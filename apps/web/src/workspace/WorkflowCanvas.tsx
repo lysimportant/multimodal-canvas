@@ -7,13 +7,14 @@ import {
   ReactFlow,
   useReactFlow,
   useViewport,
-  useStore,
+  useStoreApi,
   type Connection,
   type ConnectionLineComponentProps,
   type FinalConnectionState,
   type OnConnectStart,
   type OnConnectStartParams,
   type OnEdgesChange,
+  type OnMove,
   type OnNodesChange,
 } from '@xyflow/react';
 import { FileText, LayoutGrid, Upload } from 'lucide-react';
@@ -98,7 +99,11 @@ import {
   type InferenceStrength,
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
-import { getCenteredCanvasNodePosition, getToolbarCanvasNodePosition } from './canvas-position';
+import {
+  getCenteredCanvasNodePosition,
+  getToolbarCanvasNodePosition,
+  type CanvasViewportBounds,
+} from './canvas-position';
 import { getQuickEditorLayout, type QuickEditorPlacementState } from './quick-editor-layout';
 import {
   getConnectionDropCreateGroups,
@@ -395,21 +400,12 @@ export function WorkflowCanvas({
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
+  const flowStore = useStoreApi();
   const canvasAreaRef = useRef<HTMLElement>(null);
+  /** 画布相对 React Flow 容器的屏幕边界，移动帧只读缓存，单位为 CSS 像素。 */
+  const canvasBoundsRef = useRef<CanvasViewportBounds | null>(null);
   /** 视口动画期间只切换装饰层，不广播 React 状态或改变节点几何。 */
   const viewportMoving = useRef(false);
-  const handleViewportMoveStart = useCallback(() => {
-    viewportMoving.current = true;
-    canvasAreaRef.current?.classList.add('is-viewport-moving');
-  }, []);
-  const handleViewportMoveEnd = useCallback(() => {
-    viewportMoving.current = false;
-    canvasAreaRef.current?.classList.remove('is-viewport-moving');
-  }, []);
-  useEffect(() => {
-    window.addEventListener('blur', handleViewportMoveEnd);
-    return () => window.removeEventListener('blur', handleViewportMoveEnd);
-  }, [handleViewportMoveEnd]);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
   const suppressPaneClickRef = useRef(false);
@@ -521,24 +517,63 @@ export function WorkflowCanvas({
     [edgePathStyle, edgeEffect],
   );
 
-  const getCanvasNodePosition = useCallback(
-    (mediaType?: MediaType) => {
-      const canvasArea = canvasAreaRef.current;
-      if (!canvasArea) return undefined;
-      const bounds = canvasArea.getBoundingClientRect();
-      return getCenteredCanvasNodePosition(
-        bounds,
-        screenToFlowPosition,
-        mediaType ? getNewNodeDimensions(mediaType) : undefined,
-      );
+  /** 移动期间实时发布新建位置；使用事件倍率和已测边界，避免转换 API 内部再次读取 DOM。 */
+  const handleViewportMove = useCallback<OnMove>(
+    (_event, viewport) => {
+      const bounds = canvasBoundsRef.current;
+      if (!bounds || !Number.isFinite(viewport.zoom) || viewport.zoom <= 0) return;
+      const { snapToGrid, snapGrid } = flowStore.getState();
+      const position = getCenteredCanvasNodePosition(bounds, (center) => {
+        const x = (center.x - viewport.x) / viewport.zoom;
+        const y = (center.y - viewport.y) / viewport.zoom;
+        // 与 screenToFlowPosition 一致：先吸附中心，再由定位函数减默认节点半宽/半高。
+        return snapToGrid
+          ? {
+              x: Math.round(x / snapGrid[0]) * snapGrid[0],
+              y: Math.round(y / snapGrid[1]) * snapGrid[1],
+            }
+          : { x, y };
+      });
+      if (position) onCanvasCenterChange(position);
     },
-    [screenToFlowPosition],
+    [flowStore, onCanvasCenterChange],
   );
 
+  /** 初始化、交互边界及尺寸变化时校准相对位置，不能假设画布与 Flow 容器原点重合。 */
   const reportCanvasCenter = useCallback(() => {
-    const position = getCanvasNodePosition();
-    if (position) onCanvasCenterChange(position);
-  }, [getCanvasNodePosition, onCanvasCenterChange]);
+    const canvas = canvasAreaRef.current;
+    const { domNode, transform } = flowStore.getState();
+    if (!canvas || !domNode) {
+      canvasBoundsRef.current = null;
+      return;
+    }
+    const bounds = canvas.getBoundingClientRect();
+    const flowBounds = domNode.getBoundingClientRect();
+    canvasBoundsRef.current = {
+      left: bounds.left - flowBounds.left,
+      top: bounds.top - flowBounds.top,
+      width: bounds.width,
+      height: bounds.height,
+    };
+    handleViewportMove(null, { x: transform[0], y: transform[1], zoom: transform[2] });
+  }, [flowStore, handleViewportMove]);
+
+  /** 手势开始时先刷新边界，再切换装饰层；后续移动无需同步布局。 */
+  const handleViewportMoveStart = useCallback(() => {
+    reportCanvasCenter();
+    viewportMoving.current = true;
+    canvasAreaRef.current?.classList.add('is-viewport-moving');
+  }, [reportCanvasCenter]);
+  /** 视口停止后校准最终中心，覆盖移动期间容器位置发生变化的情况。 */
+  const handleViewportMoveEnd = useCallback(() => {
+    viewportMoving.current = false;
+    canvasAreaRef.current?.classList.remove('is-viewport-moving');
+    reportCanvasCenter();
+  }, [reportCanvasCenter]);
+  useEffect(() => {
+    window.addEventListener('blur', handleViewportMoveEnd);
+    return () => window.removeEventListener('blur', handleViewportMoveEnd);
+  }, [handleViewportMoveEnd]);
 
   const handleCenterNode = useCallback(
     (node: AssetFlowNode) => {
@@ -567,7 +602,18 @@ export function WorkflowCanvas({
 
   useEffect(() => {
     reportCanvasCenter();
-  }, [reportCanvasCenter]);
+    window.addEventListener('resize', reportCanvasCenter);
+    // 资源侧栏开合等容器变化不一定触发窗口 resize，也须刷新后续资源新建的位置。
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reportCanvasCenter);
+    if (canvasAreaRef.current) observer?.observe(canvasAreaRef.current);
+    const flowContainer = flowStore.getState().domNode;
+    if (flowContainer) observer?.observe(flowContainer);
+    return () => {
+      window.removeEventListener('resize', reportCanvasCenter);
+      observer?.disconnect();
+    };
+  }, [flowStore, reportCanvasCenter]);
 
   const handleAddGenerateNode = useCallback(
     (mediaType: MediaType) => {
@@ -1055,7 +1101,7 @@ export function WorkflowCanvas({
                                     onNodeDrag={onNodeDrag}
                                     onNodeDragStop={onNodeDragStop}
                                     onMoveStart={handleViewportMoveStart}
-                                    onMove={reportCanvasCenter}
+                                    onMove={handleViewportMove}
                                     onMoveEnd={handleViewportMoveEnd}
                                     onDrop={handleDrop}
                                     onDragOver={handleDragOver}
@@ -1208,8 +1254,8 @@ type QuickEditorOverlayProps = {
  * 使输入内容不影响节点外框；贴边等待换向时允许暂时重叠节点，但始终留在可见画布内。
  */
 function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOverlayProps) {
-  // 平移位置由视口 DOM 观察器更新；不让平移重渲染整个编辑器。
-  const viewportZoom = useStore((state) => state.transform[2]);
+  // 视口由 DOM 观察器跟踪；测量时读取最新倍率，不为每个缩放帧重建 React 订阅和监听器。
+  const store = useStoreApi();
   const overlayRef = useRef<HTMLDivElement>(null);
   /** portal 宿主在客户端挂载后确定，服务端渲染阶段保持为空。 */
   const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
@@ -1233,6 +1279,7 @@ function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOver
   }, [canvasAreaRef]);
 
   const measure = useCallback(() => {
+    const viewportZoom = store.getState().transform[2];
     const canvas = canvasAreaRef.current;
     const overlay = overlayRef.current;
     const nodeElement = findReactFlowNodeElement(nodeId);
@@ -1350,17 +1397,24 @@ function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOver
         ? current
         : nextLayout,
     );
-  }, [canvasAreaRef, nodeId, viewportZoom]);
+  }, [canvasAreaRef, nodeId, store]);
 
   useLayoutEffect(() => {
     if (!portalHost) return;
     let disposed = false;
+    let frame: number | null = null;
+    /** 同一帧的尺寸、DOM 和滚动通知共用一次测量，且在 React Flow 写完视口后读取。 */
     const update = () => {
-      if (!disposed) measure();
+      if (disposed || frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        if (!disposed) measure();
+      });
     };
 
+    // 首次定位仍在显示前同步完成；下一帧补测挂载后内容，避免浮层闪到错误位置。
+    measure();
     update();
-    const initialMeasure = window.setTimeout(update, 0);
     window.addEventListener('resize', update);
     window.addEventListener('scroll', update, true);
 
@@ -1398,7 +1452,7 @@ function QuickEditorOverlay({ nodeId, canvasAreaRef, children }: QuickEditorOver
 
     return () => {
       disposed = true;
-      window.clearTimeout(initialMeasure);
+      if (frame !== null) window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
       resizeObserver?.disconnect();

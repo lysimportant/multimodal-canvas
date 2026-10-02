@@ -122,3 +122,41 @@
 - 新入口 `/assets/index-C_p7GWqS.js` 引用 `/assets/main-CzFVfITH.js`，业务分包 SHA-256 为 `60faab671b1f1ea05bc96024ba416101bf5e023b12ab129f3c1f2a1a80478896`；HTTP 已核对选区引用和顶部设置栏代码。
 - 更新前镜像保存在 `multimodal-canvas-web:rollback-multiselect-caret-20261002-222557`。如需回退，将它重新标记为 `multimodal-canvas-web:local`，执行 `docker compose -f compose.yaml up -d --no-deps web`；不替换其他服务。部署证据与浏览器报告位于同一任务证据目录。
 - 本轮实现与本地验收完成；来源接口和真实 Provider 未验收，现有超大画布长帧继续由 TODO P2-07 跟踪，不扩大为其他模型或性能任务。提交和远端核验以本轮 Git 记录为准。
+
+## 滚轮缩放第二轮复核
+
+### 范围与实现
+
+- P1；起点 `codex/generate-to-new-node @ f6ed45e`，Node v24.12.0 / pnpm 11.19.0。只处理 PC Web 滚轮缩放的同步测量与隐藏操作栏绘制，不改模型、Provider、数据库、素材合同、节点尺寸或依赖。
+- 快速编辑器不再订阅每次倍率变化并重建观察器，改为稳定 store、首次同步定位、后续同一帧合并测量。缩放或内容更新仍使用当前倍率；卸载取消排队回调，不重建编辑器或清空草稿。
+- 画布中心继续在每次 `onMove` 实时报告，但使用缓存的容器相对边界和事件中的最新视口做纯坐标计算。初始化、交互开始/结束、失焦、窗口及容器 resize 重新校准；保留不同容器原点、默认节点半尺寸和网格吸附语义，不留下等待滚轮停止才更新新建位置的窗口。
+- 不可见节点操作栏使用 `content-visibility: hidden` 和 `visibility: hidden` 跳过内部排版、绘制，悬停、选择、键盘聚焦立即恢复。保留 DOM、状态和全部节点外框/端口，不隐藏可见图片；既有预览尺寸隔离不变。
+- 逐一试验去阴影、去预览 paint containment、强制 GPU 层和更激进隐藏；收益不稳定、倒退或牺牲内容的方案均未采用。
+
+### 同机对照
+
+- 独立优化前/后生产构建；Chromium 151.0.7922.34，1600×900，DPR 1，固定本地图片、节点、连线和相同起始 transform。60 与 300 节点各先暖机一次，再测三轮；每轮 18 次向外、18 次向内 wheel（±24、发送间隔 16ms）。测量期间没有并发构建或测试，不调用真实 Provider、项目或外部 API。
+- 60 节点及打开长文本编辑器的 60 节点：优化前后 P95 均约 16.7–16.8ms，长任务均为 0；已经受到显示刷新间隔限制，不宣称帧率翻倍。
+- 300 节点无编辑器的三轮 P95：优化前 50.1 / 66.7 / 50.0ms，优化后 66.6 / 50.0 / 50.1ms。两边中位数都是约 50.1ms，不能据此声称长帧已经消失。
+- 相同 300 节点三轮的主线程长任务计数由 13 / 16 / 7（共 36）变为 8 / 7 / 6（共 21），长任务总耗时由 2105ms 变为 1221ms。这是本机本批样本的工作量改善，不外推为所有机器或规模的固定收益。
+- 独立的 60 节点 trace（同样 108 个 wheel、相同起止倍率）中，Layerize 累计 686.351 → 330.538ms，Paint 累计 354.645 → 156.890ms，UpdateLayoutTree 事件数 226 → 118。trace 的 Profiler 启动本身造成额外长帧，其 max frame 不纳入普通帧耗时比较；不同 worker 的 RasterTask 累计时间也不等同于用户等待时长。
+- 确定性编辑器回归中，同帧三次 zoom 与多次观察通知的节点边界读取由 13 次降为 1 次，逐次 zoom 的观察器重建由各 3 次降为 0；普通 `onMove` 中画布/Flow 边界读取及 `screenToFlowPosition` 调用均为 0，中心仍即时更新。
+- 最终采样为 `.local-tests/zoom-followup-20261002/{before,after}-{60,300}[-editor]-final.json`；独立 trace 为 `{before,after}-60-trace-final.json`。目录内更早的消融/中间构建记录只用于诊断，不作为最终对照。
+
+### 回归与剩余边界
+
+- Web 全量 110 文件 / 1874 用例通过；类型检查、Web 全量 lint、生产构建及 `git diff --check` 通过。保留既有大包警告，没有引入依赖。
+- Chromium 烟测确认隐藏栏跳过绘制、hover 后内容可见、鼠标可移入操作栏、Tab 可从节点进入按钮。长文字、emoji、尾换行在 wheel 后保留正文、原生焦点、选区及 scrollTop；完整编辑器切换和 1280×800 尺寸变化通过，已检查截图。
+- 缩放前后节点位置及宽高一致，60 节点的 660 个端口与 52 条边保持；选择栏、图片仍可见。另一安全夹具在实际 wheel 的视口 mutation 后、move-end 前立即从资源侧栏添加素材，新节点位置与当时中心匹配（差值小于 0.01 画布像素；DOM transform 字符串有精度截断），内存保存成功。未操作真实项目。
+- 烟测报告为 `smoke-final.json` 与 `center-smoke-final.json`；页面异常、夹具违规、未知业务 API、生成 POST 均为 0。首次中心烟测使用 0.00001 容差误把 DOM 字符串精度损失判失败，调整为有单位的 0.01 容差后通过，不修改产品坐标或存储精度。
+- 用户原有 `index.css`、`CanvasNodeToolbar.test.tsx` 修改及文档删除保持原样，前两项 SHA-256 与任务备份一致，均不纳入本轮提交。
+- TODO P2-07 继续未完成：300 节点仍有长帧，千节点、高密度连线、持续媒体播放与长时间编辑仍需独立采样。这次仅降低已确认的局部开销，不承诺所有滚轮缩放完全无卡顿。
+
+### 本地交付与回退
+
+- 标准 `pnpm --filter @multimodal-canvas/web build` 首次遇到 Windows 用户临时目录 esbuild 清理权限错误；只为该构建进程将 TEMP/TMP 指向任务本地 tmp 后重跑通过，不更改系统或用户配置。Docker Web 构建也通过，沿用 lockfile；构建中的一次 npm registry 连接重置经现有重试恢复。
+- 仅执行 `docker compose -f compose.yaml build web` 与 `docker compose -f compose.yaml up -d --no-deps web`。六个服务健康，API、worker、PostgreSQL、Redis、MinIO 的 ID 与本轮操作前完全一致，没有迁移、数据库写入或重启其它服务。
+- `http://localhost:8080` 的 HTML/health 为 200；HTTP 实际业务分包 `/assets/main-BsgWJ6Up.js` 的 SHA-256 为 `65f779866e354715a4645ae830ca68ba32647ed66d13fda23b4d32fee6999b16`，与本轮实际测量的生产文件逐字节一致，CSS 哈希也一致，不只检查入口脚本。
+- 独立匿名浏览器从首页进入工作台成功，未创建真实项目。无页面异常或非预期控制台错误；`/v1/auth/me`、`/v1/auth/refresh` 的三次匿名 401 已单独记录，是未登录会话检查，不写成控制台完全无输出。证据见 `deployed-smoke-final.json`。
+- 更新前镜像为 `multimodal-canvas-web:rollback-wheel-followup-20261003-005507`；已核对其 amd64 manifest 与当时运行的 Web 相同，入口及业务文件哈希相同。容器 config digest 不能直接作为当前 Docker image store 的 tag 源，第一次失败未改变运行容器；核对后使用原 local 镜像创建回退标签。
+- 回退只需将该标签重新标记为 `multimodal-canvas-web:local`，再执行 `docker compose -f compose.yaml up -d --no-deps web`；不替换其它服务。任务实现、本地同机验证与本地交付完成，Git 提交及远端核验以本轮记录为准，P2-07 不关闭。

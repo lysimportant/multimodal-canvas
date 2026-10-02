@@ -16,8 +16,24 @@ const layoutCss = readFileSync(
   'utf8',
 ).replace(/\s+/g, ' ');
 
+/** 节点悬浮栏的内容隔离不能裁剪端口或改变外框尺寸。 */
+const nodeCss = readFileSync(
+  resolve(process.cwd(), 'src/workspace/asset-node.css'),
+  'utf8',
+).replace(/\s+/g, ' ');
+
 // CSS 契约只覆盖尺寸边界；实际视口位置与滚动仍需浏览器视觉验收。
 describe('桌面节点输入区高度', () => {
+  it('隐藏操作栏跳过内部排版与绘制，悬停、选择和键盘聚焦均恢复内容', () => {
+    expect(nodeCss).toMatch(
+      /\.flow-asset-node > \.flow-node-header\.flow-node-floating-controls \{[^}]*content-visibility: hidden;[^}]*visibility: hidden;/,
+    );
+    expect(nodeCss).toMatch(
+      /\.flow-asset-node:hover > \.flow-node-floating-controls, \.flow-asset-node\.is-selected > \.flow-node-floating-controls, \.flow-asset-node:focus-within > \.flow-node-floating-controls, \.react-flow__node:focus-within \.flow-node-floating-controls \{[^}]*content-visibility: visible;[^}]*visibility: visible;/,
+    );
+    expect(nodeCss).not.toMatch(/\.react-flow__node \{[^}]*content-visibility:/);
+  });
+
   it('设置栏可换行且放大固定在顶部右侧，不改变节点或输入框尺寸规则', () => {
     expect(indexCss).toMatch(
       /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-controls\.node-quick-editor-topbar \{ align-items: start; display: grid; grid-template-columns: minmax\(0, 1fr\) auto; \}/,

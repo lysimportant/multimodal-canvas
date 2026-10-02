@@ -67,6 +67,15 @@ function applyEdgeChanges<T extends { id: string }>(
 
 vi.mock('@xyflow/react', async (importOriginal) => {
   const React = await import('react');
+  /** 画布浮层直接读取当前视口；替身保持稳定的 store 身份。 */
+  const storeApi = {
+    getState: () => ({
+      transform: [0, 0, 1] as const,
+      domNode: document.querySelector<HTMLElement>('[data-testid="rf__wrapper"]'),
+      snapToGrid: false,
+      snapGrid: [15, 15] as const,
+    }),
+  };
 
   function ReactFlowProvider({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
@@ -310,6 +319,7 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     useNodesState,
     useReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+    useStoreApi: () => storeApi,
     useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
       selector({ transform: [0, 0, 1] }),
     useEdges: () => [],

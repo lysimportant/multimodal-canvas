@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { OnMove } from '@xyflow/react';
 import { memo, useContext } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +28,11 @@ const reactFlowMock = vi.hoisted(() => ({
   getZoom: vi.fn(() => 1),
   screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x: x - 100, y: y - 50 }),
   viewportZoom: 1,
+  viewportX: 0,
+  viewportY: 0,
+  domNode: null as HTMLElement | null,
+  snapToGrid: false,
+  snapGrid: [15, 15] as [number, number],
   nodeProbe: undefined as React.ElementType | undefined,
   edges: [] as WorkflowCanvasProps['edges'],
   storeProps: {} as Record<string, unknown>,
@@ -34,6 +40,7 @@ const reactFlowMock = vi.hoisted(() => ({
   setCenter: vi.fn(),
   fitView: vi.fn(() => Promise.resolve(true)),
   onMoveStart: undefined as (() => void) | undefined,
+  onMove: undefined as OnMove | undefined,
   onMoveEnd: undefined as (() => void) | undefined,
   onConnectStart: undefined as
     ((event: MouseEvent, params: Record<string, unknown>) => void) | undefined,
@@ -44,6 +51,14 @@ const reactFlowMock = vi.hoisted(() => ({
 
 vi.mock('@xyflow/react', async () => {
   const React = await import('react');
+  const storeApi = {
+    getState: () => ({
+      transform: [reactFlowMock.viewportX, reactFlowMock.viewportY, reactFlowMock.viewportZoom],
+      domNode: reactFlowMock.domNode,
+      snapToGrid: reactFlowMock.snapToGrid,
+      snapGrid: reactFlowMock.snapGrid,
+    }),
+  };
 
   function ReactFlow({
     nodes,
@@ -59,6 +74,7 @@ vi.mock('@xyflow/react', async () => {
     onNodeContextMenu,
     onPaneClick,
     onMoveStart,
+    onMove,
     onMoveEnd,
     onPaneContextMenu,
     onSelectionContextMenu,
@@ -89,6 +105,7 @@ vi.mock('@xyflow/react', async () => {
     onNodeContextMenu?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onPaneClick?: () => void;
     onMoveStart?: () => void;
+    onMove?: OnMove;
     onMoveEnd?: () => void;
     onPaneContextMenu?: React.MouseEventHandler<HTMLDivElement>;
     onSelectionContextMenu?: React.MouseEventHandler<HTMLDivElement>;
@@ -120,12 +137,16 @@ vi.mock('@xyflow/react', async () => {
     };
     reactFlowMock.edges = edges;
     reactFlowMock.onMoveStart = onMoveStart;
+    reactFlowMock.onMove = onMove;
     reactFlowMock.onMoveEnd = onMoveEnd;
     reactFlowMock.onNodesChange = onNodesChange;
     reactFlowMock.onConnectStart = onConnectStart;
     reactFlowMock.onConnectEnd = onConnectEnd;
     return (
       <div
+        ref={(element) => {
+          reactFlowMock.domNode = element;
+        }}
         data-testid="react-flow"
         data-default-edge-animated={String(Boolean(defaultEdgeOptions?.animated))}
         data-default-edge-type={defaultEdgeOptions?.type ?? ''}
@@ -190,6 +211,7 @@ vi.mock('@xyflow/react', async () => {
     useViewport: () => ({ x: 0, y: 0, zoom: reactFlowMock.viewportZoom }),
     useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
       selector({ transform: [0, 0, reactFlowMock.viewportZoom] }),
+    useStoreApi: () => storeApi,
     useEdges: () => [],
     useNodeConnections: () => [],
     useUpdateNodeInternals: () => React.useCallback(() => {}, []),
@@ -293,9 +315,15 @@ function createProps(overrides: Partial<WorkflowCanvasProps> = {}): WorkflowCanv
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   reactFlowMock.getNodesBounds.mockClear();
   reactFlowMock.getZoom.mockClear().mockReturnValue(1);
   reactFlowMock.viewportZoom = 1;
+  reactFlowMock.viewportX = 0;
+  reactFlowMock.viewportY = 0;
+  reactFlowMock.domNode = null;
+  reactFlowMock.snapToGrid = false;
+  reactFlowMock.snapGrid = [15, 15];
   reactFlowMock.nodeProbe = undefined;
   reactFlowMock.edges = [];
   reactFlowMock.onNodesChange = undefined;
@@ -323,6 +351,88 @@ describe('WorkflowCanvas context menu', () => {
     act(() => reactFlowMock.onMoveStart?.());
     fireEvent(window, new Event('blur'));
     expect(canvas).not.toHaveClass('is-viewport-moving');
+  });
+
+  it('移动未结束时新建所用中心已是最新，逐次移动不读取 DOM，结束和窗口变化校准边界', () => {
+    reactFlowMock.nodeProbe = () => null;
+    let transform = { x: 0, y: 0, zoom: 1 };
+    let flowRect = createMockRect(100, 50, 900, 650);
+    const convert = vi
+      .spyOn(reactFlowMock, 'screenToFlowPosition')
+      .mockImplementation(({ x, y }) => ({
+        x: (x - flowRect.left - transform.x) / transform.zoom,
+        y: (y - flowRect.top - transform.y) / transform.zoom,
+      }));
+    const props = createProps({ nodes: [generateNode] });
+    const view = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const bounds = vi
+      .spyOn(canvas, 'getBoundingClientRect')
+      .mockReturnValue(createMockRect(80, 90, 1000, 720));
+    const flowBounds = vi
+      .spyOn(screen.getByTestId('react-flow'), 'getBoundingClientRect')
+      .mockImplementation(() => flowRect);
+    act(() => reactFlowMock.onMoveStart?.());
+    bounds.mockClear();
+    flowBounds.mockClear();
+    vi.mocked(props.onCanvasCenterChange).mockClear();
+    convert.mockClear();
+    for (const { next, expected } of [
+      { next: { x: 20, y: -10, zoom: 0.5 }, expected: { x: 805, y: 712 } },
+      { next: { x: 40, y: -20, zoom: 1 }, expected: { x: 325, y: 312 } },
+      { next: { x: 60, y: -40, zoom: 2 }, expected: { x: 95, y: 112 } },
+    ]) {
+      transform = next;
+      // 不更新 store，证明该事件即刻发布传入的 viewport，而非上一帧或移动结束的缓存。
+      act(() => reactFlowMock.onMove?.(null, next));
+      expect(props.onCanvasCenterChange).toHaveBeenLastCalledWith(expected);
+      expect(canvas).toHaveClass('is-viewport-moving');
+    }
+    expect(bounds).not.toHaveBeenCalled();
+    expect(flowBounds).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
+    expect(props.onCanvasCenterChange).toHaveBeenCalledTimes(3);
+    reactFlowMock.viewportX = transform.x;
+    reactFlowMock.viewportY = transform.y;
+    reactFlowMock.viewportZoom = transform.zoom;
+    act(() => reactFlowMock.onMoveEnd?.());
+    expect(bounds).toHaveBeenCalledTimes(1);
+    expect(flowBounds).toHaveBeenCalledTimes(1);
+    expect(props.onCanvasCenterChange).toHaveBeenLastCalledWith({ x: 95, y: 112 });
+
+    bounds.mockReturnValue(createMockRect(100, 50, 1200, 600));
+    flowRect = createMockRect(140, 70, 1160, 580);
+    fireEvent.resize(window);
+    expect(props.onCanvasCenterChange).toHaveBeenLastCalledWith({ x: 135, y: 52 });
+    fireEvent.click(screen.getByRole('button', { name: '新建图片生成节点' }));
+    expect(props.onAddGenerateNode).toHaveBeenLastCalledWith('image', { x: 50, y: 42 });
+
+    bounds.mockClear();
+    flowBounds.mockClear();
+    convert.mockClear();
+    act(() => reactFlowMock.onMove?.(null, { x: -20, y: 80, zoom: 0.5 }));
+    expect(props.onCanvasCenterChange).toHaveBeenLastCalledWith({ x: 1045, y: 292 });
+    expect(bounds).not.toHaveBeenCalled();
+    expect(flowBounds).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
+
+    act(() => reactFlowMock.onMoveStart?.());
+    transform = { x: 160, y: 60, zoom: 2 };
+    reactFlowMock.viewportX = transform.x;
+    reactFlowMock.viewportY = transform.y;
+    fireEvent(window, new Event('blur'));
+    expect(props.onCanvasCenterChange).toHaveBeenLastCalledWith({ x: 85, y: 2 });
+    expect(canvas).not.toHaveClass('is-viewport-moving');
+
+    // 保持原 screenToFlowPosition 的可选网格吸附，再减默认节点半宽/半高。
+    reactFlowMock.snapToGrid = true;
+    reactFlowMock.snapGrid = [20, 10];
+    act(() => reactFlowMock.onMove?.(null, { x: 155, y: 55, zoom: 2 }));
+    expect(props.onCanvasCenterChange).toHaveBeenLastCalledWith({ x: 85, y: 2 });
+    view.unmount();
+    bounds.mockClear();
+    fireEvent.resize(window);
+    expect(bounds).not.toHaveBeenCalled();
   });
   it('禁用 React Flow 默认删除键，由 App 统一检查菜单边界和撤销历史', () => {
     render(<WorkflowCanvas {...createProps()} />);
@@ -905,6 +1015,11 @@ describe('WorkflowCanvas context menu', () => {
         canvasNode.style.transform = 'translate(' + frame + 'px)';
       });
       const switched = frame >= path.indexOf(447);
+      await waitFor(() =>
+        expect(overlay).toHaveStyle({
+          top: `${switched ? top - 64 - 220 : Math.min(top + 80 + 16, 482)}px`,
+        }),
+      );
       expect(overlay).toHaveAttribute('data-placement', switched ? 'above' : 'below');
       expect(overlay).toHaveStyle({ visibility: 'visible', width: '360px', left: '290px' });
       const maxHeight = Number.parseFloat(
@@ -945,7 +1060,9 @@ describe('WorkflowCanvas context menu', () => {
       editor.append(document.createElement('span'));
     });
     expect(overlay).toHaveAttribute('data-placement', 'below');
-    expect(overlay.style.getPropertyValue('--quick-editor-max-height')).toBe('450px');
+    await waitFor(() =>
+      expect(overlay.style.getPropertyValue('--quick-editor-max-height')).toBe('450px'),
+    );
     expect(overlay).toHaveStyle({ top: '246px', width: '360px' });
   });
 
@@ -1042,6 +1159,8 @@ describe('WorkflowCanvas context menu', () => {
     reactFlowMock.viewportZoom = 0.5;
     nodeRect = createMockRect(400, 160, 200, 133);
     rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+    // 替身不包含 React Flow 的视口 DOM，显式发出几何变化通知。
+    fireEvent.resize(window);
     await waitFor(() => expect(overlay).toHaveStyle({ width: '800px', transform: 'scale(0.5)' }));
     expect(Number.parseFloat(overlay.style.width) * 0.5).toBe(nodeRect.width * 2);
 
@@ -1067,6 +1186,138 @@ describe('WorkflowCanvas context menu', () => {
     expect(props.onNodesChange).not.toHaveBeenCalled();
     expect(props.onResizeNode).not.toHaveBeenCalled();
     expect(generateNode).not.toHaveProperty('width');
+  });
+
+  it('缩放不重建编辑器观察器，同帧视口、滚动及尺寸通知只测量一次', async () => {
+    vi.useFakeTimers();
+    // 隔离节点装饰层，只统计真实编辑器的几何读取和监听器生命周期。
+    reactFlowMock.nodeProbe = () => null;
+    const resizeObserve = vi.spyOn(ResizeObserver.prototype, 'observe');
+    const mutationObserve = vi.spyOn(MutationObserver.prototype, 'observe');
+    const props = createProps({ nodes: [generateNode], selectedNode: null });
+    const view = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+    const viewport = document.createElement('div');
+    viewport.className = 'react-flow__viewport';
+    canvas.append(viewport);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(0, 80, 1024, 680));
+    const nodeBounds = vi
+      .spyOn(canvasNode, 'getBoundingClientRect')
+      .mockImplementation(() =>
+        createMockRect(380, 150, 180 * reactFlowMock.viewportZoom, 80 * reactFlowMock.viewportZoom),
+      );
+    view.rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+    const editor = screen.getByRole('region', { name: '图片生成节点生成设置' });
+    const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    nodeBounds.mockClear();
+    resizeObserve.mockClear();
+    mutationObserve.mockClear();
+    quickEditorRender.mockClear();
+
+    for (const zoom of [0.75, 1.25, 1.5]) {
+      reactFlowMock.viewportZoom = zoom;
+      view.rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+      await act(async () => {
+        viewport.style.transform = `translate(0px, 0px) scale(${zoom})`;
+        canvasNode.style.transform = `translateX(${zoom}px)`;
+        fireEvent.resize(window);
+        fireEvent.scroll(window);
+      });
+    }
+    const beforeFrame = nodeBounds.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    expect({
+      resizeSubscriptions: resizeObserve.mock.calls.filter(([target]) => target === overlay).length,
+      mutationSubscriptions: mutationObserve.mock.calls.filter(([target]) => target === editor)
+        .length,
+      beforeFrame,
+      nodeMeasurements: nodeBounds.mock.calls.length,
+    }).toEqual({
+      resizeSubscriptions: 0,
+      mutationSubscriptions: 0,
+      beforeFrame: 0,
+      nodeMeasurements: 1,
+    });
+    expect(overlay).toHaveStyle({
+      visibility: 'visible',
+      width: '360px',
+      transform: 'scale(1.5)',
+      top: '294px',
+    });
+    expect(quickEditorRender).not.toHaveBeenCalled();
+    expect(props.onResizeNode).not.toHaveBeenCalled();
+  });
+
+  it('视口直接更新 DOM 时读取最新倍率，保留草稿光标并在关闭后取消待测量帧', async () => {
+    vi.useFakeTimers();
+    reactFlowMock.nodeProbe = () => null;
+    const props = createProps({ nodes: [generateNode], selectedNode: null });
+    const view = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const canvasNode = screen.getByTestId(`canvas-node-${generateNode.id}`);
+    const viewport = document.createElement('div');
+    viewport.className = 'react-flow__viewport';
+    canvas.append(viewport);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(0, 80, 1024, 680));
+    const nodeBounds = vi
+      .spyOn(canvasNode, 'getBoundingClientRect')
+      .mockImplementation(() =>
+        createMockRect(380, 150, 180 * reactFlowMock.viewportZoom, 80 * reactFlowMock.viewportZoom),
+      );
+    view.rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+    const editor = screen.getByRole('region', { name: '图片生成节点生成设置' });
+    const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+    const textarea = within(editor).getByLabelText<HTMLTextAreaElement>('提示词');
+    fireEvent.change(textarea, { target: { value: '还未保存的提示词' } });
+    textarea.focus();
+    textarea.setSelectionRange(2, 5, 'backward');
+    editor.scrollTop = 17;
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    quickEditorRender.mockClear();
+
+    // React Flow 12.11.3 的 Viewport 直接改写 transform，不需要父组件重新渲染。
+    for (const zoom of [0.5, 1.5]) {
+      await act(async () => {
+        reactFlowMock.viewportZoom = zoom;
+        viewport.style.transform = `translate(0px, 0px) scale(${zoom})`;
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(16);
+      });
+      expect(overlay).toHaveStyle({
+        visibility: 'visible',
+        width: '360px',
+        transform: `scale(${zoom})`,
+      });
+      expect(Number.parseFloat(overlay.style.top)).toBe(150 + 96 * zoom);
+      expect(within(editor).getByLabelText('提示词')).toBe(textarea);
+      expect(document.activeElement).toBe(textarea);
+      expect(textarea).toHaveValue('还未保存的提示词');
+      expect([textarea.selectionStart, textarea.selectionEnd, textarea.selectionDirection]).toEqual(
+        [2, 5, 'backward'],
+      );
+      expect(editor.scrollTop).toBe(17);
+    }
+    expect(quickEditorRender).not.toHaveBeenCalled();
+    expect(props.onResizeNode).not.toHaveBeenCalled();
+    nodeBounds.mockClear();
+    await act(async () => {
+      viewport.style.transform = 'translateX(10px) scale(1.5)';
+    });
+    view.rerender(<WorkflowCanvas {...props} selectedNode={null} />);
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(document.querySelector('.quick-editor-overlay')).not.toBeInTheDocument();
+    expect(nodeBounds).not.toHaveBeenCalled();
   });
 
   it.each(['鼠标', '键盘'])('放大后通过%s聚焦不移位，也不锁定滚动和后续测量', async (method) => {
