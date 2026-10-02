@@ -328,3 +328,30 @@ describe('CanvasContextMenu', () => {
     expect(inputs.onRequestUpload).not.toHaveBeenCalled();
   });
 });
+
+/** 选区入口复用现有菜单、键盘导航和四种媒体创建动作。 */
+describe('CanvasContextMenu selection', () => {
+  it.each([
+    ['text', '文字'],
+    ['image', '图片'],
+    ['audio', '音频'],
+    ['video', '视频'],
+  ] as const)('引用选区创建 %s，不调用普通创建或运行', (mediaType, label) => {
+    const inputs = props({
+      target: {
+        kind: 'selection',
+        count: 2,
+        clientPosition: { x: 40, y: 80 },
+        flowPosition: { x: 200, y: 100 },
+        returnFocusTo: null,
+      },
+      onAddSelectionGenerateNode: vi.fn(),
+    });
+    render(<CanvasContextMenu {...inputs} />);
+    fireEvent.click(screen.getByRole('menuitem', { name: '引用选区新建' + label + '节点' }));
+    expect(inputs.onAddSelectionGenerateNode).toHaveBeenCalledWith(mediaType, { x: 200, y: 100 });
+    expect(inputs.onAddGenerateNode).not.toHaveBeenCalled();
+    expect(inputs.onRunNode).not.toHaveBeenCalled();
+    expect(inputs.onClose).toHaveBeenCalledWith('action');
+  });
+});

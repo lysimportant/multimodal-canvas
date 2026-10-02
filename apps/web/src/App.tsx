@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import {
   ReactFlowProvider,
+  applyNodeChanges,
   useEdgesState,
   useNodesState,
   type Connection,
@@ -106,7 +107,11 @@ import {
 import { createUniqueNodeLabel } from './app-contract-utils';
 import { getNodePlacementRightOf } from './workspace/canvas-position';
 import { createGenerationBatch } from './workspace/generation-batch';
-import { collectConnectedPromptAssets } from './workspace/connected-prompt-assets';
+import {
+  collectConnectedPromptAssets,
+  createSelectedNodesPromptDocument,
+} from './workspace/connected-prompt-assets';
+import { projectGenerationBatches } from './workspace/generation-batch-view';
 import {
   freezeConnectedResourceReferences,
   projectConnectedPromptDocument,
@@ -1296,8 +1301,13 @@ function WorkspaceApp({
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
-      if (changes.some((change) => change.type === 'select' && change.selected)) {
-        setSelectedGroupId(null);
+      if (changes.some((change) => change.type === 'select')) {
+        const next = applyNodeChanges(changes, nodesRef.current);
+        const selected = projectGenerationBatches(next, []).nodes.filter(
+          (node) => node.selected && !node.hidden,
+        );
+        if (selected.length > 0) setSelectedGroupId(null);
+        setSelectedNodeId(selected.length === 1 ? selected[0].id : null);
       }
       // 初次 DOM 测量不修改画布；只有用户调尺寸的标记才进入保存和撤销历史。
       const documentChanges = changes.filter(
@@ -2075,6 +2085,12 @@ function WorkspaceApp({
       setSelectedGroupId(null);
       setSelectedNodeId(nodeId);
       setNodes((current) => {
+        // 点击多选成员只切换编辑器，不收窄选区；点其他节点或背景仍按单选合同处理。
+        const visibleSelection = projectGenerationBatches(current, []).nodes.filter(
+          (node) => node.selected && !node.hidden,
+        );
+        if (visibleSelection.length > 1 && visibleSelection.some((node) => node.id === nodeId))
+          return current;
         let changed = false;
         const next = current.map((node) => {
           const selected = node.id === nodeId;
@@ -2341,6 +2357,49 @@ function WorkspaceApp({
       );
     },
     [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
+  );
+
+  /**
+   * 用实时可见选区的真实资产新建引用节点，不触发运行或改变来源选择。
+   * @param mediaType 目标生成类型；模型默认值沿用普通新建流程。
+   * @param position 右键菜单所在画布位置。
+   * 空资源或版本不明时整次拒绝；成功只增加节点并记录一次撤销。
+   */
+  const handleAddSelectionGenerateNode = useCallback(
+    (mediaType: MediaType, position: { x: number; y: number }) => {
+      const selected = projectGenerationBatches(nodesRef.current, []).nodes.filter(
+        (node) => node.selected && !node.hidden,
+      );
+      try {
+        const promptDocument = createSelectedNodesPromptDocument(selected, assets);
+        const node = createGenerateNode(mediaType, position, {
+          promptDocument,
+          prompt: renderPromptDocument(promptDocument),
+          ...(mediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
+        });
+        rememberHistory();
+        // 不调用独占选择的 appendNodesAndSelect，来源的选择和所有数据保持原样。
+        const next = [...nodesRef.current, { ...node, selected: false }];
+        nodesRef.current = next;
+        setNodes(next);
+        canvasDirtyRef.current = true;
+        const count = promptDocument.blocks.filter((block) => block.type === 'mention').length;
+        setNotice({
+          kind: nodePreferenceNoticeRef.current ? 'error' : 'success',
+          message:
+            '已引用 ' +
+            count +
+            ' 个资源新建节点，原选区保留，未开始生成' +
+            (nodePreferenceNoticeRef.current ? '；' + nodePreferenceNoticeRef.current : ''),
+        });
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '引用节点创建失败',
+        });
+      }
+    },
+    [assets, createGenerateNode, rememberHistory, setNodes],
   );
 
   /**
@@ -4380,6 +4439,7 @@ function WorkspaceApp({
             onAddGenerateNode={handleAddGenerateNode}
             onEditImage={handleCreateImageEditNode}
             onAddConnectedGenerateNode={handleAddConnectedGenerateNode}
+            onAddSelectionGenerateNode={handleAddSelectionGenerateNode}
             onOpenRequestPrompt={(nodeId) => void openRequestPrompt(nodeId)}
             onCanvasCenterChange={updateCanvasCenterPosition}
             onRequestUpload={() => uploadInputRef.current?.click()}

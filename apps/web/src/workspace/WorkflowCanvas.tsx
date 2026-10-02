@@ -170,6 +170,11 @@ type QuickEditorLayout = {
   ready: boolean;
 };
 
+/** 桌面框选保留中键及空格平移；稳定数组避免坐标帧重置 React Flow 配置。 */
+const FLOW_PAN_ON_DRAG = [1];
+/** 跨平台修饰键点击使用 React Flow 的增减选择语义。 */
+const FLOW_MULTI_SELECTION_KEYS = ['Control', 'Meta', 'Shift'];
+
 export type WorkflowCanvasProps = {
   /** 当前项目用于创建独立 Skill 优化任务。 */
   projectId?: string;
@@ -206,6 +211,8 @@ export type WorkflowCanvasProps = {
     position: { x: number; y: number },
   ) => void;
   onNodeSelect: (node: AssetFlowNode) => void;
+  /** 以实时可见选区的真实资源创建节点；不运行且保留来源选择。 */
+  onAddSelectionGenerateNode?: (mediaType: MediaType, position: { x: number; y: number }) => void;
   onClearNodeSelection: () => void;
   onResizeNode: NodeResizeHandler;
   /** 双击节点名称后的保存回调。 */
@@ -328,6 +335,7 @@ export function WorkflowCanvas({
   onNodeDragStop,
   onCanvasDrop,
   onNodeSelect,
+  onAddSelectionGenerateNode,
   onClearNodeSelection,
   onResizeNode,
   onNodeLabelChange,
@@ -458,6 +466,9 @@ export function WorkflowCanvas({
   /** 收起后的后方卡牌不能继续显示输入编辑器。 */
   const quickEditorNode =
     selectedNode && !batchProjection.views.get(selectedNode.id)?.hidden ? selectedNode : null;
+  const selectedResourceNodes = batchProjection.nodes.filter(
+    (node) => node.selected && !node.hidden,
+  );
   /** 菜单打开后仍读取实时节点，避免恢复/SSE 更新被右键快照遮住。 */
   const currentContextMenu =
     contextMenu?.kind === 'node'
@@ -465,7 +476,9 @@ export function WorkflowCanvas({
           ...contextMenu,
           node: nodes.find((node) => node.id === contextMenu.node.id) ?? contextMenu.node,
         }
-      : contextMenu;
+      : contextMenu?.kind === 'selection'
+        ? { ...contextMenu, count: selectedResourceNodes.length }
+        : contextMenu;
   /** 所有节点入口共用本地锁及服务端活动状态。 */
   const isNodeBusy = (node: AssetFlowNode) =>
     Boolean(busyNodeIds?.has(node.id)) || isActiveRunStatus(node.data.runStatus);
@@ -585,7 +598,8 @@ export function WorkflowCanvas({
   }, [fitView]);
 
   /** 通过最新数据定位节点；兼容控件持有的历史数据对象，不冻结拖动后的坐标。 */
-  const selectNodeByData = useCallback((data: AssetFlowNode['data']) => {
+  const selectNodeByData = useCallback((data: AssetFlowNode['data'], event?: ReactMouseEvent) => {
+    if (event?.ctrlKey || event?.metaKey || event?.shiftKey) return;
     const { nodes: currentNodes, onNodeSelect: select } = nodeActionsRef.current;
     const node =
       currentNodes.find((candidate) => candidate.data === data) ??
@@ -599,9 +613,12 @@ export function WorkflowCanvas({
   }, []);
 
   /** 保持 React Flow 节点包装器的点击回调引用稳定，选择仍交给当前 App 回调。 */
-  const handleNodeClick = useCallback((_event: ReactMouseEvent, node: AssetFlowNode) => {
-    nodeActionsRef.current.onNodeSelect(node);
-  }, []);
+  const handleNodeClick = useCallback(
+    (event: ReactMouseEvent, node: AssetFlowNode) => {
+      selectNodeByData(node.data, event);
+    },
+    [selectNodeByData],
+  );
 
   /** App 的内联动作保持最新语义，但不因坐标刷新而广播整个节点树。 */
   const handleDeleteNode = useCallback((nodeId: string) => {
@@ -641,13 +658,20 @@ export function WorkflowCanvas({
       event.preventDefault();
       event.stopPropagation();
       setContextMenu({
-        kind: 'canvas',
+        kind:
+          selectedResourceNodes.length > 0 && onAddSelectionGenerateNode ? 'selection' : 'canvas',
+        count: selectedResourceNodes.length,
         clientPosition: { x: event.clientX, y: event.clientY },
         flowPosition: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
         returnFocusTo: getReturnFocusTarget(event),
       });
     },
-    [getReturnFocusTarget, screenToFlowPosition],
+    [
+      getReturnFocusTarget,
+      screenToFlowPosition,
+      selectedResourceNodes.length,
+      onAddSelectionGenerateNode,
+    ],
   );
 
   const handleNodeContextMenu = useCallback(
@@ -655,6 +679,10 @@ export function WorkflowCanvas({
       if (shouldKeepNativeContextMenu(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
+      if (node.selected && selectedResourceNodes.length > 1 && onAddSelectionGenerateNode) {
+        handlePaneContextMenu(event);
+        return;
+      }
       nodeActionsRef.current.onNodeSelect(node);
       setContextMenu({
         kind: 'node',
@@ -663,7 +691,12 @@ export function WorkflowCanvas({
         returnFocusTo: getReturnFocusTarget(event),
       });
     },
-    [getReturnFocusTarget],
+    [
+      getReturnFocusTarget,
+      handlePaneContextMenu,
+      selectedResourceNodes.length,
+      onAddSelectionGenerateNode,
+    ],
   );
 
   const handleContextMenuClose = useCallback(
@@ -1029,6 +1062,10 @@ export function WorkflowCanvas({
                                     onNodeClick={handleNodeClick}
                                     onNodeContextMenu={handleNodeContextMenu}
                                     onPaneContextMenu={handlePaneContextMenu}
+                                    onSelectionContextMenu={handlePaneContextMenu}
+                                    selectionOnDrag
+                                    panOnDrag={FLOW_PAN_ON_DRAG}
+                                    multiSelectionKeyCode={FLOW_MULTI_SELECTION_KEYS}
                                     onPaneClick={handlePaneClick}
                                     fitView
                                     minZoom={FIT_VIEW_MIN_ZOOM}
@@ -1121,6 +1158,7 @@ export function WorkflowCanvas({
           onNodeEnabledChange={onNodeEnabledChange}
           onDeleteNode={(nodeId) => onDeleteNode?.(nodeId)}
           onAddGenerateNode={onAddGenerateNode}
+          onAddSelectionGenerateNode={onAddSelectionGenerateNode}
           onAddConnectedGenerateNode={onAddConnectedGenerateNode}
           onRequestUpload={onRequestUpload}
           onOpenRequestPrompt={onOpenRequestPrompt}

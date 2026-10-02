@@ -38,6 +38,7 @@ import {
   useState,
   useRef,
   type KeyboardEvent,
+  type MouseEvent,
   type FocusEvent,
   type HTMLAttributes,
   type ReactNode,
@@ -76,7 +77,8 @@ import { getNodeInfoTimes } from './node-info';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
 import './asset-node.css';
 
-export type NodeSelectionHandler = (data: AssetFlowNode['data']) => void;
+/** 节点本体把点击修饰键交给画布，避免捕获阶段覆盖 React Flow 的多选。 */
+export type NodeSelectionHandler = (data: AssetFlowNode['data'], event?: MouseEvent) => void;
 export const NodeSelectionContext = createContext<NodeSelectionHandler | null>(null);
 /** 当前已打开输入编辑器的节点 ID；框选或全选状态不能代替实际编辑器状态。 */
 export const NodeQuickEditorIdContext = createContext<string | null>(null);
@@ -625,7 +627,7 @@ export function AssetNode({
       onClickCapture={(event) => {
         if ((event.target as Element).closest('.flow-node-prompt-button, .flow-node-batch-toggle'))
           return;
-        selectNode?.(data);
+        selectNode?.(data, event);
       }}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes('Files')) {

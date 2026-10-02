@@ -65,7 +65,7 @@ function applyEdgeChanges<T extends { id: string }>(
   }, current);
 }
 
-vi.mock('@xyflow/react', async () => {
+vi.mock('@xyflow/react', async (importOriginal) => {
   const React = await import('react');
 
   function ReactFlowProvider({ children }: { children: React.ReactNode }) {
@@ -296,6 +296,7 @@ vi.mock('@xyflow/react', async () => {
   }
 
   return {
+    applyNodeChanges: (await importOriginal<typeof import('@xyflow/react')>()).applyNodeChanges,
     Background: () => null,
     BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
     Controls: () => null,

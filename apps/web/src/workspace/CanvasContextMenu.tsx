@@ -43,6 +43,14 @@ export type CanvasContextMenuTarget =
       returnFocusTo: HTMLElement | null;
     }
   | {
+      kind: 'selection';
+      clientPosition: { x: number; y: number };
+      flowPosition: { x: number; y: number };
+      /** 当前可见选中节点数，不包含收起批次的隐藏成员。 */
+      count: number;
+      returnFocusTo: HTMLElement | null;
+    }
+  | {
       kind: 'node';
       clientPosition: { x: number; y: number };
       node: AssetFlowNode;
@@ -72,6 +80,8 @@ type CanvasContextMenuProps = {
   onNodeEnabledChange: (nodeId: string, enabled: boolean) => void;
   onDeleteNode: (nodeId: string) => void;
   onAddGenerateNode: (mediaType: MediaType, position: { x: number; y: number }) => void;
+  /** 创建包含选区真实资源引用的节点，不触发生成。 */
+  onAddSelectionGenerateNode?: (mediaType: MediaType, position: { x: number; y: number }) => void;
   /** 悬空连线松手后创建节点并立刻连上。 */
   onAddConnectedGenerateNode: (request: ConnectedGenerateNodeRequest) => void;
   onRequestUpload: () => void;
@@ -182,14 +192,21 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
               }),
             ),
           )
-        : canvasMenuItems(props, target.flowPosition, runAction),
+        : canvasMenuItems(
+            props,
+            target.flowPosition,
+            runAction,
+            target.kind === 'selection' ? target.count : undefined,
+          ),
   );
   const ariaLabel =
     target.kind === 'node'
       ? `${target.node.data.label}节点操作`
       : target.kind === 'connection-drop'
         ? '选择要创建的节点'
-        : '画布操作';
+        : target.kind === 'selection'
+          ? '引用选中节点新建'
+          : '画布操作';
   const heading =
     target.kind === 'node'
       ? target.node.data.label
@@ -197,7 +214,9 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
         ? target.handleType === 'target'
           ? `为「${target.sourceNode.data.label}」创建输入`
           : `从「${target.sourceNode.data.label}」创建`
-        : undefined;
+        : target.kind === 'selection'
+          ? '引用选中的 ' + target.count + ' 个节点新建（保留选区）'
+          : undefined;
 
   return createPortal(
     <Dropdown
@@ -360,6 +379,7 @@ function canvasMenuItems(
   props: CanvasContextMenuProps,
   position: { x: number; y: number },
   run: (action: () => void) => void,
+  selectedCount?: number,
 ): MenuProps['items'] {
   return [
     {
@@ -368,16 +388,26 @@ function canvasMenuItems(
       label: (
         <span className="canvas-context-menu-label">
           <Sparkles size={12} aria-hidden="true" />
-          创建生成节点
+          {selectedCount === undefined ? '创建生成节点' : '引用选中节点新建'}
         </span>
       ),
       children: mediaTypes.map((mediaType) =>
         menuItem(
           `create-${mediaType}`,
           mediaIcons[mediaType],
-          `创建${mediaLabels[mediaType]}生成节点`,
-          `在此处添加${mediaLabels[mediaType]}生成节点`,
-          () => run(() => props.onAddGenerateNode(mediaType, position)),
+          selectedCount === undefined
+            ? `创建${mediaLabels[mediaType]}生成节点`
+            : `引用选区新建${mediaLabels[mediaType]}节点`,
+          selectedCount === undefined
+            ? `在此处添加${mediaLabels[mediaType]}生成节点`
+            : '引用可见选区中的已保存素材，不运行，保留来源选择',
+          () =>
+            run(() =>
+              selectedCount === undefined
+                ? props.onAddGenerateNode(mediaType, position)
+                : props.onAddSelectionGenerateNode?.(mediaType, position),
+            ),
+          selectedCount !== undefined && (selectedCount === 0 || !props.onAddSelectionGenerateNode),
         ),
       ),
     },

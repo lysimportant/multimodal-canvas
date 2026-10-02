@@ -273,7 +273,7 @@ function installApi() {
       return Response.json({ canvas });
     }
     if (path.endsWith('/runs') && method === 'GET') return Response.json({ runs: archivedRuns });
-    if (path === '/v1/nodes/video-target/runs' && method === 'POST' && allowRejectedSubmission) {
+    if (/^\/v1\/nodes\/[^/]+\/runs$/.test(path) && method === 'POST' && allowRejectedSubmission) {
       return Response.json({ error: '合成拒绝，不创建任务' }, { status: 400 });
     }
     unexpectedRequests.push(method + ' ' + path);
@@ -559,4 +559,183 @@ describe('连线资源别名同步到提示词', () => {
       ).toEqual(['良', '满穗', '陶缸', '良']);
     },
   );
+});
+
+/** 只操作内存模拟项目，禁止创建真实任务、上传素材或修改 Provider。 */
+describe('选区资源新建节点', () => {
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '创建 %s 使用真实历史版本并保留来源、选区、连线和一次撤销',
+    async (mediaType) => {
+      restoreLegacyCanvas();
+      await openLegacyEditor();
+      act(() =>
+        view.canvas!.onNodesChange([
+          { type: 'select', id: 'image-node-six', selected: true },
+          { type: 'select', id: 'image-node-mansui', selected: true },
+        ]),
+      );
+      expect(view.canvas!.selectedNode).toBeNull();
+      const sources = structuredClone(view.canvas!.nodes);
+      const edges = structuredClone(view.canvas!.edges);
+      const position = { x: 760, y: 80 };
+      act(() => view.canvas!.onAddSelectionGenerateNode?.(mediaType, position));
+      expect(view.canvas!.nodes).toHaveLength(sources.length + 1);
+      const added = view.canvas!.nodes.at(-1)!;
+      expect(added.position).toEqual(position);
+      expect(added.selected).toBe(false);
+      expect(added.data).toMatchObject({ mediaType, mode: 'generate' });
+      if (mediaType === 'video') expect(added.data.videoMode).toBe('omni_reference');
+      expect(added.data.resultAsset).toBeUndefined();
+      expect(added.data.assetId).toBeUndefined();
+      const mentions = added.data.promptDocument!.blocks.filter(
+        (block) => block.type === 'mention',
+      );
+      expect(mentions.map(({ assetId, assetVersion }) => [assetId, assetVersion])).toEqual([
+        [image.id, 1],
+        [mansui.assetId, 4],
+      ]);
+      expect(added.data.prompt).toBe(renderPromptDocument(added.data.promptDocument!));
+      expect(view.canvas!.nodes.slice(0, sources.length)).toEqual(sources);
+      expect(view.canvas!.edges).toEqual(edges);
+      expect(view.canvas!.selectedNode).toBeNull();
+      await waitFor(() =>
+        expect(canvas.nodes.at(-1)?.data.promptDocument).toEqual(added.data.promptDocument),
+      );
+      expect(
+        fetchMock.mock.calls.filter(
+          ([input, init]) => init?.method === 'POST' && String(input).endsWith('/runs'),
+        ),
+      ).toEqual([]);
+      act(() => view.canvas!.onUndoCanvas?.());
+      expect(view.canvas!.nodes).toEqual(sources);
+      expect(view.canvas!.edges).toEqual(edges);
+      act(() => view.canvas!.onRedoCanvas?.());
+      expect(view.canvas!.nodes.at(-1)?.data.promptDocument).toEqual(added.data.promptDocument);
+      expect(view.canvas!.nodes.slice(0, sources.length)).toEqual(sources);
+    },
+  );
+
+  it('选区包含空节点时不部分创建、不保存、不清空选择或已有文档', async () => {
+    restoreLegacyCanvas();
+    await openLegacyEditor();
+    act(() =>
+      view.canvas!.onNodesChange([
+        { type: 'select', id: 'image-node-six', selected: true },
+        { type: 'select', id: 'video-target', selected: true },
+      ]),
+    );
+    const before = structuredClone(view.canvas!.nodes);
+    const edges = structuredClone(view.canvas!.edges);
+    const canUndo = view.canvas!.canUndo;
+    act(() => view.canvas!.onAddSelectionGenerateNode?.('image', { x: 760, y: 0 }));
+    expect(screen.getByText(/视频生成节点.*尚无资源/)).toBeInTheDocument();
+    expect(view.canvas!.nodes).toEqual(before);
+    expect(view.canvas!.edges).toEqual(edges);
+    expect(view.canvas!.canUndo).toBe(canUndo);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toEqual([]);
+  });
+
+  it('只取实时可见选区，不把收起批次的隐藏选中成员或未选节点带入引用', async () => {
+    restoreLegacyCanvas();
+    canvas.nodes.slice(0, 2).forEach((node, index) => {
+      node.data.generationBatch = { id: 'test-batch', rootNodeId: 'image-node-six', index };
+    });
+    await openLegacyEditor();
+    act(() =>
+      view.canvas!.onNodesChange([
+        { type: 'select', id: 'image-node-six', selected: true },
+        { type: 'select', id: 'image-node-mansui', selected: true },
+      ]),
+    );
+    const before = structuredClone(view.canvas!.nodes);
+    act(() => view.canvas!.onAddSelectionGenerateNode?.('text', { x: 900, y: 80 }));
+    const mentions = view
+      .canvas!.nodes.at(-1)!
+      .data.promptDocument!.blocks.filter((block) => block.type === 'mention');
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0]).toMatchObject({ assetId: image.id, assetVersion: 1 });
+    expect(view.canvas!.nodes.slice(0, before.length)).toEqual(before);
+    act(() => view.canvas!.onUndoCanvas?.());
+    const expanded = { ...before[0], data: { ...before[0].data, generationBatchExpanded: true } };
+    act(() => view.canvas!.onNodesChange([{ type: 'replace', id: expanded.id, item: expanded }]));
+    act(() => view.canvas!.onAddSelectionGenerateNode?.('text', { x: 900, y: 80 }));
+    expect(
+      view
+        .canvas!.nodes.at(-1)!
+        .data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
+    ).toHaveLength(2);
+  });
+
+  it('取消选择后调用旧菜单回调也不引用过期选区，普通单节点创建保持独占选择', async () => {
+    restoreLegacyCanvas();
+    await openLegacyEditor();
+    act(() =>
+      view.canvas!.onNodesChange([{ type: 'select', id: 'image-node-six', selected: true }]),
+    );
+    const create = view.canvas!.onAddSelectionGenerateNode;
+    act(() => view.canvas!.onClearNodeSelection());
+    const before = structuredClone(view.canvas!.nodes);
+    act(() => create?.('text', { x: 760, y: 0 }));
+    expect(view.canvas!.nodes).toEqual(before);
+    expect(screen.getByText('请先选择可见的资源节点')).toBeInTheDocument();
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[0]));
+    act(() => view.canvas!.onAddGenerateNode('text', { x: 760, y: 0 }));
+    expect(view.canvas!.nodes.filter((node) => node.selected)).toEqual([view.canvas!.nodes.at(-1)]);
+    expect(view.canvas!.nodes.at(-1)?.data.promptDocument).toBeUndefined();
+  });
+});
+
+/** 选中和编辑器焦点分离，不改变已有资源执行合同。 */
+describe('选区创建兼容现有编辑与运行入口', () => {
+  it('点击多选成员只切换编辑器，减选后同步剩余节点，点击外部节点才切为单选', async () => {
+    restoreLegacyCanvas();
+    await openLegacyEditor();
+    act(() =>
+      view.canvas!.onNodesChange([
+        { type: 'select', id: 'image-node-six', selected: true },
+        { type: 'select', id: 'image-node-mansui', selected: true },
+      ]),
+    );
+    const selected = view.canvas!.nodes.filter((node) => node.selected).map((node) => node.id);
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[0]));
+    expect(view.canvas!.selectedNode?.id).toBe('image-node-six');
+    expect(view.canvas!.nodes.filter((node) => node.selected).map((node) => node.id)).toEqual(
+      selected,
+    );
+    act(() =>
+      view.canvas!.onNodesChange([{ type: 'select', id: 'image-node-six', selected: false }]),
+    );
+    expect(view.canvas!.selectedNode?.id).toBe('image-node-mansui');
+    act(() => view.canvas!.onNodeSelect(view.canvas!.nodes[2]));
+    expect(view.canvas!.nodes.filter((node) => node.selected).map((node) => node.id)).toEqual([
+      'video-target',
+    ]);
+  });
+
+  it('显式运行才提交完整提及，沿用服务端拒绝处理且不降级为纯文字重发', async () => {
+    restoreLegacyCanvas();
+    allowRejectedSubmission = true;
+    await openLegacyEditor();
+    act(() =>
+      view.canvas!.onNodesChange([
+        { type: 'select', id: 'image-node-six', selected: true },
+        { type: 'select', id: 'image-node-mansui', selected: true },
+      ]),
+    );
+    act(() => view.canvas!.onAddSelectionGenerateNode?.('text', { x: 760, y: 0 }));
+    const node = view.canvas!.nodes.at(-1)!;
+    const getPosts = () =>
+      fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input).endsWith('/' + node.id + '/runs') && init?.method === 'POST',
+      );
+    expect(getPosts()).toHaveLength(0);
+    act(() => view.canvas!.onRunNode(node, 'sameNode'));
+    await screen.findByText('合成拒绝，不创建任务');
+    expect(getPosts()).toHaveLength(1);
+    const body = JSON.parse(String(getPosts()[0][1]?.body));
+    expect(body.promptDocument).toEqual(node.data.promptDocument);
+    expect(body.parameters.prompt).toBe(renderPromptDocument(node.data.promptDocument!));
+    expect(view.canvas!.nodes.at(-1)?.data.promptDocument).toEqual(node.data.promptDocument);
+  });
 });

@@ -225,6 +225,8 @@ export function ResourceMentionEditor({
       rangesRef.current = normalizeRanges(snapshot.text, snapshot.ranges);
       setText(snapshot.text);
       setRanges(rangesRef.current);
+      // 撤销是明确的本地替换，不能被 IME 的迟到回填保护当成旧值忽略。
+      setDraftResetKey((current) => current + 1);
       caretRef.current = Math.min(caretRef.current, snapshot.text.length);
       const document = documentFromRanges(snapshot.text, rangesRef.current);
       pendingLocalSignatureRef.current = documentSignature(document, snapshot.text);
@@ -802,7 +804,12 @@ export function ResourceMentionEditor({
         !selectedTextRange
       )
         return;
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (
+        (event.key === 'ArrowDown' || event.key === 'ArrowUp') &&
+        !command &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
         event.preventDefault();
         if (searchEntries.length === 0) return;
         setActiveIndex((current) => {
@@ -1414,7 +1421,12 @@ export function ResourceMentionEditor({
           disabled={disabled}
           className="resource-mention-textarea"
         />
-        <PromptCaret inputRef={textareaRef} value={ime.bind.value} disabled={disabled} />
+        <PromptCaret
+          inputRef={textareaRef}
+          highlightRef={highlightRef}
+          value={ime.bind.value}
+          disabled={disabled}
+        />
       </div>
 
       {protectedEditMessage && (

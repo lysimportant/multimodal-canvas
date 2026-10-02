@@ -5,6 +5,8 @@ import './prompt-caret.css';
 /** 节点输入框光标使用原生 textarea 的选区；value 用于外部回填及撤销后重新定位。 */
 type PromptCaretProps = {
   inputRef: RefObject<HTMLTextAreaElement | null>;
+  /** 可见正文层必须与原生输入使用相同的排版和滚动坐标。 */
+  highlightRef?: RefObject<HTMLDivElement | null>;
   value: string;
   /** 禁用变动后立即撤掉增强光标。 */
   disabled?: boolean;
@@ -25,6 +27,7 @@ const MIRROR_STYLE_PROPERTIES = [
   'text-indent',
   'text-transform',
   'word-spacing',
+  'white-space',
   'word-break',
   'overflow-wrap',
   'tab-size',
@@ -40,9 +43,10 @@ const MIRROR_STYLE_PROPERTIES = [
 
 /**
  * 为节点提示词绘制 2 个屏幕像素宽的光标，不接管输入、选区或 IME。
+ * 可见正文层同步原生输入的字体、换行、滚动条占位和滚动量，避免长文本编辑后与插入点错位。
  * 测量层只在节点编辑器内创建；失焦、选区和组合输入时保留浏览器原生行为。
  */
-export function PromptCaret({ inputRef, value, disabled = false }: PromptCaretProps) {
+export function PromptCaret({ inputRef, highlightRef, value, disabled = false }: PromptCaretProps) {
   const caretRef = useRef<HTMLSpanElement>(null);
   const syncRef = useRef<(() => void) | null>(null);
 
@@ -50,31 +54,47 @@ export function PromptCaret({ inputRef, value, disabled = false }: PromptCaretPr
     const input = inputRef.current;
     const caret = caretRef.current;
     const host = caret?.parentElement;
-    if (
-      !input ||
-      !caret ||
-      !host ||
-      !input.closest('.node-quick-editor, .node-quick-editor-dialog')
-    )
-      return;
+    if (!input || !caret || !host) return;
 
-    const mirror = document.createElement('div');
-    mirror.className = 'resource-mention-caret-mirror';
-    mirror.setAttribute('aria-hidden', 'true');
+    const highlight = highlightRef?.current;
+    const mirror = input.closest('.node-quick-editor, .node-quick-editor-dialog')
+      ? document.createElement('div')
+      : null;
     const marker = document.createElement('span');
-    host.append(mirror);
+    if (mirror) {
+      mirror.className = 'resource-mention-caret-mirror';
+      mirror.setAttribute('aria-hidden', 'true');
+      host.append(mirror);
+    }
     let composing = false;
 
     /** 恢复原生 caret 并移除镜像布局，避免失焦后缩小节点仍保留旧测量宽度。 */
     const hide = () => {
       caret.hidden = true;
-      mirror.hidden = true;
+      if (mirror) mirror.hidden = true;
       delete input.dataset.promptCaret;
     };
 
     /** 使用排版镜像测量 UTF-16 选区起点，换算到未缩放坐标并扣除原生滚动量。 */
     const sync = () => {
+      const style = getComputedStyle(input);
+      const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+      const borderRight = parseFloat(style.borderRightWidth) || 0;
+      const borderTop = parseFloat(style.borderTopWidth) || 0;
+      // textarea 的字体由组件库提供，正文不能另用父层字体或不同的换行规则。
+      if (highlight) {
+        for (const property of MIRROR_STYLE_PROPERTIES)
+          highlight.style.setProperty(property, style.getPropertyValue(property));
+        highlight.style.boxSizing = 'border-box';
+        highlight.style.borderStyle = 'solid';
+        highlight.style.borderColor = 'transparent';
+        highlight.style.width = String(input.clientWidth + borderLeft + borderRight) + 'px';
+        highlight.style.height = String(input.offsetHeight) + 'px';
+        highlight.scrollTop = input.scrollTop;
+        highlight.scrollLeft = input.scrollLeft;
+      }
       if (
+        !mirror ||
         composing ||
         document.activeElement !== input ||
         input.disabled ||
@@ -90,12 +110,8 @@ export function PromptCaret({ inputRef, value, disabled = false }: PromptCaretPr
         hide();
         return;
       }
-      const style = getComputedStyle(input);
       for (const property of MIRROR_STYLE_PROPERTIES)
         mirror.style.setProperty(property, style.getPropertyValue(property));
-      const borderLeft = parseFloat(style.borderLeftWidth) || 0;
-      const borderRight = parseFloat(style.borderRightWidth) || 0;
-      const borderTop = parseFloat(style.borderTopWidth) || 0;
       // 排除滚动条占位，确保换行位置与可编辑区域一致。
       mirror.style.width = `${input.clientWidth + borderLeft + borderRight}px`;
       // 测量长文本时也要裁剪到输入框高度，不能把隐藏内容计入父面板的 scrollHeight。
@@ -156,10 +172,10 @@ export function PromptCaret({ inputRef, value, disabled = false }: PromptCaretPr
       input.removeEventListener('compositionend', compositionEnd);
       document.removeEventListener('selectionchange', sync);
       observer.disconnect();
-      mirror.remove();
+      mirror?.remove();
       hide();
     };
-  }, [inputRef]);
+  }, [inputRef, highlightRef]);
 
   useLayoutEffect(() => {
     syncRef.current?.();

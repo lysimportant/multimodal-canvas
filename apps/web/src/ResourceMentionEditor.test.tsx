@@ -1894,4 +1894,60 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([{ type: 'text', text: '@' }]);
   });
+  it.each([
+    { key: 'ArrowUp', shiftKey: true },
+    { key: 'ArrowDown', shiftKey: true },
+    { key: 'ArrowUp', ctrlKey: true, shiftKey: true },
+    { key: 'ArrowDown', metaKey: true, shiftKey: true },
+    { key: 'ArrowUp', altKey: true },
+  ])('选字引用弹层不拦截原生组合方向键 $key', (modifiers) => {
+    render(
+      <ResourceMentionEditor
+        nodeId="selection-native"
+        value="第一行提示词\n第二行提示词\n第三行提示词"
+        assets={[imageAsset]}
+        onChange={vi.fn()}
+        ariaLabel="提示词"
+      />,
+    );
+    const input = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    input.focus();
+    input.setSelectionRange(2, 6);
+    fireEvent.select(input);
+    expect(fireEvent.keyDown(input, modifiers)).toBe(true);
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(6);
+  });
+  it('普通文字撤销重做与选区替换后，输入值、可见正文和结构化文档保持一致', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="plain-history"
+        value=""
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const input = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const highlight = input
+      .closest('.resource-mention-composer')!
+      .querySelector('.resource-mention-highlight')!;
+    await user.type(input, 'abc');
+    await user.keyboard('{Control>}z{/Control}');
+    await waitFor(() => expect(input).toHaveValue('ab'));
+    expect(highlight.textContent).toBe(input.value);
+    await user.keyboard('{Control>}y{/Control}');
+    await waitFor(() => expect(input).toHaveValue('abc'));
+    expect(highlight.textContent).toBe(input.value);
+    input.setSelectionRange(1, 3);
+    fireEvent.select(input);
+    await user.keyboard('Z');
+    expect(input).toHaveValue('aZ');
+    await user.keyboard('{Control>}z{/Control}');
+    await waitFor(() => expect(input).toHaveValue('abc'));
+    expect(highlight.textContent).toBe(input.value);
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: 'abc' }]);
+  });
 });

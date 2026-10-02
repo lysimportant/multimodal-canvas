@@ -2067,6 +2067,32 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+/* 设置栏只属于输入编辑器；放大独占右侧，设置换行不挤占它的位置。 */
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-controls.node-quick-editor-topbar {
+  align-items: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.node-quick-editor-settings {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.node-quick-editor-settings > .compact-select {
+  flex: 1 1 100px;
+  min-width: min(100px, 100%);
+}
+
+.node-quick-editor-topbar > .node-quick-editor-expand {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 .node-quick-editor-media-options {
   align-items: start;
   display: grid;
@@ -2860,7 +2886,7 @@ h2 {
   background: color-mix(in srgb, var(--mc-accent, #18794e) 16%, white);
   border-radius: 4px;
   color: #0f6a45;
-  font-weight: 600;
+  font-weight: inherit;
 }
 
 .resource-mention-hover-card {

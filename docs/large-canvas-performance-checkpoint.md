@@ -99,3 +99,26 @@
 - 本地仅替换 web，`http://127.0.0.1:8080` 首页与 health 均为 200，六项服务健康，API/worker/PostgreSQL/Redis/MinIO 容器 ID 全部保持不变；不执行迁移。新入口 `/assets/index-w95aO-Zn.js` 引用业务分包 `/assets/main-CYdu67bl.js`，通过 HTTP 核对缩放暂停与新流星代码，业务分包 SHA-256 为 `f58e5e36a52bd918cf2eae53c3a78b9b46b32e6482fe04eb33bc017926c0a49d`。
 - 原 Web 容器引用的旧镜像已被清理，不能直接打回退 tag；先核对静态 Web 无挂载、无业务凭据环境变量，再保存运行容器快照 `multimodal-canvas-web:rollback-zoom-theme-20261002-213800`。需要回退时将该镜像重新标记为 `multimodal-canvas-web:local`，再执行 `docker compose -f compose.yaml up -d --no-deps web`；不替换其他服务。发布证据保存在 `deployment-before.json`、`deployment-after.json` 和 `docker-web-build.log`。
 - 实现、全量测试、有效同机对照与本地 Web 交付完成；提交和推送以本轮 Git 记录为准。剩余大画布长帧沿用 TODO P2-07 跟踪，不把局部改善写成完全无卡顿。
+
+## 2026-10-02 多选引用与输入编辑复查
+
+- P1；起点 `codex/generate-to-new-node @ 25e989a`，Node v24.12.0 / pnpm 11.19.0。只修改 PC Web 的选择、引用创建与输入编辑；保留用户已有工具栏层级、工具栏测试及文档删除，不包含到本轮提交。不改数据库、Provider、计费、素材格式或节点自动尺寸。
+- 空白画布按住左键拖动框选；Ctrl / Meta / Shift 支持增减选择，中键或按住空格拖动画布。选区、已选成员或空白处右键可引用选区新建文字、图片、音频或视频节点。冻结真实资产 ID 和版本，同资产同版本去重；空素材、不可用资源或版本未知时整次拒绝，不静默少引用。折叠批次的隐藏成员不加入。创建只增加节点，来源数据、连线和选择保持，支持撤销/重做，不触发生成。
+- 复用现有 NodeParameterSelect、媒体参数面板和完整编辑器：模型、视频模式（如适用）、媒体参数/推理设置移到输入上方，放大按钮固定在顶部右侧；Skill、数量和生成操作仍在底部。未添加组件库或依赖。
+- 光标错位的原因为原生 textarea 与可见正文的字体、换行规则和尾部空行高度不一致，另外候选菜单拦截了带修饰键的上下方向键。现正文和测量层都同步原生排版及滚动，引用文字不再加粗改变字宽；末尾空行保留零宽占位，Ctrl/Shift/Alt+上下键交还浏览器选择行为。
+- 补测发现普通撤销也会被 IME 迟到回填保护识别为旧值，造成输入框仍为 `abc`、可见正文变为 `ab`。恢复历史快照现在使用已有 draftResetKey 明确重置本地输入，不修改共享 IME 合同。
+
+### 浏览器与回归证据
+
+- 隔离的 16 节点合成场景、50 个本地素材；夹具只允许有界新增空生成节点和内存画布保存，未知业务请求禁止转发。早期固定节点数夹具拒绝第 17 个节点，只用于诊断，不能视为产品持久化失败。最终证据为 `.local-tests/multiselect-prompt-caret-20261002/browser-final.json`，不使用带中间失败的 `browser-caret-after.json` 作为通过报告。
+- Chromium 实际左键框选两个节点，右键引用新建图片节点并成功保存 `drag-image-004@1`、`drag-image-005@1`；原数据及连线一致，两个来源仍选中，节点创建撤销/重做通过。已检查 1280×800 与 1600×900 的输入工具栏和完整编辑器截图。
+- 长文本尾换行原为 textarea/正文滚动高度 4015/3993，修复后均为 4015，滚动偏移均为 3825。Ctrl+Shift+Up 连续四次可扩展选区；跨行删除、真实鼠标选中 `beta gamma` 再删除、普通撤销/重做、中文组合输入、emoji、展开编辑、画布缩放和窗口尺寸变化均通过。抽查非空插入点与可见文字位置误差小于 0.02 屏幕像素；不据此保证所有浏览器/输入法绝无偏差。
+- 合成节点宽高在长文本编辑前后保持不变；中文组合阶段使用原生光标。控制台错误、生成 POST、真实 API 写入和夹具违规均为 0。未调用真实 Provider，运行仍遵循已有能力校验。
+- Web 全量 110 文件 / 1870 用例通过；`pnpm --filter @multimodal-canvas/web typecheck`、Web 全量 lint、生产构建、`git diff --check` 通过。构建保留已有大包警告。重点回归含光标/输入 89 项、选择/引用 265 项、布局相关 217 项，不与全量用例相加。
+
+### 本地交付与回退
+
+- 仅重新构建并替换 Web，六个服务均健康；API、worker、PostgreSQL、Redis、MinIO 的容器 ID 与更新前一致，不执行迁移。独立浏览器在 `http://localhost:8080` 验证首页及工作台入口，未登录状态无项目，页面异常为 0；不新建真实项目。`127.0.0.1` 的静态页和 health 虽返回 200，但浏览器 API 会被既有来源保护拒绝，本轮不修改该配置。
+- 新入口 `/assets/index-C_p7GWqS.js` 引用 `/assets/main-CzFVfITH.js`，业务分包 SHA-256 为 `60faab671b1f1ea05bc96024ba416101bf5e023b12ab129f3c1f2a1a80478896`；HTTP 已核对选区引用和顶部设置栏代码。
+- 更新前镜像保存在 `multimodal-canvas-web:rollback-multiselect-caret-20261002-222557`。如需回退，将它重新标记为 `multimodal-canvas-web:local`，执行 `docker compose -f compose.yaml up -d --no-deps web`；不替换其他服务。部署证据与浏览器报告位于同一任务证据目录。
+- 本轮实现与本地验收完成；来源接口和真实 Provider 未验收，现有超大画布长帧继续由 TODO P2-07 跟踪，不扩大为其他模型或性能任务。提交和远端核验以本轮 Git 记录为准。

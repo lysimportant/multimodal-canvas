@@ -1,10 +1,11 @@
 /**
  * 收集提示词资源条可用的连线输入，并补齐生成结果的预览地址。
  */
-import type { Asset } from '@multimodal-canvas/domain';
+import { promptDocumentSchema, type Asset, type PromptDocument } from '@multimodal-canvas/domain';
 
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { nodeEchoAssetVersion, resultAssetContentUrl } from './node-echo-text';
+import { createPromptMentionId } from '../resource-mention-sync';
 
 /** 提示词资源条使用的连线资源，至少要能预览。 */
 export type ConnectedPromptAsset = Pick<Asset, 'id' | 'name' | 'mediaType'> &
@@ -82,4 +83,52 @@ export function collectConnectedPromptAssets(
     });
   }
   return items;
+}
+
+/**
+ * 将可见选区转换为已有资源提及，不复制提示词、读取正文或创建素材。
+ * @param sources 调用方按当前批次投影筛选出的选中节点，顺序沿用画布。
+ * @param assets 当前已加载资源目录；只为上传来源补齐已知版本。
+ * @returns 同资产同版本去重后的提示词文档，不同版本各保留一次。
+ * @throws 选区为空、任一节点没有真实资产/明确版本、资源不可用或协议校验失败。
+ */
+export function createSelectedNodesPromptDocument(
+  sources: readonly AssetFlowNode[],
+  assets: readonly Asset[],
+): PromptDocument {
+  if (sources.length === 0) throw new Error('请先选择可见的资源节点');
+  const blocks: PromptDocument['blocks'] = [];
+  const seen = new Set<string>();
+  const mentionIds = new Set<string>();
+  for (const source of sources) {
+    const result = source.data.manualOutput ? undefined : source.data.resultAsset;
+    const assetId = result?.assetId ?? source.data.assetId;
+    if (!assetId) throw new Error('「' + source.data.label + '」尚无资源，请先上传或保存内容');
+    const asset = assets.find((item) => item.id === assetId);
+    if (
+      asset &&
+      (asset.status !== 'ready' || asset.archivedAt || asset.mediaType !== source.data.mediaType)
+    )
+      throw new Error('「' + source.data.label + '」的资源不可用，请检查资源状态');
+    const assetVersion =
+      nodeEchoAssetVersion(source) ??
+      (source.data.mode === 'source' && !result ? asset?.latestVersion : undefined);
+    if (assetVersion === undefined)
+      throw new Error('「' + source.data.label + '」的资源版本未知，请先确认当前素材');
+    const identity = JSON.stringify([assetId, assetVersion]);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const mentionId = createPromptMentionId(mentionIds);
+    mentionIds.add(mentionId);
+    if (blocks.length > 0) blocks.push({ type: 'text', text: ' ' });
+    blocks.push({
+      type: 'mention',
+      mentionId,
+      assetId,
+      assetVersion,
+      mediaType: source.data.mediaType,
+      label: source.data.label,
+    });
+  }
+  return promptDocumentSchema.parse({ version: 1, blocks });
 }

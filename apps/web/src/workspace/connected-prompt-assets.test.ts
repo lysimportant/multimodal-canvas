@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { Asset } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
-import { collectConnectedPromptAssets } from './connected-prompt-assets';
+import {
+  collectConnectedPromptAssets,
+  createSelectedNodesPromptDocument,
+} from './connected-prompt-assets';
 
 const parent = {
   id: 'node_parent',
@@ -269,5 +272,133 @@ describe('collectConnectedPromptAssets', () => {
       status: 'ready',
       contentUrl: '/v1/assets/asset_upload/content',
     });
+  });
+});
+
+/** 选区创建只绑定真实资产，正文、版本和来源节点都不可被替换。 */
+describe('createSelectedNodesPromptDocument', () => {
+  it('按资产和版本去重，同名不同身份及不同历史版本都保留', () => {
+    const sources: AssetFlowNode[] = [
+      parent,
+      { ...parent, id: 'duplicate' },
+      {
+        ...parent,
+        id: 'historical',
+        data: { ...parent.data, resultAsset: { assetId: 'asset_result', version: 1 } },
+      },
+      {
+        ...parent,
+        id: 'another',
+        data: { ...parent.data, resultAsset: { assetId: 'different-asset', version: 2 } },
+      },
+    ];
+    const before = structuredClone(sources);
+    const document = createSelectedNodesPromptDocument(sources, []);
+    const mentions = document.blocks.filter((block) => block.type === 'mention');
+    expect(mentions.map(({ assetId, assetVersion }) => [assetId, assetVersion])).toEqual([
+      ['asset_result', 2],
+      ['asset_result', 1],
+      ['different-asset', 2],
+    ]);
+    expect(new Set(mentions.map((mention) => mention.mentionId)).size).toBe(3);
+    expect(mentions.every((mention) => mention.label === parent.data.label)).toBe(true);
+    expect(sources).toEqual(before);
+  });
+
+  it('四种媒体均保留结构化身份，不将来源提示词当成已生成素材', () => {
+    const sources = (['text', 'image', 'audio', 'video'] as const).map((mediaType) => ({
+      ...parent,
+      id: mediaType,
+      type: mediaType,
+      data: {
+        ...parent.data,
+        mediaType,
+        prompt: '不能复制的来源指令',
+        resultAsset: { assetId: mediaType + '-asset', version: 3 },
+      },
+    }));
+    const document = createSelectedNodesPromptDocument(sources, []);
+    expect(
+      document.blocks.filter((block) => block.type === 'mention').map((block) => block.mediaType),
+    ).toEqual(['text', 'image', 'audio', 'video']);
+    expect(JSON.stringify(document)).not.toContain('不能复制');
+  });
+
+  it('上传来源采用当前展示版本，没有版本 URL 时才用目录明确版本', () => {
+    const catalog = {
+      id: 'uploaded',
+      name: '上传',
+      mediaType: 'image',
+      status: 'ready',
+      latestVersion: 9,
+    } as Asset;
+    const source: AssetFlowNode = {
+      ...parent,
+      data: {
+        label: '上传图片',
+        mediaType: 'image',
+        mode: 'source',
+        assetId: 'uploaded',
+        contentUrl: '/v1/assets/uploaded/versions/4/content',
+      },
+    };
+    expect(createSelectedNodesPromptDocument([source], [catalog]).blocks[0]).toMatchObject({
+      assetVersion: 4,
+    });
+    expect(
+      createSelectedNodesPromptDocument(
+        [{ ...source, data: { ...source.data, contentUrl: undefined } }],
+        [catalog],
+      ).blocks[0],
+    ).toMatchObject({ assetVersion: 9 });
+  });
+
+  it('手动保存后的资源身份不被旧生成结果替代', () => {
+    const source = {
+      ...parent,
+      data: {
+        ...parent.data,
+        manualOutput: true,
+        assetId: 'manual',
+        contentUrl: '/v1/assets/manual/versions/5/content',
+      },
+    };
+    expect(createSelectedNodesPromptDocument([source], []).blocks[0]).toMatchObject({
+      assetId: 'manual',
+      assetVersion: 5,
+    });
+  });
+
+  it('空素材、未归档文字和版本不明均整次拒绝，不返回部分引用或借用生成结果最新版', () => {
+    const empty: AssetFlowNode = {
+      ...parent,
+      data: {
+        label: '空节点',
+        mediaType: 'text',
+        mode: 'generate',
+        prompt: '只有文字，没有真实素材',
+      },
+    };
+    expect(() => createSelectedNodesPromptDocument([], [])).toThrow('请先选择');
+    expect(() => createSelectedNodesPromptDocument([parent, empty], [])).toThrow('空节点');
+    const unknown = {
+      ...parent,
+      data: { ...parent.data, resultAsset: { assetId: 'asset_result' } },
+    };
+    expect(() =>
+      createSelectedNodesPromptDocument(
+        [unknown],
+        [{ id: 'asset_result', mediaType: 'image', status: 'ready', latestVersion: 99 } as Asset],
+      ),
+    ).toThrow('版本未知');
+  });
+
+  it.each([
+    { status: 'failed' },
+    { status: 'ready', archivedAt: '2026-10-01T00:00:00.000Z' },
+    { status: 'ready', mediaType: 'audio' },
+  ])('不使用不可用或类型不符的资源：%j', (override) => {
+    const asset = { id: 'asset_result', mediaType: 'image', ...override } as Asset;
+    expect(() => createSelectedNodesPromptDocument([parent], [asset])).toThrow('资源不可用');
   });
 });

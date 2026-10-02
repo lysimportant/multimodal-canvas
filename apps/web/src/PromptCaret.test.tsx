@@ -17,11 +17,20 @@ function CaretHarness({
   disabled?: boolean;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
   return (
     <div className={nodeEditor ? 'node-quick-editor' : ''}>
       <div className="resource-mention-composer">
+        <div ref={highlightRef} className="resource-mention-highlight" aria-hidden="true">
+          {value}
+        </div>
         <textarea ref={inputRef} aria-label="提示词" defaultValue={value} disabled={disabled} />
-        <PromptCaret inputRef={inputRef} value={value} disabled={disabled} />
+        <PromptCaret
+          inputRef={inputRef}
+          highlightRef={highlightRef}
+          value={value}
+          disabled={disabled}
+        />
       </div>
     </div>
   );
@@ -210,6 +219,51 @@ describe('PromptCaret', () => {
     act(() => input.focus());
     unmount();
     expect(container.querySelector('.resource-mention-caret-mirror')).toBeNull();
+    expect(input).not.toHaveAttribute('data-prompt-caret');
+  });
+  it.each([true, false])('正文与 textarea 共用字体、换行和滚动布局，节点模式=%s', (nodeEditor) => {
+    const { container } = render(<CaretHarness nodeEditor={nodeEditor} />);
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    const highlight = container.querySelector<HTMLElement>('.resource-mention-highlight')!;
+    mockLayout(input);
+    input.style.cssText =
+      'font: 13px/22.1px Arial; padding: 8px 4px; border: 1px solid; letter-spacing: 0.25px; word-break: normal; overflow-wrap: break-word; white-space: pre-wrap; tab-size: 4';
+    fireEvent.scroll(input);
+    expect(highlight).toHaveStyle({
+      fontFamily: 'Arial',
+      fontSize: '13px',
+      lineHeight: '22.1px',
+      letterSpacing: '0.25px',
+      wordBreak: 'normal',
+      overflowWrap: 'break-word',
+      width: '300px',
+      height: '100px',
+      paddingLeft: '4px',
+      borderLeftWidth: '1px',
+    });
+    input.scrollTop = 56;
+    input.scrollLeft = 12;
+    fireEvent.scroll(input);
+    expect(highlight.scrollTop).toBe(56);
+    expect(highlight.scrollLeft).toBe(12);
+    expect(input.selectionStart).toBe(0);
+  });
+
+  it('长选区删除回到顶部时同步可见正文，禁用状态仍不覆盖原生光标', () => {
+    const { container, rerender } = render(<CaretHarness value={'长文本\n'.repeat(60)} />);
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    const highlight = container.querySelector<HTMLElement>('.resource-mention-highlight')!;
+    mockLayout(input);
+    act(() => input.focus());
+    input.scrollTop = 800;
+    fireEvent.scroll(input);
+    expect(highlight.scrollTop).toBe(800);
+    input.value = '保留😀\n';
+    input.setSelectionRange(3, 3);
+    input.scrollTop = 0;
+    rerender(<CaretHarness value={'保留😀\n'} disabled />);
+    expect(highlight.scrollTop).toBe(0);
+    expect(input.selectionStart).toBe(3);
     expect(input).not.toHaveAttribute('data-prompt-caret');
   });
 });

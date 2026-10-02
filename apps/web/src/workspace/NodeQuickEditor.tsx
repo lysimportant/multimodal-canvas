@@ -1133,13 +1133,20 @@ export function NodeQuickEditor({
       </Popover>
     );
 
-  const controls = (
-    <div
-      className="node-quick-editor-controls"
-      data-has-inference={
-        node.data.mediaType !== 'text' || inferenceOptions.length > 0 ? 'true' : 'false'
-      }
-    >
+  /** 设置先于输入框渲染，使键盘导航与顶部布局顺序一致。 */
+  const topControls = (
+    <div className="node-quick-editor-controls node-quick-editor-topbar">
+      <div className="node-quick-editor-settings">
+        <NodeParameterSelect
+          label="模型"
+          value={currentModelValue}
+          options={modelOptions}
+          onChange={(value) => onModelChange(parseModelOptionValue(value))}
+          className="node-quick-editor-select-group"
+        />
+        {videoModeEditor}
+        {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
+      </div>
       {!expandedEditorOpen && (
         <Button
           type="button"
@@ -1155,15 +1162,11 @@ export function NodeQuickEditor({
           <Expand size={16} aria-hidden="true" />
         </Button>
       )}
-      <NodeParameterSelect
-        label="模型"
-        value={currentModelValue}
-        options={modelOptions}
-        onChange={(value) => onModelChange(parseModelOptionValue(value))}
-        className="node-quick-editor-select-group"
-      />
-      {videoModeEditor}
-      {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
+    </div>
+  );
+
+  const controls = (
+    <div className="node-quick-editor-controls">
       <div className="node-quick-editor-run-group">
         {!expandedEditorOpen && skillPanel}
         <NodeParameterSelect
@@ -1293,6 +1296,7 @@ export function NodeQuickEditor({
       >
         {!expandedEditorOpen && (
           <>
+            {topControls}
             <div className="node-quick-editor-prompt-group">
               {imageEditSourcePreview}
               {promptEditor}
@@ -1359,6 +1363,7 @@ export function NodeQuickEditor({
             </DialogClose>
           </div>
           <div className="node-quick-editor-dialog-body">
+            {topControls}
             <div className="node-quick-editor-prompt-group">{promptEditor}</div>
             {expandedEditorOpen && inlineSkillPreview}
             {controls}

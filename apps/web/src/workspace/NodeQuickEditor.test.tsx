@@ -217,6 +217,46 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each([
+    { label: '图片', node: imageNode, settings: ['模型', '媒体参数'] },
+    { label: '视频', node: videoNode, settings: ['模型', '生成模式', '媒体参数'] },
+    { label: '音频', node: audioNode, settings: ['模型', '媒体参数'] },
+    {
+      label: '文字',
+      node: {
+        ...imageNode,
+        type: 'text',
+        data: { ...imageNode.data, mediaType: 'text', modelAlias: 'gpt-5.6-sol' },
+      } as AssetFlowNode,
+      settings: ['模型', '推理强度'],
+    },
+  ])('$label设置位于输入框顶部左侧，放大在右侧，生成操作留在底部', ({ node, settings }) => {
+    const view = renderRaw(
+      <NodeQuickEditor {...makeProps({ node, onGenerationCountChange: vi.fn() })} />,
+    );
+    const editor = view.container.querySelector('.node-quick-editor')!;
+    const topbar = editor.querySelector('.node-quick-editor-topbar')!;
+    const settingsGroup = topbar.querySelector('.node-quick-editor-settings')!;
+    const prompt = within(editor as HTMLElement).getByRole('textbox', { name: '提示词' });
+    const runGroup = editor.querySelector('.node-quick-editor-run-group')!;
+    const expand = screen.getByRole('button', { name: '打开完整编辑器' });
+
+    expect(
+      [...settingsGroup.querySelectorAll('[role="combobox"], button')].map(
+        (control) => control.getAttribute('aria-label')?.split('：')[0],
+      ),
+    ).toEqual(settings);
+    expect(topbar.firstElementChild).toBe(settingsGroup);
+    expect(topbar.lastElementChild).toBe(expand);
+    expect(topbar.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(prompt.compareDocumentPosition(runGroup) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(runGroup).toContainElement(screen.getByRole('combobox', { name: '生成数量：1份' }));
+    expect(runGroup).toContainElement(screen.getByRole('button', { name: '生成' }));
+    expect(runGroup.querySelector('.prompt-skill-trigger')).not.toBeNull();
+    expect(runGroup).not.toContainElement(expand);
+    expect(screen.getAllByRole('combobox', { name: /^模型：/ })).toHaveLength(1);
+  });
+
   it('同名模型按本人分组保留独立身份，选中后提交分组凭据', async () => {
     const actor = userEvent.setup();
     const onModelChange = vi.fn();
@@ -657,7 +697,7 @@ describe('NodeQuickEditor', () => {
       expect(count.closest('.node-parameter-select')!.nextElementSibling).toBe(run);
       expect(
         screen.getByRole('combobox', { name: /^模型：/ }).closest('.node-quick-editor-controls'),
-      ).toBe(controls);
+      ).toHaveClass('node-quick-editor-topbar');
       expect(screen.getAllByRole('button', { name: 'Skill 配置' })).toEqual([trigger]);
       expect(skill).toHaveTextContent(/^Skill$/);
       expect(count).toBeDisabled();
@@ -2581,6 +2621,16 @@ describe('NodeQuickEditor', () => {
     expect(trigger).toHaveFocus();
     await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
     const dialog = screen.getByRole('dialog');
+    const topbar = dialog.querySelector('.node-quick-editor-topbar')!;
+    expect(topbar).toContainElement(within(dialog).getByRole('combobox', { name: /^模型：/ }));
+    expect(topbar).toContainElement(within(dialog).getByRole('button', { name: '媒体参数' }));
+    expect(
+      topbar.compareDocumentPosition(within(dialog).getByRole('textbox', { name: '提示词' })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      within(dialog).queryByRole('button', { name: '打开完整编辑器' }),
+    ).not.toBeInTheDocument();
     expect(within(dialog).getByLabelText('引用资源')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '预览并命名 产品图' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '预览并命名 连线参考' })).toBeInTheDocument();

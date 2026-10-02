@@ -61,6 +61,10 @@ vi.mock('@xyflow/react', async () => {
     onMoveStart,
     onMoveEnd,
     onPaneContextMenu,
+    onSelectionContextMenu,
+    selectionOnDrag,
+    panOnDrag,
+    multiSelectionKeyCode,
     onConnectStart,
     onConnectEnd,
     defaultEdgeOptions,
@@ -87,6 +91,10 @@ vi.mock('@xyflow/react', async () => {
     onMoveStart?: () => void;
     onMoveEnd?: () => void;
     onPaneContextMenu?: React.MouseEventHandler<HTMLDivElement>;
+    onSelectionContextMenu?: React.MouseEventHandler<HTMLDivElement>;
+    selectionOnDrag?: boolean;
+    panOnDrag?: boolean | number[];
+    multiSelectionKeyCode?: string[];
     onConnectStart?: (event: MouseEvent, params: Record<string, unknown>) => void;
     onConnectEnd?: (
       event: MouseEvent,
@@ -106,6 +114,9 @@ vi.mock('@xyflow/react', async () => {
       onConnectStart,
       defaultEdgeOptions,
       fitViewOptions,
+      selectionOnDrag,
+      panOnDrag,
+      multiSelectionKeyCode,
     };
     reactFlowMock.edges = edges;
     reactFlowMock.onMoveStart = onMoveStart;
@@ -131,6 +142,7 @@ vi.mock('@xyflow/react', async () => {
           onClick={onPaneClick}
           onContextMenu={onPaneContextMenu}
         />
+        <div data-testid="canvas-selection" onContextMenu={onSelectionContextMenu} />
         {nodes.map((node) => {
           const NodeComponent =
             reactFlowMock.nodeProbe ?? (node.type ? nodeTypes?.[node.type] : undefined);
@@ -1674,5 +1686,84 @@ describe('WorkflowCanvas 拖动时暂隐连线', () => {
     expect(reactFlowMock.edges[0]).toBe(edges[0]);
     expect(reactFlowMock.edges[1]).toEqual({ ...edges[1], hidden: true });
     expect(edges.some((edge) => 'hidden' in edge)).toBe(false);
+  });
+});
+
+/** 覆盖真实节点捕获回调与画布冒泡回调，不改编辑器和工具栏测试。 */
+describe('WorkflowCanvas 选区资源入口', () => {
+  it('左键框选，保留中键/空格平移与跨平台修饰键多选', () => {
+    render(<WorkflowCanvas {...createProps()} />);
+    expect(reactFlowMock.storeProps).toMatchObject({
+      selectionOnDrag: true,
+      panOnDrag: [1],
+      multiSelectionKeyCode: ['Control', 'Meta', 'Shift'],
+    });
+  });
+
+  it.each(['ctrlKey', 'metaKey', 'shiftKey'])('%s 点击节点本体不触发独占选择', (modifier) => {
+    const props = createProps({ nodes: [sourceNode, generateNode] });
+    render(<WorkflowCanvas {...props} />);
+    const body = screen
+      .getByTestId('canvas-node-' + sourceNode.id)
+      .querySelector('.flow-asset-node')!;
+    fireEvent.click(body, { [modifier]: true });
+    expect(props.onNodeSelect).not.toHaveBeenCalled();
+  });
+
+  it.each(['canvas-selection', 'canvas-pane', 'canvas-node-node-source'])(
+    '从 %s 右键新建保留多选，并使用菜单的画布坐标',
+    async (entry) => {
+      const nodes = [sourceNode, generateNode].map((node) => ({ ...node, selected: true }));
+      const props = createProps({ nodes, onAddSelectionGenerateNode: vi.fn() });
+      render(<WorkflowCanvas {...props} />);
+      fireEvent.contextMenu(screen.getByTestId(entry), { clientX: 720, clientY: 410 });
+      expect(await screen.findByRole('menu', { name: '引用选中节点新建' })).toBeInTheDocument();
+      expect(screen.getByText('引用选中的 2 个节点新建（保留选区）')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('menuitem', { name: '引用选区新建图片节点' }));
+      expect(props.onAddSelectionGenerateNode).toHaveBeenCalledWith('image', { x: 620, y: 360 });
+      expect(props.onNodeSelect).not.toHaveBeenCalled();
+      expect(props.onClearNodeSelection).not.toHaveBeenCalled();
+      expect(props.onRunNode).not.toHaveBeenCalled();
+      expect(props.onAddGenerateNode).not.toHaveBeenCalled();
+      expect(screen.queryByRole('menu', { name: '引用选中节点新建' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('点击已有多选成员不塌缩选区，右键其他节点仍按原单节点合同选择', async () => {
+    const nodes = [
+      { ...sourceNode, selected: true },
+      { ...generateNode, selected: true },
+      { ...sourceNode, id: 'other' },
+    ];
+    const props = createProps({ nodes, onAddSelectionGenerateNode: vi.fn() });
+    render(<WorkflowCanvas {...props} />);
+    fireEvent.click(
+      screen.getByTestId('canvas-node-' + sourceNode.id).querySelector('.flow-asset-node')!,
+    );
+    expect(props.onNodeSelect).toHaveBeenCalledWith(nodes[0]);
+    fireEvent.contextMenu(screen.getByTestId('canvas-node-other'));
+    expect(
+      await screen.findByRole('menu', { name: sourceNode.data.label + '节点操作' }),
+    ).toBeInTheDocument();
+    expect(props.onNodeSelect).toHaveBeenCalledWith(nodes[2]);
+  });
+
+  it('菜单按实时可见选区计数，收起批次隐藏成员不计入，清空后禁止旧菜单创建', async () => {
+    const nodes = [sourceNode, generateNode].map((node, index) => ({
+      ...node,
+      selected: true,
+      data: { ...node.data, generationBatch: { id: 'batch', rootNodeId: sourceNode.id, index } },
+    }));
+    const props = createProps({ nodes, onAddSelectionGenerateNode: vi.fn() });
+    const view = render(<WorkflowCanvas {...props} />);
+    fireEvent.contextMenu(screen.getByTestId('canvas-pane'));
+    expect(await screen.findByText('引用选中的 1 个节点新建（保留选区）')).toBeInTheDocument();
+    view.rerender(
+      <WorkflowCanvas {...props} nodes={nodes.map((node) => ({ ...node, selected: false }))} />,
+    );
+    const create = screen.getByRole('menuitem', { name: '引用选区新建图片节点' });
+    expect(create).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(create);
+    expect(props.onAddSelectionGenerateNode).not.toHaveBeenCalled();
   });
 });

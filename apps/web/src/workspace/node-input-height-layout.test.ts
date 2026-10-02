@@ -18,6 +18,21 @@ const layoutCss = readFileSync(
 
 // CSS 契约只覆盖尺寸边界；实际视口位置与滚动仍需浏览器视觉验收。
 describe('桌面节点输入区高度', () => {
+  it('设置栏可换行且放大固定在顶部右侧，不改变节点或输入框尺寸规则', () => {
+    expect(indexCss).toMatch(
+      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-controls\.node-quick-editor-topbar \{ align-items: start; display: grid; grid-template-columns: minmax\(0, 1fr\) auto; \}/,
+    );
+    expect(indexCss).toMatch(
+      /\.node-quick-editor-settings \{ align-items: center; display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; \}/,
+    );
+    expect(indexCss).toMatch(
+      /\.node-quick-editor-settings > \.compact-select \{ flex: 1 1 100px; min-width: min\(100px, 100%\); \}/,
+    );
+    expect(indexCss).toMatch(
+      /\.node-quick-editor-topbar > \.node-quick-editor-expand \{ grid-column: 2; grid-row: 1; \}/,
+    );
+  });
+
   it('文字层铺满输入容器，不保留独立固定高度或移动端高度覆盖', () => {
     expect(layoutCss).toMatch(
       /\.node-quick-editor \.node-quick-editor-prompt \.resource-mention-highlight \{ height: auto; max-height: none; min-height: 0; overflow-y: auto; \}/,
