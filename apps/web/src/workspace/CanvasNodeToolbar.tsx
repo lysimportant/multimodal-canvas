@@ -1,6 +1,15 @@
 import { Button } from '@multimodal-canvas/ui';
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
-import { Group, Maximize2, Redo2, Search, Undo2, Upload, WandSparkles } from 'lucide-react';
+import {
+  Group,
+  LayoutGrid,
+  Maximize2,
+  Redo2,
+  Search,
+  Undo2,
+  Upload,
+  WandSparkles,
+} from 'lucide-react';
 import { type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
@@ -25,6 +34,8 @@ export function CanvasNodeToolbar({
   onClearEmptyNodes,
   clearCounts,
   onCreateGroup,
+  onArrangeNodes,
+  canArrangeNodes = true,
   onUndoCanvas,
   onRedoCanvas,
   onOpenSearch,
@@ -55,6 +66,10 @@ export function CanvasNodeToolbar({
   clearCounts?: ClearActionCounts;
   /** 按当前选区或视口中心创建布局区域组。 */
   onCreateGroup?: () => void;
+  /** 整理全部节点，每行最多 30 个；历史记录和保存由 App 统一处理。 */
+  onArrangeNodes?: () => void;
+  /** 项目装载完成且至少有两个节点时允许整理。 */
+  canArrangeNodes?: boolean;
   /** 撤销最近一次画布修改。 */
   onUndoCanvas?: () => void;
   /** 重做最近一次撤销的画布修改。 */
@@ -84,7 +99,7 @@ export function CanvasNodeToolbar({
   /** 当前是否存在可重做的历史记录。 */
   canRedo?: boolean;
 }) {
-  /** 节点图相关操作：上传、清空、撤销、重做。 */
+  /** 节点图相关操作：上传、分组、整理、清空、撤销、重做。 */
   const nodeActions: ReactNode[] = [];
   /** 工作台系统操作：搜索、外观、适配缩放。 */
   const systemActions: ReactNode[] = [];
@@ -144,6 +159,26 @@ export function CanvasNodeToolbar({
         }}
       >
         <Group size={16} aria-hidden="true" />
+      </Button>,
+    );
+  }
+
+  if (onArrangeNodes) {
+    nodeActions.push(
+      <Button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool"
+        aria-label="整理画布节点"
+        title="整理节点（每行最多 30 个，保留分组，可撤销）"
+        key="arrange"
+        disabled={!canArrangeNodes}
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          onArrangeNodes();
+        }}
+      >
+        <LayoutGrid size={16} aria-hidden="true" />
       </Button>,
     );
   }

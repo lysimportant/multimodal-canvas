@@ -269,6 +269,10 @@ export type WorkflowCanvasProps = {
     groupId: string,
     size: { width: number; height: number; position?: { x: number; y: number } },
   ) => void;
+  /** 整理全部节点，由 App 原子更新布局与历史。 */
+  onArrangeNodes?: () => void;
+  /** 装载完成且至少有两个节点时允许整理。 */
+  canArrangeNodes?: boolean;
   /** 整组移动或缩放前记录一次历史。 */
   onGroupInteractionStart?: () => void;
   /** 撤销最近一次画布变更。 */
@@ -362,6 +366,8 @@ export function WorkflowCanvas({
   onTranslateGroup,
   onResizeGroup,
   onGroupInteractionStart,
+  onArrangeNodes,
+  canArrangeNodes,
   onUndoCanvas,
   onRedoCanvas,
   onOpenSearch,
@@ -928,6 +934,8 @@ export function WorkflowCanvas({
         onClearCanvas={onClearCanvas}
         onClearEmptyNodes={onClearEmptyNodes}
         clearCounts={clearCounts}
+        onArrangeNodes={onArrangeNodes}
+        canArrangeNodes={canArrangeNodes}
         onCreateGroup={onCreateGroup}
         onUndoCanvas={onUndoCanvas}
         onRedoCanvas={onRedoCanvas}

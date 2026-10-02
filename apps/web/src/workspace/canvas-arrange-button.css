@@ -1,0 +1,6 @@
+.topbar-tool-cluster .canvas-arrange-trigger {
+  width: auto;
+  min-width: 64px;
+  gap: 6px;
+  padding-inline: 10px;
+}

@@ -1,5 +1,7 @@
 import { useCanvasDraft } from './use-canvas-draft';
 import { CanvasHistory } from './canvas-history';
+import { arrangeCanvasNodes } from './canvas-auto-arrange';
+import './workspace/canvas-arrange-button.css';
 import { CanvasPersistence, type CanvasSnapshot } from './canvas-persistence';
 import { Dropdown, Modal } from 'antd';
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
@@ -877,6 +879,31 @@ function WorkspaceApp({
     },
     [setEdges, setNodes],
   );
+
+  /** 一次整理所有节点的位置与组框；保留连线、内容和节点尺寸，只记录一步撤销。 */
+  const arrangeCanvas = useCallback(() => {
+    if (!isCanvasReady || isProjectLoading) return;
+    const current = currentCanvasSnapshot();
+    if (current.nodes.some((node) => node.dragging || node.resizing)) return;
+    try {
+      const arranged = arrangeCanvasNodes(current.nodes, current.groups);
+      if (arranged.nodes === current.nodes && arranged.groups === current.groups) return;
+      rememberHistory();
+      applyHistorySnapshot({ ...current, ...arranged });
+      setDropTargetGroupId(null);
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '整理节点失败',
+      });
+    }
+  }, [
+    applyHistorySnapshot,
+    currentCanvasSnapshot,
+    isCanvasReady,
+    isProjectLoading,
+    rememberHistory,
+  ]);
 
   /** 撤销用户编辑，运行状态从当前会话合并而非从历史回滚。 */
   const undoCanvas = useCallback(() => {
@@ -3996,6 +4023,17 @@ function WorkspaceApp({
                 <Redo2 size={16} />
               </UiButton>
               <span className="topbar-tool-divider" aria-hidden="true" />
+              <UiButton
+                type="button"
+                className="icon-button canvas-arrange-trigger"
+                aria-label="整理节点"
+                title="整理全部节点：从左到右排列，每行最多 30 个；保留分组，可撤销"
+                onClick={arrangeCanvas}
+                disabled={!isCanvasReady || isProjectLoading || nodes.length < 2}
+              >
+                <LayoutGrid size={16} aria-hidden="true" />
+                <span>整理</span>
+              </UiButton>
               <AppearancePicker
                 placement="top"
                 canvasTheme={canvasTheme}
@@ -4285,6 +4323,8 @@ function WorkspaceApp({
             onTranslateGroup={translateGroupBy}
             onResizeGroup={resizeGroupTo}
             onGroupInteractionStart={rememberHistory}
+            onArrangeNodes={arrangeCanvas}
+            canArrangeNodes={isCanvasReady && !isProjectLoading && nodes.length >= 2}
             onNodeDrag={handleNodeDrag}
             onNodeDragStop={handleNodeDragStop}
             onUndoCanvas={undoCanvas}

@@ -2642,4 +2642,180 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
       child!.position.x + (child!.width ?? 0),
     );
   });
+  it('空画布的整理节点按钮不可用', async () => {
+    await renderCanvas();
+    expect(screen.getByRole('button', { name: '整理节点' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '整理画布节点' })).toBeDisabled();
+  });
+
+  it('整理节点保留尺寸、内容和连线，重复整理不新增历史，并可一次撤销重做', async () => {
+    canvas.nodes = [
+      {
+        id: 'arrange-a',
+        type: 'text',
+        position: { x: 900, y: 700 },
+        width: 200,
+        height: 210,
+        data: {
+          label: '文字 A',
+          mediaType: 'text',
+          mode: 'generate',
+          enabled: true,
+          prompt: '保留 A',
+          mimeType: 'application/octet-stream',
+        },
+      },
+      {
+        id: 'arrange-b',
+        type: 'text',
+        position: { x: 100, y: 90 },
+        width: 270,
+        height: 320,
+        data: {
+          label: '文字 B',
+          mediaType: 'text',
+          mode: 'generate',
+          enabled: true,
+          prompt: '保留 B',
+          mimeType: 'application/octet-stream',
+        },
+      },
+      {
+        id: 'arrange-c',
+        type: 'text',
+        position: { x: 440, y: 480 },
+        width: 360,
+        height: 240,
+        data: {
+          label: '文字 C',
+          mediaType: 'text',
+          mode: 'generate',
+          enabled: true,
+          prompt: '保留 C',
+          mimeType: 'application/octet-stream',
+        },
+      },
+    ];
+    canvas.edges = [
+      {
+        id: 'arrange-edge',
+        sourceNodeId: 'arrange-a',
+        targetNodeId: 'arrange-b',
+        sourceHandle: 'output:text',
+        targetHandle: 'input:content',
+        order: 0,
+      },
+    ];
+    const original = structuredClone(canvas);
+    const { user } = await renderCanvas();
+    const arrange = screen.getByRole('button', { name: '整理节点' });
+    await waitFor(() => expect(arrange).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: '整理画布节点' }));
+    const positions = [
+      { x: 100, y: 90 },
+      { x: 360, y: 90 },
+      { x: 690, y: 90 },
+    ];
+    await waitFor(() => expect(canvas.nodes.map((node) => node.position)).toEqual(positions));
+    expect(canvas.nodes.map(({ position: _position, ...node }) => node)).toEqual(
+      original.nodes.map(({ position: _position, ...node }) => node),
+    );
+    expect(canvas.edges).toEqual(original.edges);
+    await user.click(arrange);
+    await user.click(screen.getByRole('button', { name: '撤销' }));
+    await waitFor(() => expect(canvas.nodes).toEqual(original.nodes));
+    expect(screen.getByRole('button', { name: '撤销' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '重做' }));
+    await waitFor(() => expect(canvas.nodes.map((node) => node.position)).toEqual(positions));
+    expect(canvas.edges).toEqual(original.edges);
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
+  it('组内节点无法容纳时明确提示并保留原布局，不新增撤销历史', async () => {
+    canvas.nodes = ['wide-a', 'wide-b'].map((id, index) => ({
+      id,
+      type: 'text' as const,
+      position: { x: index * 300, y: 200 },
+      width: 10_000,
+      height: 220,
+      data: {
+        label: id,
+        mediaType: 'text' as const,
+        mode: 'generate' as const,
+        enabled: true,
+        prompt: '保留原布局',
+      },
+    }));
+    canvas.groups = [
+      {
+        id: 'wide-group',
+        name: '超宽节点组',
+        position: { x: 0, y: 0 },
+        width: 10_000,
+        height: 600,
+        nodeIds: ['wide-a', 'wide-b'],
+      },
+    ];
+    const original = structuredClone(canvas);
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '整理节点' }));
+    expect(await screen.findByText(/分组“超宽节点组”无法/)).toBeVisible();
+    expect(canvas).toEqual(original);
+    expect(screen.getByRole('button', { name: '撤销' })).toBeDisabled();
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
+  it('胶囊整理保留分组归属并将更新的组框一起保存和撤销', async () => {
+    canvas.nodes = ['free', 'member-a', 'member-b'].map((id, index) => ({
+      id,
+      type: 'text' as const,
+      position: { x: 500 - index * 150, y: 500 + index * 230 },
+      width: 220,
+      height: 160,
+      data: {
+        label: id,
+        mediaType: 'text' as const,
+        mode: 'generate' as const,
+        enabled: true,
+        prompt: '保留内容',
+        mimeType: 'text/plain',
+      },
+    }));
+    canvas.groups = [
+      {
+        id: 'keep-group',
+        name: '保留分组',
+        position: { x: 150, y: 650 },
+        width: 800,
+        height: 800,
+        nodeIds: ['member-b', 'member-a'],
+      },
+    ];
+    const original = structuredClone(canvas);
+    const { user } = await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '整理画布节点' }));
+    await waitFor(() =>
+      expect(canvas.groups?.[0]?.position).not.toEqual(original.groups?.[0]?.position),
+    );
+    const group = canvas.groups![0]!;
+    expect(group).toMatchObject({
+      id: 'keep-group',
+      name: '保留分组',
+      nodeIds: ['member-b', 'member-a'],
+    });
+    const free = canvas.nodes[0]!;
+    expect(group.position.y).toBeGreaterThanOrEqual(free.position.y + free.height! + 80);
+    for (const node of canvas.nodes.slice(1)) {
+      expect(node.position.x).toBeGreaterThanOrEqual(group.position.x + 24);
+      expect(node.position.y).toBeGreaterThanOrEqual(group.position.y + 24);
+      expect(node.position.x + node.width! + 24).toBeLessThanOrEqual(
+        group.position.x + group.width,
+      );
+      expect(node.position.y + node.height! + 24).toBeLessThanOrEqual(
+        group.position.y + group.height,
+      );
+    }
+    await user.click(screen.getByRole('button', { name: '撤销' }));
+    await waitFor(() => expect(canvas.groups).toEqual(original.groups));
+    expect(canvas.nodes).toEqual(original.nodes);
+    expect(nodeRunRequestCounts.size).toBe(0);
+  });
 });
