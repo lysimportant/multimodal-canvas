@@ -135,7 +135,7 @@ const FLOW_FIT_VIEW_OPTIONS = { padding: 0.3, maxZoom: 1.1, minZoom: FIT_VIEW_MI
 /** 新连线保留既有默认路径与静止外观。 */
 const FLOW_DEFAULT_EDGE_OPTIONS = { type: 'default', animated: false };
 /** 未完成连接的预览样式不依赖节点位置。 */
-const FLOW_CONNECTION_LINE_STYLE = { stroke: '#18794e', strokeWidth: 2 };
+const FLOW_CONNECTION_LINE_STYLE = { stroke: 'var(--mc-accent)', strokeWidth: 2 };
 /** 归属展示选项固定，不在位置帧中创建新对象。 */
 const FLOW_PRO_OPTIONS = { hideAttribution: true };
 /** 画布连线使用带路径形态与特效的默认边，几何与叠加层都由偏好驱动。 */
@@ -388,6 +388,20 @@ export function WorkflowCanvas({
 }: WorkflowCanvasProps) {
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const canvasAreaRef = useRef<HTMLElement>(null);
+  /** 视口动画期间只切换装饰层，不广播 React 状态或改变节点几何。 */
+  const viewportMoving = useRef(false);
+  const handleViewportMoveStart = useCallback(() => {
+    viewportMoving.current = true;
+    canvasAreaRef.current?.classList.add('is-viewport-moving');
+  }, []);
+  const handleViewportMoveEnd = useCallback(() => {
+    viewportMoving.current = false;
+    canvasAreaRef.current?.classList.remove('is-viewport-moving');
+  }, []);
+  useEffect(() => {
+    window.addEventListener('blur', handleViewportMoveEnd);
+    return () => window.removeEventListener('blur', handleViewportMoveEnd);
+  }, [handleViewportMoveEnd]);
   const connectionStartRef = useRef<OnConnectStartParams | null>(null);
   /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
   const suppressPaneClickRef = useRef(false);
@@ -917,7 +931,7 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}`}
+      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}`}
       data-edge-path-style={edgePathStyle}
       data-edge-effect={edgeEffect}
       aria-label="工作流画布"
@@ -1007,7 +1021,9 @@ export function WorkflowCanvas({
                                     onNodeDragStart={onNodeDragStart}
                                     onNodeDrag={onNodeDrag}
                                     onNodeDragStop={onNodeDragStop}
+                                    onMoveStart={handleViewportMoveStart}
                                     onMove={reportCanvasCenter}
+                                    onMoveEnd={handleViewportMoveEnd}
                                     onDrop={handleDrop}
                                     onDragOver={handleDragOver}
                                     onNodeClick={handleNodeClick}

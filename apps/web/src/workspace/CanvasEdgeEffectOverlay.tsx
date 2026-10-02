@@ -1,27 +1,28 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
 import { edgeEffectOverlayClassName, type CanvasEdgeEffect } from './canvas-edge-appearance';
 
 import './CanvasEdgeEffectOverlay.css';
 
 /**
- * 单个亮点与渐淡短尾迹共用基础边的真实路径。将路径归一到 1、虚线周期设为 2，
- * 保证长边也只有一个亮点；尾迹沿曲线/折线回溯，不用会在转角处偏离路径的切线拖尾。
+ * 一条连续渐细光尾和一个亮头共用 CSS 运动路径，不堆叠粒子或逐帧更新 React。
+ * 亮头沿真实路径从源到目标移动，短尾沿当前位置的反向切线伸展；折角处随切线转向。
  * @param props.path 从源节点到目标节点的 SVG 路径。
- * @returns 不参与命中测试的叠加层；减少动态效果时由 CSS 停在路径中点。
+ * @returns 不参与命中的光束；减少动态效果时停在中点，不支持运动路径时显示静态亮点。
  */
 function ShootingStarEdgeEffect({ path }: { path: string }) {
+  const gradientId = useId();
   const overlayRef = useRef<SVGGElement>(null);
-  const headRef = useRef<SVGPathElement>(null);
+  const pathRef = useRef<SVGPathElement>(null);
 
   useEffect(() => {
-    /** 合并同一绘制帧内的路径变化，不在每次 React 提交时同步求 SVG 长度。 */
+    /** 仅几何变化时测长，同帧更新合并；缩放与动画进度不触发测量。 */
     const frame = requestAnimationFrame(() => {
-      const length = headRef.current?.getTotalLength?.();
-      // 无 SVG 几何接口时保留 CSS 的相对长度；浏览器中把尾迹限制在 22 个画布单位内。
-      if (length === undefined) return;
-      const tailLength = length > 0 ? Math.min(0.22, 22 / length) : 0;
-      overlayRef.current?.style.setProperty('--canvas-edge-star-tail', `${tailLength}px`);
+      const length = pathRef.current?.getTotalLength?.();
+      // 无几何接口时保留 16 单位短尾；正常路径最长 32 单位且不超过路径的 22%。
+      if (length === undefined || !Number.isFinite(length)) return;
+      const tailScale = Math.min(1, (Math.max(0, length) * 0.22) / 32);
+      overlayRef.current?.style.setProperty('--canvas-edge-star-tail-scale', String(tailScale));
     });
     return () => cancelAnimationFrame(frame);
   }, [path]);
@@ -34,18 +35,24 @@ function ShootingStarEdgeEffect({ path }: { path: string }) {
       aria-hidden="true"
       pointerEvents="none"
     >
-      <path d={path} pathLength={1} className="canvas-edge-shooting-star-trail" />
-      <path
-        d={path}
-        pathLength={1}
-        className="canvas-edge-shooting-star-trail canvas-edge-shooting-star-trail-middle"
-      />
-      <path
-        d={path}
-        pathLength={1}
-        className="canvas-edge-shooting-star-trail canvas-edge-shooting-star-trail-near"
-      />
-      <path ref={headRef} d={path} pathLength={1} className="canvas-edge-shooting-star-head" />
+      <defs>
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0" />
+          <stop offset="100%" stopColor="currentColor" />
+        </linearGradient>
+      </defs>
+      <path ref={pathRef} d={path} pathLength={1} className="canvas-edge-shooting-star-fallback" />
+      <g
+        className="canvas-edge-shooting-star-motion"
+        style={{ offsetPath: `path(${JSON.stringify(path)})` }}
+      >
+        <path
+          d="M -32 0 Q -12 -0.6 0 -3 L 0 3 Q -12 0.6 -32 0 Z"
+          className="canvas-edge-shooting-star-trail"
+          fill={`url(#${gradientId})`}
+        />
+        <circle cx="0" cy="0" r="3" className="canvas-edge-shooting-star-head" />
+      </g>
     </g>
   );
 }

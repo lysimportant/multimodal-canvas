@@ -285,14 +285,14 @@ export function AssetNode({
           height: height ?? 160,
         }),
   );
-  /** 大画布隐藏悬浮栏不跟踪视口；显示时订阅平移和缩放以计算屏幕边界。 */
+  /** 隐藏悬浮栏不订阅视口；显示时读取当前平移和缩放以保持屏幕尺寸及避让。 */
   const controlsVisible = Boolean(hovered || focusWithin || selected) && !batchView?.hidden;
   const [viewportX, viewportY, zoom] = useStore(
     (state) =>
       [
         controlsVisible ? state.transform[0] : 0,
         controlsVisible ? state.transform[1] : 0,
-        !largeCanvas || controlsVisible ? state.transform[2] : 1,
+        controlsVisible ? state.transform[2] : 1,
       ] as const,
     (previous, next) =>
       previous[0] === next[0] && previous[1] === next[1] && previous[2] === next[2],

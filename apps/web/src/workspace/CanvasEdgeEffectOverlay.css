@@ -1,55 +1,83 @@
 .canvas-edge-effect-shooting-star {
-  --canvas-edge-star-tail: 0.22px;
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--mc-accent) 70%, #ffffff));
+  --canvas-edge-star-tail-scale: 0.5;
+  color: var(--canvas-edge-flow-color, var(--mc-accent-strong));
   pointer-events: none;
 }
 
-.canvas-edge-effect-shooting-star > path {
-  --canvas-edge-star-span: 0px;
-  animation: canvas-edge-shooting-star 2.6s linear infinite;
+.canvas-edge-shooting-star-fallback {
   fill: none;
-  pointer-events: none;
-  stroke: #f7ffe8;
-  stroke-dasharray: var(--canvas-edge-star-span) 2;
+  stroke: currentColor;
+  stroke-dasharray: 0 2;
+  stroke-dashoffset: -0.5;
   stroke-linecap: round;
-  stroke-linejoin: round;
+  stroke-width: 6;
 }
 
-.canvas-edge-effect-shooting-star > .canvas-edge-shooting-star-trail {
-  --canvas-edge-star-span: var(--canvas-edge-star-tail);
-  opacity: 0.22;
-  stroke-width: 1.2;
+.canvas-edge-shooting-star-motion {
+  display: none;
+  offset-anchor: 0px 0px;
+  offset-distance: 50%;
+  offset-rotate: auto;
+  transform-box: view-box;
+  transform-origin: 0 0;
 }
 
-.canvas-edge-effect-shooting-star > .canvas-edge-shooting-star-trail-middle {
-  --canvas-edge-star-span: calc(var(--canvas-edge-star-tail) * 0.66);
-  opacity: 0.4;
-  stroke-width: 2;
-}
-
-.canvas-edge-effect-shooting-star > .canvas-edge-shooting-star-trail-near {
-  --canvas-edge-star-span: calc(var(--canvas-edge-star-tail) * 0.33);
-  opacity: 0.65;
-  stroke-width: 2.8;
+.canvas-edge-shooting-star-trail {
+  stroke: none;
+  transform: scaleX(var(--canvas-edge-star-tail-scale));
+  transform-box: view-box;
+  transform-origin: 0 0;
 }
 
 .canvas-edge-shooting-star-head {
-  stroke-width: 4.4;
+  fill: currentColor;
+  stroke: none;
 }
 
-/* 归一化长度仍显式带 px，保证 calc 的动画插值连续；负偏移沿源到目标方向移动。 */
+/* 无运动路径支持时保留中点亮点，不把光束误画在 SVG 原点。 */
+@supports (offset-path: path('M 0 0 L 1 0')) and (offset-anchor: 0px 0px) {
+  .canvas-edge-shooting-star-fallback {
+    visibility: hidden;
+  }
+
+  .canvas-edge-shooting-star-motion {
+    display: inline;
+    animation: canvas-edge-shooting-star 2.6s linear infinite;
+  }
+}
+
+/* 路径从源到目标；只有位移和端点淡入淡出，没有滤镜或逐帧脚本。 */
 @keyframes canvas-edge-shooting-star {
-  from {
-    stroke-dashoffset: var(--canvas-edge-star-span);
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
   }
-  to {
-    stroke-dashoffset: calc(var(--canvas-edge-star-span) - 1px);
+  15%,
+  85% {
+    opacity: 1;
   }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
+/* 拖动和缩放只暂停装饰层；保留基础边、命中区及用户保存的特效值。 */
+.canvas-area.is-node-dragging .canvas-edge-effect-shooting-star,
+.canvas-area.is-viewport-moving .canvas-edge-effect-shooting-star {
+  filter: none;
+  visibility: hidden;
+}
+
+.canvas-area.is-node-dragging .canvas-edge-shooting-star-motion,
+.canvas-area.is-viewport-moving .canvas-edge-shooting-star-motion {
+  animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .canvas-edge-effect-shooting-star > path {
+  .canvas-edge-shooting-star-motion {
     animation: none;
-    stroke-dashoffset: calc(var(--canvas-edge-star-span) - 0.5px);
+    offset-distance: 50%;
+    opacity: 1;
   }
 }

@@ -27,7 +27,7 @@ import {
 
 /** 五种路径形态，顺序与外观面板一致。 */
 const pathStyles: CanvasEdgePathStyle[] = ['bezier', 'gentle', 'smoothstep', 'step', 'straight'];
-/** 七种动态特效，单点流星与旧流光独立，`none` 不渲染叠加层。 */
+/** 七种动态特效，流星光束与旧流光独立，`none` 不渲染叠加层。 */
 const effects: CanvasEdgeEffect[] = [
   'meteor',
   'shooting-star',
@@ -242,12 +242,15 @@ describe('连接线路径与特效的独立性', () => {
         expect(overlay).toHaveAttribute('class', expectedOverlayClass);
         if (effect === 'shooting-star') {
           expect(overlay?.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-          const paths = overlay?.querySelectorAll('path');
-          expect(paths).toHaveLength(4);
-          paths?.forEach((path) => {
-            expect(path).toHaveAttribute('d', settledPath(pathStyle));
-            expect(path).toHaveAttribute('pathLength', '1');
-          });
+          expect(overlay?.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
+          expect(overlay?.querySelector('.canvas-edge-shooting-star-fallback')).toHaveAttribute(
+            'd',
+            settledPath(pathStyle),
+          );
+          expect(
+            overlay?.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style
+              .offsetPath,
+          ).toBe('path(' + JSON.stringify(settledPath(pathStyle)) + ')');
         } else {
           expect(overlay).toHaveAttribute('d', settledPath(pathStyle));
         }
@@ -269,7 +272,7 @@ describe('连接线路径与特效的独立性', () => {
     expect([...paths][0]).toBe(settledPath('smoothstep'));
   });
 
-  it('单点流星保留基础边的状态颜色、选中态、终点标记和透明命中区域', () => {
+  it('流星光束保留基础边的状态颜色、选中态、终点标记和透明命中区域', () => {
     const { container } = render(
       <CanvasEdgeAppearanceProvider appearance={{ pathStyle: 'step', effect: 'shooting-star' }}>
         <svg>
@@ -335,7 +338,7 @@ describe('连接线路径与特效的独立性', () => {
 });
 
 describe('FlowingConnectionLine', () => {
-  it.each(pathStyles)('%s 单点流星在正向/反向拖线与落定后共用同一条源到目标路径', (pathStyle) => {
+  it.each(pathStyles)('%s 流星光束在正向/反向拖线与落定后共用同一条源到目标路径', (pathStyle) => {
     const source = centerHandlePoint(
       edgeParams.sourceX,
       edgeParams.sourceY,
@@ -387,9 +390,18 @@ describe('FlowingConnectionLine', () => {
     );
 
     expect(container.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(2);
-    container.querySelectorAll('path').forEach((path) => {
-      expect(path).toHaveAttribute('d', settledPath(pathStyle));
-    });
+    container
+      .querySelectorAll('.canvas-flow-edge-path, .canvas-edge-shooting-star-fallback')
+      .forEach((path) => {
+        expect(path).toHaveAttribute('d', settledPath(pathStyle));
+      });
+    container
+      .querySelectorAll<SVGGElement>('.canvas-edge-shooting-star-motion')
+      .forEach((motion) => {
+        expect(motion.style.offsetPath).toBe(
+          'path(' + JSON.stringify(settledPath(pathStyle)) + ')',
+        );
+      });
   });
 
   it.each(pathStyles)('%s 预览使用 xyflow 已居中的端点，不再二次内收', (pathStyle) => {

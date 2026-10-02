@@ -61,7 +61,7 @@ function mockPathLength(length: number) {
 }
 
 describe('CanvasEdgeEffectOverlay', () => {
-  it('新增单点流星不改变默认流光与旧效果类名', () => {
+  it('流星光束不改变默认流光与旧效果类名', () => {
     expect(canvasEdgeAppearanceDefaults.effect).toBe('meteor');
     expect(edgeEffectOverlayClassName('meteor')).toBe('canvas-edge-effect-meteor');
     expect(edgeEffectOverlayClassName('shooting-star')).toBe('canvas-edge-effect-shooting-star');
@@ -71,11 +71,12 @@ describe('CanvasEdgeEffectOverlay', () => {
 
   it.each([
     [0, 0],
-    [40, 0.22],
-    [100, 0.22],
-    [1000, 0.022],
-    [10000, 0.0022],
-  ])('路径长 %s 时尾迹比例为 %s，最长保持 22 个画布单位', (length, ratio) => {
+    [-10, 0],
+    [40, 0.275],
+    [100, 0.6875],
+    [1000, 1],
+    [10000, 1],
+  ])('路径长 %s 时尾迹缩放为 %s，最长保持 32 个画布单位', (length, ratio) => {
     const measure = mockPathLength(length);
     const { container } = render(
       <svg>
@@ -86,11 +87,11 @@ describe('CanvasEdgeEffectOverlay', () => {
     const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-shooting-star');
     expect(measure).toHaveBeenCalledTimes(1);
     expect(
-      parseFloat(overlay?.style.getPropertyValue('--canvas-edge-star-tail') ?? ''),
+      parseFloat(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale') ?? ''),
     ).toBeCloseTo(ratio);
     expect(container.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    expect(container.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(3);
-    container.querySelectorAll('path').forEach((path) => {
+    expect(container.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
+    container.querySelectorAll('.canvas-edge-shooting-star-fallback').forEach((path) => {
       expect(path).toHaveAttribute('pathLength', '1');
       expect(path).toHaveAttribute('d', `M 0,0 L ${length},0`);
     });
@@ -106,22 +107,24 @@ describe('CanvasEdgeEffectOverlay', () => {
     flushFrame();
     const head = container.querySelector('.canvas-edge-shooting-star-head');
     const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-shooting-star');
-    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail')).toBe('0.022px');
+    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale')).toBe('1');
 
-    measure.mockReturnValue(200);
+    measure.mockReturnValue(100);
     rerender(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 200,0 L 0,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 100,0 L 0,0" effect="shooting-star" />
       </svg>,
     );
     flushFrame();
     expect(measure).toHaveBeenCalledTimes(2);
     expect(container.querySelector('.canvas-edge-shooting-star-head')).toBe(head);
-    expect(head).toHaveAttribute('d', 'M 200,0 L 0,0');
-    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail')).toBe('0.11px');
+    expect(
+      container.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
+    ).toBe('path("M 100,0 L 0,0")');
+    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale')).toBe('0.6875');
   });
 
-  it('没有 SVG 布局接口时仍可渲染单点与相对长度尾迹', () => {
+  it('没有 SVG 布局接口时仍可渲染光束并使用 CSS 默认短尾', () => {
     const { container } = render(
       <svg>
         <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="shooting-star" />
@@ -134,26 +137,91 @@ describe('CanvasEdgeEffectOverlay', () => {
     );
   });
 
-  it('归一化周期只容纳一个亮点，沿源到目标运动，减少动态效果时停在中点', () => {
+  it('每条边只有一条渐细光尾与一个亮头，渐变标识互不串色', () => {
+    const { container } = render(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 100,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 100,0 L 0,0" effect="shooting-star" />
+      </svg>,
+    );
+    const gradients = [...container.querySelectorAll('linearGradient')];
+    expect(new Set(gradients.map((gradient) => gradient.id)).size).toBe(2);
+    container.querySelectorAll('.canvas-edge-effect-shooting-star').forEach((overlay) => {
+      const gradient = overlay.querySelector('linearGradient');
+      const trail = overlay.querySelector('.canvas-edge-shooting-star-trail');
+      expect(trail).toHaveAttribute('fill', 'url(#' + gradient?.id + ')');
+      expect(gradient?.querySelector('stop')).toHaveAttribute('stop-opacity', '0');
+      expect(overlay.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
+      expect(overlay.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
+      expect(overlay.querySelectorAll('animate, animateMotion, filter')).toHaveLength(0);
+    });
+  });
+
+  it.each([NaN, Infinity])('无效测长 %s 不写入无效样式，保留默认短尾', (length) => {
+    mockPathLength(length);
+    const { container } = render(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="shooting-star" />
+      </svg>,
+    );
+    flushFrame();
+    expect(
+      container
+        .querySelector<SVGGElement>('.canvas-edge-effect-shooting-star')
+        ?.style.getPropertyValue('--canvas-edge-star-tail-scale'),
+    ).toBe('');
+  });
+
+  it('光束沿源到目标运动，支持主题、减少动态效果、拖动与视口暂停和静态降级', () => {
     const css = readFileSync(
       resolve(process.cwd(), 'src/workspace/CanvasEdgeEffectOverlay.css'),
       'utf8',
     ).replace(/\s+/g, ' ');
 
-    expect(css).toContain('stroke-dasharray: var(--canvas-edge-star-span) 2;');
-    expect(css).toContain('--canvas-edge-star-span: 0px;');
-    expect(css).toContain('stroke-dashoffset: calc(var(--canvas-edge-star-span) - 1px);');
-    expect(css).toMatch(/\.canvas-edge-effect-shooting-star > path \{[^}]*pointer-events: none;/);
+    expect(css).toContain('color: var(--canvas-edge-flow-color, var(--mc-accent-strong));');
+    expect(css).toMatch(/\.canvas-edge-effect-shooting-star \{[^}]*pointer-events: none;/);
+    expect(css).toContain('offset-anchor: 0px 0px;');
+    expect(css).toContain('offset-rotate: auto;');
+    expect(css).toContain(
+      "@supports (offset-path: path('M 0 0 L 1 0')) and (offset-anchor: 0px 0px)",
+    );
+    expect(css).toMatch(/\.canvas-edge-shooting-star-fallback \{[^}]*stroke-dashoffset: -0.5;/);
+    expect(css).toMatch(/0% \{[^}]*offset-distance: 0%;/);
+    expect(css).toMatch(/100% \{[^}]*offset-distance: 100%;/);
+    expect(css).toMatch(
+      /\.canvas-area\.is-viewport-moving \.canvas-edge-effect-shooting-star \{[^}]*visibility: hidden;/,
+    );
+    expect(css).toMatch(
+      /\.canvas-area\.is-viewport-moving \.canvas-edge-shooting-star-motion \{[^}]*animation-play-state: paused;/,
+    );
+    expect(css).toContain('.canvas-area.is-node-dragging .canvas-edge-effect-shooting-star,');
+    expect(css).toContain('.canvas-area.is-node-dragging .canvas-edge-shooting-star-motion,');
+    expect(css).toContain('filter: none;');
     const reducedMotion = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
     expect(reducedMotion).toContain('animation: none;');
-    expect(reducedMotion).toContain(
-      'stroke-dashoffset: calc(var(--canvas-edge-star-span) - 0.5px);',
-    );
-    expect(css).not.toContain('!important');
+    expect(reducedMotion).toContain('offset-distance: 50%;');
+    expect(css).not.toMatch(/drop-shadow|blur\(|will-change:|#[0-9a-f]{3,8}|!important/);
   });
 });
 
 describe('CanvasEdgeEffectOverlay 拖动性能', () => {
+  it('仅缩放视口不重复测长、不重建动画，也不调度下一帧', () => {
+    const measure = mockPathLength(200);
+    const renderAtZoom = (zoom: number) => (
+      <svg>
+        <g transform={'scale(' + zoom + ')'}>
+          <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="shooting-star" />
+        </g>
+      </svg>
+    );
+    const view = render(renderAtZoom(1));
+    flushFrame();
+    const motion = view.container.querySelector('.canvas-edge-shooting-star-motion');
+    for (const zoom of [0.25, 0.5, 1.5, 2]) view.rerender(renderAtZoom(zoom));
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(pendingFrames.size).toBe(0);
+    expect(view.container.querySelector('.canvas-edge-shooting-star-motion')).toBe(motion);
+  });
   it('同一绘制帧内连续 12 次更新只测量最终路径', () => {
     const measure = mockPathLength(1000);
     const view = render(
@@ -179,7 +247,7 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     flushFrame();
     expect(measure).toHaveBeenCalledTimes(1);
     expect(view.container.querySelector('.canvas-edge-effect-shooting-star')).toHaveStyle({
-      '--canvas-edge-star-tail': 22 / 1120 + 'px',
+      '--canvas-edge-star-tail-scale': '1',
     });
     view.unmount();
     expect(pendingFrames.size).toBe(0);
@@ -217,7 +285,7 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     flushFrame();
     expect(measure).toHaveBeenCalledTimes(2);
     expect(view.container.querySelector('.canvas-edge-effect-shooting-star')).toHaveStyle({
-      '--canvas-edge-star-tail': '0.022px',
+      '--canvas-edge-star-tail-scale': '1',
     });
     view.rerender(
       <svg>

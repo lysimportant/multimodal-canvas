@@ -54,7 +54,7 @@ export const appearanceEdgeEffectOptions: Array<{
   description: string;
 }> = [
   { value: 'meteor', label: '流光', description: '短亮线行进' },
-  { value: 'shooting-star', label: '单点流星', description: '亮点携短尾迹' },
+  { value: 'shooting-star', label: '单束流星', description: '头亮尾细' },
   { value: 'marching', label: '虚线行进', description: '虚线沿向移动' },
   { value: 'cruiser', label: '单点巡航', description: '单点循环' },
   { value: 'multi', label: '多点流动', description: '多点间隔' },

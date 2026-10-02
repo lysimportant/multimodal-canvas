@@ -1772,7 +1772,7 @@ h2 {
 }
 
 .canvas-edge-effect-meteor {
-  stroke: #f7ffe8;
+  stroke: var(--canvas-edge-flow-color);
   stroke-dasharray: 10 72;
   stroke-width: 2;
   animation: canvas-flow-meteor 1.6s linear infinite;
@@ -1786,7 +1786,7 @@ h2 {
 }
 
 .canvas-edge-effect-cruiser {
-  stroke: #f7ffe8;
+  stroke: var(--canvas-edge-flow-color);
   stroke-dasharray: 2 120;
   stroke-width: 3;
   animation: canvas-flow-meteor 2.6s linear infinite;
@@ -1794,7 +1794,7 @@ h2 {
 }
 
 .canvas-edge-effect-multi {
-  stroke: #f7ffe8;
+  stroke: var(--canvas-edge-flow-color);
   stroke-dasharray: 6 22;
   stroke-width: 2.5;
   animation: canvas-flow-meteor 2.4s linear infinite;
@@ -2598,7 +2598,7 @@ h2 {
 }
 
 .flow-asset-node .react-flow__handle {
-  background: #18794e;
+  background: var(--canvas-edge-stroke);
   border: 3px solid #ffffff;
   box-sizing: border-box;
   height: 18px;
@@ -4526,7 +4526,7 @@ h2 {
 }
 
 .flow-asset-node .react-flow__handle {
-  background: var(--mc-accent);
+  background: var(--canvas-edge-stroke);
   border-color: var(--mc-surface);
 }
 
@@ -5566,4 +5566,15 @@ textarea:focus-visible {
     animation: none;
     transition: none;
   }
+}
+
+/* 连线、连接点和动态光束共用当前主题，不跟随媒体类型写死颜色。 */
+:root,
+[data-theme] {
+  --canvas-edge-stroke: var(--mc-accent);
+  --canvas-edge-flow-color: color-mix(in srgb, var(--mc-accent-strong) 55%, var(--mc-surface));
+}
+
+.canvas-area .canvas-flow-edge-path:not(.is-selected) {
+  stroke: var(--canvas-edge-stroke);
 }

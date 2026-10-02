@@ -495,6 +495,7 @@ describe('AssetNode result presentation', () => {
   it.each([0.25, 0.5, 1, 2])('文本悬浮卡片抵消 %s 倍画布缩放', (zoom) => {
     viewportMock.zoom = zoom;
     renderNode(makeNode());
+    fireEvent.mouseEnter(document.querySelector('.flow-asset-node')!);
     const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
     expect(toolbar.style.getPropertyValue('--flow-node-zoom')).toBe(String(zoom));
     expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe(String(1 / zoom));
@@ -702,7 +703,7 @@ describe('AssetNode result presentation', () => {
     expect(observer.create).toHaveBeenCalledTimes(1);
   });
 
-  it('41 个隐藏悬浮栏节点不因视口平移重渲染，缩放仍更新', () => {
+  it('41 个隐藏悬浮栏节点不因平移或缩放重渲染，显示时读取当前倍率', () => {
     const onRender = vi.fn();
     const view = render(
       <>
@@ -723,12 +724,15 @@ describe('AssetNode result presentation', () => {
     updateViewport({ x: 120, y: -40 });
     expect(onRender).not.toHaveBeenCalled();
     updateViewport({ zoom: 0.5 });
-    expect(onRender).toHaveBeenCalledTimes(41);
-    for (const toolbar of view.container.querySelectorAll<HTMLElement>(
-      '.flow-node-floating-controls',
-    )) {
-      expect(toolbar.style.getPropertyValue('--flow-node-inverse-zoom')).toBe('2');
-    }
+    expect(onRender).not.toHaveBeenCalled();
+    const nodes = view.container.querySelectorAll<HTMLElement>('.flow-asset-node');
+    fireEvent.mouseEnter(nodes[0]);
+    const toolbar = nodes[0].querySelector<HTMLElement>('.flow-node-floating-controls');
+    expect(toolbar?.style.getPropertyValue('--flow-node-inverse-zoom')).toBe('2');
+    onRender.mockClear();
+    updateViewport({ zoom: 0.25 });
+    expect(onRender).toHaveBeenCalledTimes(1);
+    expect(toolbar?.style.getPropertyValue('--flow-node-inverse-zoom')).toBe('4');
   });
 
   it.each(['hovered', 'focusWithin', 'selected'] as const)(

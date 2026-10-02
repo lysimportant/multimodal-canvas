@@ -9,6 +9,7 @@ import type { CanvasGroup } from '@multimodal-canvas/domain';
 
 import { CanvasGroupLayer } from './CanvasGroupLayer';
 import type { AssetFlowNode } from '../canvas-utils';
+import { GenerationBatchViewContext, projectGenerationBatches } from './generation-batch-view';
 
 afterEach(cleanup);
 
@@ -53,6 +54,16 @@ function group(overrides: Partial<CanvasGroup> = {}): CanvasGroup {
     nodeIds: ['a', 'b'],
     ...overrides,
   };
+}
+
+/** 构造真实可见成员；批次测试复用画布的显示投影，不伪造隐藏规则。 */
+function memberNode(id: string, data: Partial<AssetFlowNode['data']> = {}): AssetFlowNode {
+  return {
+    id,
+    type: data.mediaType ?? 'image',
+    position: { x: 120, y: 80 },
+    data: { label: id, mediaType: 'image', mode: 'generate', ...data },
+  } as AssetFlowNode;
 }
 
 describe('CanvasGroupLayer', () => {
@@ -109,8 +120,14 @@ describe('CanvasGroupLayer', () => {
     expect(container.querySelector('.canvas-group-layer')).toBeNull();
   });
 
-  it('标题条显示组名与成员数量', () => {
-    render(<CanvasGroupLayer groups={[group()]} viewport={{ x: 0, y: 0, zoom: 1 }} />);
+  it('标题条显示组名与仍存在的成员数量', () => {
+    render(
+      <CanvasGroupLayer
+        groups={[group()]}
+        nodes={[memberNode('a'), memberNode('b')]}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+      />,
+    );
     const name = screen.getByRole('button', { name: /场景 A/ });
     expect(name).toHaveTextContent('场景 A');
     expect(name).toHaveTextContent('2');
@@ -357,6 +374,174 @@ describe('CanvasGroupLayer', () => {
     expect(onDissolveGroup).toHaveBeenCalledWith('g1');
     expect(screen.queryByRole('region', { name: '场景 A分组信息' })).not.toBeInTheDocument();
   });
+
+  it.each([
+    { name: '重复成员 ID', ids: ['a', 'b', 'c', 'd', 'e', 'a'], duplicateNode: false },
+    { name: '失效成员 ID', ids: ['a', 'b', 'c', 'd', 'e', 'deleted'], duplicateNode: false },
+    { name: '重复节点记录', ids: ['a', 'b', 'c', 'd', 'e'], duplicateNode: true },
+  ])('$name 不增加标题、总数和媒体分类计数，也不重写归属', ({ ids, duplicateNode }) => {
+    const nodes = ['a', 'b', 'c', 'd', 'e', 'outside'].map((id) => memberNode(id));
+    if (duplicateNode) nodes.push(nodes[0]!);
+    const currentGroup = group({ nodeIds: ids });
+    const before = JSON.stringify({ nodes, currentGroup });
+    render(
+      <CanvasGroupLayer
+        groups={[currentGroup]}
+        nodes={nodes}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        selectedGroupId="g1"
+      />,
+    );
+    const card = screen.getByRole('region', { name: '场景 A分组信息' });
+    expect(
+      screen.getByRole('button', { name: /^场景 A/ }).querySelector('small'),
+    ).toHaveTextContent(/^5$/);
+    expect(card).toHaveTextContent('5 个节点');
+    expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片5');
+    expect(JSON.stringify({ nodes, currentGroup })).toBe(before);
+  });
+
+  it('五张图片加一个文字成员仍计六个节点，不按图片数量或所在位置删减成员', () => {
+    const nodes = ['a', 'b', 'c', 'd', 'e'].map((id) => memberNode(id));
+    nodes.push({ ...memberNode('prompt', { mediaType: 'text' }), position: { x: 5000, y: 5000 } });
+    render(
+      <CanvasGroupLayer
+        groups={[group({ nodeIds: nodes.map((node) => node.id) })]}
+        nodes={nodes}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        selectedGroupId="g1"
+      />,
+    );
+    const card = screen.getByRole('region', { name: '场景 A分组信息' });
+    expect(
+      screen.getByRole('button', { name: /^场景 A/ }).querySelector('small'),
+    ).toHaveTextContent(/^6$/);
+    expect(card).toHaveTextContent('6 个节点');
+    expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片5');
+    expect(within(card).getByText('文字').parentElement).toHaveTextContent('文字1');
+  });
+
+  it.each([true, false])(
+    '批次父节点在组内=%s：收起显示五个可见节点和六个成员，展开恢复六个',
+    (rootInGroup) => {
+      const root = memberNode('root', {
+        generationBatch: { id: 'batch', rootNodeId: 'root', index: 0 },
+        generationBatchExpanded: false,
+      });
+      const child = memberNode('child', {
+        generationBatch: { id: 'batch', rootNodeId: 'root', index: 1 },
+      });
+      const otherIds = rootInGroup ? ['a', 'b', 'c', 'd'] : ['a', 'b', 'c', 'd', 'e'];
+      const nodes = [root, child, ...otherIds.map((id) => memberNode(id))];
+      const memberIds = (rootInGroup ? nodes : nodes.slice(1)).map((node) => node.id);
+      const currentGroup = group({ nodeIds: memberIds });
+      const before = JSON.stringify({ nodes, currentGroup });
+      const { rerender } = render(
+        <GenerationBatchViewContext.Provider value={projectGenerationBatches(nodes, [])}>
+          <CanvasGroupLayer
+            groups={[currentGroup]}
+            nodes={nodes}
+            viewport={{ x: 0, y: 0, zoom: 1 }}
+            selectedGroupId="g1"
+          />
+        </GenerationBatchViewContext.Provider>,
+      );
+      let card = screen.getByRole('region', { name: '场景 A分组信息' });
+      expect(
+        screen.getByRole('button', { name: /^场景 A/ }).querySelector('small'),
+      ).toHaveTextContent('5 / 6');
+      expect(card).toHaveTextContent('5 个可见节点 / 6 个成员');
+      expect(card).toHaveTextContent('1 个成员已隐藏或批次收起');
+      expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片5');
+      expect(card).not.toHaveTextContent('暂无成员');
+      expect(JSON.stringify({ nodes, currentGroup })).toBe(before);
+
+      const expanded = [
+        { ...root, data: { ...root.data, generationBatchExpanded: true } },
+        ...nodes.slice(1),
+      ];
+      rerender(
+        <GenerationBatchViewContext.Provider value={projectGenerationBatches(expanded, [])}>
+          <CanvasGroupLayer
+            groups={[currentGroup]}
+            nodes={expanded}
+            viewport={{ x: 0, y: 0, zoom: 1 }}
+            selectedGroupId="g1"
+          />
+        </GenerationBatchViewContext.Provider>,
+      );
+      card = screen.getByRole('region', { name: '场景 A分组信息' });
+      expect(
+        screen.getByRole('button', { name: /^场景 A/ }).querySelector('small'),
+      ).toHaveTextContent(/^6$/);
+      expect(card).toHaveTextContent('6 个节点');
+      expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片6');
+      expect(card).not.toHaveTextContent('已隐藏');
+      expect(currentGroup.nodeIds).toEqual(memberIds);
+    },
+  );
+
+  it('全部成员显式隐藏时显示零个可见节点，但不将组标为空组', () => {
+    const nodes = [{ ...memberNode('hidden'), hidden: true }];
+    const { rerender } = render(
+      <CanvasGroupLayer
+        groups={[group({ nodeIds: ['hidden'] })]}
+        nodes={nodes}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        selectedGroupId="g1"
+      />,
+    );
+    let card = screen.getByRole('region', { name: '场景 A分组信息' });
+    expect(
+      screen.getByRole('button', { name: /^场景 A/ }).querySelector('small'),
+    ).toHaveTextContent('0 / 1');
+    expect(card).toHaveTextContent('0 个可见节点 / 1 个成员');
+    expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片0');
+    expect(card).not.toHaveTextContent('暂无成员');
+    rerender(
+      <CanvasGroupLayer
+        groups={[group({ nodeIds: ['hidden'] })]}
+        nodes={[]}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        selectedGroupId="g1"
+      />,
+    );
+    card = screen.getByRole('region', { name: '场景 A分组信息' });
+    expect(card).toHaveTextContent('0 个节点');
+    expect(card).toHaveTextContent('暂无成员');
+  });
+
+  it.each(['missing-root', 'different-batch'])(
+    '批次父节点无效（%s）时保留仍可见的成员',
+    (rootState) => {
+      const child = memberNode('child', {
+        generationBatch: { id: 'batch', rootNodeId: 'root', index: 1 },
+      });
+      const nodes =
+        rootState === 'missing-root'
+          ? [child]
+          : [
+              child,
+              memberNode('root', {
+                generationBatch: { id: 'other', rootNodeId: 'root', index: 0 },
+              }),
+            ];
+      render(
+        <GenerationBatchViewContext.Provider value={projectGenerationBatches(nodes, [])}>
+          <CanvasGroupLayer
+            groups={[group({ nodeIds: ['child'] })]}
+            nodes={nodes}
+            viewport={{ x: 0, y: 0, zoom: 1 }}
+            selectedGroupId="g1"
+          />
+        </GenerationBatchViewContext.Provider>,
+      );
+      const card = screen.getByRole('region', { name: '场景 A分组信息' });
+      expect(card).toHaveTextContent('1 个节点');
+      expect(within(card).getByText('图片').parentElement).toHaveTextContent('图片1');
+      expect(card).not.toHaveTextContent('已隐藏');
+    },
+  );
 
   it('悬浮栏的拖动手柄移动整组，操作按钮不触发拖动', async () => {
     const onTranslateGroup = vi.fn();

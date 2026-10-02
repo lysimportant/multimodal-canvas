@@ -29,7 +29,7 @@ describe('AppearancePicker', () => {
     expect(css).not.toContain('!important');
   });
 
-  it('单点流星独立于旧流光，选项与组合预览共用真实路径和同一特效层', async () => {
+  it('单束流星独立于旧流光，选项与组合预览共用真实路径和同一特效层', async () => {
     const user = userEvent.setup();
     const props = {
       canvasTheme: 'eye-care' as const,
@@ -50,13 +50,13 @@ describe('AppearancePicker', () => {
     );
 
     const meteor = within(dialog).getByRole('button', { name: '流光 短亮线行进' });
-    const shootingStar = within(dialog).getByRole('button', { name: '单点流星 亮点携短尾迹' });
+    const shootingStar = within(dialog).getByRole('button', { name: '单束流星 头亮尾细' });
     expect(meteor).toHaveAttribute('aria-pressed', 'true');
     expect(meteor.querySelector('.canvas-edge-effect-meteor')).toBeInTheDocument();
     expect(shootingStar).toHaveAttribute('aria-pressed', 'false');
     expect(shootingStar.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    expect(shootingStar.querySelector('strong')).toHaveTextContent('单点流星');
-    expect(shootingStar.querySelector('small')).toHaveTextContent('亮点携短尾迹');
+    expect(shootingStar.querySelector('strong')).toHaveTextContent('单束流星');
+    expect(shootingStar.querySelector('small')).toHaveTextContent('头亮尾细');
 
     await user.click(shootingStar);
     expect(props.onEdgeEffectChange).toHaveBeenCalledExactlyOnceWith('shooting-star');
@@ -68,15 +68,24 @@ describe('AppearancePicker', () => {
     const combined = within(dialog).getByRole('group', { name: '连接线组合预览' });
     const expectedPath = canvasEdgePreviewPath('step');
     expect(combined.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    combined.querySelectorAll('path').forEach((path) => {
-      expect(path).toHaveAttribute('d', expectedPath);
-    });
+    expect(combined.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
+    expect(
+      combined.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
+    ).toBe('path(' + JSON.stringify(expectedPath) + ')');
+    combined
+      .querySelectorAll('.canvas-flow-edge-path, .canvas-edge-shooting-star-fallback')
+      .forEach((path) => {
+        expect(path).toHaveAttribute('d', expectedPath);
+      });
     within(dialog)
       .getByRole('group', { name: '连接线路径' })
       .querySelectorAll('.appearance-edge-option')
       .forEach((option) => {
         const base = option.querySelector('.canvas-flow-edge-path');
-        option.querySelectorAll('.canvas-edge-effect-shooting-star path').forEach((path) => {
+        expect(
+          option.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
+        ).toBe('path(' + JSON.stringify(base?.getAttribute('d')) + ')');
+        option.querySelectorAll('.canvas-edge-shooting-star-fallback').forEach((path) => {
           expect(path).toHaveAttribute('d', base?.getAttribute('d'));
         });
       });

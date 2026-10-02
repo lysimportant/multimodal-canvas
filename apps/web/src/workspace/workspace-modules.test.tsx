@@ -152,8 +152,8 @@ describe('workspace modules', () => {
     expect(document.querySelectorAll('.appearance-edge-preview')).toHaveLength(13);
     expect(document.querySelectorAll('[data-edge-effect="meteor"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-edge-effect="shooting-star"]')).toHaveLength(1);
-    /** 新增流星保持独立选项，且单条预览只有一个亮点，不替换原有流光。 */
-    const shootingStar = screen.getByRole('button', { name: '单点流星 亮点携短尾迹' });
+    /** 单束流星保持独立选项，且单条预览只有一个亮头，不替换原有流光。 */
+    const shootingStar = screen.getByRole('button', { name: '单束流星 头亮尾细' });
     expect(shootingStar.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
     await user.click(screen.getByRole('button', { name: /圆角折线/ }));
     expect(callbacks.onEdgePathStyle).toHaveBeenCalledWith('smoothstep');

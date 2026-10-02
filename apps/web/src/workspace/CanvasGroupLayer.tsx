@@ -3,8 +3,10 @@ import { Popover } from 'antd';
 import { mediaTypes, type CanvasGroup } from '@multimodal-canvas/domain';
 import { GripVertical, Group, Type, Ungroup } from 'lucide-react';
 import {
+  useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -15,6 +17,7 @@ import { flushSync } from 'react-dom';
 
 import type { AssetFlowNode } from '../canvas-utils';
 import { mediaIcons, mediaLabels } from './contracts';
+import { GenerationBatchViewContext } from './generation-batch-view';
 
 import './canvas-group-hover-card.css';
 
@@ -29,7 +32,7 @@ export type CanvasGroupViewport = { x: number; y: number; zoom: number };
 /** 组展示数据与画布持有的布局操作。 */
 type CanvasGroupLayerProps = {
   groups: readonly CanvasGroup[];
-  /** 画布节点用于统计组成员的媒体类型，不改变成员归属。 */
+  /** 真实画布节点用于解析有效成员；隐藏状态仅影响展示计数，不改变归属。 */
   nodes?: readonly AssetFlowNode[];
   viewport: CanvasGroupViewport;
   /** 当前正在拖拽节点时预高亮的组。 */
@@ -92,6 +95,22 @@ export function CanvasGroupLayer({
   onGroupInteractionStart,
   onGroupInteractionEnd,
 }: CanvasGroupLayerProps) {
+  const { views: batchViews } = useContext(GenerationBatchViewContext);
+  /** 标题和浮卡共用有效成员；只复用画布的批次隐藏结果，不重算或写回归属。 */
+  const membersByGroup = useMemo(() => {
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    return new Map(
+      groups.map((group) => {
+        const members = [...new Set(group.nodeIds)]
+          .map((id) => nodesById.get(id))
+          .filter((node): node is AssetFlowNode => node !== undefined);
+        const visibleMembers = members.filter(
+          (node) => !node.hidden && !batchViews.get(node.id)?.hidden,
+        );
+        return [group.id, { members, visibleMembers }] as const;
+      }),
+    );
+  }, [groups, nodes, batchViews]);
   const dragRef = useRef<DragState | undefined>(undefined);
   /** 保持监听器稳定；缩放和回调更新不取消已经排队的尾帧。 */
   const interactionRef = useRef({
@@ -306,6 +325,8 @@ export function CanvasGroupLayer({
   return (
     <div className="canvas-group-layer" aria-hidden={groups.length === 0}>
       {groups.map((group) => {
+        const { members, visibleMembers } = membersByGroup.get(group.id)!;
+        const hiddenCount = members.length - visibleMembers.length;
         const selected = selectedGroupId === group.id;
         const isDropTarget = dropTargetGroupId === group.id;
         return (
@@ -325,7 +346,8 @@ export function CanvasGroupLayer({
               hoveredGroup?.groupId === group.id ? (
                 <CanvasGroupHoverCard
                   group={group}
-                  nodes={nodes}
+                  members={visibleMembers}
+                  hiddenCount={hiddenCount}
                   anchor={hoveredGroup.anchor}
                   onEnter={keepHoverCardOpen}
                   onLeave={closeHoverCardLater}
@@ -407,7 +429,17 @@ export function CanvasGroupLayer({
                   >
                     <Group size={12} aria-hidden="true" />
                     <span>{group.name}</span>
-                    <small>{group.nodeIds.length}</small>
+                    <small
+                      title={
+                        hiddenCount
+                          ? `${visibleMembers.length} 个可见节点 / ${members.length} 个成员`
+                          : undefined
+                      }
+                    >
+                      {hiddenCount
+                        ? `${visibleMembers.length} / ${members.length}`
+                        : members.length}
+                    </small>
                   </Button>
                 )}
               </div>
@@ -434,12 +466,15 @@ export function CanvasGroupLayer({
 
 /**
  * 分组 Popover 内的成员统计和操作；浮层定位由 Ant Design 负责。
- * @param group 当前组；成员类型以 nodes 中仍存在的节点为准。
+ * @param group 当前组，仅用于身份和组操作，不修改成员 ID。
+ * @param members 去重且仍存在的可见成员，媒体分类与标题使用同一口径。
+ * @param hiddenCount 仍属于本组的隐藏成员数，包含收起的批次成员。
  * @param anchor 组元素，用于 Escape 关闭后归还键盘焦点，不改变画布或节点尺寸。
  */
 function CanvasGroupHoverCard({
   group,
-  nodes,
+  members,
+  hiddenCount,
   anchor,
   onEnter,
   onLeave,
@@ -449,7 +484,8 @@ function CanvasGroupHoverCard({
   onDissolve,
 }: {
   group: CanvasGroup;
-  nodes: readonly AssetFlowNode[];
+  members: readonly AssetFlowNode[];
+  hiddenCount: number;
   anchor: HTMLElement;
   onEnter: () => void;
   onLeave: () => void;
@@ -458,8 +494,6 @@ function CanvasGroupHoverCard({
   onRename?: (group: CanvasGroup) => void;
   onDissolve?: (groupId: string) => void;
 }) {
-  const members = nodes.filter((node) => group.nodeIds.includes(node.id));
-
   return (
     <div
       className="canvas-group-hover-card"
@@ -489,7 +523,11 @@ function CanvasGroupHoverCard({
       <div className="canvas-group-hover-heading">
         <Group size={15} aria-hidden="true" />
         <strong>{group.name}</strong>
-        <span>{group.nodeIds.length} 个节点</span>
+        <span>
+          {hiddenCount
+            ? `${members.length} 个可见节点 / ${members.length + hiddenCount} 个成员`
+            : `${members.length} 个节点`}
+        </span>
       </div>
       <div className="canvas-group-hover-members">
         {mediaTypes.map((mediaType) => {
@@ -503,7 +541,8 @@ function CanvasGroupHoverCard({
             </span>
           );
         })}
-        {group.nodeIds.length === 0 ? <span>暂无成员</span> : null}
+        {hiddenCount ? <span>{hiddenCount} 个成员已隐藏或批次收起</span> : null}
+        {members.length === 0 && hiddenCount === 0 ? <span>暂无成员</span> : null}
       </div>
       {onRename || onDissolve ? (
         <div className="canvas-group-hover-actions">

@@ -33,6 +33,8 @@ const reactFlowMock = vi.hoisted(() => ({
   onNodesChange: undefined as WorkflowCanvasProps['onNodesChange'] | undefined,
   setCenter: vi.fn(),
   fitView: vi.fn(() => Promise.resolve(true)),
+  onMoveStart: undefined as (() => void) | undefined,
+  onMoveEnd: undefined as (() => void) | undefined,
   onConnectStart: undefined as
     ((event: MouseEvent, params: Record<string, unknown>) => void) | undefined,
   onConnectEnd: undefined as
@@ -56,6 +58,8 @@ vi.mock('@xyflow/react', async () => {
     onNodeMouseLeave,
     onNodeContextMenu,
     onPaneClick,
+    onMoveStart,
+    onMoveEnd,
     onPaneContextMenu,
     onConnectStart,
     onConnectEnd,
@@ -80,6 +84,8 @@ vi.mock('@xyflow/react', async () => {
     onNodeMouseLeave?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onNodeContextMenu?: (event: React.MouseEvent, node: AssetFlowNode) => void;
     onPaneClick?: () => void;
+    onMoveStart?: () => void;
+    onMoveEnd?: () => void;
     onPaneContextMenu?: React.MouseEventHandler<HTMLDivElement>;
     onConnectStart?: (event: MouseEvent, params: Record<string, unknown>) => void;
     onConnectEnd?: (
@@ -102,6 +108,8 @@ vi.mock('@xyflow/react', async () => {
       fitViewOptions,
     };
     reactFlowMock.edges = edges;
+    reactFlowMock.onMoveStart = onMoveStart;
+    reactFlowMock.onMoveEnd = onMoveEnd;
     reactFlowMock.onNodesChange = onNodesChange;
     reactFlowMock.onConnectStart = onConnectStart;
     reactFlowMock.onConnectEnd = onConnectEnd;
@@ -287,6 +295,23 @@ afterEach(() => {
 });
 
 describe('WorkflowCanvas context menu', () => {
+  it('视口缩放或平移只暂停装饰层，结束后恢复且不改变节点或连线', () => {
+    const props = createProps({ nodes: [generateNode] });
+    const view = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const beforeEdges = reactFlowMock.edges;
+    act(() => reactFlowMock.onMoveStart?.());
+    expect(canvas).toHaveClass('is-viewport-moving');
+    view.rerender(<WorkflowCanvas {...props} selectedGroupId="group-1" />);
+    expect(canvas).toHaveClass('is-viewport-moving');
+    act(() => reactFlowMock.onMoveEnd?.());
+    expect(canvas).not.toHaveClass('is-viewport-moving');
+    expect(reactFlowMock.edges).toBe(beforeEdges);
+    expect(props.onNodesChange).not.toHaveBeenCalled();
+    act(() => reactFlowMock.onMoveStart?.());
+    fireEvent(window, new Event('blur'));
+    expect(canvas).not.toHaveClass('is-viewport-moving');
+  });
   it('禁用 React Flow 默认删除键，由 App 统一检查菜单边界和撤销历史', () => {
     render(<WorkflowCanvas {...createProps()} />);
     expect(screen.getByTestId('react-flow')).toHaveAttribute('data-library-delete-key', 'null');

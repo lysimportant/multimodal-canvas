@@ -1,15 +1,17 @@
-/* 拖动只暂停装饰层，基础路径、命中区、端口和已保存外观不变；松手自动恢复。 */
-.canvas-area.is-node-dragging .canvas-edge-effect-meteor,
-.canvas-area.is-node-dragging .canvas-edge-effect-cruiser,
-.canvas-area.is-node-dragging .canvas-edge-effect-multi,
-.canvas-area.is-node-dragging .canvas-edge-effect-breathe {
+/* 拖动、平移与缩放只暂停装饰层，基础路径、命中区、端口和已保存外观不变；松手自动恢复。 */
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-meteor,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-cruiser,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-multi,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-breathe {
   animation-play-state: paused;
   filter: none;
   visibility: hidden;
 }
 
 /* 行进虚线属于基础路径，只冻结位移，不隐藏连线。 */
-.canvas-area.is-node-dragging .canvas-edge-effect-marching,
-.canvas-area.is-node-dragging .react-flow__edge.animated .react-flow__edge-path {
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-marching,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving)
+  .react-flow__edge.animated
+  .react-flow__edge-path {
   animation-play-state: paused;
 }
