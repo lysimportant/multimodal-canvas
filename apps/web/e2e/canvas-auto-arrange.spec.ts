@@ -4,10 +4,10 @@ import { installFixture, project, settleFrames } from './image-thumbnail-cache.h
 /** 整理、保存和刷新只写合成画布；所有生成请求由夹具拒绝，不接触真实项目。 */
 for (const { name, withEdges, expectedRows } of [
   {
-    name: '无连线节点按十列网格排列',
+    name: '无连线节点按五列网格排列',
     withEdges: false,
-    expectedRows: [10, 10, 10, 10, 10, 10, 1].map((size, row) =>
-      Array.from({ length: size }, (_, column) => row * 10 + column),
+    expectedRows: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1].map((size, row) =>
+      Array.from({ length: size }, (_, column) => row * 5 + column),
     ),
   },
   {
@@ -49,7 +49,7 @@ for (const { name, withEdges, expectedRows } of [
       for (const button of [arrange, topArrange]) {
         await expect(button).toBeVisible();
         await expect(button).toBeEnabled();
-        await expect(button).toHaveAttribute('title', /每行最多 10 个/);
+        await expect(button).toHaveAttribute('title', /每行最多 5 个/);
         await expect(button).toHaveAttribute('title', /相连节点按层级排列/);
       }
       await arrange.click();
@@ -92,7 +92,7 @@ for (const { name, withEdges, expectedRows } of [
       expect(fixture.counts().canvasWrites).toBe(writes + 2);
       await page.reload();
       await expect(page.locator('.react-flow__node')).toHaveCount(61, { timeout: 60_000 });
-      for (const index of [0, 30, 60]) {
+      for (const index of [0, 4, 5, 10, 30, 60]) {
         const position = positions[index]!;
         await expect(
           page.locator('.react-flow__node[data-id="thumb-node-' + index + '"]'),

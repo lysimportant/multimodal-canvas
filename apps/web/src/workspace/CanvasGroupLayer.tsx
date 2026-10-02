@@ -11,6 +11,8 @@ import {
   type ComponentRef,
 } from 'react';
 
+import { flushSync } from 'react-dom';
+
 import type { AssetFlowNode } from '../canvas-utils';
 import { mediaIcons, mediaLabels } from './contracts';
 
@@ -37,7 +39,7 @@ type CanvasGroupLayerProps = {
   onSelectGroup?: (groupId: string | undefined) => void;
   onRenameGroup?: (groupId: string, name: string) => void;
   onDissolveGroup?: (groupId: string) => void;
-  /** 组拖动相对上一指针事件的位移，单位为画布像素。 */
+  /** 组拖动相对上一帧提交的位移，单位为画布像素。 */
   onTranslateGroup?: (groupId: string, delta: { x: number; y: number }) => void;
   /** 组外框尺寸变化，单位为画布像素；左上角/右上角拖动同时给出新的原点。 */
   onResizeGroup?: (
@@ -45,10 +47,12 @@ type CanvasGroupLayerProps = {
     size: { width: number; height: number; position?: { x: number; y: number } },
   ) => void;
   /** 开始整组移动或缩放前记录一次历史。 */
-  onGroupInteractionStart?: () => void;
+  onGroupInteractionStart?: (groupId: string, kind: 'move' | 'resize') => void;
+  /** 松手、取消或窗口失焦后结束整组交互，恢复成员的正常显示。 */
+  onGroupInteractionEnd?: () => void;
 };
 
-/** 单次指针交互的起点及外框快照，移动增量会在每次事件后更新。 */
+/** 单次指针交互的起点及外框快照，移动增量会在每次帧提交后更新。 */
 type DragState = {
   kind: 'move' | 'resize';
   groupId: string;
@@ -72,7 +76,7 @@ type DragState = {
  * 画布布局区域层。
  *
  * 组是画布布局，不是第五种媒体节点，不参与连线或运行。
- * 空白区域与标题均可选中、拖动；节点和连线保持在组上层并优先接收指针事件。
+ * 背景在节点下方接收空白拖动；标题、边框和手柄在节点上方，正文不拦截节点与端口。
  */
 export function CanvasGroupLayer({
   groups,
@@ -86,11 +90,36 @@ export function CanvasGroupLayer({
   onTranslateGroup,
   onResizeGroup,
   onGroupInteractionStart,
+  onGroupInteractionEnd,
 }: CanvasGroupLayerProps) {
   const dragRef = useRef<DragState | undefined>(undefined);
+  /** 保持监听器稳定；缩放和回调更新不取消已经排队的尾帧。 */
+  const interactionRef = useRef({
+    onGroupInteractionStart,
+    onGroupInteractionEnd,
+    onTranslateGroup,
+    onResizeGroup,
+    zoom: viewport.zoom,
+  });
+  useLayoutEffect(() => {
+    interactionRef.current = {
+      onGroupInteractionStart,
+      onGroupInteractionEnd,
+      onTranslateGroup,
+      onResizeGroup,
+      zoom: viewport.zoom,
+    };
+  }, [
+    onGroupInteractionStart,
+    onGroupInteractionEnd,
+    onTranslateGroup,
+    onResizeGroup,
+    viewport.zoom,
+  ]);
   const groupElementsRef = useRef(new Map<string, HTMLDivElement>());
   const popoverRef = useRef<ComponentRef<typeof Popover>>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | undefined>(undefined);
+  const [interacting, setInteracting] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [hoveredGroup, setHoveredGroup] = useState<{ groupId: string; anchor: HTMLElement }>();
   const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -131,6 +160,45 @@ export function CanvasGroupLayer({
   );
 
   useEffect(() => {
+    let frame: number | undefined;
+    let pending: { clientX: number; clientY: number; zoom: number } | undefined;
+    /** 每帧只提交最后的指针位置；同步提交组与 React Flow 成员，避免前后帧错位。 */
+    const flushMove = (synchronous = true) => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      const event = pending;
+      pending = undefined;
+      const drag = dragRef.current;
+      if (!event || !drag) return;
+      const deltaX = (event.clientX - drag.startClientX) / event.zoom;
+      const deltaY = (event.clientY - drag.startClientY) / event.zoom;
+      const apply = () => {
+        if (drag.kind === 'move') {
+          drag.startClientX = event.clientX;
+          drag.startClientY = event.clientY;
+          if (deltaX || deltaY)
+            interactionRef.current.onTranslateGroup?.(drag.groupId, { x: deltaX, y: deltaY });
+          return;
+        }
+        const movesLeft = drag.corner === 'nw' || drag.corner === 'sw';
+        const movesTop = drag.corner === 'nw' || drag.corner === 'ne';
+        interactionRef.current.onResizeGroup?.(drag.groupId, {
+          width: drag.originWidth + (movesLeft ? -deltaX : deltaX),
+          height: drag.originHeight + (movesTop ? -deltaY : deltaY),
+          ...(movesLeft || movesTop
+            ? {
+                position: {
+                  x: movesLeft ? drag.originX + deltaX : drag.originX,
+                  y: movesTop ? drag.originY + deltaY : drag.originY,
+                },
+              }
+            : {}),
+        });
+      };
+      // 卸载清理发生在 React 提交期，不在该阶段嵌套 flushSync。
+      if (synchronous) flushSync(apply);
+      else apply();
+    };
     const onMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || event.pointerId !== drag.pointerId) return;
@@ -138,66 +206,55 @@ export function CanvasGroupLayer({
         if (Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) < 3)
           return;
         drag.started = true;
+        // 悬浮卡片会在拖动中隐藏，捕获指针交给不会卸载的组外框。
         drag.captureTarget.setPointerCapture?.(drag.pointerId);
-        onGroupInteractionStart?.();
+        keepHoverCardOpen();
+        setInteracting(true);
+        interactionRef.current.onGroupInteractionStart?.(drag.groupId, drag.kind);
       }
-      const deltaX = (event.clientX - drag.startClientX) / viewport.zoom;
-      const deltaY = (event.clientY - drag.startClientY) / viewport.zoom;
-      if (drag.kind === 'move') {
-        drag.startClientX = event.clientX;
-        drag.startClientY = event.clientY;
-        onTranslateGroup?.(drag.groupId, { x: deltaX, y: deltaY });
-        return;
-      }
-      // 缩放只改变组外框：拖动左边界或上边界时原点跟随，右/下边界只改变尺寸。
-      const widthDelta = drag.corner === 'sw' || drag.corner === 'nw' ? -deltaX : deltaX;
-      const heightDelta = drag.corner === 'ne' || drag.corner === 'nw' ? -deltaY : deltaY;
-      const movesLeft = drag.corner === 'nw' || drag.corner === 'sw';
-      const movesTop = drag.corner === 'nw' || drag.corner === 'ne';
-      onResizeGroup?.(drag.groupId, {
-        width: drag.originWidth + widthDelta,
-        height: drag.originHeight + heightDelta,
-        ...(movesLeft || movesTop
-          ? {
-              position: {
-                x: movesLeft ? drag.originX + deltaX : drag.originX,
-                y: movesTop ? drag.originY + deltaY : drag.originY,
-              },
-            }
-          : {}),
-      });
+      pending = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        zoom: interactionRef.current.zoom,
+      };
+      if (frame === undefined) frame = requestAnimationFrame(() => flushMove());
     };
-    const onUp = (event: PointerEvent) => {
+    /** 先补交最后一次位移，再释放指针和成员拖动态，不丢失松手前的移动。 */
+    const finish = (synchronous = true) => {
       const drag = dragRef.current;
-      if (drag?.pointerId !== event.pointerId) return;
+      if (!drag) return;
+      flushMove(synchronous);
+      dragRef.current = undefined;
       if (drag.captureTarget.hasPointerCapture?.(drag.pointerId)) {
         drag.captureTarget.releasePointerCapture(drag.pointerId);
       }
-      dragRef.current = undefined;
-    };
-    const onBlur = () => {
-      const drag = dragRef.current;
-      if (drag?.captureTarget.hasPointerCapture?.(drag.pointerId)) {
-        drag.captureTarget.releasePointerCapture(drag.pointerId);
+      if (drag.started) {
+        if (synchronous) setInteracting(false);
+        interactionRef.current.onGroupInteractionEnd?.();
       }
-      dragRef.current = undefined;
     };
+    const onUp = (event: PointerEvent) => {
+      if (dragRef.current?.pointerId === event.pointerId) finish();
+    };
+    const onBlur = () => finish();
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
     window.addEventListener('blur', onBlur);
     return () => {
+      finish(false);
+      if (frame !== undefined) cancelAnimationFrame(frame);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [onGroupInteractionStart, onResizeGroup, onTranslateGroup, viewport.zoom]);
+  }, []);
 
   useLayoutEffect(() => {
-    // 视口平移只改变 transform，不触发 ResizeObserver，需要重新对齐浮层。
-    popoverRef.current?.forceAlign();
-  }, [viewport, groups, hoveredGroup]);
+    // 视口平移只改变位置，不触发 ResizeObserver；静止时才重新对齐浮层。
+    if (!interacting) popoverRef.current?.forceAlign();
+  }, [viewport, groups, hoveredGroup, interacting]);
 
   if (groups.length === 0) return null;
 
@@ -224,7 +281,7 @@ export function CanvasGroupLayer({
       originY: group.position.y,
       pointerId: event.pointerId,
       started: false,
-      captureTarget: event.currentTarget,
+      captureTarget: groupElementsRef.current.get(group.id) ?? event.currentTarget,
       ...(corner ? { corner } : {}),
     };
   };
@@ -262,7 +319,7 @@ export function CanvasGroupLayer({
             arrow={false}
             destroyOnHidden
             fresh
-            classNames={{ root: 'canvas-group-popover' }}
+            classNames={{ root: `canvas-group-popover${interacting ? ' is-interacting' : ''}` }}
             styles={{ container: { padding: 0 } }}
             content={
               hoveredGroup?.groupId === group.id ? (
@@ -297,9 +354,8 @@ export function CanvasGroupLayer({
               }`}
               data-group-id={group.id}
               style={{
-                transform: `translate(${viewport.x + group.position.x * viewport.zoom}px, ${
-                  viewport.y + group.position.y * viewport.zoom
-                }px)`,
+                left: viewport.x + group.position.x * viewport.zoom,
+                top: viewport.y + group.position.y * viewport.zoom,
                 width: group.width * viewport.zoom,
                 height: group.height * viewport.zoom,
               }}

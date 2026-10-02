@@ -62,8 +62,22 @@ async function json(route: Route, body: unknown) {
 }
 
 /** 安装可保存并刷新恢复的隔离画布，记录未声明请求与页面错误。 */
-async function installFixture(page: Page) {
-  let canvas = structuredClone(initialCanvas);
+async function installFixture(page: Page, source: CanvasDocument = initialCanvas) {
+  const baseURL = test.info().project.use.baseURL;
+  if (
+    !baseURL ||
+    new URL(baseURL).port === '8080' ||
+    !['127.0.0.1', 'localhost'].includes(new URL(baseURL).hostname)
+  )
+    throw new Error('组验收只允许隔离本地端口');
+  const origin = new URL(baseURL).origin;
+  await page.route('**/*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.protocol === 'data:' || url.protocol === 'blob:' || url.origin === origin)
+      return route.fallback();
+    throw new Error('组验收阻断外部访问：' + url.origin);
+  });
+  let canvas = structuredClone(source);
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
@@ -86,7 +100,12 @@ async function installFixture(page: Page) {
   });
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const requestUrl = new URL(request.url());
+    if (requestUrl.origin !== origin) {
+      errors.push('组验收拒绝外部 API：' + requestUrl.origin);
+      return route.fulfill({ status: 403, body: '仅允许隔离同源接口' });
+    }
+    const path = requestUrl.pathname;
     if (path === '/v1/auth/me')
       return json(route, {
         user: {
@@ -97,6 +116,13 @@ async function installFixture(page: Page) {
         },
       });
     if (path === '/v1/prompt-skills') return json(route, { skills: [] });
+    if (
+      !['GET', 'HEAD'].includes(request.method()) &&
+      !(request.method() === 'PATCH' && path === `/v1/projects/${project.id}/canvas`)
+    ) {
+      errors.push('组验收拒绝未声明写入：' + request.method() + ' ' + path);
+      return route.fulfill({ status: 403, body: '禁止验收之外的写入' });
+    }
     if (path.endsWith('/events'))
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
     if (path === '/v1/projects') return json(route, { projects: [project] });
@@ -118,7 +144,7 @@ async function installFixture(page: Page) {
     return route.fulfill({ status: 404, body: '未声明的验收接口' });
   });
   await page.goto(`/projects/${project.id}`);
-  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  await expect(page.locator('.react-flow__node')).toHaveCount(3, { timeout: 60_000 });
   return { errors, canvas: () => canvas };
 }
 
@@ -183,12 +209,12 @@ for (const zoom of [0.5, 1, 2]) {
     }
     expect(moved.nodes[2]!.position).toEqual(initialCanvas.nodes[2]!.position);
     expect(moved.groups![0]!.position.x).toBeCloseTo(130 + 40 / zoom, 1);
-    await page.getByRole('button', { name: '画布撤销', exact: true }).click();
+    await page.getByRole('button', { name: '撤销', exact: true }).click();
     await save(page);
     expect(fixture.canvas().nodes.map((node) => node.position)).toEqual(
       initialCanvas.nodes.map((node) => node.position),
     );
-    await page.getByRole('button', { name: '画布重做', exact: true }).click();
+    await page.getByRole('button', { name: '重做', exact: true }).click();
     await save(page);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.locator('.canvas-group')).toHaveCount(1);
@@ -348,6 +374,101 @@ for (const viewport of [
     expect(after.y - before.y).toBeCloseTo(20, 0);
     await save(page);
     expect(fixture.canvas().groups).toHaveLength(2);
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
+/** 隔离重叠场景：前景标题不被组外节点遮挡，正文仍交给节点交互。 */
+test('组标题在节点重叠时保持可见可拖动', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const source = structuredClone(initialCanvas);
+  source.nodes[2]!.position = { x: 130, y: 120 };
+  const fixture = await installFixture(page, source);
+  const name = page.locator('.canvas-group-name');
+  await expect(name).toBeVisible();
+  const hit = await name.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return Boolean(
+      document
+        .elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+        ?.closest('.canvas-group-header'),
+    );
+  });
+  await page.screenshot({ path: testInfo.outputPath('group-title-overlap.png') });
+  expect(hit).toBe(true);
+  expect(fixture.errors).toEqual([]);
+});
+
+for (const batch of [false, true]) {
+  /** 逐帧记录外框与成员的相对距离，覆盖批量卡牌的 transform 过渡。 */
+  test('组拖动逐帧同步：' + (batch ? '批量节点' : '普通节点'), async ({ page }, testInfo) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    const source = structuredClone(initialCanvas);
+    if (batch) {
+      for (const [index, node] of source.nodes.slice(0, 2).entries()) {
+        node.data.generationBatch = { id: 'drag-batch', rootNodeId: 'text-member', index };
+        node.data.generationBatchExpanded = true;
+      }
+    }
+    const fixture = await installFixture(page, source);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    const name = page.locator('.canvas-group-name');
+    const box = (await name.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.evaluate(() => {
+      const group = document.querySelector('.canvas-group')!;
+      const member = document.querySelector('.react-flow__node[data-id="text-member"]')!;
+      const offset = () => {
+        const a = group.getBoundingClientRect();
+        const b = member.getBoundingClientRect();
+        return { x: b.x - a.x, y: b.y - a.y };
+      };
+      const origin = offset();
+      const state = { running: true, samples: [] as number[] };
+      Object.assign(window, { groupDragSample: state });
+      const sample = () => {
+        const value = offset();
+        state.samples.push(Math.hypot(value.x - origin.x, value.y - origin.y));
+        if (state.running) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await page.mouse.move(box.x + box.width / 2 + 160, box.y + box.height / 2 + 80, { steps: 28 });
+    await expect(page.locator('.canvas-group-popover.is-interacting')).toBeHidden();
+    await page.mouse.up();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          let remaining = 18;
+          const tick = () => {
+            if (--remaining === 0) resolve();
+            else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    const measurement = await page.evaluate(() => {
+      const state = (
+        window as typeof window & { groupDragSample: { running: boolean; samples: number[] } }
+      ).groupDragSample;
+      state.running = false;
+      return { count: state.samples.length, maxDrift: Math.max(...state.samples) };
+    });
+    await page.screenshot({ path: testInfo.outputPath('group-drag-active.png') });
+    await page.mouse.up();
+    await testInfo.attach('frame-drift', {
+      body: JSON.stringify(measurement),
+      contentType: 'application/json',
+    });
+    expect(measurement.count).toBeGreaterThan(5);
+    expect(measurement.maxDrift).toBeLessThanOrEqual(1);
     expect(fixture.errors).toEqual([]);
   });
 }

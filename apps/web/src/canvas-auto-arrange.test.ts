@@ -99,7 +99,7 @@ describe('arrangeCanvasNodes', () => {
     expect(arranged.groups).toBe(groups);
   });
 
-  it.each([10, 11, 21, 61])('%i 个节点从原包围盒左上角稳定排列，每行最多 10 个', (count) => {
+  it.each([5, 6, 11, 61])('%i 个节点从原包围盒左上角稳定排列，每行最多 5 个', (count) => {
     const nodes = Array.from({ length: count }, (_, index) =>
       node(index, { width: undefined, height: undefined }),
     );
@@ -108,8 +108,8 @@ describe('arrangeCanvasNodes', () => {
     arranged.nodes.forEach((entry, index) => {
       expect(entry.id).toBe(nodes[index].id);
       expect(entry.position).toEqual({
-        x: origin.x + (index % 10) * (DEFAULT_FLOW_NODE_WIDTH + 60),
-        y: origin.y + Math.floor(index / 10) * (DEFAULT_FLOW_NODE_HEIGHT + 80),
+        x: origin.x + (index % 5) * (DEFAULT_FLOW_NODE_WIDTH + 60),
+        y: origin.y + Math.floor(index / 5) * (DEFAULT_FLOW_NODE_HEIGHT + 80),
       });
       expect(entry.width).toBeUndefined();
       expect(entry.height).toBeUndefined();
@@ -120,17 +120,17 @@ describe('arrangeCanvasNodes', () => {
   });
 
   it('列宽取整列最大值、行高取整行最大值，跨行异形节点不重叠', () => {
-    const nodes = Array.from({ length: 21 }, (_, index) => node(index));
-    nodes[10].width = 600;
-    nodes[11].width = 300;
-    nodes[6].height = 450;
-    nodes[14].height = 380;
+    const nodes = Array.from({ length: 11 }, (_, index) => node(index));
+    nodes[5].width = 600;
+    nodes[6].width = 300;
+    nodes[3].height = 450;
+    nodes[9].height = 380;
     const arranged = arrangeCanvasNodes(nodes, []);
     const origin = arranged.nodes[0].position;
     expect(arranged.nodes[1].position.x).toBe(origin.x + 600 + 60);
     expect(arranged.nodes[2].position.x).toBe(origin.x + 600 + 60 + 300 + 60);
-    expect(arranged.nodes[10].position).toEqual({ x: origin.x, y: origin.y + 450 + 80 });
-    expect(arranged.nodes[20].position).toEqual({
+    expect(arranged.nodes[5].position).toEqual({ x: origin.x, y: origin.y + 450 + 80 });
+    expect(arranged.nodes[10].position).toEqual({
       x: origin.x,
       y: origin.y + 450 + 80 + 380 + 80,
     });
@@ -153,7 +153,8 @@ describe('arrangeCanvasNodes', () => {
     const origin = arranged.nodes[0].position;
     expect(arranged.nodes[1].position.x).toBe(origin.x + 400 + 60);
     expect(arranged.nodes[2].position.x).toBe(origin.x + 400 + 60 + 500 + 60);
-    expect(arranged.nodes[10].position.y).toBe(origin.y + 320 + 80);
+    expect(arranged.nodes[5].position.y).toBe(origin.y + 320 + 80);
+    expect(arranged.nodes[10].position.y).toBe(origin.y + 320 + 80 + 180.25 + 80);
     arranged.nodes.forEach((entry, index) => {
       expect(entry.width).toBe(nodes[index].width);
       expect(entry.height).toBe(nodes[index].height);
@@ -175,7 +176,7 @@ describe('arrangeCanvasNodes', () => {
       expect(arranged.nodes[1].position.x - arranged.nodes[0].position.x).toBe(
         DEFAULT_FLOW_NODE_WIDTH + 60,
       );
-      expect(arranged.nodes[10].position.y - arranged.nodes[0].position.y).toBe(
+      expect(arranged.nodes[5].position.y - arranged.nodes[0].position.y).toBe(
         DEFAULT_FLOW_NODE_HEIGHT + 80,
       );
     },
@@ -280,17 +281,28 @@ describe('arrangeCanvasNodes', () => {
     expect(repeated.groups).toBe(arranged.groups);
   });
 
-  it.each([11, 21, CANVAS_GROUP_NODE_LIMIT])(
-    '组内 %i 个节点最多 10 个一行，组框包含全部成员且符合领域上限',
-    (count) => {
+  it.each([
+    { count: 5, height: 100 },
+    { count: 6, height: 100 },
+    { count: 11, height: 100 },
+    { count: 61, height: 100 },
+    { count: CANVAS_GROUP_NODE_LIMIT, height: 10 },
+  ])(
+    '组内 $count 个高 $height 像素节点最多 5 个一行，组框包含全部成员且符合领域上限',
+    ({ count, height }) => {
       const nodes = Array.from({ length: count }, (_, index) =>
-        node(index, { width: undefined, height: 100 }),
+        node(index, { width: undefined, height }),
       );
       const members = nodes.map((entry) => entry.id).reverse();
       const arranged = arrangeCanvasNodes(nodes, [group('many', members)]);
       expect(arranged.groups[0].nodeIds).toBe(members);
-      expect(arranged.nodes[10].position.x).toBe(arranged.nodes[0].position.x);
-      expect(arranged.nodes[10].position.y - arranged.nodes[0].position.y).toBe(100 + 80);
+      const origin = arranged.nodes[0].position;
+      arranged.nodes.forEach((entry, index) => {
+        expect(entry.position).toEqual({
+          x: origin.x + (index % 5) * (DEFAULT_FLOW_NODE_WIDTH + 60),
+          y: origin.y + Math.floor(index / 5) * (height + 80),
+        });
+      });
       expectGroupContainsMembers(arranged.groups[0], arranged.nodes);
       const repeated = arrangeCanvasNodes(arranged.nodes, arranged.groups);
       expect(repeated.nodes).toBe(arranged.nodes);
@@ -357,7 +369,7 @@ describe('arrangeCanvasNodes', () => {
 
   it('大尺寸组必要时减少列数，不裁剪组框或节点，重复整理复用引用', () => {
     const nodes = Array.from({ length: 21 }, (_, index) =>
-      node(index, { width: 1200, height: 266 }),
+      node(index, { width: 2400, height: 266 }),
     );
     const arranged = arrangeCanvasNodes(nodes, [
       group(
@@ -365,11 +377,11 @@ describe('arrangeCanvasNodes', () => {
         nodes.map((entry) => entry.id),
       ),
     ]);
-    expect(arranged.groups[0].width).toBe(7 * 1200 + 6 * 60 + 48);
-    expect(arranged.nodes[7].position.x).toBe(arranged.nodes[0].position.x);
-    expect(arranged.nodes[7].position.y - arranged.nodes[0].position.y).toBe(266 + 80);
+    expect(arranged.groups[0].width).toBe(4 * 2400 + 3 * 60 + 48);
+    expect(arranged.nodes[4].position.x).toBe(arranged.nodes[0].position.x);
+    expect(arranged.nodes[4].position.y - arranged.nodes[0].position.y).toBe(266 + 80);
     expectGroupContainsMembers(arranged.groups[0], arranged.nodes);
-    expectNoOverlap(arranged.nodes.map((entry) => ({ ...entry, width: 1200, height: 266 })));
+    expectNoOverlap(arranged.nodes.map((entry) => ({ ...entry, width: 2400, height: 266 })));
     const repeated = arrangeCanvasNodes(arranged.nodes, arranged.groups);
     expect(repeated.nodes).toBe(arranged.nodes);
     expect(repeated.groups).toBe(arranged.groups);
@@ -405,9 +417,9 @@ describe('arrangeCanvasNodes', () => {
     },
   );
 
-  it('成员本身尺寸合法但所有列数组合均超宽或超高时不返回非法组框', () => {
+  it.each([100, 400])('成员高度 %i 合法但五列网格超高时明确失败且输入不变', (height) => {
     const nodes = Array.from({ length: CANVAS_GROUP_NODE_LIMIT }, (_, index) =>
-      node(index, { width: 400, height: 400 }),
+      node(index, { width: 400, height }),
     );
     const groups = [
       group(
@@ -415,7 +427,12 @@ describe('arrangeCanvasNodes', () => {
         nodes.map((entry) => entry.id),
       ),
     ];
+    const original = structuredClone({ nodes, groups });
     expect(() => arrangeCanvasNodes(nodes, groups)).toThrow(RangeError);
+    expect(() => arrangeCanvasNodes(nodes, groups)).toThrow(
+      `${CANVAS_GROUP_MAX_SIZE} 像素边长内容纳五列网格或连接层级`,
+    );
+    expect({ nodes, groups }).toEqual(original);
     expect(groups[0].width).toBe(640);
     expect(groups[0].nodeIds).toHaveLength(CANVAS_GROUP_NODE_LIMIT);
   });
@@ -468,7 +485,7 @@ describe('连接节点按依赖列排列', () => {
     expect(arrangeCanvasNodes(arranged.nodes, [], edges).nodes).toBe(arranged.nodes);
   });
 
-  it('孤立节点按10列换行，连接链保留依赖列而不被第10个强制折行', () => {
+  it('孤立节点按5列换行，连接链保留依赖列而不在第5层折行', () => {
     const nodes = Array.from({ length: 23 }, (_, index) => node(index));
     const edges = Array.from({ length: 11 }, (_, index) => edge(index, index + 1));
     const arranged = arrangeCanvasNodes(nodes, [], edges);
@@ -477,8 +494,8 @@ describe('连接节点按依赖列排列', () => {
       const connected = index < 12;
       const offset = connected ? index : index - 12;
       expect(entry.position).toEqual({
-        x: origin.x + (connected ? offset : offset % 10) * 260,
-        y: origin.y + (connected ? 2 : Math.floor(offset / 10)) * 180,
+        x: origin.x + (connected ? offset : offset % 5) * 260,
+        y: origin.y + (connected ? 3 : Math.floor(offset / 5)) * 180,
       });
     });
     expectNoOverlap(arranged.nodes.map((entry) => ({ ...entry, width: 200, height: 100 })));

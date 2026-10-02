@@ -274,7 +274,9 @@ export type WorkflowCanvasProps = {
   /** 装载完成且至少有两个节点时允许整理。 */
   canArrangeNodes?: boolean;
   /** 整组移动或缩放前记录一次历史。 */
-  onGroupInteractionStart?: () => void;
+  onGroupInteractionStart?: (groupId: string, kind: 'move' | 'resize') => void;
+  /** 松手或取消后恢复组成员的正常显示。 */
+  onGroupInteractionEnd?: () => void;
   /** 撤销最近一次画布变更。 */
   onUndoCanvas?: () => void;
   /** 重做最近一次撤销的画布变更。 */
@@ -366,6 +368,7 @@ export function WorkflowCanvas({
   onTranslateGroup,
   onResizeGroup,
   onGroupInteractionStart,
+  onGroupInteractionEnd,
   onArrangeNodes,
   canArrangeNodes,
   onUndoCanvas,
@@ -970,7 +973,7 @@ export function WorkflowCanvas({
                             >
                               <GenerationBatchViewContext.Provider value={batchContext}>
                                 <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
-                                  {/* 组空白区域可选中、拖动，端口、连线与节点仍在组上层交互。 */}
+                                  {/* 组背景接受空白拖动，标题和外框在节点之上，正文仍保留节点与端口交互。 */}
                                   <ViewportGroupLayer
                                     groups={groups}
                                     nodes={nodes}
@@ -986,6 +989,7 @@ export function WorkflowCanvas({
                                     {...(onGroupInteractionStart
                                       ? { onGroupInteractionStart }
                                       : {})}
+                                    {...(onGroupInteractionEnd ? { onGroupInteractionEnd } : {})}
                                   />
                                   <ReactFlow
                                     nodes={batchProjection.nodes}

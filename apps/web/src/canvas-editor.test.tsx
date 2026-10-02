@@ -2710,7 +2710,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const { user } = await renderCanvas();
     const arrange = screen.getByRole('button', { name: '整理节点' });
     await waitFor(() => expect(arrange).toBeEnabled());
-    expect(arrange).toHaveAttribute('title', expect.stringContaining('每行最多 10 个'));
+    expect(arrange).toHaveAttribute('title', expect.stringContaining('每行最多 5 个'));
     expect(arrange).toHaveAttribute('title', expect.stringContaining('相连节点按层级排列'));
     await user.click(screen.getByRole('button', { name: '整理画布节点' }));
     await waitFor(() =>
@@ -2792,7 +2792,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(canvas.groups ?? []).toEqual(original.groups ?? []);
     expect(nodeRunRequestCounts.size).toBe(0);
   });
-  it('整理十一层连接链持续向右递进，不按独立节点的十列上限折行', async () => {
+  it('整理十一层连接链持续向右递进，不按独立节点的五列上限折行', async () => {
     const ids = Array.from({ length: 11 }, (_, index) => 'long-chain-' + index);
     canvas.nodes = [...ids].reverse().map((id, index) => ({
       id,

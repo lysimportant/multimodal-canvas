@@ -18,8 +18,9 @@ describe('胶囊区整理按钮', () => {
     const button = within(screen.getByRole('group', { name: '节点组' })).getByRole('button', {
       name: '整理画布节点',
     });
-    expect(button).toHaveAttribute('title', expect.stringContaining('每行最多 10 个'));
+    expect(button).toHaveAttribute('title', expect.stringContaining('每行最多 5 个'));
     expect(button).toHaveAttribute('title', expect.stringContaining('相连节点按层级排列'));
+    expect(button).toHaveAttribute('title', expect.stringContaining('父节点居中'));
     fireEvent.pointerDown(button);
     fireEvent.click(button);
     expect(arrange).toHaveBeenCalledTimes(1);

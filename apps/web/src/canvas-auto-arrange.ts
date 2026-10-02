@@ -12,8 +12,8 @@ import {
   type FlowEdge,
 } from './canvas-utils';
 
-/** 孤立节点每行最多 10 个；组框超宽时可减少网格列数，连接图按依赖列排列。 */
-const MAX_COLUMNS = 10;
+/** 孤立节点每行最多 5 个；组框超宽时可减少网格列数，连接图按依赖列排列，不受五列上限限制。 */
+const MAX_COLUMNS = 5;
 /** 相邻列之间的净间距，单位为画布像素。 */
 const COLUMN_GAP = 60;
 /** 相邻行或区块之间的净间距，单位为画布像素。 */
@@ -31,7 +31,7 @@ function nodeDimension(
   return fallback;
 }
 
-/** 计算非空区块的列/行偏移与包围尺寸；列数为 1–10，单位为画布像素，无副作用。 */
+/** 计算非空区块的列/行偏移与包围尺寸；列数为 1–5，单位为画布像素，无副作用。 */
 function measureGrid(nodes: readonly AssetFlowNode[], columns: number) {
   const columnWidths = Array<number>(columns).fill(0);
   const rowHeights = Array<number>(Math.ceil(nodes.length / columns)).fill(0);
@@ -364,7 +364,7 @@ function measureBlocks(
 }
 
 /**
- * 孤立节点每行最多 10 个，连接分量各自按上下游从左至右排列并居中父节点。
+ * 孤立节点每行最多 5 个，连接分量各自按上下游从左至右排列并居中父节点，不按五列折行。
  * @param nodes 已规范化、ID 唯一的节点；坐标与尺寸为画布像素，尺寸不会被改写。
  * @param groups 已规范化的互斥分组；保留身份、成员顺序及空组尺寸，跨组连接不合并归属。
  * @param edges 真实画布连线；只用于识别连接区块和上下游层级，不修改边，省略时均按孤立节点处理。
@@ -416,7 +416,7 @@ export function arrangeCanvasNodes(
         columns -= 1;
         if (columns === 0) {
           throw new RangeError(
-            `分组“${group.name}”无法在 ${CANVAS_GROUP_MAX_SIZE} 像素边长内容纳十列网格或连接层级，请减少成员或缩小节点。`,
+            `分组“${group.name}”无法在 ${CANVAS_GROUP_MAX_SIZE} 像素边长内容纳五列网格或连接层级，请减少成员或缩小节点。`,
           );
         }
         layout = measureBlocks(sections, columns, levels, outgoing);

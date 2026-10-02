@@ -1,17 +1,74 @@
+/* 不在整个组上建立层叠上下文：背景低于节点，标题与外框高于节点。 */
+.canvas-area .canvas-group-layer {
+  z-index: auto;
+}
+
 .canvas-group-layer .canvas-group {
+  --group-fill: color-mix(in srgb, var(--mc-accent, #18794e) 6%, transparent);
+  --group-border: color-mix(in srgb, var(--mc-accent, #18794e) 42%, transparent);
+  --group-border-style: dashed;
+  background: none;
+  border: 0;
   cursor: grab;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
   user-select: none;
+}
+
+.canvas-group-layer .canvas-group.is-selected,
+.canvas-group-layer .canvas-group.is-drop-target {
+  --group-fill: color-mix(in srgb, var(--mc-accent, #18794e) 10%, transparent);
+  --group-border: var(--mc-accent-strong, #12613e);
+  --group-border-style: solid;
+  background: none;
+  border: 0;
+}
+
+.canvas-group-layer .canvas-group.is-drop-target {
+  --group-fill: color-mix(in srgb, var(--mc-accent, #18794e) 16%, transparent);
+}
+
+.canvas-group::before,
+.canvas-group::after {
+  border-radius: inherit;
+  content: '';
+  inset: 0;
+  position: absolute;
+}
+
+.canvas-group::before {
+  background: var(--group-fill);
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.canvas-group::after {
+  border: 1px var(--group-border-style) var(--group-border);
+  pointer-events: none;
+  z-index: 4;
 }
 
 .canvas-group-layer .canvas-group:active {
   cursor: grabbing;
 }
 
-/* 标题随画布缩放，避免低倍率下固定屏幕高度侵入成员节点的端口和命中范围。 */
+/* 标题只占自身高度，低倍率仍按画布比例缩放，不遮住整块节点。 */
 .canvas-group .canvas-group-header {
+  background: var(--mc-surface, #fff);
+  border-radius: 13px 13px 0 0;
+  position: relative;
   transform-origin: top left;
+  z-index: 4;
+}
+
+.canvas-group .canvas-group-handle {
+  z-index: 4;
+}
+
+/* 保留悬浮卡片 DOM 和焦点，仅在交互期间停止展示，避免对齐动画留下闪影。 */
+.canvas-group-popover.is-interacting {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .canvas-group .canvas-group-name {

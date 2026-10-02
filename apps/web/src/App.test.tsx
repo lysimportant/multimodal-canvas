@@ -2005,8 +2005,12 @@ describe('App 历史与共享保存快照', () => {
     expect(view.canvas!.nodes).toHaveLength(2);
     expect(view.canvas!.edges).toHaveLength(1);
     expect(view.canvas!.groups![0].nodeIds).toEqual(['empty-one', 'empty-two']);
-    act(() => view.canvas!.onGroupInteractionStart?.());
+    act(() => view.canvas!.onGroupInteractionStart?.('group-a', 'move'));
+    expect(view.canvas!.nodes.every((node) => node.dragging)).toBe(true);
     act(() => view.canvas!.onTranslateGroup?.('group-a', { x: 30, y: 40 }));
+    act(() => view.canvas!.onGroupInteractionEnd?.());
+    expect(view.canvas!.nodes.some((node) => node.dragging)).toBe(false);
+    expect(view.canvas!.edges).toHaveLength(1);
     act(() => view.canvas!.onUndoCanvas?.());
     expect(view.canvas!.groups![0].position).toEqual({ x: 0, y: 0 });
     act(() => view.canvas!.onDissolveGroup?.('group-a'));

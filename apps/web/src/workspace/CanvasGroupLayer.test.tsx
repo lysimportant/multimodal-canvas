@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CanvasGroup } from '@multimodal-canvas/domain';
@@ -32,8 +32,9 @@ function pointerEvent(type: string, clientX = 0, clientY = 0, pointerId = 1, but
 }
 
 /** 派发到 window，覆盖组件的 window 级监听。 */
-function dispatchWindowPointer(type: string, clientX = 0, clientY = 0, pointerId = 1) {
+async function dispatchWindowPointer(type: string, clientX = 0, clientY = 0, pointerId = 1) {
   fireEvent(window, pointerEvent(type, clientX, clientY, pointerId));
+  await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
 }
 
 /** 派发到元素，覆盖 `onPointerDown` 处理器。 */
@@ -61,13 +62,14 @@ describe('CanvasGroupLayer', () => {
     );
     const element = container.querySelector<HTMLElement>('.canvas-group');
     expect(element).toHaveStyle({
-      transform: 'translate(60px, 45px)',
+      left: '60px',
+      top: '45px',
       width: '320px',
       height: '210px',
     });
   });
 
-  it('Popover 挂在组外，成员和视口更新不写入显式组尺寸', () => {
+  it('Popover 挂在组外，成员和视口更新不写入显式组尺寸', async () => {
     const onResizeGroup = vi.fn();
     const onTranslateGroup = vi.fn();
     const props = {
@@ -90,7 +92,8 @@ describe('CanvasGroupLayer', () => {
       />,
     );
     expect(container.querySelector('.canvas-group')).toHaveStyle({
-      transform: 'translate(60px, 45px)',
+      left: '60px',
+      top: '45px',
       width: '320px',
       height: '210px',
     });
@@ -170,7 +173,7 @@ describe('CanvasGroupLayer', () => {
     expect(onDissolveGroup).toHaveBeenCalledWith('g1');
   });
 
-  it('组内空白区域可选中并拖动，超过阈值后才捕获指针', () => {
+  it('组内空白区域可选中并拖动，超过阈值后才捕获指针', async () => {
     const onTranslateGroup = vi.fn();
     const onSelectGroup = vi.fn();
     const { container } = render(
@@ -192,10 +195,10 @@ describe('CanvasGroupLayer', () => {
     dispatchPointer(area, 120, 140, 2);
     expect(onSelectGroup).toHaveBeenCalledWith('g1');
     expect(setPointerCapture).not.toHaveBeenCalled();
-    dispatchWindowPointer('pointermove', 150, 160, 2);
+    await dispatchWindowPointer('pointermove', 150, 160, 2);
     expect(setPointerCapture).toHaveBeenCalledWith(2);
     expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 60, y: 40 });
-    dispatchWindowPointer('pointerup', 150, 160, 2);
+    await dispatchWindowPointer('pointerup', 150, 160, 2);
     expect(releasePointerCapture).toHaveBeenCalledWith(2);
   });
 
@@ -212,19 +215,19 @@ describe('CanvasGroupLayer', () => {
     );
     const header = container.querySelector<HTMLElement>('.canvas-group-header')!;
     dispatchPointer(header, 0, 0);
-    dispatchWindowPointer('pointermove', 40, 20);
+    await dispatchWindowPointer('pointermove', 40, 20);
     expect(onGroupInteractionStart).toHaveBeenCalledTimes(1);
     expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 80, y: 40 });
-    dispatchWindowPointer('pointermove', 70, 45);
+    await dispatchWindowPointer('pointermove', 70, 45);
     expect(onTranslateGroup).toHaveBeenLastCalledWith('g1', { x: 60, y: 50 });
 
-    dispatchWindowPointer('pointerup');
+    await dispatchWindowPointer('pointerup');
     onTranslateGroup.mockClear();
-    dispatchWindowPointer('pointermove', 80, 60);
+    await dispatchWindowPointer('pointermove', 80, 60);
     expect(onTranslateGroup).not.toHaveBeenCalled();
   });
 
-  it('拖拽右下角只改变尺寸，不移动原点', () => {
+  it('拖拽右下角只改变尺寸，不移动原点', async () => {
     const onResizeGroup = vi.fn();
     const { container } = render(
       <CanvasGroupLayer
@@ -236,11 +239,11 @@ describe('CanvasGroupLayer', () => {
     );
     const se = container.querySelector<HTMLElement>('.canvas-group-handle-se')!;
     dispatchPointer(se, 100, 100);
-    dispatchWindowPointer('pointermove', 150, 130);
+    await dispatchWindowPointer('pointermove', 150, 130);
     expect(onResizeGroup).toHaveBeenLastCalledWith('g1', { width: 690, height: 450 });
   });
 
-  it('拖拽左上角同时移动原点并保持右下角不动', () => {
+  it('拖拽左上角同时移动原点并保持右下角不动', async () => {
     const onResizeGroup = vi.fn();
     const { container } = render(
       <CanvasGroupLayer
@@ -252,7 +255,7 @@ describe('CanvasGroupLayer', () => {
     );
     const nw = container.querySelector<HTMLElement>('.canvas-group-handle-nw')!;
     dispatchPointer(nw, 0, 0, 2);
-    dispatchWindowPointer('pointermove', -20, -10, 2);
+    await dispatchWindowPointer('pointermove', -20, -10, 2);
     // 左上角外扩：原点跟随位移，右下角保持在 (740, 470)。
     expect(onResizeGroup).toHaveBeenLastCalledWith('g1', {
       width: 660,
@@ -279,13 +282,13 @@ describe('CanvasGroupLayer', () => {
     expect(onSelectGroup).toHaveBeenCalledWith('g1');
     expect(onGroupInteractionStart).not.toHaveBeenCalled();
     dispatchPointer(title, 100, 100);
-    dispatchWindowPointer('pointermove', 101, 101);
+    await dispatchWindowPointer('pointermove', 101, 101);
     expect(onGroupInteractionStart).not.toHaveBeenCalled();
-    dispatchWindowPointer('pointermove', 140, 120);
+    await dispatchWindowPointer('pointermove', 140, 120);
     expect(onGroupInteractionStart).toHaveBeenCalledTimes(1);
     expect(onTranslateGroup).toHaveBeenLastCalledWith('g1', { x: 80, y: 40 });
-    dispatchWindowPointer('pointercancel');
-    dispatchWindowPointer('pointermove', 200, 200);
+    await dispatchWindowPointer('pointercancel');
+    await dispatchWindowPointer('pointermove', 200, 200);
     expect(onTranslateGroup).toHaveBeenCalledTimes(1);
   });
 
@@ -301,19 +304,19 @@ describe('CanvasGroupLayer', () => {
     );
     const title = screen.getByRole('button', { name: /场景 A/ });
     fireEvent(title, pointerEvent('pointerdown', 10, 10, 1, 2));
-    dispatchWindowPointer('pointermove', 40, 30);
+    await dispatchWindowPointer('pointermove', 40, 30);
     expect(onTranslateGroup).not.toHaveBeenCalled();
     dispatchPointer(title, 10, 10, 2);
-    dispatchWindowPointer('pointermove', 40, 30, 1);
-    dispatchWindowPointer('pointerup', 40, 30, 1);
+    await dispatchWindowPointer('pointermove', 40, 30, 1);
+    await dispatchWindowPointer('pointerup', 40, 30, 1);
     expect(onTranslateGroup).not.toHaveBeenCalled();
-    dispatchWindowPointer('pointermove', 40, 30, 2);
+    await dispatchWindowPointer('pointermove', 40, 30, 2);
     expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 30, y: 20 });
-    dispatchWindowPointer('pointerup', 40, 30, 2);
+    await dispatchWindowPointer('pointerup', 40, 30, 2);
     await userEvent.dblClick(title);
     onTranslateGroup.mockClear();
     dispatchPointer(container.querySelector('input')!, 10, 10);
-    dispatchWindowPointer('pointermove', 40, 30);
+    await dispatchWindowPointer('pointermove', 40, 30);
     expect(onTranslateGroup).not.toHaveBeenCalled();
   });
 
@@ -367,12 +370,12 @@ describe('CanvasGroupLayer', () => {
       />,
     );
     dispatchPointer(screen.getByRole('button', { name: '拖动组 场景 A' }), 10, 10);
-    dispatchWindowPointer('pointermove', 50, 40);
+    await dispatchWindowPointer('pointermove', 50, 40);
     expect(onTranslateGroup).toHaveBeenCalledWith('g1', { x: 40, y: 30 });
-    dispatchWindowPointer('pointerup', 50, 40);
+    await dispatchWindowPointer('pointerup', 50, 40);
     onTranslateGroup.mockClear();
     dispatchPointer(screen.getByRole('button', { name: '重命名组 场景 A' }), 10, 10);
-    dispatchWindowPointer('pointermove', 50, 40);
+    await dispatchWindowPointer('pointermove', 50, 40);
     expect(onTranslateGroup).not.toHaveBeenCalled();
   });
 
@@ -387,7 +390,7 @@ describe('CanvasGroupLayer', () => {
     expect(screen.queryByRole('region', { name: '场景 A分组信息' })).not.toBeInTheDocument();
   });
 
-  it('窗口失去焦点后终止拖动，重新进入窗口不会继续移动组', () => {
+  it('窗口失去焦点后终止拖动，重新进入窗口不会继续移动组', async () => {
     const onTranslateGroup = vi.fn();
     render(
       <CanvasGroupLayer
@@ -397,13 +400,13 @@ describe('CanvasGroupLayer', () => {
       />,
     );
     dispatchPointer(screen.getByRole('button', { name: /场景 A/ }), 0, 0);
-    dispatchWindowPointer('pointermove', 30, 20);
+    await dispatchWindowPointer('pointermove', 30, 20);
     fireEvent(window, new Event('blur'));
-    dispatchWindowPointer('pointermove', 60, 40);
+    await dispatchWindowPointer('pointermove', 60, 40);
     expect(onTranslateGroup).toHaveBeenCalledTimes(1);
   });
 
-  it('CSS 保证组内空白区域可交互，组仍位于节点与连线下方', () => {
+  it('CSS 将背景放在节点下方，仅标题、边框与手柄位于节点上方', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
     expect(css).toMatch(/\.canvas-group-layer \{[^}]*pointer-events: none;/);
     expect(css).toMatch(/\.canvas-group-header \{[^}]*pointer-events: auto;/);
@@ -412,12 +415,108 @@ describe('CanvasGroupLayer', () => {
       resolve(process.cwd(), 'src/workspace/canvas-group-hover-card.css'),
       'utf8',
     ).replace(/\s+/g, ' ');
-    expect(groupCss).toMatch(/\.canvas-group-layer \.canvas-group \{[^}]*pointer-events: auto;/);
+    expect(groupCss).toMatch(/\.canvas-group-layer \.canvas-group \{[^}]*pointer-events: none;/);
+    expect(groupCss).toMatch(/\.canvas-area \.canvas-group-layer \{[^}]*z-index: auto;/);
+    expect(groupCss).toMatch(/\.canvas-group::before \{[^}]*pointer-events: auto;[^}]*z-index: 2;/);
+    expect(groupCss).toMatch(/\.canvas-group::after \{[^}]*pointer-events: none;[^}]*z-index: 4;/);
+    expect(groupCss).toMatch(/\.canvas-group \.canvas-group-header \{[^}]*z-index: 4;/);
     expect(groupCss).toMatch(/\.canvas-group-layer \.canvas-group \{[^}]*touch-action: none;/);
     const groupLevel = Number(css.match(/\.canvas-group-layer \{[^}]*z-index: (\d+);/)?.[1]);
     const nodeLevel = Number(
       css.match(/\.canvas-area \.react-flow__viewport \{[^}]*z-index: (\d+);/)?.[1],
     );
     expect(groupLevel).toBeLessThan(nodeLevel);
+  });
+
+  it('一帧内的连续位移只提交最后位置，松手补交尾帧并只结束一次', () => {
+    const onTranslateGroup = vi.fn();
+    const onGroupInteractionStart = vi.fn();
+    const onGroupInteractionEnd = vi.fn();
+    const frames = new Map<number, FrameRequestCallback>();
+    let id = 0;
+    const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.set(++id, callback);
+      return id;
+    });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((handle) => {
+      frames.delete(handle);
+    });
+    try {
+      const { container } = render(
+        <CanvasGroupLayer
+          groups={[group()]}
+          viewport={{ x: 0, y: 0, zoom: 0.5 }}
+          onTranslateGroup={onTranslateGroup}
+          onGroupInteractionStart={onGroupInteractionStart}
+          onGroupInteractionEnd={onGroupInteractionEnd}
+        />,
+      );
+      dispatchPointer(container.querySelector('.canvas-group')!, 0, 0);
+      fireEvent(window, pointerEvent('pointermove', 10, 5));
+      fireEvent(window, pointerEvent('pointermove', 30, 20));
+      expect(onTranslateGroup).not.toHaveBeenCalled();
+      expect(onGroupInteractionStart).toHaveBeenCalledExactlyOnceWith('g1', 'move');
+      act(() => {
+        const callbacks = [...frames.values()];
+        frames.clear();
+        callbacks.forEach((callback) => callback(16));
+      });
+      expect(onTranslateGroup).toHaveBeenCalledExactlyOnceWith('g1', { x: 60, y: 40 });
+      fireEvent(window, pointerEvent('pointermove', 45, 30));
+      fireEvent(window, pointerEvent('pointerup', 45, 30));
+      expect(onTranslateGroup).toHaveBeenLastCalledWith('g1', { x: 30, y: 20 });
+      expect(onTranslateGroup).toHaveBeenCalledTimes(2);
+      fireEvent(window, pointerEvent('pointerup', 45, 30));
+      expect(onGroupInteractionEnd).toHaveBeenCalledTimes(1);
+      expect(frames.size).toBe(0);
+    } finally {
+      request.mockRestore();
+      cancel.mockRestore();
+    }
+  });
+
+  it('取消指针补交尾帧、结束拖动态，单击不开始或结束交互', async () => {
+    const onTranslateGroup = vi.fn();
+    const onGroupInteractionStart = vi.fn();
+    const onGroupInteractionEnd = vi.fn();
+    const { container } = render(
+      <CanvasGroupLayer
+        groups={[group()]}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        onTranslateGroup={onTranslateGroup}
+        onGroupInteractionStart={onGroupInteractionStart}
+        onGroupInteractionEnd={onGroupInteractionEnd}
+      />,
+    );
+    const area = container.querySelector('.canvas-group')!;
+    dispatchPointer(area, 0, 0);
+    await dispatchWindowPointer('pointerup');
+    expect(onGroupInteractionStart).not.toHaveBeenCalled();
+    expect(onGroupInteractionEnd).not.toHaveBeenCalled();
+    dispatchPointer(area, 0, 0);
+    fireEvent(window, pointerEvent('pointermove', 50, 30));
+    fireEvent(window, pointerEvent('pointercancel', 50, 30));
+    expect(onTranslateGroup).toHaveBeenCalledExactlyOnceWith('g1', { x: 50, y: 30 });
+    expect(onGroupInteractionEnd).toHaveBeenCalledTimes(1);
+    await dispatchWindowPointer('pointermove', 80, 60);
+    expect(onTranslateGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['zoom', 'unmount'] as const)('等待尾帧时%s不会丢位移或留下拖动态', (action) => {
+    const onTranslateGroup = vi.fn();
+    const onGroupInteractionEnd = vi.fn();
+    const props = { groups: [group()], onTranslateGroup, onGroupInteractionEnd };
+    const { container, rerender, unmount } = render(
+      <CanvasGroupLayer {...props} viewport={{ x: 0, y: 0, zoom: 0.5 }} />,
+    );
+    dispatchPointer(container.querySelector('.canvas-group')!, 0, 0);
+    fireEvent(window, pointerEvent('pointermove', 40, 20));
+    expect(onTranslateGroup).not.toHaveBeenCalled();
+    if (action === 'zoom') {
+      rerender(<CanvasGroupLayer {...props} viewport={{ x: 0, y: 0, zoom: 2 }} />);
+      fireEvent(window, pointerEvent('pointerup', 40, 20));
+    } else unmount();
+    expect(onTranslateGroup).toHaveBeenCalledExactlyOnceWith('g1', { x: 80, y: 40 });
+    expect(onGroupInteractionEnd).toHaveBeenCalledTimes(1);
   });
 });

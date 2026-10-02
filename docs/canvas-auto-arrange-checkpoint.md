@@ -2,9 +2,9 @@
 
 ## 本轮范围与基线
 
-- 2026-10-02，P1；分支 `codex/generate-to-new-node`，起点 `2f2d251`；Node v24.12.0、pnpm 11.19.0，复用现有依赖。
-- 顶部及胶囊共用整理入口。用户最终确认：**独立节点每行最多 10 个；连接节点按上下游从左到右分列，同层上下排列，父节点垂直居中对齐子节点**。例如 1 → 2、3：1 在第一列，2、3 在第二列，1 的中心位于两个子节点中心之间。
-- 各连通分量单独成块，不与孤立节点混排、不创建持久分组。连接图按依赖列展开，不强制在第 10 层折行，避免破坏层级关系。
+- 2026-10-02，P1 五列整理；分支 `codex/generate-to-new-node`，起点 `08ddf3896a8fef50a125fb2179f96ea920b80bfa`；Node v24.12.0、pnpm 11.19.0，复用现有依赖。
+- 顶部及胶囊共用整理入口。用户最终确认：**独立节点每行最多 5 个；连接节点按上下游从左到右分列，同层上下排列，父节点垂直居中对齐子节点**。例如 1 → 2、3：1 在第一列，2、3 在第二列，1 的中心位于两个子节点中心之间。
+- 各连通分量单独成块，不与孤立节点混排、不创建持久分组。连接图按依赖列展开，不在第 5 层折行，也不限制连接图的总列数，避免破坏层级关系。
 - 保留真实连线、手动分组、节点数组顺序、外框尺寸、内容和状态；仅更新位置及组框。复用一次撤销/重做、自动保存和刷新恢复。重复整理不多写历史。
 - 不改 API/Worker、Provider、生成/下载、数据库或依赖；不在真实项目中自动点击整理。移动适配与其它性能改造不在本轮范围。
 - 起点用户已有 index.css、CanvasNodeToolbar.test.tsx 修改及 resource-input-compatibility.md 删除，必须保持原样且不纳入本轮提交。
@@ -17,22 +17,27 @@
 - 手动分组优先，跨组连线不合并归属；只在各归属内排依赖列，不为跨组边强行统一全局列位置。
 - 有效连接识别忽略方向，依赖层级遵守方向；未知端点忽略，重复边去重用于计算但原边保留。自环不增加深度；有环时从原顺序首个未处理节点展开，回边保留，不递归重算。
 - 分组仍遵守既有 10,000 像素边长合同；孤立网格超宽时可减少列数，连接列过宽或区块过高则明确报错，整个原布局和历史不变。
-- 不展开批次卡牌，只整理当前加载节点，不强制改变视口缩放。回滚用本轮提交的逆向提交及发布前 web 镜像，不覆盖项目数据或用户已有改动。
+- 不展开批次卡牌，只整理当前加载节点，不强制改变视口缩放。本子任务不执行部署或回滚，不覆盖项目数据或用户已有改动。
 
-## 验证结果
+## 本子任务验证
 
-- 基线 26 项布局单测通过。最终布局 41 项通过，覆盖 0/1/10/11/21/61、异形尺寸、分叉/合流、父居中、环/重复/无效边、跨组、幂等和组框拒绝；补测不平衡多层分支、121 节点三叉树每级父节点居中、5,000 节点长链。大节点数结果仅证明布局计算，不代表浏览器渲染性能验收。
-- 最终相关回归 10 文件、**290/290 通过，无跳过**。命令：`pnpm --filter @multimodal-canvas/web exec vitest run src/canvas-auto-arrange.test.ts src/canvas-editor.test.tsx src/canvas-history.test.ts src/canvas-persistence.test.ts src/canvas-group-utils.test.ts src/canvas-utils.test.ts src/workspace/CanvasNodeToolbar.test.tsx src/workspace/CanvasNodeToolbar.arrange.test.tsx src/workspace/WorkflowCanvas.test.tsx src/App.test.tsx --maxWorkers=2 --testTimeout=60000`。
-- Playwright **3/3 通过**：61 个孤立节点十列网格、七条独立连接链、三节点分叉父居中。已人工复核 PC 桌面截图，DOM 中心偏差不超过 1 像素；保存、刷新、幂等、一次撤销/重做、尺寸及边保留均通过，页面/控制台及隔离错误为 0。
-- 浏览器命令：先设置 `WEB_PORT=5187`、`VITE_API_BASE_URL=http://127.0.0.1:5187`，再执行 `pnpm --filter @multimodal-canvas/web exec playwright test -c playwright.config.ts e2e/canvas-auto-arrange.spec.ts --workers=1`。全部使用同源合成数据，夹具拒绝 8080、未知 API、生成请求和外部写入。
-- `pnpm typecheck` 15 tasks、`pnpm lint` 9 tasks、`pnpm build` 9 tasks 全部通过；保留既有大 chunk 构建警告，不扩大本轮范围拆包。
-- 初轮集成夹具边 order 使用了全局序号，现已按目标节点及 handle 分别计数修正，未改生产序列化合同。
-- 日志及截图位于 `.local-tests/canvas-arrange-connections-20261002/`；部署前后身份和发布校验分别为 `deployment-before.json`、`deployment-after.json`、`deployment-verification.json`。
+- 修改前基线：布局 41 项、工具栏整理入口 3 项，共 **44/44 通过**；这是十列旧规则的基线，不是五列验收。
+- 修改后：布局 44 项、工具栏整理入口 3 项，共 **47/47 通过，无跳过**。命令：`pnpm --filter @multimodal-canvas/web exec vitest run src/canvas-auto-arrange.test.ts src/workspace/CanvasNodeToolbar.arrange.test.tsx --maxWorkers=2 --testTimeout=60000`。
+- 覆盖无连接节点 0/1/5/6/11/61、跨行异形尺寸、持久/测量/默认尺寸、手动组五列与宽度不足时降为四列、幂等及输入保留；连接图仍逐层左至右、树形父节点居中，保留 121 节点三叉树和 5,000 节点长链用例。
+- 分组边长仍为 10,000 像素。500 个高 10 像素节点的五列网格可容纳；500 个高 100 或 400 像素节点超高时抛出 `RangeError` 且输入不变，不增加列数或突破尺寸上限。未修改领域成员数量、持久化或历史记录合同。
+- Prettier：本子任务六个文件均已执行格式化，随后定向 `pnpm exec prettier --check` **全部通过**，未格式化写集外文件。
+- 最后成功步骤：上述两文件单测 47/47，六文件 Prettier 检查通过；下一步由主代理执行整合回归及五列浏览器验收。大节点数结果只证明布局计算，不代表浏览器渲染性能验收。
 
-## 本地发布与恢复
+## 变更边界与待验收
 
-- 已执行 `docker compose -f compose.yaml build web`、`docker compose -f compose.yaml up -d --no-deps web`，只替换 web；六服务 healthy，其余五服务容器 ID 均未改变。
-- 8080 项目页面 HTTP 200，已读取入口动态引用的主 JS 确认“独立节点每行最多 10 个”“父节点居中”和新布局错误合同，不再含旧 30 列文案。只检索小型 index 入口不足以确认实际主包。
-- 未刷新用户编辑标签页或自动点击真实项目整理，没有真实 Provider 请求或项目数据写入。用户刷新网页后可从顶部或胶囊“整理”按钮执行。
-- 发布前纯 web 镜像保留为 `multimodal-canvas-web:before-layered-arrange-20261002`。回退时将该标签重新标记为 `multimodal-canvas-web:local`，再仅执行 `up -d --no-deps web`，不改数据卷；源代码可逆向撤销本轮提交。
-- 原有两项用户修改的 SHA-256 与起点一致，原文档删除保持；三项均不纳入本轮提交。提交、分支及中文 annotated Tag 以 Git 记录为准。
+- 写集仅为 `apps/web/src/canvas-auto-arrange.ts`、`apps/web/src/canvas-auto-arrange.test.ts`、`apps/web/src/workspace/CanvasNodeToolbar.tsx`、`apps/web/src/workspace/CanvasNodeToolbar.arrange.test.tsx`、`apps/web/e2e/canvas-auto-arrange.spec.ts` 及本检查点。
+- 61 节点浏览器用例已更新为五列、共 13 行（前 12 行各 5 个、末行 1 个），刷新后 DOM 坐标检查覆盖索引 0/4/5/10/30/60；七条连接链与三节点父居中用例保留。**本子任务未执行 Playwright，五列浏览器验收待主代理统一运行。**
+- `App.tsx` 顶部入口文案及 `canvas-editor.test.tsx` 断言、组拖动闪影和遮挡由主代理处理；本子任务不修改它们。不修改 `index.css`、`CanvasNodeToolbar.test.tsx`，不恢复原有 `docs/resource-input-compatibility.md` 删除。
+- 本子任务未运行全仓 lint/typecheck/test/build，未启动服务、部署或访问真实项目/Provider；不执行 git add/commit/push/tag，由主代理整合验证后统一提交推送。
+- 原十列版的浏览器、全仓检查和发布结果不能作为当前五列版的验证证据；本检查点仅记录本子任务实际执行结果，尚不表示整体任务或发布完成。## 验证结果
+
+- 五列调整前布局41项与工具栏3项，共44/44；调整后布局44项与工具栏3项，共47/47。覆盖0/1/5/6/11/61、持久/测量/默认尺寸、异形节点、四列降级、幂等和组框拒绝，121节点三叉树与5000长链保持通过。
+- 主回归12文件329/329。五列浏览器、七条连接链与三节点父居中3/3，并覆盖保存、刷新、一次撤销重做、重复整理幂等、尺寸/内容/连线不变。
+- 61节点实际五列13行，DOM抽查索引0/4/5/10/30/60；连接图不受五列上限限制。
+- 分组仍受10,000像素边长限制：500个高10像素节点可容纳；500个高100或400像素节点明确拒绝且输入不变。大节点数只证明布局计算，不代表渲染性能验收。
+- 本轮五列入口、组拖动、检查和发布统一收尾，命令及证据见[分组拖动检查点](canvas-group-drag-checkpoint.md)。不使用上轮十列版本的结果作为五列验收。

@@ -732,6 +732,8 @@ function WorkspaceApp({
   const forkElevationTimersRef = useRef(new Map<string, number>());
   const edgesRef = useRef<FlowEdge[]>([]);
   const groupsRef = useRef<CanvasGroup[]>([]);
+  /** 本次整组移动的成员，仅用于临时拖动显示，不写入文档。 */
+  const groupDragNodeIdsRef = useRef(new Set<string>());
   /** 历史、待保存请求与本地草稿共享不可变画布对象。 */
   const historyRef = useRef(new CanvasHistory());
   const persistenceRef = useRef(new CanvasPersistence());
@@ -1157,6 +1159,36 @@ function WorkspaceApp({
       message: selected.length > 0 ? `已把 ${selected.length} 个节点放入新组` : '已创建空组',
     });
   }, [rememberHistory, selectCanvasGroup]);
+
+  /** 记录一次历史，并让整组成员复用单节点拖动的轻量显示与连线投影。 */
+  const startGroupInteraction = useCallback(
+    (groupId: string, kind: 'move' | 'resize') => {
+      rememberHistory();
+      if (kind !== 'move') return;
+      const members = new Set(
+        groupsRef.current.find((group) => group.id === groupId)?.nodeIds ?? [],
+      );
+      groupDragNodeIdsRef.current = members;
+      const next = nodesRef.current.map((node) =>
+        members.has(node.id) ? { ...node, dragging: true } : node,
+      );
+      nodesRef.current = next;
+      setNodes(next);
+    },
+    [rememberHistory, setNodes],
+  );
+
+  /** 仅清除本次移动成员的临时状态，松手后恢复连线、内容与自动保存。 */
+  const endGroupInteraction = useCallback(() => {
+    const members = groupDragNodeIdsRef.current;
+    if (members.size === 0) return;
+    groupDragNodeIdsRef.current = new Set();
+    const next = nodesRef.current.map((node) =>
+      members.has(node.id) && node.dragging ? { ...node, dragging: false } : node,
+    );
+    nodesRef.current = next;
+    setNodes(next);
+  }, [setNodes]);
 
   /** 整组移动：组与成员使用同一位移，成员之间保持相对位置。 */
   const translateGroupBy = useCallback(
@@ -4027,7 +4059,7 @@ function WorkspaceApp({
                 type="button"
                 className="icon-button canvas-arrange-trigger"
                 aria-label="整理节点"
-                title="整理全部节点：从左到右排列，独立节点每行最多 10 个，相连节点按层级排列，父节点居中；保留分组，可撤销"
+                title="整理全部节点：从左到右排列，独立节点每行最多 5 个，相连节点按层级排列，父节点居中；保留分组，可撤销"
                 onClick={arrangeCanvas}
                 disabled={!isCanvasReady || isProjectLoading || nodes.length < 2}
               >
@@ -4322,7 +4354,8 @@ function WorkspaceApp({
             onDissolveGroup={dissolveGroup}
             onTranslateGroup={translateGroupBy}
             onResizeGroup={resizeGroupTo}
-            onGroupInteractionStart={rememberHistory}
+            onGroupInteractionStart={startGroupInteraction}
+            onGroupInteractionEnd={endGroupInteraction}
             onArrangeNodes={arrangeCanvas}
             canArrangeNodes={isCanvasReady && !isProjectLoading && nodes.length >= 2}
             onNodeDrag={handleNodeDrag}
