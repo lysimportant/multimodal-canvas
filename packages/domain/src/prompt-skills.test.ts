@@ -195,18 +195,19 @@ describe('提示词 Skill 契约', () => {
       name: '生成人物',
       category: '人物与场景',
       description: '补充人物外貌、发型、服装、气质和材质，生成单人物图的提示词。',
-      version: '1.0.0',
-      instruction:
-        'Refine a character image prompt. Preserve stated identity, age, skin tone, body proportions, clothing, and reference bindings. Organize appearance, hair, clothing layers, accessories, pose, material, lighting, and composition. Add only compatible visual detail. Do not replace the character with an example character, change ethnicity or skin tone, or impose a genre. Default to a single character image, not a multi-view board.',
+      version: '1.1.0',
     });
+    expect(getPromptSkill('character')!.instruction).toContain(
+      'Default to a single character image, not a multi-view board',
+    );
   });
 });
 
 describe('Skill 升级元技能', () => {
-  it('目录 ID 稳定唯一，新增裙装技能不替代既有技能或升级版本', () => {
+  it('保留原有目录顺序与稳定 ID，按指令变更升级版本', () => {
     expect(SKILL_AUTHORING_SKILL_ID).toBe('skill-authoring');
     const ids = PROMPT_SKILLS.map((skill) => skill.id);
-    expect(ids.filter((id) => id !== 'xianxia-dress-character')).toEqual([
+    expect(ids.slice(0, 18).filter((id) => id !== 'xianxia-dress-character')).toEqual([
       'novel-premise',
       'novel-outline',
       'novel-draft',
@@ -228,7 +229,10 @@ describe('Skill 升级元技能', () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const skill of PROMPT_SKILLS) {
       expect(getPromptSkill(skill.id)).toBe(skill);
-      expect(skill.version).toBe('1.0.0');
+      const changedBuiltin =
+        ids.indexOf(skill.id) < 18 &&
+        !['xianxia-dress-character', SKILL_AUTHORING_SKILL_ID].includes(skill.id);
+      expect(skill.version).toBe(changedBuiltin ? '1.1.0' : '1.0.0');
     }
     expect(getPromptSkill(SKILL_AUTHORING_SKILL_ID)).toMatchObject({
       id: SKILL_AUTHORING_SKILL_ID,

@@ -21,7 +21,7 @@ vi.mock('../prompt-skills', async (importOriginal) => ({
   submitPromptOptimization: vi.fn(),
 }));
 
-/** 使用当前发布的真实内置原文；只有该语义版本允许显示配套中文说明。 */
+/** 使用当前本地目录的真实内置原文；ID、语义版本和原文均匹配才显示中文说明。 */
 const builtin: PromptSkill = { ...PROMPT_SKILLS[0]!, builtin: true, enabled: true, revision: 1 };
 /** 自定义指令包含英文、中文与占位符，保存或复制不能替换为内置说明。 */
 const custom: PromptSkill = {
@@ -31,6 +31,95 @@ const custom: PromptSkill = {
   instruction: 'Preserve {{subject}}, exact model-id and "quoted literals".\n保留原始语言。',
   builtin: false,
   revision: 3,
+};
+
+/** 逐项检查目录语义与工具包边界；说明不能暗示已执行生成、采集或媒体观察。 */
+const instructionExpectations: Readonly<Record<string, readonly string[]>> = {
+  'novel-premise': ['主角欲望', '不照搬参考故事', '不写故事本身', '因果联系'],
+  'novel-outline': ['关系或认知变化', '追踪尚未解决的线索'],
+  'novel-draft': ['口头对白与内心活动', '不默认五千字'],
+  'novel-revise': ['修改前后对照', '后续回收'],
+  character: ['稳定身份特征', '统一审美'],
+  'character-views': ['左侧面和右侧面', '群像正背面', '身份和相对位置', '不固定为六人'],
+  scene: ['固定空间格局', '不编造精确尺寸'],
+  'scene-views': ['世界坐标', '不镜像平面布局'],
+  prop: ['激活、折叠、破损、变形状态', '可选设计'],
+  'extract-assets': [
+    '服饰妆造',
+    '生物',
+    '同类群像',
+    '混合身份或物种群像',
+    '个体对应',
+    'same as above',
+    '共享资源 token 只绑定一次',
+  ],
+  screenplay: ['内心声', '画外音', '受保护对白'],
+  storyboard: [
+    '要求确认目标视频时长',
+    '画外人物保持既定位置',
+    '损坏不自动恢复',
+    '光照、天气和时间跳跃',
+    '原文支持的过渡',
+    '武器、坐骑、法器',
+    '回收状态',
+  ],
+  'image-quality': ['文字排版', '不默认美白', '不声称已经检查或渲染'],
+  camera: ['起始构图', '结束构图', '未知参考影像仍标为未知'],
+  expression: ['具体场景刺激', '少量有意义线索'],
+  action: ['力量传递', '武器触及范围', '有因果作用的实体动作'],
+  'novel-adaptation': ['持有副本不等于拥有改编权', '确认改编权', '后续情节的依赖'],
+  'story-analysis': ['特色对白、开篇铺垫、高潮、反转和情绪回报', '文本证据、解读和未知上下文'],
+  'video-breakdown': ['不接收视频像素或音频', '不能声称已观看或听过', '区分观察、推断和拟重建方案'],
+  'short-video': ['未提供时长时要求确认', '不自行套用十秒或十五秒格式'],
+  'extract-assets-3d': [
+    '共同视觉语言',
+    '服饰妆造',
+    '生物',
+    '混合身份与物种群像',
+    '群像正背面保持个体对应',
+    'same as above',
+    '共享资源 token 只绑定一次',
+    '用户明确要求 hybrid',
+    '同组资产不混用',
+  ],
+  'extract-assets-live-action': [
+    '自然皮肤纹理',
+    '服饰妆造',
+    '生物',
+    '混合身份与物种群像',
+    '群像正背面保持个体对应',
+    'same as above',
+    '共享资源 token 只绑定一次',
+    '用户明确要求 hybrid',
+    '同组资产不混用',
+  ],
+  'prop-views': ['未指定时要求确认所需视图', '不擅加细节板'],
+  'screenplay-urban': ['不强加恋爱线', '同意边界'],
+  'screenplay-historical': ['待核实的历史主张', '不编造历史权威'],
+  'screenplay-xianxia': ['能力限制与代价', '不编造力量层级'],
+  'screenplay-fantasy': ['不改换为修炼体系', '编辑许可不明时保留原文'],
+  'storyboard-10s': [
+    '未给时长时默认 10 秒',
+    '指出预设冲突并保留用户时长',
+    '画外人物保持既定位置',
+    '损坏不自动恢复',
+    '光照、天气和时间跳跃',
+    '原文支持的过渡',
+    '武器、坐骑、法器',
+    '回收状态',
+  ],
+  'storyboard-15s': [
+    '未给时长时默认 15 秒',
+    '指出预设冲突并保留用户时长',
+    '不强制五到八镜',
+    '画外人物保持既定位置',
+    '损坏不自动恢复',
+    '光照、天气和时间跳跃',
+    '原文支持的过渡',
+    '武器、坐骑、法器',
+    '回收状态',
+  ],
+  'visual-effects': ['触发、蓄势、释放、环境交互与消散', '不虚构能力'],
 };
 
 beforeEach(() => {
@@ -53,7 +142,8 @@ function setup() {
 }
 
 describe('Skill 指令中文说明', () => {
-  it('匹配当前内置版本时默认显示中文要点，切换原文不改草稿或发请求', async () => {
+  it('匹配当前 1.1.0 内置版本时默认显示中文要点，切换原文不改草稿或发请求', async () => {
+    expect(builtin.version).toBe('1.1.0');
     const { user, onOpenChange } = setup();
     const summary = await screen.findByRole('region', { name: '指令中文说明' });
     await waitFor(() => expect(summary).toBeVisible());
@@ -107,7 +197,10 @@ describe('Skill 指令中文说明', () => {
 
   it.each([
     ['同 ID 但原文改变', { ...builtin, instruction: 'Imported instruction with {{placeholder}}.' }],
-    ['同 ID 但版本改变', { ...builtin, version: '2.0.0' }],
+    ['同 ID 但原文末尾多出空白', { ...builtin, instruction: `${builtin.instruction}\n` }],
+    ['缺失内置标记且原文改变', { ...builtin, builtin: undefined, instruction: custom.instruction }],
+    ['同 ID 但旧版本 1.0.0', { ...builtin, version: '1.0.0' }],
+    ['同 ID 但未来版本 2.0.0', { ...builtin, version: '2.0.0' }],
     ['显式自定义但与内置同 ID', { ...builtin, builtin: false }],
     ['服务端新增内置 ID', { ...builtin, id: 'future-builtin' }],
   ] as const)('%s 时不套用当前内置中文说明', async (_, skill) => {
@@ -129,22 +222,52 @@ describe('Skill 指令中文说明', () => {
     );
   });
 
-  it('当前全部内置项均有完整中文说明，并可查看完全一致的执行原文', async () => {
-    const library = PROMPT_SKILLS.map((skill) => ({ ...skill, builtin: true, revision: 1 }));
-    vi.mocked(fetchSkillLibrary).mockResolvedValue(library);
-    const { user } = setup();
-    for (const skill of library) {
-      await user.click(await screen.findByRole('button', { name: skill.name }));
-      const summary = screen.getByRole('region', { name: '指令中文说明' });
+  it('当前目录包含十六项 1.1.0 和十六项 1.0.0，保留既有特殊技能版本', () => {
+    expect(PROMPT_SKILLS).toHaveLength(32);
+    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.1.0')).toHaveLength(16);
+    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(16);
+    for (const id of ['xianxia-dress-character', 'skill-authoring'])
+      expect(PROMPT_SKILLS.find((skill) => skill.id === id)?.version).toBe('1.0.0');
+  });
+
+  it.each(PROMPT_SKILLS)(
+    '内置 $id@$version 显示完整中文说明，并保留完全一致的执行原文',
+    async (skill) => {
+      vi.mocked(fetchSkillLibrary).mockResolvedValue([{ ...skill, builtin: true, revision: 1 }]);
+      const { user } = setup();
+      const summary = await screen.findByRole('region', { name: '指令中文说明' });
       const definitions = [...summary.querySelectorAll('.skill-instruction-paragraph')];
       expect(definitions.length).toBeGreaterThan(0);
       for (const definition of definitions)
         expect(definition.textContent!.length).toBeGreaterThan(20);
+      for (const phrase of instructionExpectations[skill.id] ?? [])
+        expect(summary).toHaveTextContent(phrase);
       await user.click(screen.getByRole('button', { name: '执行原文' }));
       expect(screen.getByRole('textbox', { name: /^指令$/ })).toHaveValue(skill.instruction);
-    }
+      expect(screen.getByRole('textbox', { name: /^指令$/ })).toHaveAttribute('readonly');
+      expect(createSkill).not.toHaveBeenCalled();
+      expect(updateSkill).not.toHaveBeenCalled();
+      expect(submitPromptOptimization).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['原文不符', { instruction: 'Imported {{asset}} with original wording.' }],
+    ['版本不符', { version: '1.1.0' }],
+    ['显式导入', { builtin: false }],
+  ] as const)('新增技能%s时保持原文，不借用本地中文说明', async (_, override) => {
+    const local = PROMPT_SKILLS.find((skill) => skill.id === 'storyboard-15s');
+    expect(local?.version).toBe('1.0.0');
+    const skill: PromptSkill = { ...local!, builtin: true, revision: 1, ...override };
+    vi.mocked(fetchSkillLibrary).mockResolvedValue([skill]);
+    setup();
+    expect(await screen.findByRole('textbox', { name: /^指令$/ })).toHaveValue(skill.instruction);
+    expect(screen.queryByRole('region', { name: '指令中文说明' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '中文说明' })).not.toBeInTheDocument();
+    expect(createSkill).not.toHaveBeenCalled();
+    expect(updateSkill).not.toHaveBeenCalled();
     expect(submitPromptOptimization).not.toHaveBeenCalled();
-  }, 15000);
+  });
 
   it('用户已存和导入指令按原文编辑保存，切回内置时显示对应摘要', async () => {
     vi.mocked(updateSkill).mockResolvedValue({ ...custom, description: '新的说明', revision: 4 });

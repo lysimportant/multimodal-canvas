@@ -193,7 +193,13 @@ async function installFixture(page: Page, mediaType: MediaType = 'image') {
           },
         ],
       });
-    if (method === 'GET' && path === '/v1/assets/character-image/versions/2/content')
+    if (
+      method === 'GET' &&
+      [
+        '/v1/assets/character-image/versions/2/content',
+        '/v1/assets/character-image/versions/2/derivatives/thumbnail',
+      ].includes(path)
+    )
       return route.fulfill({ contentType: 'image/jpeg', body: image });
     if (path === '/v1/prompt-skills' && ['GET', 'POST'].includes(method)) {
       if (method === 'POST') {
@@ -295,7 +301,7 @@ function selectContainer(select: Locator) {
 
 async function editor(page: Page) {
   const node = page.locator('.react-flow__node[data-id="skill-node"]');
-  await expect(node).toBeVisible();
+  await expect(node).toBeVisible({ timeout: 15_000 });
   await node.getByText('尚未生成', { exact: true }).click();
   return page.locator('.node-quick-editor');
 }
@@ -428,56 +434,58 @@ test('完整编辑器不嵌套 Skill 配置，保持提示词编辑可用', asyn
 for (const skill of [
   { id: 'character', name: '生成人物' },
   { id: 'xianxia-dress-character', name: '仙妖同款裙装' },
+  { id: 'extract-assets-3d', name: '三维动画资产提取' },
+  { id: 'storyboard-15s', name: '十五秒分镜编排' },
+  { id: 'video-breakdown', name: '视频逐镜拆解' },
 ]) {
-  test(`${skill.name} 优化预览显式应用、资源不变、选择与结果可保存重载`, async ({
+  test(`${skill.name} 优化直写可撤销、资源不变、选择与结果可保存重载`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const fixture = await installFixture(page);
-    await page.goto(`/projects/${project.id}`);
+    await page.goto('/projects/' + project.id);
     const panel = await editor(page);
     await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
-    await page
-      .getByRole('group', { name: 'Skill 配置', exact: true })
-      .getByRole('combobox', { name: '提示词 Skill', exact: true })
-      .click();
+    const settings = page.getByRole('group', { name: 'Skill 配置', exact: true });
+    await settings.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
     await page.getByRole('option', { name: skill.name, exact: true }).click();
-    await page
-      .getByRole('group', { name: 'Skill 配置', exact: true })
-      .getByRole('button', { name: '优化提示词', exact: true })
-      .click();
-    await expect(page.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
-    await expect(panel.getByRole('textbox', { name: '提示词', exact: true })).not.toContainText(
-      '优化后',
-    );
+    const optimize = settings.getByRole('button', { name: '优化提示词', exact: true });
+    await optimize.click();
+    const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
+    await expect(prompt).toContainText('优化后：');
+    await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
     expect(fixture.submissions).toHaveLength(1);
-    expect(fixture.submissions[0]!.skillId).toBe(skill.id);
-    expect(fixture.submissions[0]!.promptDocument).toEqual(original);
-    await page.getByRole('textbox', { name: '优化文字 1', exact: true }).fill('尚未应用的角色 ');
-    await expect(page.getByRole('group', { name: 'Skill 配置', exact: true })).toBeVisible();
-    await expect(page.getByRole('group', { name: '优化预览', exact: true })).toBeVisible();
-    await panel.getByRole('button', { name: '打开完整编辑器' }).click();
-    const expanded = page.getByRole('dialog', { name: '创作节点 · 编辑设置' });
-    await expect(expanded.getByRole('group', { name: '优化预览' })).toBeVisible();
-    await expect(expanded.getByRole('group', { name: 'Skill 配置', exact: true })).toBeHidden();
-    await expect(expanded.getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
-      '尚未应用的角色 ',
-    );
-    await expanded.getByRole('textbox', { name: '优化文字 1' }).fill('优化后：庭院晨光，保持角色 ');
-    await page.screenshot({ path: testInfo.outputPath('skill-preview-desktop.png') });
-    await expanded.getByRole('button', { name: '应用', exact: true }).click();
-    await expect(expanded.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
-      '庭院晨光',
-    );
-    await expanded.getByRole('button', { name: '关闭编辑器' }).click();
+    expect(fixture.submissions[0]).toMatchObject({
+      skillId: skill.id,
+      skillVersion: PROMPT_SKILLS.find((entry) => entry.id === skill.id)!.version,
+      promptDocument: original,
+    });
     await expect
       .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
-      .toEqual({ type: 'text', text: '优化后：庭院晨光，保持角色 ' });
+      .toEqual({
+        type: 'text',
+        text: '优化后：以庭院为背景，保持角色 ',
+      });
     expect(
       fixture
         .canvas()
         .nodes[0]!.data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
     ).toEqual(original.blocks.filter((block) => block.type === 'mention'));
+    await page.screenshot({ path: testInfo.outputPath('skill-direct-desktop.png') });
+    await settings.getByRole('button', { name: '撤销提示词', exact: true }).click();
+    await expect(prompt).not.toContainText('优化后：');
+    await expect.poll(() => fixture.canvas().nodes[0]!.data.promptDocument).toEqual(original);
+    expect(fixture.submissions).toHaveLength(1);
+    await optimize.click();
+    await expect(prompt).toContainText('优化后：');
+    await expect
+      .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
+      .toEqual({
+        type: 'text',
+        text: '优化后：以庭院为背景，保持角色 ',
+      });
+    expect(fixture.submissions).toHaveLength(2);
+    expect(fixture.submissions[1]!.idempotencyKey).not.toBe(fixture.submissions[0]!.idempotencyKey);
     await page.reload();
     const restored = await editor(page);
     await restored.getByRole('button', { name: 'Skill 配置', exact: true }).click();
@@ -489,38 +497,43 @@ for (const skill of [
       ),
     ).toContainText(skill.name);
     await expect(restored.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
-      '庭院晨光',
+      '优化后：',
     );
-    expect(fixture.submissions).toHaveLength(1);
+    expect(fixture.submissions).toHaveLength(2);
     expect(fixture.errors).toEqual([]);
   });
 }
 
-test('原文变化后旧预览不可覆盖，丢弃不调用生成', async ({ page }) => {
-  const fixture = await installFixture(page, 'text');
+test('工作台升级要求变化后旧预览不可覆盖，丢弃不改画布或指令', async ({ page }) => {
+  const fixture = await installFixture(page);
+  const beforeCanvas = structuredClone(fixture.canvas());
+  const beforeSkills = structuredClone(fixture.skills());
   fixture.hold(true);
-  await page.goto(`/projects/${project.id}`);
+  await page.goto('/projects/' + project.id);
   const panel = await editor(page);
   await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
-  await page
-    .getByRole('group', { name: 'Skill 配置', exact: true })
-    .getByRole('combobox', { name: '提示词 Skill', exact: true })
-    .click();
-  await page.getByRole('option', { name: '小说章纲规划', exact: true }).click();
-  await page
-    .getByRole('group', { name: 'Skill 配置', exact: true })
-    .getByRole('button', { name: '优化提示词', exact: true })
-    .click();
+  await page.getByRole('button', { name: '技能工作台', exact: true }).click();
+  const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  const assistant = workbench.getByRole('complementary', { name: 'AI 升级 Skill', exact: true });
+  const requirements = assistant.getByRole('textbox', { name: 'Skill 升级要求', exact: true });
+  await requirements.fill('Clarify the reusable instruction without performing the task.');
+  await assistant.getByRole('button', { name: '生成升级预览', exact: true }).click();
   await expect.poll(() => fixture.submissions.length).toBe(1);
-  await panel.getByRole('textbox', { name: '提示词', exact: true }).press('Control+End');
-  await page.keyboard.insertText('用户新的创作要求');
+  await requirements.fill('Preserve literal placeholders and add source-evidence requirements.');
   fixture.hold(false);
-  await expect(page.getByRole('button', { name: '应用', exact: true })).toBeDisabled();
-  await expect(page.getByText('原提示词、节点或 Skill 版本已改变', { exact: false })).toBeVisible();
-  await page.getByRole('button', { name: '丢弃', exact: true }).click();
-  await expect(panel.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
-    '用户新的创作要求',
+  const preview = assistant.getByRole('group', { name: 'Skill 升级预览', exact: true });
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole('button', { name: '采用到草稿', exact: true })).toBeDisabled();
+  await expect(preview.getByText('草稿或升级要求已改变', { exact: false })).toBeVisible();
+  await preview.getByRole('button', { name: '丢弃', exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(requirements).toHaveValue(
+    'Preserve literal placeholders and add source-evidence requirements.',
   );
+  expect(fixture.canvas()).toEqual(beforeCanvas);
+  expect(fixture.skills()).toEqual(beforeSkills);
+  expect(fixture.writes).toHaveLength(1);
+  expect(fixture.writes[0]!.path).toBe('/v1/projects/' + project.id + '/prompt-optimizations');
   expect(fixture.errors).toEqual([]);
 });
 
@@ -578,7 +591,7 @@ test('目录加载期间保留已存选择，不能误清空，完成后仍可�
   }
 });
 
-test('优化预览内 Ctrl+S 到达全局保存且不触发浏览器另存', async ({ page }) => {
+test('优化直写后 Ctrl+S 到达全局保存且不触发浏览器另存', async ({ page }) => {
   const fixture = await installFixture(page);
   fixture.canvas().nodes[0]!.data.promptSkillId = 'character';
   await page.goto(`/projects/${project.id}`);
@@ -588,8 +601,8 @@ test('优化预览内 Ctrl+S 到达全局保存且不触发浏览器另存', asy
     .getByRole('group', { name: 'Skill 配置', exact: true })
     .getByRole('button', { name: '优化提示词', exact: true })
     .click();
-  const preview = page.getByRole('textbox', { name: '优化文字 1', exact: true });
-  await expect(preview).toBeVisible();
+  const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
+  await expect(prompt).toContainText('优化后：');
   await panel.getByRole('textbox', { name: '提示词', exact: true }).press('Control+End');
   await page.keyboard.insertText('保存新要求');
   await page.evaluate(() => {
@@ -604,7 +617,7 @@ test('优化预览内 Ctrl+S 到达全局保存且不触发浏览器另存', asy
       true,
     );
   });
-  await preview.press('Control+s');
+  await prompt.press('Control+s');
   await expect(page.locator('body')).toHaveAttribute('data-save-prevented', 'true');
   await expect.poll(() => JSON.stringify(fixture.canvas())).toContain('保存新要求');
   expect(fixture.submissions).toHaveLength(1);
@@ -663,7 +676,7 @@ test('长用途说明不挤没选项，鼠标和键盘都可继续选择', async
   expect(fixture.errors).toEqual([]);
 });
 
-test('PC 小视口多引用长预览与过期提示不遮挡原生成控件', async ({ page }, testInfo) => {
+test('PC 小视口多引用优化直写不遮挡生成控件并可撤销', async ({ page }, testInfo) => {
   const fixture = await installFixture(page);
   const node = fixture.canvas().nodes[0]!;
   const mention = original.blocks[1]!;
@@ -687,10 +700,9 @@ test('PC 小视口多引用长预览与过期提示不遮挡原生成控件', as
     .getByRole('group', { name: 'Skill 配置', exact: true })
     .getByRole('button', { name: '优化提示词', exact: true })
     .click();
-  await expect(page.getByRole('button', { name: '应用', exact: true })).toBeEnabled();
-  await panel.getByRole('textbox', { name: '提示词', exact: true }).press('Control+End');
-  await page.keyboard.insertText('新要求');
-  await expect(page.getByRole('button', { name: '应用', exact: true })).toBeDisabled();
+  const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
+  await expect(prompt).toContainText('优化后：');
+  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
   for (const viewport of [
     { width: 1366, height: 768 },
     { width: 1440, height: 900 },
@@ -715,8 +727,14 @@ test('PC 小视口多引用长预览与过期提示不遮挡原生成控件', as
       )
       .toBe(true);
     await panel.getByRole('button', { name: '生成', exact: true }).scrollIntoViewIfNeeded();
-    await expect(panel.locator('.node-quick-editor-controls')).toBeInViewport({ ratio: 0.99 });
+    await expect(
+      panel.locator('.node-quick-editor-controls').filter({
+        has: page.getByRole('button', { name: '生成', exact: true }),
+      }),
+    ).toBeInViewport({ ratio: 0.99 });
     const modelSelect = panel.getByRole('combobox', { name: /^模型：/ });
+    await modelSelect.scrollIntoViewIfNeeded();
+    await expect(modelSelect).toBeInViewport({ ratio: 0.99 });
     expect((await modelSelect.boundingBox())!.width).toBeGreaterThanOrEqual(100);
     await modelSelect.click();
     await expect(page.getByRole('listbox', { name: '模型选项', exact: true })).toBeVisible();
@@ -726,19 +744,26 @@ test('PC 小视口多引用长预览与过期提示不遮挡原生成控件', as
       await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
     }
     await expect(configuration).toBeVisible();
-    const discard = configuration.getByRole('button', { name: '丢弃', exact: true });
-    await expect(discard).toBeVisible();
+    const undo = configuration.getByRole('button', { name: '撤销提示词', exact: true });
+    await expect(undo).toBeVisible();
     await page.screenshot({
-      path: testInfo.outputPath(`skill-long-preview-${viewport.width}.png`),
+      path: testInfo.outputPath(`skill-long-direct-${viewport.width}.png`),
     });
   }
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).hover();
+  await page.getByRole('group', { name: 'Skill 配置', exact: true }).hover();
+  await page
+    .getByRole('group', { name: 'Skill 配置', exact: true })
+    .getByRole('button', { name: '撤销提示词', exact: true })
+    .click();
+  await expect(prompt).not.toContainText('优化后：');
   await page.setViewportSize({ width: 1366, height: 768 });
   await panel.getByRole('button', { name: '打开完整编辑器' }).click();
   const expanded = page.getByRole('dialog', { name: '创作节点 · 编辑设置' });
-  await expanded.getByRole('button', { name: '丢弃', exact: true }).scrollIntoViewIfNeeded();
-  await expect(expanded.getByRole('button', { name: '丢弃', exact: true })).toBeInViewport({
-    ratio: 1,
-  });
+  await expect(expanded.getByRole('textbox', { name: '提示词', exact: true })).not.toContainText(
+    '优化后：',
+  );
+  await expanded.getByRole('button', { name: '关闭编辑器', exact: true }).click();
   expect(fixture.submissions).toHaveLength(1);
   expect(fixture.errors).toEqual([]);
 });
@@ -783,7 +808,14 @@ test('已确认的资源-only成功结果允许手动重新优化且保留原文
     .getByRole('group', { name: 'Skill 配置', exact: true })
     .getByRole('button', { name: '优化提示词', exact: true })
     .click();
-  await expect(page.getByRole('button', { name: '应用', exact: true })).toBeEnabled();
+  await expect(panel.getByRole('textbox', { name: '提示词', exact: true })).toContainText(
+    '优化后：',
+  );
+  await expect(
+    page
+      .getByRole('group', { name: 'Skill 配置', exact: true })
+      .getByRole('button', { name: '撤销提示词', exact: true }),
+  ).toBeVisible();
   expect(fixture.submissions).toHaveLength(2);
   expect(fixture.submissions[0]!.idempotencyKey).not.toBe(fixture.submissions[1]!.idempotencyKey);
   expect(fixture.errors).toEqual([]);
@@ -1213,3 +1245,31 @@ for (const sourceKind of ['custom', 'builtin'] as const) {
     expect(fixture.errors).toEqual([]);
   });
 }
+
+/** 核对工具包扩充后的真实工作台目录；只验证界面与合同，不代表模型输出质量。 */
+test('三工具包目录保留三十二项并提供匹配版本的中文说明', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  expect(fixture.skills()).toHaveLength(32);
+  await page.goto('/projects/' + project.id);
+  const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+  await page.getByRole('button', { name: '技能工作台', exact: true }).click();
+  const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  for (const skill of fixture.skills()) {
+    await workbench.getByRole('button', { name: skill.name, exact: true }).click();
+    const chinese = workbench.getByRole('region', { name: '指令中文说明' });
+    await expect(chinese).toBeVisible();
+    await expect(chinese).toContainText(/[一-鿿]/);
+    await workbench.getByRole('button', { name: '执行原文', exact: true }).click();
+    await expect(workbench.getByRole('textbox', { name: '指令', exact: true })).toHaveValue(
+      skill.instruction,
+    );
+    await workbench.getByRole('button', { name: '中文说明', exact: true }).click();
+  }
+  await page.screenshot({ path: testInfo.outputPath('toolkit-skills-workbench-desktop.png') });
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.submissions).toEqual([]);
+  expect(fixture.errors).toEqual([]);
+});

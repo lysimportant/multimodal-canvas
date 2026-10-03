@@ -229,6 +229,48 @@ describe('独立 Skill 提示词优化 API', () => {
     expect(ctx.archiver).not.toHaveBeenCalled();
   });
 
+  it('工具包升级后的旧内置版本明确冲突，不静默执行新指令', async () => {
+    const ctx = await fixture({ authenticated: true });
+    expect(PROMPT_SKILLS[0]!.version).toBe('1.1.0');
+    const stale = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.url,
+      payload: { ...ctx.payload, skillVersion: '1.0.0' },
+      headers: ctx.headers,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().code).toBe('PROMPT_SKILL_VERSION_CONFLICT');
+    expect(ctx.executor).not.toHaveBeenCalled();
+    expect(ctx.archiver).not.toHaveBeenCalled();
+  });
+
+  it.each(['novel-premise', 'extract-assets-3d', 'storyboard-15s', 'visual-effects'])(
+    '工具包目录 %s 按当前版本和完整指令冻结独立文本任务',
+    async (id) => {
+      const ctx = await fixture({ authenticated: true });
+      const skill = PROMPT_SKILLS.find((entry) => entry.id === id)!;
+      const created = await ctx.app.inject({
+        method: 'POST',
+        url: ctx.url,
+        payload: { ...ctx.payload, skillId: id, skillVersion: skill.version },
+        headers: ctx.headers,
+      });
+      expect(created.statusCode, created.body).toBe(202);
+      const runId = created.json().optimization.runId;
+      await vi.waitFor(async () =>
+        expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
+      );
+      expect((await ctx.runService.get(runId))?.snapshot.promptOptimization).toMatchObject({
+        skillId: id,
+        skillVersion: skill.version,
+        instruction: skill.instruction,
+        input: plainInput,
+      });
+      expect(ctx.executor).toHaveBeenCalledTimes(1);
+      expect(ctx.archiver).not.toHaveBeenCalled();
+    },
+  );
+
   it('冻结自定义 Skill，修改、停用及删除后同键仍恢复原任务，明确版本冲突不执行', async () => {
     const ctx = await fixture({ authenticated: true });
     const skill = await ctx.promptSkillStore.create(ownerId, {

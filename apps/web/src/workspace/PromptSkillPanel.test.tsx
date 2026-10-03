@@ -1134,7 +1134,10 @@ describe('PromptSkillPanel', () => {
     await user.click(screen.getByRole('button', { name: '确认原请求' }));
     await screen.findByRole('button', { name: '应用' });
     expect(fetcher.mock.calls[1]![1]?.body).toBe(original);
-    expect(JSON.parse(String(original))).toHaveProperty('skillVersion', '1.0.0');
+    expect(JSON.parse(String(original))).toHaveProperty(
+      'skillVersion',
+      PROMPT_SKILLS.find((skill) => skill.id === inputs.skillId)!.version,
+    );
     expect(screen.getByRole('button', { name: '应用' })).toBeDisabled();
   });
 
