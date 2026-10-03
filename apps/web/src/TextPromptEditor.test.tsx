@@ -60,6 +60,55 @@ describe('TextPromptEditor', () => {
     expect(onChange).toHaveBeenLastCalledWith('Product shot 2026!');
   });
 
+  it('转发参考图受控入口和版本顺序，键盘排序不回写正文', async () => {
+    const user = userEvent.setup();
+    const onReferencePickToggle = vi.fn();
+    const onResourceReorder = vi.fn();
+    const onDocumentChange = vi.fn();
+    const onChange = vi.fn();
+    render(
+      <TextPromptEditor
+        nodeId="forward-reference-controls"
+        value="保持原文"
+        ariaLabel="提示词"
+        connectedAssets={[
+          { id: 'same-image', name: '第三版', mediaType: 'image', assetVersion: 3 },
+          { id: 'same-image', name: '第一版', mediaType: 'image', assetVersion: 1 },
+        ]}
+        resourceRefs={[
+          {
+            id: 'ordered:old-first',
+            assetId: 'same-image',
+            mediaType: 'image',
+            assetVersion: 1,
+            name: '第一版',
+          },
+        ]}
+        referencePickActive
+        onReferencePickToggle={onReferencePickToggle}
+        onResourceReorder={onResourceReorder}
+        onDocumentChange={onDocumentChange}
+        onChange={onChange}
+      />,
+    );
+    const pick = screen.getByRole('button', { name: '添加参考图' });
+    expect(pick).toHaveAttribute('aria-pressed', 'true');
+    await user.click(pick);
+    expect(onReferencePickToggle).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByRole('article')[0]).toHaveAccessibleName('参考资源 1：第一版');
+    fireEvent.keyDown(screen.getByRole('button', { name: '预览并命名 第三版' }), {
+      key: 'ArrowLeft',
+      altKey: true,
+    });
+    expect(onResourceReorder).toHaveBeenCalledExactlyOnceWith([
+      { assetId: 'same-image', assetVersion: 3 },
+      { assetId: 'same-image', assetVersion: 1 },
+    ]);
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('保持原文');
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it.each(['快速', '完整'])(
     '%s编辑器经共享入口解绑后保留原文，切换编辑器也不恢复旧绑定',
     async (mode) => {

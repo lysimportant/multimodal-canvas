@@ -26,6 +26,7 @@ const MIRROR_STYLE_PROPERTIES = [
   'text-align',
   'text-indent',
   'text-transform',
+  'text-rendering',
   'word-spacing',
   'white-space',
   'word-break',

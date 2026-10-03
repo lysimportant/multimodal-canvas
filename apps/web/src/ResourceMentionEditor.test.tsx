@@ -4,7 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Asset, PromptDocument, PromptMention } from '@multimodal-canvas/domain';
+import type {
+  Asset,
+  NodeResourceRef,
+  PromptDocument,
+  PromptMention,
+} from '@multimodal-canvas/domain';
 import { Dialog, DialogContent, DialogTitle, Button } from '@multimodal-canvas/ui';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
@@ -67,10 +72,324 @@ const numberedVideoAsset: Asset = {
   tags: [],
 };
 
+/** 模拟浏览器拖放数据；只记录类型与值，不引入真实资源库或网络请求。 */
+function resourceDragData() {
+  const values = new Map<string, string>();
+  return {
+    effectAllowed: 'none',
+    dropEffect: 'none',
+    get types() {
+      return [...values.keys()];
+    },
+    setData: (type: string, value: string) => values.set(type, value),
+    getData: (type: string) => values.get(type) ?? '',
+  };
+}
+
 describe('ResourceMentionEditor', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllEnvs();
+  });
+
+  it('默认仅搜索正文和连线资源，按版本去重且插入冻结版本而不是目录最新版', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="frozen-scope"
+        ariaLabel="提示词"
+        assets={[{ ...imageAsset, latestVersion: 9 }, audioAsset, textAsset]}
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'old',
+              assetId: imageAsset.id,
+              mediaType: 'image',
+              label: imageAsset.name,
+              entityName: '旧图',
+              assetVersion: 1,
+            },
+            { type: 'text', text: ' 和 ' },
+            {
+              type: 'mention',
+              mentionId: 'duplicate',
+              assetId: imageAsset.id,
+              mediaType: 'image',
+              label: imageAsset.name,
+              entityName: '侧面别名',
+              assetVersion: 1,
+            },
+            { type: 'text', text: ' 和 ' },
+            {
+              type: 'mention',
+              mentionId: 'new',
+              assetId: imageAsset.id,
+              mediaType: 'image',
+              label: imageAsset.name,
+              entityName: '新版图',
+              assetVersion: 3,
+            },
+          ],
+        }}
+        connectedAssets={[
+          { ...imageAsset, assetVersion: 1, referenceName: '目标主角' },
+          {
+            id: 'frozen-result',
+            name: '未收录的生成结果',
+            referenceName: '背景图',
+            mediaType: 'image',
+            assetVersion: 6,
+          },
+        ]}
+        resourceRefs={[
+          {
+            id: 'ref-old',
+            assetId: imageAsset.id,
+            assetVersion: 1,
+            mediaType: 'image',
+            name: '封面参考',
+          },
+        ]}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    await user.type(screen.getByRole('textbox', { name: '提示词' }), ' @');
+    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getAllByRole('option')).toHaveLength(3);
+    expect(screen.getByRole('option', { name: /封面参考.*v1/ })).toBeEnabled();
+    expect(screen.getByRole('option', { name: /新版图.*v3/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /背景图.*v6/ })).toBeEnabled();
+    expect(screen.queryByRole('option', { name: /资料文档/ })).not.toBeInTheDocument();
+    const search = screen.getByRole('searchbox', { name: '搜索资源' });
+    for (const query of ['侧面别名', '目标主角', '封面参考']) {
+      fireEvent.change(search, { target: { value: query } });
+      expect(screen.getAllByRole('option')).toHaveLength(1);
+      expect(screen.getByRole('option', { name: /封面参考.*v1/ })).toBeInTheDocument();
+    }
+    fireEvent.change(search, { target: { value: '产品' } });
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    fireEvent.change(search, { target: { value: '参考' } });
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    await user.click(screen.getByRole('option', { name: /封面参考.*v1/ }));
+    expect(onDocumentChange.mock.lastCall?.[0].blocks.at(-1)).toMatchObject({
+      assetId: imageAsset.id,
+      assetVersion: 1,
+    });
+  });
+
+  it('目录外冻结连线结果可插入，版本未知的连线不借用目录最新版', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="result-only"
+        ariaLabel="提示词"
+        assets={[{ ...imageAsset, latestVersion: 9 }]}
+        connectedAssets={[
+          { id: 'result-only', name: '场景', mediaType: 'image', assetVersion: 6 },
+          { ...imageAsset, referenceName: '待确认图', versionUnavailable: true },
+        ]}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    await user.type(screen.getByRole('textbox', { name: '提示词' }), '@');
+    expect(screen.getByRole('option', { name: /待确认图.*版本不可用/ })).toBeDisabled();
+    await user.click(screen.getByRole('option', { name: /场景.*v6/ }));
+    expect(onDocumentChange.mock.lastCall?.[0].blocks[0]).toMatchObject({
+      assetId: 'result-only',
+      assetVersion: 6,
+    });
+  });
+
+  it('节点空态可切换项目，类型与范围联动且再次打开恢复默认节点', async () => {
+    const user = userEvent.setup();
+    render(
+      <ResourceMentionEditor
+        nodeId="scope-tabs"
+        ariaLabel="提示词"
+        assets={[imageAsset, audioAsset]}
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    await user.type(editor, '@');
+    expect(screen.getByText('当前节点尚未引用资源')).toBeInTheDocument();
+    const controls = screen.getByRole('group', { name: '节点类型' }).parentElement;
+    expect(controls).toContainElement(screen.getByRole('tablist', { name: '资源范围' }));
+    await user.click(screen.getByRole('button', { name: '音频' }));
+    await user.click(screen.getByRole('button', { name: '切换到项目资源' }));
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: /声音样本/ })).toBeInTheDocument();
+    await user.type(screen.getByRole('searchbox', { name: '搜索资源' }), '角色');
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    fireEvent.keyDown(screen.getByRole('tab', { name: '项目资源' }), { key: 'ArrowLeft' });
+    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveFocus();
+    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await user.click(editor);
+    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('上传与添加参考图入口前置，受控高亮并在缺少回调时隐藏', async () => {
+    const user = userEvent.setup();
+    const onReferencePickToggle = vi.fn();
+    const view = render(
+      <ResourceMentionEditor
+        nodeId="pick-entry"
+        connectedAssets={[imageAsset]}
+        referencePickActive
+        onReferencePickToggle={onReferencePickToggle}
+      />,
+    );
+    const strip = screen.getByLabelText('引用资源');
+    expect(strip.children[0]).toBe(screen.getByRole('button', { name: '上传引用资源' }));
+    expect(strip.children[1]).toBe(screen.getByRole('button', { name: '添加参考图' }));
+    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await user.click(screen.getByRole('button', { name: '添加参考图' }));
+    expect(onReferencePickToggle).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('article')).toHaveAttribute('draggable', 'false');
+    expect(screen.getByLabelText('引用顺序 1')).toHaveTextContent('1');
+    view.rerender(<ResourceMentionEditor nodeId="pick-entry" connectedAssets={[imageAsset]} />);
+    expect(screen.queryByRole('button', { name: '添加参考图' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /预览并命名/ })).not.toHaveAttribute(
+      'aria-keyshortcuts',
+    );
+  });
+
+  it('按冻结版本优先排序，拖动回传完整去重顺序且不冒泡或修改正文', () => {
+    const onDocumentChange = vi.fn();
+    const onChange = vi.fn();
+    const onResourceReorder = vi.fn();
+    const onCanvasDrop = vi.fn();
+    const onCanvasPointer = vi.fn();
+    const promptDocument: PromptDocument = {
+      version: 1,
+      blocks: [
+        {
+          type: 'mention',
+          mentionId: 'image-v3',
+          assetId: imageAsset.id,
+          assetVersion: 3,
+          mediaType: 'image',
+          label: '第三版',
+        },
+        { type: 'text', text: '接' },
+        {
+          type: 'mention',
+          mentionId: 'image-v1',
+          assetId: imageAsset.id,
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '第一版',
+        },
+        { type: 'text', text: '和声音' },
+      ],
+    };
+    const refs: NodeResourceRef[] = [
+      {
+        id: 'ordered:first',
+        assetId: imageAsset.id,
+        assetVersion: 1,
+        mediaType: 'image',
+        name: '第一版',
+      },
+    ];
+    const props = {
+      nodeId: 'resource-order',
+      promptDocument,
+      assets: [imageAsset, audioAsset],
+      connectedAssets: [{ ...imageAsset, assetVersion: 3 }, audioAsset],
+      resourceRefs: refs,
+      onResourceReorder,
+      onDocumentChange,
+      onChange,
+      ariaLabel: '提示词',
+    };
+    const view = render(
+      <div onDrop={onCanvasDrop} onPointerDown={onCanvasPointer}>
+        <ResourceMentionEditor {...props} />
+      </div>,
+    );
+    const items = screen.getAllByRole('article');
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveAccessibleName('参考资源 1：第一版');
+    expect(items[1]).toHaveAccessibleName('参考资源 2：第三版');
+    expect(items[2]).toHaveAccessibleName('参考资源 3：声音样本');
+    const dataTransfer = resourceDragData();
+    fireEvent.pointerDown(items[2]);
+    fireEvent.dragStart(items[2], { dataTransfer });
+    fireEvent.dragOver(items[0], { dataTransfer });
+    fireEvent.drop(items[0], { dataTransfer });
+    expect(onResourceReorder).toHaveBeenCalledExactlyOnceWith([
+      { assetId: audioAsset.id },
+      { assetId: imageAsset.id, assetVersion: 1 },
+      { assetId: imageAsset.id, assetVersion: 3 },
+    ]);
+    expect(onCanvasDrop).not.toHaveBeenCalled();
+    expect(onCanvasPointer).not.toHaveBeenCalled();
+    expect(dataTransfer.getData(ASSET_DRAG_TYPE)).toBe('');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('第三版接第一版和声音');
+    view.rerender(
+      <ResourceMentionEditor
+        {...props}
+        resourceRefs={[
+          {
+            id: 'ordered:audio',
+            assetId: audioAsset.id,
+            mediaType: 'audio',
+            name: audioAsset.name,
+          },
+          ...refs,
+        ]}
+      />,
+    );
+    expect(screen.getAllByRole('article')[0]).toHaveAccessibleName('参考资源 1：声音样本');
+    expect(screen.getByLabelText('引用顺序 3')).toHaveTextContent('3');
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('第三版接第一版和声音');
+  });
+
+  it.each(['键盘', '拖动'])('%s排序同步报错时展示原因，不提前重排或修改正文', (mode) => {
+    const onDocumentChange = vi.fn();
+    const onResourceReorder = vi.fn(() => {
+      throw new Error('资源池已变化，请重试');
+    });
+    render(
+      <ResourceMentionEditor
+        nodeId="reorder-error"
+        value="保持正文"
+        connectedAssets={[imageAsset, audioAsset]}
+        onResourceReorder={onResourceReorder}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    const items = screen.getAllByRole('article');
+    if (mode === '键盘') {
+      fireEvent.keyDown(within(items[1]).getByRole('button', { name: /预览并命名/ }), {
+        key: 'ArrowLeft',
+        altKey: true,
+      });
+    } else {
+      const dataTransfer = resourceDragData();
+      fireEvent.dragStart(items[1], { dataTransfer });
+      fireEvent.drop(items[0], { dataTransfer });
+    }
+    expect(onResourceReorder).toHaveBeenCalledExactlyOnceWith([
+      { assetId: audioAsset.id },
+      { assetId: imageAsset.id },
+    ]);
+    expect(screen.getByRole('status')).toHaveTextContent('资源池已变化，请重试');
+    expect(screen.getAllByRole('article')[0]).toBe(items[0]);
+    expect(screen.getByRole('textbox')).toHaveValue('保持正文');
+    expect(onDocumentChange).not.toHaveBeenCalled();
   });
 
   it('does not turn typing 2 or 3 into a project-library mention', async () => {
@@ -300,6 +619,9 @@ describe('ResourceMentionEditor', () => {
 
     await user.type(editor, '生成 @产');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
+    editor.focus();
     expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
     await user.keyboard('{Enter}');
 
@@ -333,6 +655,7 @@ describe('ResourceMentionEditor', () => {
     );
 
     await user.type(screen.getByRole('textbox', { name: '提示词' }), '@');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图.*v7/ }));
 
     expect(onDocumentChange.mock.lastCall?.[0].blocks[0]).toMatchObject({
@@ -1085,6 +1408,7 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     editor.setSelectionRange(1, 1);
     fireEvent.select(editor);
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     const option = screen.getByRole('option', { name: /产品图/ });
     option.focus();
     expect(document.activeElement).toBe(option);
@@ -1147,6 +1471,7 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox', { name: '提示词' });
     await user.type(editor, '@');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
     const insertedDocument = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     const insertedMention = insertedDocument.blocks[0];
@@ -1216,6 +1541,7 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     editor.setSelectionRange(0, editor.value.length);
     fireEvent.select(editor);
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
 
     const mention = onDocumentChange.mock.lastCall?.[0].blocks[0];
@@ -1306,12 +1632,14 @@ describe('ResourceMentionEditor', () => {
     const editor = screen.getByRole('textbox', { name: '提示词' });
 
     await user.type(editor, '@采访');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     expect(editor).toHaveValue('@采访');
     expect(screen.getByRole('option', { name: /资料文档/ })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.clear(editor);
     await user.type(editor, '@广告');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     expect(editor).toHaveValue('@广告');
     expect(screen.getByRole('option', { name: /产品视频/ })).toBeInTheDocument();
   });
@@ -1329,6 +1657,7 @@ describe('ResourceMentionEditor', () => {
     const editorRoot = editor.closest('.resource-mention-editor');
 
     await user.type(editor, '@');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
 
     const listbox = screen.getByRole('listbox', { name: '选择资源' });
     const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
@@ -1338,7 +1667,11 @@ describe('ResourceMentionEditor', () => {
 
     const filterLabels = ['全部', '图片', '视频', '音频', '文本'] as const;
     for (const label of filterLabels) {
-      expect(screen.getByRole('button', { name: label })).toHaveAttribute('aria-pressed');
+      const filter = screen.getByRole('button', { name: label });
+      expect(filter).toHaveAttribute('aria-pressed');
+      expect(filter).toHaveAttribute('title', label);
+      expect(filter).toHaveTextContent('');
+      expect(filter.querySelector('svg')).not.toBeNull();
     }
     expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
 
@@ -1409,6 +1742,7 @@ describe('ResourceMentionEditor', () => {
     const editor = screen.getByRole('textbox', { name: '提示词' });
 
     await user.type(editor, '生成 @');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
     await user.type(searchbox, '产品');
     expect(editor).toHaveValue('生成 @');
@@ -1441,6 +1775,7 @@ describe('ResourceMentionEditor', () => {
     await user.type(editor, '@');
     const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
 
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     fireEvent.compositionStart(searchbox);
     fireEvent.change(searchbox, { target: { value: '产品' } });
     expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
@@ -1548,6 +1883,7 @@ describe('ResourceMentionEditor', () => {
       'data-offset',
       '3',
     );
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('button', { name: '图片' }));
     await user.type(screen.getByRole('searchbox', { name: '搜索资源' }), '产品');
     await user.click(screen.getByRole('option', { name: /产品图/ }));
@@ -1599,6 +1935,7 @@ describe('ResourceMentionEditor', () => {
         editor.setSelectionRange(0, name.length + 4);
         fireEvent.mouseUp(editor);
         fireEvent.click(editor);
+        await user.click(screen.getByRole('tab', { name: '项目资源' }));
         await user.click(screen.getByRole('option', { name: new RegExp(asset.name) }));
         expect(editor).toHaveValue(value);
         expect(onDocumentChange).toHaveBeenLastCalledWith({
@@ -1669,6 +2006,7 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     editor.setSelectionRange(0, 6);
     fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
     expect(editor).toHaveValue('  主角  回头');
     expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([
@@ -1708,6 +2046,7 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     editor.setSelectionRange(0, 2);
     fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
     expect(editor).toHaveValue('主角回头');
     expect(onDocumentChange).not.toHaveBeenCalled();
@@ -1834,6 +2173,7 @@ describe('ResourceMentionEditor', () => {
     expect(listbox.closest('[aria-hidden="true"]')).toBeNull();
     expect(editor.closest('.resource-mention-composer')).not.toContainElement(listbox);
     expect(editor).toHaveValue('第一行\n第二行 @');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
     expect(editor).toHaveValue('第一行\n第二行 产品图');
   });

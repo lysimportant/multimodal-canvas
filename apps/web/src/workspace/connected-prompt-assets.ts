@@ -10,15 +10,35 @@ import { createPromptMentionId } from '../resource-mention-sync';
 /** 提示词资源条使用的连线资源，至少要能预览。 */
 export type ConnectedPromptAsset = Pick<Asset, 'id' | 'name' | 'mediaType'> &
   Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status' | 'sizeBytes' | 'tags'>> & {
+    /** 提供此连线资源的节点；写入引用时用于绑定来源，不作为资产版本。 */
+    sourceNodeId?: string;
     /** 当前目标节点保存的引用别名，不修改资源库文件名。 */
     referenceName?: string;
     /** 目标引用或来源回显已确定的版本；不因资源目录更新而替换。 */
     assetVersion?: number;
     /** 尚未冻结的旧别名，仅用于只读恢复投影。 */
     referenceNeedsSync?: boolean;
-    /** 生成来源版本未知，不能借资源目录最新版建立引用。 */
+    /** 来源版本未知或历史绑定存在歧义，不能借资源目录最新版建立引用。 */
     versionUnavailable?: boolean;
   };
+
+/** 来源绑定 ID 的保留前缀；旧 connected 别名不含此段。 */
+const SOURCE_REFERENCE_PREFIX = 'connected:source:';
+
+/**
+ * 生成稳定的来源绑定 ID；排序仅在外层加 ordered:，版本仍只保存在 assetVersion。
+ * @param sourceNodeId 提供资源的画布节点 ID，不使用节点名称。
+ * @param assetId 真实资产 ID；同来源更换资产时属于另一条绑定。
+ * @returns 未带排序标记的 ID；保存端仍须校验引用 ID 的长度上限。
+ */
+export function createConnectedResourceReferenceId(sourceNodeId: string, assetId: string): string {
+  return `${SOURCE_REFERENCE_PREFIX}${encodeURIComponent(sourceNodeId)}:${encodeURIComponent(assetId)}`;
+}
+
+/** 只剥离排序标记，不改变别名 ID、来源或资产编码；兼容重复包装的旧值。 */
+function referenceIdentity(id: string): string {
+  return id.replace(/^(?:ordered:)+/, '');
+}
 
 /**
  * 收集可出现在提示词「引用资源」条里的上游资源。
@@ -27,7 +47,7 @@ export type ConnectedPromptAsset = Pick<Asset, 'id' | 'name' | 'mediaType'> &
  * @param nodes 画布节点。
  * @param edges 画布边。
  * @param assets 项目资源目录。
- * @returns 去重后的连线资源；没有可预览地址时仍返回身份，供诊断。
+ * @returns 去重后的连线资源；无法唯一恢复版本时标记 versionUnavailable，不回填最新版。
  */
 export function collectConnectedPromptAssets(
   nodeId: string,
@@ -43,18 +63,48 @@ export function collectConnectedPromptAssets(
     if (edge.targetHandle === 'input:imageEdit') continue;
     const source = nodes.find((node) => node.id === edge.source);
     if (!source) continue;
-    const result = source.data.resultAsset;
+    const result = source.data.manualOutput ? undefined : source.data.resultAsset;
     const assetId = result?.assetId ?? source.data.assetId;
     if (!assetId) continue;
     const catalog = assets.find((asset) => asset.id === assetId);
-    const reference =
-      references.find((reference) => reference.id === `connected:${assetId}`) ??
-      references.find((reference) => reference.assetId === assetId);
-    const assetVersion =
-      reference?.assetVersion ??
+    const sourceVersion =
       nodeEchoAssetVersion(source) ??
       (source.data.mode === 'source' && !result ? catalog?.latestVersion : undefined);
-    const versionUnavailable = assetVersion === undefined && source.data.mode !== 'source';
+    const matchingReferences = references.filter((reference) => reference.assetId === assetId);
+    const sourceReferenceId = createConnectedResourceReferenceId(source.id, assetId);
+    const boundReferences = matchingReferences.filter(
+      (item) => referenceIdentity(item.id) === sourceReferenceId,
+    );
+    const legacyReferences = matchingReferences.filter(
+      (item) => !referenceIdentity(item.id).startsWith(SOURCE_REFERENCE_PREFIX),
+    );
+    const exactReferences = legacyReferences.filter(
+      (item) => sourceVersion !== undefined && item.assetVersion === sourceVersion,
+    );
+    const connectedReferences = legacyReferences.filter(
+      (item) => referenceIdentity(item.id) === `connected:${assetId}`,
+    );
+    // 保留来源精确匹配；没有匹配时，明确旧连线身份优先于同资产的导入别名。
+    const candidates = boundReferences.length
+      ? boundReferences
+      : exactReferences.length
+        ? exactReferences
+        : connectedReferences.length
+          ? connectedReferences
+          : legacyReferences;
+    // 同一优先级内仍须唯一确定冻结身份，不能借来源最新版覆盖历史版本。
+    const bindingUnavailable =
+      new Set(candidates.map((item) => item.assetVersion)).size > 1 ||
+      (boundReferences.length > 0 && boundReferences[0].assetVersion === undefined);
+    const reference = bindingUnavailable
+      ? undefined
+      : (candidates.find((item) => referenceIdentity(item.id) === `connected:${assetId}`) ??
+        candidates[0]);
+    const assetVersion = bindingUnavailable
+      ? undefined
+      : (reference?.assetVersion ?? sourceVersion);
+    const versionUnavailable =
+      bindingUnavailable || (assetVersion === undefined && source.data.mode !== 'source');
     const identity = JSON.stringify([assetId, assetVersion]);
     if (seen.has(identity)) continue;
     seen.add(identity);
@@ -69,6 +119,7 @@ export function collectConnectedPromptAssets(
             resultAssetContentUrl(assetId));
     items.push({
       id: assetId,
+      sourceNodeId: source.id,
       name: catalog?.name ?? source.data.label,
       ...(reference?.name ? { referenceName: reference.name } : {}),
       ...(reference && reference.assetVersion === undefined ? { referenceNeedsSync: true } : {}),

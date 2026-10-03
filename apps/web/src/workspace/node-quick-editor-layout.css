@@ -12,12 +12,20 @@
   resize: none;
 }
 
-/* 透明输入框决定高度；文字层铺满同一容器，避免桌面加高后底部仍被旧高度裁切。 */
-.node-quick-editor .node-quick-editor-prompt .resource-mention-highlight {
+/* textarea 是唯一交互滚动层；正文只裁剪并接受同步滚动，不能再次扣除滚动条宽度。 */
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-prompt
+  .resource-mention-highlight {
   height: auto;
   max-height: none;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
+}
+
+/* 仅底部操作栏靠右，不能把顶部模型、模式等设置一并挪走。 */
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-controls:not(.node-quick-editor-topbar) {
+  justify-content: flex-end;
 }
 
 .node-quick-editor-video-mode {

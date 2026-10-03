@@ -1,3 +1,4 @@
+import type { ProjectResourceSearch } from '../project-resource-search';
 import {
   ChevronDown,
   Expand,
@@ -118,6 +119,13 @@ export type NodeQuickEditorProps = {
   onPromptDocumentChange?: (document: PromptDocument) => void;
   /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
   onUploadResource?: (file: File) => Promise<Asset>;
+  /** 当前节点连续添加画布参考资源的开关；不触发生成。 */
+  referencePickActive?: boolean;
+  onReferencePickToggle?: () => void;
+  /** 按当前项目在服务端分页搜索；未提供时兼容使用传入的完整目录。 */
+  onSearchProjectResources?: ProjectResourceSearch;
+  /** 保存资源条的完整版本化顺序，不移动正文引用。 */
+  onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
   /** 当前项目可访问资源，用于提示词中的 `@` 搜索。 */
   assets?: readonly Asset[];
   onModelChange: (value: ModelSelection) => void;
@@ -371,6 +379,10 @@ export function NodeQuickEditor({
   onPromptChange,
   onPromptDocumentChange,
   onUploadResource,
+  referencePickActive,
+  onReferencePickToggle,
+  onSearchProjectResources,
+  onResourceReorder,
   assets = [],
   onModelChange,
   onInferenceStrengthChange,
@@ -694,6 +706,7 @@ export function NodeQuickEditor({
         value={node.data.prompt ?? ''}
         promptDocument={node.data.promptDocument}
         assets={assets}
+        onSearchProjectResources={onSearchProjectResources}
         connectedAssets={connectedAssets}
         onConnectedResourceRename={onConnectedResourceRename}
         placeholder={
@@ -703,6 +716,17 @@ export function NodeQuickEditor({
         onChange={onPromptDocumentChange ? undefined : onPromptChange}
         onDocumentChange={onPromptDocumentChange}
         onUploadResource={onUploadResource}
+        referencePickActive={referencePickActive}
+        onReferencePickToggle={
+          onReferencePickToggle
+            ? () => {
+                if (expandedEditorOpen) setExpandedEditorOpen(false);
+                onReferencePickToggle();
+              }
+            : undefined
+        }
+        resourceRefs={node.data.resourceRefs}
+        onResourceReorder={onResourceReorder}
       />
     </label>
   );

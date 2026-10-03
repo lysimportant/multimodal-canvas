@@ -1,0 +1,31 @@
+/* 添加模式只改变命中与提示，不改变节点坐标、大小或资源内容。 */
+.canvas-area.is-reference-picking .react-flow__node {
+  cursor: crosshair;
+}
+
+.canvas-area.is-reference-picking .react-flow__node:hover {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 3px;
+}
+
+.node-reference-pick-banner {
+  align-items: center;
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #d5dfdb);
+  border-radius: 8px;
+  color: var(--mc-text, #18212f);
+  display: flex;
+  font-size: 13px;
+  gap: 12px;
+  left: 50%;
+  max-width: calc(100% - 32px);
+  padding: 8px 12px;
+  position: absolute;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 20;
+}
+
+.node-reference-pick-banner button {
+  flex-shrink: 0;
+}

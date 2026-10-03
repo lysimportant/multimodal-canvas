@@ -1,4 +1,6 @@
+import type { ProjectResourceSearch } from '../project-resource-search';
 import './canvas-drag-performance.css';
+import './node-reference-pick.css';
 import { Button } from '@multimodal-canvas/ui';
 import {
   Background,
@@ -232,6 +234,15 @@ export type WorkflowCanvasProps = {
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
   /** 仅保存目标节点的连线资源别名，不修改源资源名称或提示词。 */
   onConnectedResourceRename?: (assetId: string, name: string, nodeId?: string) => void;
+  /** 向固定目标添加已有资源及来源连线；失败时抛出可展示错误，不改变当前图。 */
+  onAddNodeReference?: (sourceId: string, targetId: string) => void;
+  /** 按当前项目在服务端分页搜索；未提供时兼容使用传入的完整目录。 */
+  onSearchProjectResources?: ProjectResourceSearch;
+  /** 保存资源条排列，包含资产冻结版本。 */
+  onResourceReorder?: (
+    resources: readonly { assetId: string; assetVersion?: number }[],
+    nodeId?: string,
+  ) => void;
   /** 保存目标节点的技能选择，不触发生成。 */
   onPromptSkillChange?: (skillId: string | undefined, nodeId?: string) => void;
   /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
@@ -353,6 +364,9 @@ export function WorkflowCanvas({
   onPromptChange,
   onPromptDocumentChange,
   onConnectedResourceRename,
+  onAddNodeReference,
+  onSearchProjectResources,
+  onResourceReorder,
   onPromptSkillChange,
   onUploadResource,
   onParametersChange,
@@ -413,6 +427,50 @@ export function WorkflowCanvas({
   /** 吞掉拖线松手后紧随而来的 pane click，避免菜单刚弹出就被关掉。 */
   const suppressPaneClickRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuTarget | null>(null);
+  /** 添加模式锁定目标，点击来源时不切换当前编辑器。 */
+  const [referenceTargetId, setReferenceTargetId] = useState<string | null>(null);
+  const [referencePickMessage, setReferencePickMessage] = useState<string | null>(null);
+  const referenceTargetRef = useRef<string | null>(null);
+  referenceTargetRef.current = referenceTargetId;
+  useEffect(() => {
+    if (
+      referenceTargetId &&
+      (selectedNode?.id !== referenceTargetId ||
+        !nodes.some((node) => node.id === referenceTargetId))
+    ) {
+      setReferenceTargetId(null);
+      setReferencePickMessage(null);
+    }
+  }, [nodes, selectedNode?.id, referenceTargetId]);
+  useEffect(() => {
+    if (!referenceTargetId) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setReferenceTargetId(null);
+      setReferencePickMessage(null);
+    };
+    window.addEventListener('keydown', cancel);
+    return () => window.removeEventListener('keydown', cancel);
+  }, [referenceTargetId]);
+  /** 在节点内控件之前消费资源点击，避免预览、删除或选择改变目标。 */
+  const handleReferenceClick = useCallback(
+    (event: ReactMouseEvent<HTMLElement>) => {
+      if (!referenceTargetId || !(event.target instanceof Element)) return;
+      const element = event.target.closest('.react-flow__node[data-id]');
+      const sourceId = element?.getAttribute('data-id');
+      if (!sourceId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        onAddNodeReference?.(sourceId, referenceTargetId);
+        setReferencePickMessage(null);
+      } catch (error) {
+        setReferencePickMessage(error instanceof Error ? error.message : '添加资源失败，请重试');
+      }
+    },
+    [onAddNodeReference, referenceTargetId],
+  );
   /** 单次 Tab 锁存一次框选，松鼠标或取消后恢复默认平移。 */
   const [tabSelectionActive, setTabSelectionActive] = useState(false);
   const tabSelectionActiveRef = useRef(false);
@@ -444,6 +502,7 @@ export function WorkflowCanvas({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (referenceTargetRef.current) return;
       if (event.key === 'Escape' && (tabSelectionActiveRef.current || selectionGesture.current)) {
         cancelSelectionGesture();
         return;
@@ -574,7 +633,10 @@ export function WorkflowCanvas({
     (node) => node.selected && !node.hidden,
   );
   const suppressNodeInteractions =
-    tabSelectionActive || selectedResourceNodes.length > 1 || contextMenu?.kind === 'selection';
+    Boolean(referenceTargetId) ||
+    tabSelectionActive ||
+    selectedResourceNodes.length > 1 ||
+    contextMenu?.kind === 'selection';
   /** 菜单打开后仍读取实时节点，避免恢复/SSE 更新被右键快照遮住。 */
   const currentContextMenu =
     contextMenu?.kind === 'node'
@@ -601,6 +663,7 @@ export function WorkflowCanvas({
   }, []);
   /** 拖线后的首个背景点击不清空新菜单，普通点击仍清除节点选择。 */
   const handlePaneClick = useCallback(() => {
+    if (referenceTargetRef.current) return;
     if (suppressPaneClickRef.current) {
       suppressPaneClickRef.current = false;
       return;
@@ -1009,6 +1072,7 @@ export function WorkflowCanvas({
         models={models}
         busy={editorBusy}
         assets={assets}
+        onSearchProjectResources={onSearchProjectResources}
         connectedAssets={collectConnectedPromptAssets(editorNode.id, editorNodes, edges, assets)}
         onConnectedResourceRename={
           onConnectedResourceRename
@@ -1024,6 +1088,22 @@ export function WorkflowCanvas({
             : undefined
         }
         onUploadResource={onUploadResource}
+        referencePickActive={referenceTargetId === editorNode.id}
+        onReferencePickToggle={
+          onAddNodeReference && !editorBusy
+            ? () => {
+                cancelSelectionGesture();
+                setContextMenu(null);
+                setReferencePickMessage(null);
+                setReferenceTargetId((current) =>
+                  current === editorNode.id ? null : editorNode.id,
+                );
+              }
+            : undefined
+        }
+        onResourceReorder={
+          onResourceReorder ? (resources) => onResourceReorder(resources, editorNode.id) : undefined
+        }
         onPromptSkillChange={
           onPromptSkillChange ? (id) => onPromptSkillChange(id, editorNode.id) : undefined
         }
@@ -1102,6 +1182,11 @@ export function WorkflowCanvas({
     skillLibraryError,
     skillLibraryLoading,
     onConnectedResourceRename,
+    onSearchProjectResources,
+    onResourceReorder,
+    onAddNodeReference,
+    referenceTargetId,
+    cancelSelectionGesture,
     onPromptChange,
     onPromptDocumentChange,
     onUploadResource,
@@ -1120,7 +1205,8 @@ export function WorkflowCanvas({
   return (
     <section
       ref={canvasAreaRef}
-      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}${tabSelectionActive ? ' is-tab-selecting' : ''}${suppressNodeInteractions ? ' is-selection-mode' : ''}`}
+      className={`canvas-area${quickEditorNode ? ' has-quick-editor' : ''}${draggingNodeIdsKey !== '[]' ? ' is-node-dragging' : ''}${viewportMoving.current ? ' is-viewport-moving' : ''}${tabSelectionActive ? ' is-tab-selecting' : ''}${suppressNodeInteractions ? ' is-selection-mode' : ''}${referenceTargetId ? ' is-reference-picking' : ''}`}
+      data-reference-target={referenceTargetId ?? undefined}
       data-edge-path-style={edgePathStyle}
       data-edge-effect={edgeEffect}
       aria-label="工作流画布"
@@ -1134,13 +1220,41 @@ export function WorkflowCanvas({
       onPointerLeave={() => {
         pointerInsideCanvas.current = false;
       }}
-      onPointerDownCapture={handleSelectionPointerDown}
+      onClickCapture={handleReferenceClick}
+      onPointerDownCapture={(event) => {
+        if (
+          referenceTargetId &&
+          event.target instanceof Element &&
+          event.target.closest('.react-flow__node[data-id]')
+        ) {
+          event.stopPropagation();
+          return;
+        }
+        handleSelectionPointerDown(event);
+      }}
       onPointerUp={handleSelectionPointerUp}
       onPointerCancel={cancelSelectionGesture}
       onContextMenu={(event) => {
         if (!shouldKeepNativeContextMenu(event.target)) event.preventDefault();
       }}
     >
+      {referenceTargetId && (
+        <div className="node-reference-pick-banner nodrag nopan nowheel" role="status">
+          <span>
+            {referencePickMessage ??
+              '添加参考资源：连续点击画布资源，按 Esc 或再次点击添加按钮退出'}
+          </span>
+          <Button
+            type="button"
+            onClick={() => {
+              setReferenceTargetId(null);
+              setReferencePickMessage(null);
+            }}
+          >
+            完成添加
+          </Button>
+        </div>
+      )}
       <CanvasNodeToolbar
         onOpenSkillWorkbench={onOpenSkillWorkbench}
         onAddGenerateNode={handleAddGenerateNode}
@@ -1231,6 +1345,9 @@ export function WorkflowCanvas({
                                       onSelectionContextMenu={handlePaneContextMenu}
                                       selectionKeyCode={null}
                                       selectionOnDrag={tabSelectionActive}
+                                      nodesDraggable={!referenceTargetId}
+                                      nodesConnectable={!referenceTargetId}
+                                      elementsSelectable={!referenceTargetId}
                                       panOnDrag={
                                         tabSelectionActive
                                           ? FLOW_SELECTION_PAN_ON_DRAG

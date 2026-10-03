@@ -1001,7 +1001,9 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
     await user.type(prompt, '根据 @ref');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
-    await user.click(screen.getByRole('option', { name: /reference.png/ }));
+    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
+    await user.click(screen.getByRole('tab', { name: '项目资源' }));
+    await user.click(await screen.findByRole('option', { name: /reference.png/ }));
 
     expect((prompt as HTMLTextAreaElement).value).toMatch(/根据\s+@?reference(\.png)?/);
 
@@ -1161,7 +1163,8 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
       await user.click(findNodeByLabel('视频参考模式')!);
       const editor = screen.getByLabelText('视频参考模式生成设置');
       await user.type(within(editor).getByRole('textbox', { name: '提示词' }), 'Use @ref');
-      await user.click(screen.getByRole('option', { name: /reference.png/ }));
+      await user.click(screen.getByRole('tab', { name: '项目资源' }));
+      await user.click(await screen.findByRole('option', { name: /reference.png/ }));
       await waitFor(() => {
         expect(
           canvas.nodes[0]?.data.promptDocument?.blocks.some((block) => block.type === 'mention'),

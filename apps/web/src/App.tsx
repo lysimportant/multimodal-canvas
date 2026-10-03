@@ -1,3 +1,7 @@
+import {
+  searchProjectResources,
+  type ProjectResourceSearchOptions,
+} from './project-resource-search';
 import { useCanvasDraft } from './use-canvas-draft';
 import { CanvasHistory } from './canvas-history';
 import { arrangeCanvasNodes } from './canvas-auto-arrange';
@@ -112,6 +116,11 @@ import {
   createSelectedNodesPromptDocument,
 } from './workspace/connected-prompt-assets';
 import { projectGenerationBatches } from './workspace/generation-batch-view';
+import {
+  addNodeResourceReference,
+  reorderNodeResources,
+  type NodeResourceIdentity,
+} from './workspace/node-resource-actions';
 import {
   freezeConnectedResourceReferences,
   projectConnectedPromptDocument,
@@ -636,6 +645,15 @@ function WorkspaceApp({
     activeFilter,
     showArchived,
   });
+  /** 项目引用搜索独立于左侧资源栏分页，结果纳入已有资源索引以供提及解析。 */
+  const handleSearchProjectResources = useCallback(
+    async (options: ProjectResourceSearchOptions) => {
+      const result = await searchProjectResources(initialProject.id, options);
+      if (!options.signal.aborted) upsertAssets(result.assets);
+      return result;
+    },
+    [initialProject.id, upsertAssets],
+  );
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
@@ -2724,6 +2742,56 @@ function WorkspaceApp({
     [assets, rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
+  /** 每次点击原子保存参考和连线；错误保留当前图与添加模式。 */
+  const handleAddNodeReference = useCallback(
+    (sourceId: string, targetId: string) => {
+      const target = nodesRef.current.find((node) => node.id === targetId);
+      if (target && isNodeBusy(targetId)) throw new Error('节点正在生成，请完成后再添加参考资源');
+      const next = addNodeResourceReference(
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+        targetId,
+        sourceId,
+      );
+      if (!next.changed) return;
+      rememberHistory();
+      nodesRef.current = next.nodes;
+      edgesRef.current = next.edges;
+      setNodes(next.nodes);
+      setEdges(next.edges);
+      canvasDirtyRef.current = true;
+    },
+    [assets, isNodeBusy, rememberHistory, setNodes, setEdges],
+  );
+
+  /** 引用顺序沿既有 resourceRefs 持久化；正文、连线及素材版本不互换。 */
+  const handleResourceReorder = useCallback(
+    (resources: readonly NodeResourceIdentity[], nodeId?: string) => {
+      const targetId = nodeId ?? effectiveSelectedNodeId;
+      const target = nodesRef.current.find((node) => node.id === targetId);
+      if (!target) throw new Error('节点已不存在，请重新打开编辑器');
+      if (isNodeBusy(target.id)) throw new Error('节点正在生成，请完成后再排序');
+      const data = reorderNodeResources(
+        target,
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+        resources,
+      );
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(target.id, () => data);
+    },
+    [
+      assets,
+      isNodeBusy,
+      effectiveSelectedNodeId,
+      rememberHistory,
+      updateNodeDataAndMarkDownstreamStale,
+    ],
+  );
+
   /** 保存结构化提示词，并同步维护旧节点仍读取的纯文本派生字段。 */
   const updateSelectedPromptDocument = useCallback(
     (document: PromptDocument, nodeId?: string) => {
@@ -4443,6 +4511,9 @@ function WorkspaceApp({
             onRetryNode={retryNodeFromCanvas}
             onPromptDocumentChange={updateSelectedPromptDocument}
             onConnectedResourceRename={renameConnectedResource}
+            onAddNodeReference={handleAddNodeReference}
+            onResourceReorder={handleResourceReorder}
+            onSearchProjectResources={handleSearchProjectResources}
             onPromptSkillChange={updateSelectedPromptSkill}
             onUploadResource={uploadProjectAsset}
             onParametersChange={updateSelectedParameters}

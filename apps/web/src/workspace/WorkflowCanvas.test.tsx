@@ -2221,3 +2221,62 @@ describe('WorkflowCanvas 选区资源入口', () => {
     expect(props.onAddSelectionGenerateNode).not.toHaveBeenCalled();
   });
 });
+
+describe('当前节点连续添加参考资源', () => {
+  it('连续点击来源不切换选中节点，Esc 后恢复普通选择', async () => {
+    const props = createProps({
+      nodes: [generateNode, sourceNode],
+      selectedNode: generateNode,
+      onAddNodeReference: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+    const button = await screen.findByRole('button', { name: '添加参考图' });
+    fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    expect(props.onAddNodeReference).toHaveBeenCalledTimes(2);
+    expect(props.onAddNodeReference).toHaveBeenLastCalledWith(sourceNode.id, generateNode.id);
+    expect(props.onNodeSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '完成添加' })).toBeVisible();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(button).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    expect(props.onNodeSelect).toHaveBeenCalledWith(sourceNode);
+  });
+
+  it('添加错误保留模式和目标，可继续点击其它资源或主动退出', async () => {
+    const props = createProps({
+      nodes: [generateNode, sourceNode],
+      selectedNode: generateNode,
+      onAddNodeReference: vi.fn(() => {
+        throw new Error('来源尚无资源');
+      }),
+    });
+    render(<WorkflowCanvas {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: '添加参考图' }));
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    expect(screen.getByRole('status')).toHaveTextContent('来源尚无资源');
+    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '完成添加' }));
+    expect(screen.queryByText('来源尚无资源')).not.toBeInTheDocument();
+    expect(props.onNodeSelect).not.toHaveBeenCalled();
+  });
+
+  it('连续添加期间点击画布空白不清除目标，切换节点后退出模式', async () => {
+    const props = createProps({
+      nodes: [generateNode, sourceNode],
+      selectedNode: generateNode,
+      onAddNodeReference: vi.fn(),
+    });
+    const view = render(<WorkflowCanvas {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: '添加参考图' }));
+    fireEvent.click(document.querySelector('.react-flow__pane')!);
+    expect(props.onClearNodeSelection).not.toHaveBeenCalled();
+    view.rerender(<WorkflowCanvas {...props} selectedNode={sourceNode} />);
+    expect(screen.queryByRole('button', { name: '完成添加' })).not.toBeInTheDocument();
+  });
+});

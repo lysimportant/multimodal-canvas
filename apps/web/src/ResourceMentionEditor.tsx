@@ -4,12 +4,11 @@ import {
   Input as UiInput,
 } from '@multimodal-canvas/ui';
 import {
-  ArrowDown,
-  ArrowUp,
   AudioLines,
   Check,
   FileText,
   Image as ImageIcon,
+  ImagePlus,
   Link2,
   Plus,
   Replace,
@@ -37,6 +36,7 @@ import type {
   Asset,
   MediaType,
   MentionBinding,
+  NodeResourceRef,
   PromptDocument,
   PromptMention,
 } from '@multimodal-canvas/domain';
@@ -57,6 +57,8 @@ import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 import { resultAssetContentUrl } from './workspace/node-echo-text';
 import { ASSET_DRAG_TYPE, formatBytes, mediaLabels } from './workspace/contracts';
 import './resource-mention-hover.css';
+import './resource-mention-controls.css';
+import type { ProjectResourceSearch, ProjectResourceSearchPage } from './project-resource-search';
 
 /** 编辑器可接收的资源提及文档变更。 */
 export type ResourceMentionEditorProps = {
@@ -68,8 +70,19 @@ export type ResourceMentionEditorProps = {
   promptDocument?: PromptDocument;
   /** 当前项目中可访问的资源索引。归档资源不会显示为可插入结果。 */
   assets?: readonly Asset[];
+  /** 按当前项目在服务端分页搜索；未提供时兼容使用传入的完整目录。 */
+  onSearchProjectResources?: ProjectResourceSearch;
+
   /** 画布连到当前节点的资源，进入上方资源条。 */
   connectedAssets?: readonly ConnectedPromptAsset[];
+  /** 连续添加参考图模式的受控状态；只改变入口外观，不在编辑器内添加连线。 */
+  referencePickActive?: boolean;
+  /** 切换画布资源选择模式；未提供时隐藏入口，避免无效操作。 */
+  onReferencePickToggle?: () => void;
+  /** 资源条的持久化优先顺序，按 assetId 与冻结版本精确匹配。 */
+  resourceRefs?: readonly NodeResourceRef[];
+  /** 回传完整资源条顺序；同步保存错误显示在编辑警告区，不修改正文或连线。 */
+  onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
   /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
   onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 纯文本兼容回调；始终接收当前文档渲染后的文字。 */
@@ -109,10 +122,21 @@ type MentionBindingDraft = {
 
 /** 可选择的资源结果，类型筛选不改变其资源身份。 */
 type SearchEntry = {
-  asset: Asset;
+  /** 身份包含冻结版本，同一资产的不同版本不能合并。 */
+  key: string;
+  asset: ConnectedPromptAsset & Partial<Pick<Asset, 'metadata'>>;
+  assetVersion?: number;
+  /** 节点范围优先展示目标引用别名；项目范围展示资源名称。 */
+  name: string;
+  aliases: string[];
+  unavailableReason?: string;
 };
 
+/** 编辑历史最多保留的快照数量。 */
 const MAX_HISTORY_SIZE = 80;
+
+/** 资源条排序独用的拖放类型，不能被资源库 drop 识别为新引用。 */
+const RESOURCE_ORDER_DRAG_TYPE = 'application/x-multimodal-resource-order';
 
 /** 筛选顺序与画布节点的媒体类型保持一致；all 表示不过滤类型。 */
 const RESOURCE_FILTERS = ['all', 'image', 'video', 'audio', 'text'] as const;
@@ -121,7 +145,7 @@ const RESOURCE_FILTERS = ['all', 'image', 'video', 'audio', 'text'] as const;
  * 通用资源提及编辑器。
  *
  * 文本域通过组件库 Textarea 渲染，底层保留原生选区、粘贴和 IME 行为；
- * 名称以原子范围绑定到不可变 mentionId，资源条按 assetId 去重。
+ * 名称以原子范围绑定到不可变 mentionId，资源条按 assetId 与冻结版本去重。
  * 提交时同时回传纯文本和 PromptDocument，旧调用方只接收
  * 纯文本也可以继续工作。
  */
@@ -130,7 +154,12 @@ export function ResourceMentionEditor({
   value = '',
   promptDocument,
   assets = [],
+  onSearchProjectResources,
   connectedAssets = [],
+  referencePickActive = false,
+  onReferencePickToggle,
+  resourceRefs = [],
+  onResourceReorder,
   onConnectedResourceRename,
   onChange,
   onDocumentChange,
@@ -168,6 +197,15 @@ export function ResourceMentionEditor({
   const [activeIndex, setActiveIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [mediaFilter, setMediaFilter] = useState<(typeof RESOURCE_FILTERS)[number]>('all');
+  const [resourceScope, setResourceScope] = useState<'node' | 'project'>('node');
+  const [projectPage, setProjectPage] = useState({ key: '', page: 1 });
+  const [projectRevision, setProjectRevision] = useState(0);
+  const [projectResult, setProjectResult] = useState<{
+    key: string;
+    source: ProjectResourceSearch;
+    result?: ProjectResourceSearchPage;
+    error?: string;
+  } | null>(null);
   const [replaceMentionId, setReplaceMentionId] = useState<string | null>(null);
   const [pendingDropAssetId, setPendingDropAssetId] = useState<string | null>(null);
   const [bindingMentionId, setBindingMentionId] = useState<string | null>(null);
@@ -182,6 +220,8 @@ export function ResourceMentionEditor({
   const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const draggedResourceRef = useRef<string | null>(null);
+  const [draggedResourceKey, setDraggedResourceKey] = useState<string | null>(null);
   const [protectedEditMessage, setProtectedEditMessage] = useState<string | null>(null);
   const [draftResetKey, setDraftResetKey] = useState(0);
   const historyRef = useRef<{ past: EditorSnapshot[]; future: EditorSnapshot[] }>({
@@ -294,6 +334,8 @@ export function ResourceMentionEditor({
     }
     if (identityRef.current !== nodeId) {
       identityRef.current = nodeId;
+      draggedResourceRef.current = null;
+      setDraggedResourceKey(null);
       historyRef.current = { past: [], future: [] };
       pendingLocalSignatureRef.current = null;
       setTrigger(null);
@@ -342,38 +384,68 @@ export function ResourceMentionEditor({
   }, [bindingMentionId]);
 
   const activeAssets = useMemo(
-    () => assets.filter((asset) => asset.status !== 'archived'),
+    () => assets.filter((asset) => asset.status !== 'archived' && !asset.archivedAt),
     [assets],
+  );
+  const nodeSearchEntries = useMemo(
+    () => collectNodeSearchEntries(ranges, assets, connectedAssets, resourceRefs),
+    [ranges, assets, connectedAssets, resourceRefs],
   );
   const pickerQuery = searchQuery ?? trigger?.query ?? '';
   const query = pickerQuery.trim().toLocaleLowerCase();
+  // 项目范围空搜索只预览前十项；实际查询不截断服务端匹配结果。
+  const projectPreview =
+    resourceScope === 'project' && query.length === 0 && pendingDropAssetId === null;
+  const projectFilterKey = JSON.stringify([nodeId, pickerQuery.trim(), mediaFilter]);
+  const projectPageNumber = projectPage.key === projectFilterKey ? projectPage.page : 1;
+  const projectRequestKey = JSON.stringify([projectFilterKey, projectPageNumber, projectRevision]);
+  const remoteProject = Boolean(
+    onSearchProjectResources && resourceScope === 'project' && pendingDropAssetId === null,
+  );
+  const currentProjectResult =
+    projectResult?.key === projectRequestKey && projectResult.source === onSearchProjectResources
+      ? projectResult
+      : null;
   const searchEntries = useMemo(() => {
     if (pendingDropAssetId !== null) {
       const asset = activeAssets.find((candidate) => candidate.id === pendingDropAssetId);
       if (!asset) return [];
-      return [
-        {
-          asset,
-        } satisfies SearchEntry,
-      ];
+      return [projectSearchEntry(asset)];
     }
     if (!trigger && replaceMentionId === null && !selectedTextRange) return [];
-    const filtered = activeAssets.filter(
-      (asset) =>
-        (mediaFilter === 'all' || asset.mediaType === mediaFilter) &&
-        assetMatchesQuery(asset, query),
+    const source =
+      resourceScope === 'node'
+        ? nodeSearchEntries
+        : (remoteProject ? (currentProjectResult?.result?.assets ?? []) : activeAssets).map(
+            (asset) => {
+              const entry = projectSearchEntry(asset);
+              const reference = nodeSearchEntries.find((candidate) => candidate.key === entry.key);
+              return reference ? { ...entry, aliases: reference.aliases } : entry;
+            },
+          );
+    const filtered = source.filter(
+      (entry) =>
+        (mediaFilter === 'all' || entry.asset.mediaType === mediaFilter) &&
+        ((remoteProject && resourceScope === 'project') ||
+          assetMatchesQuery(entry.asset, query) ||
+          entry.aliases.some((alias) => alias.toLocaleLowerCase().includes(query))),
     );
     const entries: SearchEntry[] = [];
     for (const mediaType of ['image', 'video', 'audio', 'text'] as const) {
-      for (const asset of filtered) {
-        if (asset.mediaType === mediaType) {
-          entries.push({ asset });
+      for (const entry of filtered) {
+        if (entry.asset.mediaType === mediaType) {
+          entries.push(entry);
         }
       }
     }
-    return entries;
+    return projectPreview ? entries.slice(0, 10) : entries;
   }, [
+    projectPreview,
     activeAssets,
+    nodeSearchEntries,
+    resourceScope,
+    remoteProject,
+    currentProjectResult,
     pendingDropAssetId,
     query,
     replaceMentionId,
@@ -388,6 +460,50 @@ export function ResourceMentionEditor({
       trigger || replaceMentionId !== null || pendingDropAssetId !== null || selectedTextRange,
     );
   const pickerId = `resource-mention-picker-${nodeId}`;
+  /** 独立分页查询整个项目，关闭、切换或重新搜索时取消旧请求，不回退成已加载缓存。 */
+  useEffect(() => {
+    if (!pickerOpen || !remoteProject || !onSearchProjectResources) {
+      setProjectResult(null);
+      return;
+    }
+    const source = onSearchProjectResources;
+    const controller = new AbortController();
+    setProjectResult(null);
+    const timer = setTimeout(() => {
+      void source({
+        query: pickerQuery.trim(),
+        mediaType: mediaFilter,
+        page: projectPageNumber,
+        signal: controller.signal,
+      }).then(
+        (result) => {
+          if (!controller.signal.aborted)
+            setProjectResult({ key: projectRequestKey, source, result });
+        },
+        (error: unknown) => {
+          if (!controller.signal.aborted)
+            setProjectResult({
+              key: projectRequestKey,
+              source,
+              error: error instanceof Error ? error.message : '项目资源搜索失败',
+            });
+        },
+      );
+    }, 200);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    pickerOpen,
+    remoteProject,
+    onSearchProjectResources,
+    projectRequestKey,
+    pickerQuery,
+    mediaFilter,
+    projectPageNumber,
+  ]);
+
   const closePicker = useCallback(() => {
     pickerDismissedRef.current = true;
     setSelectedTextRange(null);
@@ -397,11 +513,14 @@ export function ResourceMentionEditor({
     setActiveIndex(0);
     setSearchQuery(null);
     setMediaFilter('all');
+    setResourceScope('node');
+    setProjectPage({ key: '', page: 1 });
   }, []);
 
   useEffect(() => {
     setSearchQuery(null);
     setMediaFilter('all');
+    setResourceScope('node');
     setActiveIndex(0);
   }, [
     pickerOpen,
@@ -415,7 +534,7 @@ export function ResourceMentionEditor({
 
   useEffect(() => {
     setActiveIndex(0);
-  }, [query, mediaFilter]);
+  }, [query, mediaFilter, resourceScope]);
 
   // 弹层中的按钮、预览控件或其他可聚焦元素可能抢走键盘焦点；用捕获阶段
   // 监听保证 Escape 在这些焦点状态下仍然执行取消，而不会创建提及。
@@ -449,11 +568,12 @@ export function ResourceMentionEditor({
   useEffect(() => {
     const option = pickerRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
     option?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeIndex, query, mediaFilter]);
+  }, [activeIndex, query, mediaFilter, resourceScope]);
 
   const selectMention = useCallback(
-    (asset: Asset) => {
-      if (disabled) return;
+    (entry: SearchEntry) => {
+      if (disabled || entry.unavailableReason) return;
+      const { asset, assetVersion } = entry;
       if (selectedTextRange) {
         const { start, end, name } = selectedTextRange;
         if (
@@ -465,11 +585,16 @@ export function ResourceMentionEditor({
           return;
         }
         const pool = collectNamedResourcePool(rangesRef.current, connectedAssets);
-        if (pool.some((item) => item.name === name && item.assetId !== asset.id)) {
+        if (
+          pool.some(
+            (item) =>
+              item.name === name &&
+              (item.assetId !== asset.id || item.assetVersion !== assetVersion),
+          )
+        ) {
           setProtectedEditMessage('这个名字已被其他资源占用，请选择其他文字');
           return;
         }
-        const assetVersion = getAssetVersion(asset);
         caretRef.current = end;
         commitState(textRef.current, [
           ...rangesRef.current,
@@ -505,7 +630,6 @@ export function ResourceMentionEditor({
           placeholderReason: _previousPlaceholderReason,
           ...previousMention
         } = replacing.mention;
-        const assetVersion = getAssetVersion(asset);
         const nextMention: PromptMention = {
           ...previousMention,
           assetId: asset.id,
@@ -565,14 +689,13 @@ export function ResourceMentionEditor({
       const activeTrigger = trigger ?? findMentionTrigger(textRef.current, selectionStart);
       const start = activeTrigger?.start ?? selectionStart;
       const end = Math.max(start, selectionEnd);
-      const token = uniqueResourceDisplayName(asset.name, takenDisplayNames(rangesRef.current));
+      const token = uniqueResourceDisplayName(entry.name, takenDisplayNames(rangesRef.current));
       const nextText = `${textRef.current.slice(0, start)}${token}${textRef.current.slice(end)}`;
       const editedRanges = updateRangesForTextEdit(textRef.current, nextText, rangesRef.current, {
         editStart: start,
         editEnd: end,
         replacementLength: token.length,
       });
-      const assetVersion = getAssetVersion(asset);
       const mention: PromptMention = {
         type: 'mention',
         mentionId: createMentionId(rangesRef.current),
@@ -621,7 +744,7 @@ export function ResourceMentionEditor({
       try {
         for (const file of files) {
           const asset = await onUploadResource(file);
-          if (asset) selectMention(asset);
+          if (asset) selectMention(projectSearchEntry(asset));
         }
       } catch (error) {
         setProtectedEditMessage(error instanceof Error ? error.message : '资源上传失败');
@@ -643,47 +766,6 @@ export function ResourceMentionEditor({
       if (nextRanges.length === rangesRef.current.length) return;
       commitState(textRef.current, nextRanges);
       setTrigger(null);
-    },
-    [commitState],
-  );
-
-  /** 在提及槽位之间交换完整资源身份，同时保留两侧文字块。 */
-  const moveMention = useCallback(
-    (mentionId: string, direction: -1 | 1) => {
-      const document = documentFromRanges(textRef.current, rangesRef.current);
-      const mentionBlockIndexes = document.blocks.flatMap((block, index) =>
-        block.type === 'mention' ? [index] : [],
-      );
-      const currentMentionIndex = mentionBlockIndexes.findIndex(
-        (blockIndex) =>
-          document.blocks[blockIndex]?.type === 'mention' &&
-          document.blocks[blockIndex].mentionId === mentionId,
-      );
-      const targetMentionIndex = currentMentionIndex + direction;
-      if (
-        currentMentionIndex < 0 ||
-        targetMentionIndex < 0 ||
-        targetMentionIndex >= mentionBlockIndexes.length
-      ) {
-        return;
-      }
-
-      const currentBlockIndex = mentionBlockIndexes[currentMentionIndex];
-      const targetBlockIndex = mentionBlockIndexes[targetMentionIndex];
-      const blocks = [...document.blocks];
-      const currentBlock = blocks[currentBlockIndex];
-      blocks[currentBlockIndex] = blocks[targetBlockIndex];
-      blocks[targetBlockIndex] = currentBlock;
-      const nextDocument: PromptDocument = { version: 1, blocks };
-      const nextText = renderPromptDocument(nextDocument);
-      const nextRanges = rangesFromDocument(nextDocument);
-      const movedRange = nextRanges.find((range) => range.mention.mentionId === mentionId);
-      caretRef.current = movedRange?.end ?? caretRef.current;
-      commitState(nextText, nextRanges);
-      setTrigger(null);
-      setReplaceMentionId(null);
-      setPendingDropAssetId(null);
-      setBindingMentionId(null);
     },
     [commitState],
   );
@@ -820,7 +902,7 @@ export function ResourceMentionEditor({
       }
       if (event.key === 'Enter' && searchEntries.length > 0) {
         event.preventDefault();
-        selectMention(searchEntries[activeIndex % searchEntries.length].asset);
+        selectMention(searchEntries[activeIndex % searchEntries.length]);
       }
     },
     [
@@ -854,7 +936,7 @@ export function ResourceMentionEditor({
         event.preventDefault();
         event.stopPropagation();
         const entry = searchEntries[activeIndex];
-        if (entry) selectMention(entry.asset);
+        if (entry) selectMention(entry);
       }
     },
     [activeIndex, searchEntries, selectMention],
@@ -966,6 +1048,10 @@ export function ResourceMentionEditor({
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
       setDragActive(false);
+      if (event.dataTransfer.types.includes(RESOURCE_ORDER_DRAG_TYPE)) {
+        event.stopPropagation();
+        return;
+      }
       if (disabled) return;
       const assetId = event.dataTransfer.getData(ASSET_DRAG_TYPE);
       if (!assetId) return;
@@ -989,6 +1075,10 @@ export function ResourceMentionEditor({
   );
 
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.types.includes(RESOURCE_ORDER_DRAG_TYPE)) {
+      event.stopPropagation();
+      return;
+    }
     if (!event.dataTransfer.types.includes(ASSET_DRAG_TYPE)) return;
     event.preventDefault();
     // 资源库只允许 link；声明 copy 会让浏览器拒绝真正的 drop。
@@ -1015,7 +1105,7 @@ export function ResourceMentionEditor({
     const seen = new Set<string>();
     const taken = new Set<string>();
     for (const range of mentionRanges) {
-      const identity = JSON.stringify([range.mention.assetId, range.mention.assetVersion]);
+      const identity = resourceIdentity(range.mention.assetId, range.mention.assetVersion);
       if (seen.has(identity)) continue;
       seen.add(identity);
       const connected = connectedAssets.find(
@@ -1033,7 +1123,7 @@ export function ResourceMentionEditor({
         : range;
       taken.add(name);
       items.push({
-        key: range.mention.mentionId,
+        key: identity,
         assetId: range.mention.assetId,
         assetVersion: range.mention.assetVersion,
         mediaType: range.mention.mediaType,
@@ -1043,13 +1133,13 @@ export function ResourceMentionEditor({
       });
     }
     for (const asset of connectedAssets) {
-      const identity = JSON.stringify([asset.id, asset.assetVersion]);
+      const identity = resourceIdentity(asset.id, asset.assetVersion);
       if (seen.has(identity)) continue;
       seen.add(identity);
       const name = asset.referenceName ?? uniqueResourceDisplayName(asset.name, taken);
       taken.add(name);
       items.push({
-        key: `connected:${asset.id}:${asset.assetVersion ?? ''}`,
+        key: identity,
         assetId: asset.id,
         assetVersion: asset.assetVersion,
         mediaType: asset.mediaType,
@@ -1057,8 +1147,59 @@ export function ResourceMentionEditor({
         asset,
       });
     }
-    return items;
-  }, [assets, connectedAssets, mentionRanges]);
+    // 旧 resourceRefs 只记录别名，不能把历史改名误当成用户排序。
+    if (!resourceRefs.some((ref) => ref.id.startsWith('ordered:'))) return items;
+    const order = new Map<string, number>();
+    resourceRefs.forEach((ref, index) => {
+      const identity = resourceIdentity(ref.assetId, ref.assetVersion);
+      if (!order.has(identity)) order.set(identity, index);
+    });
+    return items.sort(
+      (left, right) =>
+        (order.get(left.key) ?? resourceRefs.length) -
+        (order.get(right.key) ?? resourceRefs.length),
+    );
+  }, [assets, connectedAssets, mentionRanges, resourceRefs]);
+
+  /**
+   * 只回传完整资源条的新顺序，等待父层保存；不修改正文或提前更新序号。
+   * @param key 被移动资源的身份键，包含冻结版本。
+   * @param targetIndex 目标零基下标；越界、无回调或禁用时不提交。
+   */
+  const reorderResource = useCallback(
+    (key: string, targetIndex: number) => {
+      if (disabled || !onResourceReorder) return;
+      const currentIndex = stripItems.findIndex((item) => item.key === key);
+      if (
+        currentIndex < 0 ||
+        targetIndex < 0 ||
+        targetIndex >= stripItems.length ||
+        currentIndex === targetIndex
+      )
+        return;
+      const next = [...stripItems];
+      const [item] = next.splice(currentIndex, 1);
+      next.splice(targetIndex, 0, item);
+      try {
+        onResourceReorder(
+          next.map(({ assetId, assetVersion }) => ({
+            assetId,
+            ...(assetVersion !== undefined ? { assetVersion } : {}),
+          })),
+        );
+        setProtectedEditMessage(null);
+      } catch (error) {
+        setProtectedEditMessage(error instanceof Error ? error.message : '资源排序失败，请重试');
+      }
+    },
+    [disabled, onResourceReorder, stripItems],
+  );
+
+  /** 拖动完成或取消后清理临时标记，不保留未持久化顺序。 */
+  const finishResourceDrag = useCallback(() => {
+    draggedResourceRef.current = null;
+    setDraggedResourceKey(null);
+  }, []);
 
   const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
 
@@ -1117,22 +1258,17 @@ export function ResourceMentionEditor({
   const pickerContent = (
     <div
       ref={pickerRef}
-      className="resource-mention-picker resource-mention-picker-content nodrag nopan nowheel"
+      className="resource-mention-picker resource-mention-picker-content resource-mention-picker-scoped nodrag nopan nowheel"
       onKeyDown={handlePickerKeyDown}
       onPointerDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
-      {selectedTextRange && (
-        <p className="resource-mention-selection-label">
-          选择资源，将「{selectedTextRange.name}」设为引用名称
-        </p>
-      )}
       <label className="resource-mention-search">
         <Search size={15} aria-hidden="true" />
         <UiInput
           type="search"
           aria-label="搜索资源"
-          placeholder="搜索资源名称或标签"
+          placeholder="搜索名称、引用别名或标签"
           value={pickerQuery}
           onChange={(event) => setSearchQuery(event.currentTarget.value)}
           aria-controls={pickerId}
@@ -1144,12 +1280,14 @@ export function ResourceMentionEditor({
           }
         />
       </label>
-      <div className="resource-mention-picker-body">
+      <div className="resource-mention-picker-controls">
         <div className="resource-mention-filters" role="group" aria-label="节点类型">
           {RESOURCE_FILTERS.map((type) => (
             <UiButton
               key={type}
               type="button"
+              aria-label={type === 'all' ? '全部' : type === 'text' ? '文本' : mediaLabels[type]}
+              title={type === 'all' ? '全部' : type === 'text' ? '文本' : mediaLabels[type]}
               aria-pressed={mediaFilter === type}
               onClick={() => setMediaFilter(type)}
               disabled={pendingDropAssetId !== null}
@@ -1159,10 +1297,59 @@ export function ResourceMentionEditor({
               ) : (
                 <MentionMediaIcon mediaType={type} />
               )}
-              {type === 'all' ? '全部' : type === 'text' ? '文本' : mediaLabels[type]}
             </UiButton>
           ))}
         </div>
+        <div
+          className="resource-mention-scope-tabs"
+          role="tablist"
+          aria-label="资源范围"
+          onKeyDown={(event) => {
+            if (pendingDropAssetId !== null || isImeKeyboardEvent(event)) return;
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const next =
+              event.key === 'Home'
+                ? 'node'
+                : event.key === 'End'
+                  ? 'project'
+                  : resourceScope === 'node'
+                    ? 'project'
+                    : 'node';
+            setResourceScope(next);
+            event.currentTarget.querySelector<HTMLButtonElement>(`[data-scope="${next}"]`)?.focus();
+          }}
+        >
+          {(['node', 'project'] as const).map((scope) => (
+            <UiButton
+              key={scope}
+              type="button"
+              role="tab"
+              id={`${pickerId}-${scope}`}
+              data-scope={scope}
+              aria-selected={resourceScope === scope}
+              aria-controls={`${pickerId}-panel`}
+              tabIndex={resourceScope === scope ? 0 : -1}
+              disabled={pendingDropAssetId !== null}
+              onClick={() => setResourceScope(scope)}
+            >
+              {scope === 'node' ? '节点资源' : '项目资源'}
+            </UiButton>
+          ))}
+        </div>
+      </div>
+      {selectedTextRange && (
+        <p className="resource-mention-selection-label">
+          选择资源，将「{selectedTextRange.name}」设为引用名称
+        </p>
+      )}
+      <div
+        className="resource-mention-picker-body"
+        id={`${pickerId}-panel`}
+        role="tabpanel"
+        aria-labelledby={`${pickerId}-${resourceScope}`}
+      >
         <div
           className="resource-mention-results"
           id={pickerId}
@@ -1175,8 +1362,32 @@ export function ResourceMentionEditor({
                 : '选择资源'
           }
         >
-          {searchEntries.length === 0 ? (
-            <div className="resource-mention-empty">没有可引用的资源</div>
+          {remoteProject && !currentProjectResult ? (
+            <div className="resource-mention-empty" role="status">
+              正在搜索项目资源…
+            </div>
+          ) : remoteProject && currentProjectResult?.error ? (
+            <div className="resource-mention-empty" role="alert">
+              <p>{currentProjectResult.error}</p>
+              <UiButton type="button" onClick={() => setProjectRevision((value) => value + 1)}>
+                重试搜索
+              </UiButton>
+            </div>
+          ) : searchEntries.length === 0 ? (
+            <div className="resource-mention-empty">
+              <p>
+                {resourceScope === 'node' && pendingDropAssetId === null
+                  ? nodeSearchEntries.length === 0
+                    ? '当前节点尚未引用资源'
+                    : '没有匹配的节点资源'
+                  : '没有可引用的资源'}
+              </p>
+              {resourceScope === 'node' && pendingDropAssetId === null && (
+                <UiButton type="button" onClick={() => setResourceScope('project')}>
+                  切换到项目资源
+                </UiButton>
+              )}
+            </div>
           ) : (
             searchEntries.map((entry, index) => (
               <UiButton
@@ -1185,16 +1396,25 @@ export function ResourceMentionEditor({
                 id={`${pickerId}-option-${index}`}
                 aria-selected={index === activeIndex}
                 className={`resource-mention-option ${index === activeIndex ? 'is-active' : ''}`}
-                key={entry.asset.id}
+                key={entry.key}
+                disabled={Boolean(entry.unavailableReason)}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectMention(entry.asset)}
+                onClick={() => selectMention(entry)}
               >
-                <MentionPreview asset={entry.asset} mediaType={entry.asset.mediaType} />
+                {entry.unavailableReason ? (
+                  <MentionMediaIcon mediaType={entry.asset.mediaType} />
+                ) : (
+                  <MentionPreview asset={entry.asset} mediaType={entry.asset.mediaType} />
+                )}
                 <span className="resource-mention-option-copy">
-                  <strong>{entry.asset.name}</strong>
+                  <strong>{entry.name}</strong>
                   <small>
-                    {mediaLabels[entry.asset.mediaType]} · {formatBytes(entry.asset.sizeBytes)} ·{' '}
-                    {formatVersionHint(getAssetVersion(entry.asset))}
+                    {mediaLabels[entry.asset.mediaType]} ·{' '}
+                    {entry.asset.sizeBytes === undefined
+                      ? '大小未知'
+                      : formatBytes(entry.asset.sizeBytes)}{' '}
+                    · {formatVersionHint(entry.assetVersion)}
+                    {entry.unavailableReason && ` · ${entry.unavailableReason}`}
                   </small>
                 </span>
               </UiButton>
@@ -1202,6 +1422,46 @@ export function ResourceMentionEditor({
           )}
         </div>
       </div>
+      {projectPreview && (!remoteProject || currentProjectResult?.result) && (
+        <div className="resource-mention-project-pagination" role="note">
+          默认最多显示 10 项，输入关键词搜索整个项目
+        </div>
+      )}
+      {remoteProject && !projectPreview && currentProjectResult?.result && (
+        <div
+          className="resource-mention-project-pagination"
+          role="navigation"
+          aria-label="项目资源分页"
+        >
+          <UiButton
+            type="button"
+            aria-label="上一页项目资源"
+            disabled={projectPageNumber <= 1}
+            onClick={() => setProjectPage({ key: projectFilterKey, page: projectPageNumber - 1 })}
+          >
+            上一页
+          </UiButton>
+          <span>
+            {projectPageNumber} /{' '}
+            {Math.max(
+              1,
+              Math.ceil(currentProjectResult.result.total / currentProjectResult.result.pageSize),
+            )}{' '}
+            · 共 {currentProjectResult.result.total} 项
+          </span>
+          <UiButton
+            type="button"
+            aria-label="下一页项目资源"
+            disabled={
+              projectPageNumber * currentProjectResult.result.pageSize >=
+              currentProjectResult.result.total
+            }
+            onClick={() => setProjectPage({ key: projectFilterKey, page: projectPageNumber + 1 })}
+          >
+            下一页
+          </UiButton>
+        </div>
+      )}
       {(replaceMentionId !== null || pendingDropAssetId !== null || selectedTextRange !== null) && (
         <UiButton type="button" className="resource-mention-picker-cancel" onClick={closePicker}>
           <X size={13} aria-hidden="true" />
@@ -1219,8 +1479,37 @@ export function ResourceMentionEditor({
       onDragLeave={() => setDragActive(false)}
       onDrop={handleDrop}
     >
-      <div className="resource-mention-strip" aria-label="引用资源">
-        {stripItems.map((item) => {
+      <div
+        className="resource-mention-strip nodrag nopan"
+        aria-label="引用资源"
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <UiButton
+          type="button"
+          className="resource-mention-thumb resource-mention-thumb-add"
+          aria-label="上传引用资源"
+          title="上传引用资源"
+          disabled={disabled || !onUploadResource || uploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </UiButton>
+        {onReferencePickToggle && (
+          <UiButton
+            type="button"
+            className="resource-mention-thumb resource-mention-thumb-add resource-mention-reference-pick"
+            aria-label="添加参考图"
+            aria-pressed={referencePickActive}
+            title={referencePickActive ? '退出添加参考图' : '添加参考图'}
+            disabled={disabled}
+            onClick={onReferencePickToggle}
+          >
+            <ImagePlus size={18} aria-hidden="true" />
+          </UiButton>
+        )}
+        {stripItems.map((item, index) => {
           const mention = mentionRanges.find(
             (range) => range.mention.mentionId === item.mentionId,
           )?.mention;
@@ -1231,16 +1520,70 @@ export function ResourceMentionEditor({
           return (
             <div
               key={item.key}
-              className={`resource-mention-thumb${unavailableReason ? ' is-missing' : ''}`}
+              className={`resource-mention-thumb${unavailableReason ? ' is-missing' : ''}${draggedResourceKey === item.key ? ' is-reordering' : ''}`}
               role="article"
+              aria-label={`参考资源 ${index + 1}：${item.name}`}
               data-mention-id={item.mentionId}
+              data-resource-key={item.key}
+              draggable={Boolean(onResourceReorder) && !disabled}
+              onDragStart={(event) => {
+                event.stopPropagation();
+                if (disabled || !onResourceReorder) {
+                  event.preventDefault();
+                  return;
+                }
+                draggedResourceRef.current = item.key;
+                setDraggedResourceKey(item.key);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData(RESOURCE_ORDER_DRAG_TYPE, item.key);
+              }}
+              onDragOver={(event) => {
+                if (!event.dataTransfer.types.includes(RESOURCE_ORDER_DRAG_TYPE)) return;
+                event.stopPropagation();
+                if (disabled || !onResourceReorder || !draggedResourceRef.current) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+              }}
+              onDrop={(event) => {
+                if (!event.dataTransfer.types.includes(RESOURCE_ORDER_DRAG_TYPE)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const key = draggedResourceRef.current;
+                if (key && key === event.dataTransfer.getData(RESOURCE_ORDER_DRAG_TYPE)) {
+                  reorderResource(key, index);
+                }
+                finishResourceDrag();
+              }}
+              onDragEnd={(event) => {
+                event.stopPropagation();
+                finishResourceDrag();
+              }}
               {...(unavailableReason ? { 'data-placeholder-reason': unavailableReason.code } : {})}
             >
               <UiButton
                 type="button"
                 className="resource-mention-thumb-main"
                 aria-label={`预览并命名 ${item.name}`}
+                aria-keyshortcuts={
+                  onResourceReorder && !disabled ? 'Alt+ArrowLeft Alt+ArrowRight' : undefined
+                }
+                title={
+                  onResourceReorder && !disabled
+                    ? `${item.name}；拖动或 Alt + 左右方向键调整序号`
+                    : item.name
+                }
                 disabled={disabled}
+                onKeyDown={(event) => {
+                  if (
+                    !onResourceReorder ||
+                    !event.altKey ||
+                    !['ArrowLeft', 'ArrowRight'].includes(event.key)
+                  )
+                    return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  reorderResource(item.key, index + (event.key === 'ArrowLeft' ? -1 : 1));
+                }}
                 onClick={() => {
                   setResourceDialogId(item.key);
                   setResourceNameDraft(item.name);
@@ -1253,6 +1596,9 @@ export function ResourceMentionEditor({
                   <MentionMediaIcon mediaType={item.mediaType} />
                 )}
               </UiButton>
+              <span className="resource-mention-thumb-order" aria-label={`引用顺序 ${index + 1}`}>
+                {index + 1}
+              </span>
               <UiButton
                 type="button"
                 className="resource-mention-thumb-delete"
@@ -1268,15 +1614,6 @@ export function ResourceMentionEditor({
             </div>
           );
         })}
-        <UiButton
-          type="button"
-          className="resource-mention-thumb resource-mention-thumb-add"
-          aria-label="上传引用资源"
-          disabled={disabled || !onUploadResource || uploading}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <Plus size={16} aria-hidden="true" />
-        </UiButton>
         <input
           ref={fileInputRef}
           type="file"
@@ -1713,7 +2050,106 @@ function updateTrigger(
   setter(findMentionTrigger(text, caret));
 }
 
-function assetMatchesQuery(asset: Asset, query: string): boolean {
+/** 按资源身份和冻结版本生成键；未冻结与已冻结版本保持不同。 */
+function resourceIdentity(assetId: string, assetVersion?: number): string {
+  return JSON.stringify([assetId, assetVersion]);
+}
+
+/** 项目目录结果在确认时插入目录提供的版本，不依赖节点的旧引用版本。 */
+function projectSearchEntry(asset: Asset): SearchEntry {
+  const assetVersion = getAssetVersion(asset);
+  return {
+    key: resourceIdentity(asset.id, assetVersion),
+    asset,
+    assetVersion,
+    name: asset.name,
+    aliases: [asset.name],
+  };
+}
+
+/**
+ * 合并正文提及与当前节点连线，保留目录外生成结果及同一资产的不同冻结版本。
+ * @returns 可搜索的节点资源；失效引用仍显示原因，但不能插入或改用目录最新版。
+ */
+function collectNodeSearchEntries(
+  ranges: readonly MentionRange[],
+  assets: readonly Asset[],
+  connectedAssets: readonly ConnectedPromptAsset[],
+  resourceRefs: readonly NodeResourceRef[],
+): SearchEntry[] {
+  const entries = new Map<string, SearchEntry>();
+  /** 同身份合并别名；名称与可用性以首次出现的正文引用为准。 */
+  const addEntry = (entry: SearchEntry) => {
+    const refs = resourceRefs.filter(
+      (ref) => resourceIdentity(ref.assetId, ref.assetVersion) === entry.key,
+    );
+    const previous = entries.get(entry.key);
+    entries.set(entry.key, {
+      ...(previous ?? entry),
+      name: refs[0]?.name ?? previous?.name ?? entry.name,
+      aliases: [
+        ...new Set([
+          ...(previous?.aliases ?? []),
+          ...entry.aliases,
+          ...refs.map((ref) => ref.name),
+        ]),
+      ],
+    });
+  };
+  for (const { mention } of ranges) {
+    const catalog = assets.find((asset) => asset.id === mention.assetId);
+    const connected = connectedAssets.find(
+      (asset) => asset.id === mention.assetId && asset.assetVersion === mention.assetVersion,
+    );
+    const resolved = resolveMentionAsset(mention, assets, connected ? [connected] : []);
+    addEntry({
+      key: resourceIdentity(mention.assetId, mention.assetVersion),
+      asset: {
+        ...catalog,
+        ...resolved,
+        id: mention.assetId,
+        name: catalog?.name ?? connected?.name ?? mention.label,
+        mediaType: mention.mediaType,
+        tags: [...new Set([...(catalog?.tags ?? []), ...(connected?.tags ?? [])])],
+      },
+      assetVersion: mention.assetVersion,
+      name: connected?.referenceName ?? mentionDisplayName(mention),
+      aliases: [mention.label, mentionDisplayName(mention), connected?.referenceName ?? ''],
+      unavailableReason: connected?.versionUnavailable
+        ? '版本不可用'
+        : catalog?.archivedAt
+          ? '资源已归档'
+          : getMentionUnavailableReason(mention, resolved as Asset | undefined)?.label,
+    });
+  }
+  for (const connected of connectedAssets) {
+    const catalog = assets.find((asset) => asset.id === connected.id);
+    const name = connected.referenceName ?? connected.name;
+    addEntry({
+      key: resourceIdentity(connected.id, connected.assetVersion),
+      asset: {
+        ...catalog,
+        ...connected,
+        tags: [...new Set([...(catalog?.tags ?? []), ...(connected.tags ?? [])])],
+        ...(connected.assetVersion !== undefined
+          ? { contentUrl: resultAssetContentUrl(connected.id, connected.assetVersion) }
+          : {}),
+      },
+      assetVersion: connected.assetVersion,
+      name,
+      aliases: [name, connected.name],
+      unavailableReason: connected.versionUnavailable
+        ? '版本不可用'
+        : connected.status === 'archived' || catalog?.status === 'archived' || catalog?.archivedAt
+          ? '资源已归档'
+          : undefined,
+    });
+  }
+  return [...entries.values()];
+}
+
+/** 搜索目录名称、元数据别名和标签；连线资源允许缺少目录元数据。 */
+function assetMatchesQuery(asset: SearchEntry['asset'], query: string): boolean {
   if (!query) return true;
   const metadataAliases = [asset.metadata?.alias, asset.metadata?.aliases].flatMap((value) => {
     if (typeof value === 'string') return [value];
@@ -1726,8 +2162,8 @@ function assetMatchesQuery(asset: Asset, query: string): boolean {
     asset.id,
     asset.mediaType,
     mediaLabels[asset.mediaType],
-    asset.mimeType,
-    ...asset.tags,
+    asset.mimeType ?? '',
+    ...(asset.tags ?? []),
     ...metadataAliases,
   ];
   return aliases.some((value) => value.toLocaleLowerCase().includes(query));
@@ -1760,7 +2196,8 @@ function canPreviewMentionAsset(
         Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status'>>)
     | undefined,
 ): boolean {
-  if (!asset) return false;
+  // 冻结身份可能尚无目录元数据；所有预览入口都不能把它强转为完整 Asset。
+  if (!asset?.mimeType) return false;
   if (asset.status === 'archived') return false;
   return Boolean(asset.contentUrl) || asset.status === 'ready';
 }
@@ -1789,7 +2226,7 @@ function getMentionUnavailableReason(
 
 /**
  * 按提及身份解析预览；目录只提供元数据，不能覆盖文档冻结的版本地址。
- * @returns 可用资源；目录和连线均不存在时保持缺失占位，不伪造资产。
+ * @returns 已有元数据或冻结引用身份；目录未加载不冒充归档/失效，显式占位仍不可用。
  */
 function resolveMentionAsset(
   mention: PromptMention,
@@ -1802,7 +2239,19 @@ function resolveMentionAsset(
       (item) => item.id === mention.assetId && item.assetVersion === mention.assetVersion,
     ) ??
     connectedAssets.find((item) => item.id === mention.assetId);
-  if (!asset || mention.assetVersion === undefined) return asset;
+  if (!asset) {
+    // 分页目录未加载不等于引用已失效；冻结身份可继续引用，访问权限仍由 API 校验。
+    if (mention.assetVersion === undefined || mention.placeholder || mention.placeholderReason)
+      return undefined;
+    return {
+      id: mention.assetId,
+      name: mention.label,
+      mediaType: mention.mediaType,
+      assetVersion: mention.assetVersion,
+      contentUrl: resultAssetContentUrl(mention.assetId, mention.assetVersion),
+    };
+  }
+  if (mention.assetVersion === undefined) return asset;
   return { ...asset, contentUrl: resultAssetContentUrl(mention.assetId, mention.assetVersion) };
 }
 
@@ -2003,9 +2452,17 @@ function MentionMediaIcon({ mediaType }: { mediaType: MediaType }) {
 }
 
 /** 在卡片和搜索选项中复用资源缩略图；资源缺失时回退到媒体类型图标。 */
-function MentionPreview({ asset, mediaType }: { asset: Asset | undefined; mediaType: MediaType }) {
-  if (!asset) return <MentionMediaIcon mediaType={mediaType} />;
-  return <AssetPreview asset={asset} mode="compact" className="resource-mention-preview" />;
+function MentionPreview({
+  asset,
+  mediaType,
+}: {
+  asset: SearchEntry['asset'] | undefined;
+  mediaType: MediaType;
+}) {
+  if (!canPreviewMentionAsset(asset)) return <MentionMediaIcon mediaType={mediaType} />;
+  return (
+    <AssetPreview asset={asset as Asset} mode="compact" className="resource-mention-preview" />
+  );
 }
 
 export default ResourceMentionEditor;

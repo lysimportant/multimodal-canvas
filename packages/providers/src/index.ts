@@ -1113,7 +1113,7 @@ export class NewApiVideoProvider {
           attempt,
           format: 'plain',
           parts: [{ order: 0, text: sentPromptText(body) }],
-          resources: videoPromptResources(body, inputs),
+          resources: videoPromptResources(snapshot, body, inputs),
           // 只有真正写入创建体的负向字段才进入记录，画布上的编辑值不参与。
           negativeText: normalizeErrorField(
             body.negative_prompt ??
@@ -2263,7 +2263,7 @@ function officialVideoPayload(
       'Seedance 视频编辑需要 -1（自动时长）和 adaptive（跟随原视频）',
     );
   }
-  const orderedMedia = orderedVideoMedia(inputs);
+  const orderedMedia = orderedVideoMedia(snapshot, inputs);
   const media = orderedMedia.map((input) => {
     const mediaType = input.snapshot.data.mediaType;
     const role =
@@ -2320,9 +2320,14 @@ function officialVideoPayload(
   return payload;
 }
 
-/** 按冻结输入顺序收集实际发送的帧和参考媒体，供请求与脱敏记录共用。 */
-function orderedVideoMedia(inputs: VideoInputMapping): RunInputSnapshot[] {
-  return [
+/**
+ * 按最终请求顺序收集媒体，供请求、报价与脱敏记录共用。
+ * @param snapshot 目标节点的冻结快照，仅读取 resourceRefs 显式顺序。
+ * @param inputs 已通过模式/角色预检的输入；首尾帧保持原槽位和身份。
+ * @returns 参考媒体按资源条排序、未列项沿旧顺序追加的新数组，不改写输入或角色。
+ */
+function orderedVideoMedia(snapshot: RunSnapshot, inputs: VideoInputMapping): RunInputSnapshot[] {
+  const media = [
     inputs.firstFrame,
     inputs.lastFrame,
     ...inputs.referenceImages,
@@ -2333,6 +2338,16 @@ function orderedVideoMedia(inputs: VideoInputMapping): RunInputSnapshot[] {
     .sort(
       (left, right) => left.sortOrder - right.sortOrder || left.nodeId.localeCompare(right.nodeId),
     );
+  const references = orderResourceReferenceInputs(
+    snapshot,
+    media.filter((input) => input !== inputs.firstFrame && input !== inputs.lastFrame),
+  );
+  let referenceIndex = 0;
+  return media.map((input) =>
+    input === inputs.firstFrame || input === inputs.lastFrame
+      ? input
+      : references[referenceIndex++]!,
+  );
 }
 
 /** 校验已确认视频模型参考素材的媒体类型与传输方式；URL 由 Worker 按冻结版本提供。 */
@@ -3807,8 +3822,13 @@ function imagePromptResources(images: readonly ImageSourceInput[]): RequestPromp
  *
  * 只记录请求体实际出现的帧、参考图片、视频和音频；被预检丢弃或未映射的输入
  * 不会因为出现在快照里就被写进记录。
+ * @param snapshot 用于与实际请求共享目标节点的显式资源顺序。
+ * @param body 已组装的创建体，只记录其中实际发送的媒体字段。
+ * @param inputs 已校验角色和冻结身份的视频输入。
+ * @returns 与发送顺序一致的脱敏资源记录，不保存 URL 或媒体字节。
  */
 function videoPromptResources(
+  snapshot: RunSnapshot,
   body: Record<string, unknown>,
   inputs: VideoInputMapping,
 ): RequestPromptResource[] {
@@ -3829,7 +3849,7 @@ function videoPromptResources(
     (Array.isArray(body.metadata.content) ||
       (isRecord(body.metadata.input) && Array.isArray(body.metadata.input.media)))
   ) {
-    for (const input of orderedVideoMedia(inputs)) add(input);
+    for (const input of orderedVideoMedia(snapshot, inputs)) add(input);
     return resources;
   }
   if (body.image !== undefined) add(inputs.firstFrame);
@@ -4177,6 +4197,39 @@ function orderedRunInputs(snapshot: RunSnapshot): RunInputSnapshot[] {
     .map(({ input }) => input);
 }
 
+/**
+ * 在既有去重、角色分组之后应用目标节点的参考资源顺序，不参与正文或冻结提及校验。
+ * @param snapshot 仅在目标 resourceRefs 含 ordered: ID 时排序；旧别名保持原输入顺序，名称不参与身份匹配。
+ * @param inputs 已按旧规则排序的参考数组，不包含需要固定槽位的首尾帧。
+ * @param versionOf 运行输入的冻结版本；source-bound refs 不替换连线版本，也不据此新增原图。
+ * @returns 按资产 ID 和明确版本精确匹配的新数组；重复排序项取首次，未列项稳定追加。
+ */
+function orderResourceReferenceInputs<T extends RunInputSnapshot>(
+  snapshot: RunSnapshot,
+  inputs: readonly T[],
+  versionOf: (input: T) => number | undefined = (input) => input.sourceAssetVersion,
+): T[] {
+  const refs = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.resourceRefs;
+  if (!refs?.some((ref) => ref.id.startsWith('ordered:'))) return [...inputs];
+  const orderByVersion = new Map<string, number>();
+  refs.forEach((ref, index) => {
+    // 缺少版本不能视为通配符，否则会把同一资产的不同冻结版本一起前置。
+    if (ref.assetVersion === undefined) return;
+    const key = `${ref.assetId}:${ref.assetVersion}`;
+    if (!orderByVersion.has(key)) orderByVersion.set(key, index);
+  });
+  return inputs
+    .map((input, index) => {
+      const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+      const version = versionOf(input);
+      const order =
+        assetId && version !== undefined ? orderByVersion.get(`${assetId}:${version}`) : undefined;
+      return { input, index, order: order ?? refs.length };
+    })
+    .sort((left, right) => left.order - right.order || left.index - right.index)
+    .map(({ input }) => input);
+}
+
 function resolvePromptSource(
   snapshot: RunSnapshot,
   label: string,
@@ -4291,7 +4344,8 @@ export function describeVideoInputMedia(snapshot: RunSnapshot): VideoEstimateMed
     resolved,
     absorbed.absorbedMentionIds,
   );
-  return orderedVideoMedia(mapVideoInputs(estimateSnapshot, absorbed.inputs)).map((input) => {
+  const inputs = mapVideoInputs(estimateSnapshot, absorbed.inputs);
+  return orderedVideoMedia(estimateSnapshot, inputs).map((input) => {
     const type = input.snapshot.data.mediaType;
     if (type === 'image')
       return {
@@ -4786,13 +4840,13 @@ type ImageSourceInput = RunInputSnapshot & {
 type ImageGenerationMapping = {
   /** 发送给图片接口的主提示词。 */
   prompt: string;
-  /** 去重后按连线、提及顺序上传的原图，发送前校验模型数量上限。 */
+  /** 去重后按显式资源顺序上传，未列项沿连线、提及顺序追加；发送前校验数量上限。 */
   images: ImageSourceInput[];
 };
 
 /**
  * 把图片节点的连线和资源提及分成提示词、原图。
- * 图片连线和图片提及共同作为 edits 原图，按冻结资产版本去重。
+ * 图片连线和图片提及共同作为 edits 原图，按冻结资产版本去重后应用 resourceRefs 顺序。
  * @param snapshot 当前运行快照。
  * @param label 目标节点显示名。
  * @param nodePrompt 节点提示词。
@@ -4881,7 +4935,7 @@ function mapImageGenerationInputs(
       promptInput,
       'image',
     ),
-    images: uniqueImages,
+    images: orderResourceReferenceInputs(snapshot, uniqueImages, (input) => input.assetVersion),
   };
 }
 
@@ -5085,6 +5139,7 @@ function resolveRequiredVideoPrompt(
  * 文生视频节点上的图片提及会按全能参考预检，避免参考图被文生视频规则误拦。
  * @param snapshot 运行快照。
  * @param extraInputs 提示词提及吸收出的额外输入。
+ * @returns 首尾帧与角色保持不变；参考图数组应用显式顺序，混合媒体由最终组装处排序。
  */
 function mapVideoInputs(
   snapshot: RunSnapshot,
@@ -5127,7 +5182,7 @@ function mapVideoInputs(
     negativePrompt: precheck.inputSet.negativePrompt,
     firstFrame: precheck.inputSet.firstFrame,
     lastFrame: precheck.inputSet.lastFrame,
-    referenceImages,
+    referenceImages: orderResourceReferenceInputs(snapshot, referenceImages),
     referenceVideos: precheck.inputSet.content,
     referenceAudios: precheck.inputSet.audioTrack,
   };

@@ -73,15 +73,25 @@ describe('桌面节点输入区高度', () => {
     );
   });
 
-  it('文字层铺满输入容器，不保留独立固定高度或移动端高度覆盖', () => {
+  it('快速编辑与 Dialog 的正文层只裁剪溢出，不再显示第二条滚动条', () => {
     expect(layoutCss).toMatch(
-      /\.node-quick-editor \.node-quick-editor-prompt \.resource-mention-highlight \{ height: auto; max-height: none; min-height: 0; overflow-y: auto; \}/,
+      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-prompt \.resource-mention-highlight \{ height: auto; max-height: none; min-height: 0; overflow: hidden; \}/,
     );
     expect(layoutCss.match(/\.resource-mention-highlight/g)).toHaveLength(1);
     expect(indexCss).toMatch(
       /\.resource-mention-highlight \{[^}]*bottom: 0;[^}]*position: absolute;[^}]*top: 0;/,
     );
   });
+  it('底部 Skill、份数与生成整体靠右，排除顶部设置栏', () => {
+    expect(layoutCss).toMatch(
+      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-controls:not\(\.node-quick-editor-topbar\) \{ justify-content: flex-end; \}/,
+    );
+    expect(layoutCss.match(/justify-content: flex-end;/g)).toHaveLength(1);
+    expect(editorCss).toMatch(
+      /\.node-quick-editor-run-group \{[^}]*display: flex;[^}]*flex: 0 0 auto;/,
+    );
+  });
+
   it('仅为桌面浮层的提示词输入区增加固定初始高度，并保留内部滚动', () => {
     expect(indexCss).toMatch(
       /@media \(min-width: 901px\) \{ \.quick-editor-overlay \.node-quick-editor \.node-quick-editor-prompt textarea \{ height: 180px; min-height: 180px; max-height: 240px; overflow-y: auto; \} \}/,

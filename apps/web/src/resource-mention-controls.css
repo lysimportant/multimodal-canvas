@@ -1,0 +1,129 @@
+/* 只调整资源条与搜索弹层，不改变正文高亮层和原生输入层的布局。 */
+.resource-mention-strip .resource-mention-reference-pick[aria-pressed='true'] {
+  background: var(--mc-accent-soft, #edf7f1);
+  border-color: var(--mc-accent, #18794e);
+  border-style: solid;
+  color: var(--mc-accent-strong, #125d3d);
+}
+
+.resource-mention-strip .resource-mention-thumb[draggable='true'],
+.resource-mention-strip .resource-mention-thumb[draggable='true'] .resource-mention-thumb-main {
+  cursor: grab;
+}
+
+.resource-mention-strip .resource-mention-thumb.is-reordering {
+  cursor: grabbing;
+  opacity: 0.55;
+}
+
+.resource-mention-thumb-order {
+  background: var(--mc-accent-strong, #125d3d);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  left: 2px;
+  line-height: 16px;
+  min-width: 16px;
+  padding: 0 3px;
+  pointer-events: none;
+  position: absolute;
+  text-align: center;
+  top: 2px;
+}
+
+.resource-mention-picker-popover .resource-mention-picker-content.resource-mention-picker-scoped {
+  height: min(480px, calc(100dvh - 24px));
+  max-height: calc(100dvh - 24px);
+  width: min(520px, calc(100vw - 24px));
+}
+
+.resource-mention-picker-scoped .resource-mention-picker-controls {
+  align-items: center;
+  border-bottom: 1px solid var(--mc-border, #d5dfdb);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 7px 10px;
+}
+
+.resource-mention-picker-scoped .resource-mention-filters {
+  border: 0;
+  flex-direction: row;
+  gap: 3px;
+  overflow: visible;
+  padding: 0;
+}
+
+.resource-mention-picker-scoped .resource-mention-filters button {
+  height: 30px;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0;
+  width: 30px;
+}
+
+.resource-mention-picker-scoped .resource-mention-scope-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.resource-mention-scope-tabs .ui-button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--mc-text-muted, #687386);
+  font: inherit;
+  height: 30px;
+  padding: 0 8px;
+}
+
+.resource-mention-scope-tabs .ui-button[aria-selected='true'] {
+  background: var(--mc-accent-soft, #edf7f1);
+  color: var(--mc-accent-strong, #125d3d);
+}
+
+.resource-mention-picker-scoped .resource-mention-picker-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.resource-mention-picker-scoped .resource-mention-results {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.resource-mention-picker-scoped .resource-mention-selection-label {
+  flex: 0 0 auto;
+  margin: 0;
+  max-height: 3.5em;
+  overflow-y: auto;
+  padding: 6px 12px;
+}
+
+.resource-mention-picker-scoped .resource-mention-empty {
+  padding: 28px 8px;
+}
+
+.resource-mention-picker-scoped .resource-mention-empty button {
+  margin-top: 8px;
+}
+
+.resource-mention-picker-scoped .resource-mention-picker-cancel {
+  flex: 0 0 auto;
+}
+
+/* 项目检索只分页加载结果，分页栏不挤占筛选行且不扩大弹层。 */
+.resource-mention-project-pagination {
+  align-items: center;
+  border-top: 1px solid var(--mc-border, #d5dfdb);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 5px 10px;
+}

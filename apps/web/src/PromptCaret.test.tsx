@@ -13,13 +13,17 @@ function CaretHarness({
   disabled = false,
 }: {
   value?: string;
-  nodeEditor?: boolean;
+  nodeEditor?: boolean | 'dialog';
   disabled?: boolean;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   return (
-    <div className={nodeEditor ? 'node-quick-editor' : ''}>
+    <div
+      className={
+        nodeEditor === 'dialog' ? 'node-quick-editor-dialog' : nodeEditor ? 'node-quick-editor' : ''
+      }
+    >
       <div className="resource-mention-composer">
         <div ref={highlightRef} className="resource-mention-highlight" aria-hidden="true">
           {value}
@@ -221,33 +225,83 @@ describe('PromptCaret', () => {
     expect(container.querySelector('.resource-mention-caret-mirror')).toBeNull();
     expect(input).not.toHaveAttribute('data-prompt-caret');
   });
-  it.each([true, false])('正文与 textarea 共用字体、换行和滚动布局，节点模式=%s', (nodeEditor) => {
-    const { container } = render(<CaretHarness nodeEditor={nodeEditor} />);
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
-    const highlight = container.querySelector<HTMLElement>('.resource-mention-highlight')!;
-    mockLayout(input);
-    input.style.cssText =
-      'font: 13px/22.1px Arial; padding: 8px 4px; border: 1px solid; letter-spacing: 0.25px; word-break: normal; overflow-wrap: break-word; white-space: pre-wrap; tab-size: 4';
-    fireEvent.scroll(input);
-    expect(highlight).toHaveStyle({
-      fontFamily: 'Arial',
-      fontSize: '13px',
-      lineHeight: '22.1px',
-      letterSpacing: '0.25px',
-      wordBreak: 'normal',
-      overflowWrap: 'break-word',
-      width: '300px',
-      height: '100px',
-      paddingLeft: '4px',
-      borderLeftWidth: '1px',
-    });
-    input.scrollTop = 56;
-    input.scrollLeft = 12;
-    fireEvent.scroll(input);
-    expect(highlight.scrollTop).toBe(56);
-    expect(highlight.scrollLeft).toBe(12);
-    expect(input.selectionStart).toBe(0);
-  });
+  it.each([true, false, 'dialog'] as const)(
+    '正文与 textarea 共用字体、换行和滚动布局，节点模式=%s',
+    (nodeEditor) => {
+      const { container } = render(<CaretHarness nodeEditor={nodeEditor} />);
+      const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+      const highlight = container.querySelector<HTMLElement>('.resource-mention-highlight')!;
+      mockLayout(input);
+      input.style.cssText =
+        'font: 13px/22.1px Arial; padding: 8px 4px; border: 1px solid; letter-spacing: 0.25px; word-break: normal; overflow-wrap: break-word; white-space: pre-wrap; tab-size: 4; text-rendering: auto';
+      fireEvent.scroll(input);
+      expect(highlight).toHaveStyle({
+        fontFamily: 'Arial',
+        fontSize: '13px',
+        textRendering: 'auto',
+        lineHeight: '22.1px',
+        letterSpacing: '0.25px',
+        wordBreak: 'normal',
+        overflowWrap: 'break-word',
+        width: '300px',
+        height: '100px',
+        paddingLeft: '4px',
+        borderLeftWidth: '1px',
+      });
+      input.scrollTop = 56;
+      input.scrollLeft = 12;
+      fireEvent.scroll(input);
+      expect(highlight.scrollTop).toBe(56);
+      expect(highlight.scrollLeft).toBe(12);
+      expect(input.selectionStart).toBe(0);
+    },
+  );
+
+  it.each([true, 'dialog'] as const)(
+    '存在原生滚动条时正文和光标镜像只扣一次宽度，编辑器=%s',
+    (nodeEditor) => {
+      const { container } = render(
+        <CaretHarness nodeEditor={nodeEditor} value={'长中文引用与行尾。\n'.repeat(60)} />,
+      );
+      const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+      const highlight = container.querySelector<HTMLElement>('.resource-mention-highlight')!;
+      const mirror = container.querySelector<HTMLElement>('.resource-mention-caret-mirror')!;
+      mockLayout(input, 1.5);
+      input.style.border = '1px solid';
+      input.style.textRendering = 'auto';
+      Object.defineProperty(input, 'clientWidth', { configurable: true, value: 283 });
+      act(() => input.focus());
+      expect(highlight).toHaveStyle({ width: '285px', height: '100px' });
+      expect(mirror).toHaveStyle({
+        width: '285px',
+        height: '100px',
+        textRendering: 'auto',
+      });
+
+      for (let index = 0; index < 5; index += 1) {
+        input.setSelectionRange(index, index + 8, 'backward');
+        input.scrollTop = index * 22;
+        fireEvent.select(input);
+        fireEvent.pointerUp(input);
+        fireEvent.scroll(input);
+        expect(input.selectionStart).toBe(index);
+        expect(input.selectionEnd).toBe(index + 8);
+        expect(input.selectionDirection).toBe('backward');
+        expect(highlight.scrollTop).toBe(input.scrollTop);
+        expect(highlight).toHaveStyle({ width: '285px' });
+        expect(mirror.hidden).toBe(true);
+      }
+
+      // 文本缩短后滚动条消失，正文不能继续沿用旧的窄宽度。
+      Object.defineProperty(input, 'clientWidth', { configurable: true, value: 298 });
+      input.setSelectionRange(0, 0);
+      input.scrollTop = 0;
+      fireEvent.select(input);
+      expect(highlight).toHaveStyle({ width: '300px' });
+      expect(mirror).toHaveStyle({ width: '300px' });
+      expect(mirror.hidden).toBe(false);
+    },
+  );
 
   it('长选区删除回到顶部时同步可见正文，禁用状态仍不覆盖原生光标', () => {
     const { container, rerender } = render(<CaretHarness value={'长文本\n'.repeat(60)} />);

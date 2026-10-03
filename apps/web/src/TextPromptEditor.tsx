@@ -1,10 +1,17 @@
-import type { Asset, PromptDocument, PromptMention } from '@multimodal-canvas/domain';
+import type { ProjectResourceSearch } from './project-resource-search';
+import type {
+  Asset,
+  NodeResourceRef,
+  PromptDocument,
+  PromptMention,
+} from '@multimodal-canvas/domain';
 import { useMemo } from 'react';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
 import { projectConnectedPromptDocument } from './resource-mention-sync';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 
+/** 共享提示词入口参数；资源顺序与参考图选择状态由父层持久化和控制。 */
 type TextPromptEditorProps = {
   nodeId: string;
   value: string;
@@ -16,6 +23,16 @@ type TextPromptEditorProps = {
   /** 当前项目资源，用于 `@` 搜索和提及卡片。 */
   assets?: readonly Asset[];
   connectedAssets?: readonly ConnectedPromptAsset[];
+  /** 画布是否正在为当前节点连续添加参考图。 */
+  referencePickActive?: boolean;
+  /** 切换参考图选择模式；缺省时不显示入口。 */
+  onReferencePickToggle?: () => void;
+  /** 资源条优先顺序，按资产与冻结版本匹配，不改变正文顺序。 */
+  resourceRefs?: readonly NodeResourceRef[];
+  /** 按当前项目在服务端分页搜索；未提供时兼容使用传入的完整目录。 */
+  onSearchProjectResources?: ProjectResourceSearch;
+  /** 回传完整资源条顺序；保存失败可同步抛错，由编辑器显示原始错误。 */
+  onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
   /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
   onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 结构化文档保存回调。 */
@@ -44,6 +61,11 @@ export function TextPromptEditor({
   promptDocument,
   assets,
   connectedAssets,
+  referencePickActive,
+  onReferencePickToggle,
+  resourceRefs,
+  onSearchProjectResources,
+  onResourceReorder,
   onConnectedResourceRename,
   onDocumentChange,
   onUploadResource,
@@ -88,7 +110,12 @@ export function TextPromptEditor({
         value={value}
         promptDocument={projection.document}
         assets={assets}
+        onSearchProjectResources={onSearchProjectResources}
         connectedAssets={connectedAssets}
+        referencePickActive={referencePickActive}
+        onReferencePickToggle={onReferencePickToggle}
+        resourceRefs={resourceRefs}
+        onResourceReorder={onResourceReorder}
         onConnectedResourceRename={onConnectedResourceRename}
         // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
         onChange={onDocumentChange ? undefined : onChange}

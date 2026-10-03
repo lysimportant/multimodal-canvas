@@ -218,6 +218,7 @@ describe('collectConnectedPromptAssets', () => {
     expect(collectConnectedPromptAssets('node_child', [ref, child], edges)).toEqual([
       {
         id: 'asset_result',
+        sourceNodeId: 'node_ref',
         name: '参考图',
         assetVersion: 2,
         mediaType: 'image',

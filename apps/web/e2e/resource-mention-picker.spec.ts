@@ -135,7 +135,14 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 /** 安装离线 Mock 并记录浏览器异常；Cookie 会话有效期由 /v1/auth/me 返回。 */
-async function installFixture(page: Page, baseURL: string | undefined, initial = initialCanvas()) {
+async function installFixture(
+  page: Page,
+  baseURL: string | undefined,
+  initial = initialCanvas(),
+  projectCatalog?: Asset[],
+) {
+  const catalog = projectCatalog ?? assets;
+  const assetQueries: Record<string, string>[] = [];
   if (!baseURL) throw new Error('请通过 WEB_BASE_URL 指定隔离浏览器验收地址');
   const webOrigin = new URL(baseURL).origin;
   let canvas = structuredClone(initial);
@@ -202,7 +209,25 @@ async function installFixture(page: Page, baseURL: string | undefined, initial =
       return json(route, { defaults: {}, resolvedDefaults: {} });
     if (method === 'GET' && path === `/v1/projects/${project.id}/runs`)
       return json(route, { runs: [] });
-    if (method === 'GET' && path === '/v1/assets') return json(route, { assets });
+    if (method === 'GET' && path === '/v1/assets') {
+      assetQueries.push(Object.fromEntries(url.searchParams));
+      if (!projectCatalog) return json(route, { assets: catalog });
+      const query = (url.searchParams.get('query') ?? '').toLocaleLowerCase();
+      const mediaType = url.searchParams.get('mediaType');
+      const matching = catalog.filter(
+        (item) =>
+          (!mediaType || item.mediaType === mediaType) &&
+          [item.name, ...item.tags].some((value) => value.toLocaleLowerCase().includes(query)),
+      );
+      const current = Number(url.searchParams.get('page') ?? '1');
+      const pageSize = Number(url.searchParams.get('pageSize') ?? '50');
+      return json(route, {
+        assets: matching.slice((current - 1) * pageSize, current * pageSize),
+        total: matching.length,
+        page: current,
+        pageSize,
+      });
+    }
     if (method === 'GET' && path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (method === 'GET' && path === '/v1/settings/ai')
       return json(route, {
@@ -225,9 +250,22 @@ async function installFixture(page: Page, baseURL: string | undefined, initial =
       const id = decodeURIComponent(accessMatch[1]);
       return json(route, { url: `/v1/assets/${id}/versions/1/content` });
     }
+    const thumbnailMatch = path.match(
+      /^\/v1\/assets\/([^/]+)\/versions\/1\/derivatives\/thumbnail$/,
+    );
+    if (method === 'GET' && thumbnailMatch) {
+      const entry = catalog.find(
+        (candidate) => candidate.id === decodeURIComponent(thumbnailMatch[1]),
+      );
+      return route.fulfill({
+        status: entry ? 200 : 404,
+        contentType: 'image/jpeg',
+        body: entry ? poster : Buffer.alloc(0),
+      });
+    }
     const contentMatch = path.match(/^\/v1\/assets\/([^/]+)\/versions\/1\/content$/);
     if (method === 'GET' && contentMatch) {
-      const entry = assets.find(
+      const entry = catalog.find(
         (candidate) => candidate.id === decodeURIComponent(contentMatch[1]),
       );
       if (!entry) return route.fulfill({ status: 404, body: '资源不存在' });
@@ -245,7 +283,7 @@ async function installFixture(page: Page, baseURL: string | undefined, initial =
     errors.push(`未声明的 Mock 接口：${method} ${path}`);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
-  return { errors, apiRequests, canvas: () => structuredClone(canvas) };
+  return { errors, apiRequests, assetQueries, canvas: () => structuredClone(canvas) };
 }
 
 /** 通过 PC 画布节点的真实入口打开紧凑编辑器。 */
@@ -344,6 +382,14 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   await expect(searchbox).toBeVisible();
   await expect(listbox).toBeVisible();
   await expect(page.locator('.ant-popover.resource-mention-picker-popover')).toBeVisible();
+  await expect(picker.getByRole('tab', { name: '节点资源', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(listbox.getByRole('option')).toHaveCount(1);
+  await picker.getByRole('tab', { name: '项目资源', exact: true }).click();
+  await expect(listbox.getByRole('option')).toHaveCount(10);
+  await expect(picker.getByRole('navigation', { name: '项目资源分页' })).toHaveCount(0);
   expect(await picker.evaluate((element) => element.closest('.react-flow__node') === null)).toBe(
     true,
   );
@@ -353,8 +399,8 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   const caretBox = await caretCharacterRect(prompt);
   expect(promptBox).not.toBeNull();
   expect(pickerBox).not.toBeNull();
-  expect(pickerBox!.width).toBeCloseTo(420, 0);
-  expect(pickerBox!.height).toBeLessThanOrEqual(320);
+  expect(pickerBox!.width).toBeCloseTo(520, 0);
+  expect(pickerBox!.height).toBeCloseTo(480, 0);
   expect(pickerBox!.x).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.x + pickerBox!.width).toBeLessThanOrEqual(1432);
@@ -387,12 +433,15 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
     'true',
   );
   for (let index = 1; index < filterBoxes.length; index += 1) {
-    expect(filterBoxes[index].y).toBeGreaterThan(filterBoxes[index - 1].y);
-    expect(filterBoxes[index].x).toBeCloseTo(filterBoxes[0].x, 0);
+    expect(filterBoxes[index].x).toBeGreaterThan(filterBoxes[index - 1].x);
+    expect(filterBoxes[index].y).toBeCloseTo(filterBoxes[0].y, 0);
   }
   const filtersBox = await picker.locator('.resource-mention-filters').boundingBox();
   const resultsBox = await listbox.boundingBox();
-  expect(resultsBox!.x).toBeGreaterThanOrEqual(filtersBox!.x + filtersBox!.width - 1);
+  expect(resultsBox!.y).toBeGreaterThanOrEqual(filtersBox!.y + filtersBox!.height - 1);
+  const tabsBox = await picker.getByRole('tablist', { name: '资源范围' }).boundingBox();
+  expect(tabsBox!.y).toBeCloseTo(filtersBox!.y, 0);
+  expect(tabsBox!.x).toBeGreaterThan(filtersBox!.x + filtersBox!.width);
 
   await searchbox.fill('采访');
   await expect(prompt).toHaveValue(`${initialPrompt} @`);
@@ -414,7 +463,8 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   await expect(prompt).toHaveValue(`${initialPrompt} @`);
 
   await picker.getByRole('button', { name: '全部', exact: true }).click();
-  await expect(listbox.getByRole('option')).toHaveCount(assets.length);
+  await expect(listbox.getByRole('option')).toHaveCount(10);
+  await expect(picker.getByRole('navigation', { name: '项目资源分页' })).toHaveCount(0);
   await page.screenshot({
     path: test.info().outputPath('resource-mention-picker-all-resources.png'),
     animations: 'disabled',
@@ -437,6 +487,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   ).toBe(filterScrollBefore);
 
   await searchbox.fill('声音样本');
+  await expect(picker.getByRole('option', { name: /声音样本/ })).toBeVisible();
   await searchbox.press('ArrowDown');
   await searchbox.press('Enter');
   await expect(picker).toHaveCount(0);
@@ -492,6 +543,9 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   );
   await searchbox.click();
   await expect(searchbox).toBeFocused();
+  await picker.getByRole('tab', { name: '项目资源', exact: true }).click();
+  await expect(listbox.getByRole('option')).toHaveCount(10);
+  await expect(picker.getByRole('navigation', { name: '项目资源分页' })).toHaveCount(0);
   await searchbox.fill('需求');
   await expect(searchbox).toBeFocused();
   await expect(prompt).toHaveValue(`${original} @`);
@@ -500,8 +554,8 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
 
   const pickerBox = await picker.boundingBox();
   expect(pickerBox).not.toBeNull();
-  expect(pickerBox!.width).toBeCloseTo(420, 0);
-  expect(pickerBox!.height).toBeLessThanOrEqual(320);
+  expect(pickerBox!.width).toBeCloseTo(520, 0);
+  expect(pickerBox!.height).toBeCloseTo(480, 0);
   expect(pickerBox!.x).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.x + pickerBox!.width).toBeLessThanOrEqual(1016);
@@ -1078,7 +1132,9 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
     const layout = await editor.evaluate((element) => {
       const model = element.querySelector('.node-quick-editor-select-group .ant-select')!;
       const quantity = element.querySelector('.node-quick-editor-generation-count .ant-select')!;
-      const controls = element.querySelector('.node-quick-editor-controls')!;
+      const controls = element.querySelector(
+        '.node-quick-editor-controls:not(.node-quick-editor-topbar)',
+      )!;
       const trigger = element.querySelector('.prompt-skill-trigger')!;
       const shape = (target: Element) => {
         const style = getComputedStyle(target);
@@ -1276,4 +1332,327 @@ test('Skill 优化预览在悬浮卡片和完整编辑器中可编辑，关闭�
   ).toEqual(source.blocks.filter((block) => block.type === 'mention'));
   expect(submissions).toBe(1);
   expect(fixture.errors).toEqual([]);
+});
+
+test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const initial = initialCanvas();
+  const target = initial.nodes[0]!;
+  target.position = { x: 360, y: 430 };
+  target.data.promptDocument = {
+    version: 1,
+    blocks: [{ type: 'text', text: '保持两张参考图的主体。' }],
+  };
+  target.data.mediaType = 'video';
+  target.type = 'video';
+  target.data.videoMode = 'omni_reference';
+  target.data.modelAlias = 'mock-video';
+  initial.nodes.push(
+    ...[0, 1].map((index) => {
+      const asset = assets[index + 1]!;
+      return {
+        id: `pick-${index + 1}`,
+        type: 'image',
+        width: 240,
+        height: 150,
+        position: { x: 80 + index * 700, y: 100 },
+        data: {
+          label: asset.name,
+          mode: 'source' as const,
+          mediaType: 'image' as const,
+          assetId: asset.id,
+          contentUrl: asset.contentUrl,
+          mimeType: asset.mimeType,
+          enabled: true,
+        },
+      };
+    }),
+  );
+  const fixture = await installFixture(page, baseURL, initial);
+  await page.goto(`/projects/${project.id}`);
+  let { editor, node } = await openQuickEditor(page);
+  const nodeBefore = await node.boundingBox();
+  const pick = editor.getByRole('button', { name: '添加参考图' });
+  await pick.click();
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
+  for (const index of [1, 2, 1]) {
+    await page
+      .locator(`.react-flow__node[data-id="pick-${index}"]`)
+      .click({ position: { x: index === 1 ? 40 : 200, y: 50 } });
+    await expect(editor).toBeVisible();
+  }
+  await expect(editor.getByRole('article')).toHaveCount(2);
+  await expect.poll(() => fixture.canvas().edges.length).toBe(2);
+  await page.keyboard.press('Escape');
+  await expect(pick).toHaveAttribute('aria-pressed', 'false');
+  const strip = editor.getByLabel('引用资源', { exact: true });
+  const children = await strip.evaluate((element) =>
+    Array.from(element.children)
+      .filter((child) => child.tagName !== 'INPUT')
+      .map((child) => child.getAttribute('aria-label')),
+  );
+  expect(children.slice(0, 2)).toEqual(['上传引用资源', '添加参考图']);
+  expect(children[2]).toContain('参考资源 1：');
+  expect(children[3]).toContain('参考资源 2：');
+  const prompt = editor.getByRole('textbox', { name: '提示词' });
+  const originalPrompt = await prompt.inputValue();
+  const originalDocument = fixture.canvas().nodes[0]!.data.promptDocument;
+  const first = editor.getByRole('article').nth(0);
+  const second = editor.getByRole('article').nth(1);
+  await second.dragTo(first);
+  await expect(editor.getByRole('article').nth(0)).toHaveAccessibleName('参考资源 1：场景参考图 2');
+  await expect
+    .poll(() => fixture.canvas().nodes[0]!.data.resourceRefs?.map((ref) => ref.assetId))
+    .toEqual(['scene-image-2', 'scene-image-1']);
+  expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(originalDocument);
+  await expect(prompt).toHaveValue(originalPrompt);
+  await page.screenshot({
+    path: test.info().outputPath('reference-order.png'),
+    animations: 'disabled',
+  });
+  const controls = editor.locator('.node-quick-editor-controls').last();
+  const group = controls.locator('.node-quick-editor-run-group');
+  const controlsBox = (await controls.boundingBox())!;
+  const groupBox = (await group.boundingBox())!;
+  expect(
+    Math.abs(controlsBox.x + controlsBox.width - groupBox.x - groupBox.width),
+  ).toBeLessThanOrEqual(2);
+
+  await page.reload();
+  ({ editor, node } = await openQuickEditor(page));
+  await expect(editor.getByRole('article').nth(0)).toHaveAccessibleName('参考资源 1：场景参考图 2');
+  expectSameNodeSize(nodeBefore!, (await node.boundingBox())!);
+  const reloadedPrompt = editor.getByRole('textbox', { name: '提示词' });
+  await reloadedPrompt.press('Control+End');
+  await reloadedPrompt.pressSequentially(' @');
+  const picker = page.locator('.resource-mention-picker');
+  await expect(picker.getByRole('tab', { name: '节点资源', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(picker.getByRole('option')).toHaveCount(2);
+  await picker.getByRole('tab', { name: '项目资源', exact: true }).click();
+  await expect(picker.getByRole('option')).toHaveCount(10);
+  await expect(picker.getByRole('navigation', { name: '项目资源分页' })).toHaveCount(0);
+  await page.screenshot({
+    path: test.info().outputPath('reference-picker-combined.png'),
+    animations: 'disabled',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(
+    fixture.apiRequests.filter(
+      (request) => request.method === 'POST' && /runs|generations/.test(request.path),
+    ),
+  ).toEqual([]);
+});
+
+/** 空词只展示 10 项且不分页；关键词按真实匹配总数翻页，并能搜索引用第 65 项。 */
+test('项目资源搜索跨越首页并按服务端总数翻页', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const catalog = [
+    assets[0]!,
+    ...Array.from({ length: 64 }, (_, index) =>
+      asset('paged-' + index, index === 63 ? '跨页隐藏参考图' : '分页参考图 ' + index, 'image'),
+    ),
+  ];
+  const fixture = await installFixture(page, baseURL, initialCanvas(), catalog);
+  await page.goto('/projects/' + project.id);
+  const { editor } = await openQuickEditor(page);
+  const prompt = editor.getByRole('textbox', { name: '提示词' });
+  await prompt.press('Control+End');
+  await prompt.pressSequentially(' @');
+  const picker = page.locator('.resource-mention-picker');
+  await expect(picker.getByRole('tab', { name: '节点资源', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(picker.getByRole('option')).toHaveCount(1);
+  await picker.getByRole('tab', { name: '项目资源', exact: true }).click();
+  const searchbox = picker.getByRole('searchbox', { name: '搜索资源' });
+  const pagination = picker.getByRole('navigation', { name: '项目资源分页' });
+  const nextPage = picker.getByRole('button', { name: '下一页项目资源' });
+  await expect(searchbox).toHaveValue('');
+  await expect(picker.getByRole('option')).toHaveCount(10);
+  await expect(pagination).toHaveCount(0);
+  await expect(nextPage).toHaveCount(0);
+  await expect(picker.getByRole('option', { name: /跨页隐藏参考图/ })).toHaveCount(0);
+
+  // 目录共 65 项，只有 64 项匹配“参考图”；分页总数必须来自筛选结果，不能沿用目录总数。
+  await searchbox.fill('参考图');
+  await expect(picker.getByRole('option')).toHaveCount(50);
+  await expect(pagination).toContainText('1 / 2 · 共 64 项');
+  await expect(picker.getByRole('option', { name: /产品图/ })).toHaveCount(0);
+  await expect(picker.getByRole('option', { name: /跨页隐藏参考图/ })).toHaveCount(0);
+  await expect(nextPage).toBeEnabled();
+  await nextPage.click();
+  await expect(picker.getByRole('option')).toHaveCount(14);
+  await expect(pagination).toContainText('2 / 2 · 共 64 项');
+  await expect(nextPage).toBeDisabled();
+  await expect(picker.getByRole('option', { name: /跨页隐藏参考图/ })).toBeVisible();
+
+  await searchbox.fill('跨页隐藏');
+  await expect(picker.getByRole('option')).toHaveCount(1);
+  await expect(pagination).toContainText('1 / 1 · 共 1 项');
+  await expect(picker.getByRole('button', { name: '上一页项目资源' })).toBeDisabled();
+  await expect(nextPage).toBeDisabled();
+  expect(fixture.assetQueries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        projectId: project.id,
+        query: '参考图',
+        page: '1',
+        pageSize: '50',
+        status: 'ready',
+      }),
+      expect.objectContaining({
+        projectId: project.id,
+        query: '参考图',
+        page: '2',
+        pageSize: '50',
+        status: 'ready',
+      }),
+      expect.objectContaining({
+        projectId: project.id,
+        query: '跨页隐藏',
+        page: '1',
+        pageSize: '50',
+        status: 'ready',
+      }),
+    ]),
+  );
+  await picker.getByRole('option', { name: /跨页隐藏参考图/ }).click();
+  await expect(editor.getByRole('article', { name: /跨页隐藏参考图/ })).not.toHaveClass(
+    /is-missing/,
+  );
+  await expect
+    .poll(() =>
+      fixture
+        .canvas()
+        .nodes[0]!.data.promptDocument?.blocks.some(
+          (block) =>
+            block.type === 'mention' && block.assetId === 'paged-63' && block.assetVersion === 1,
+        ),
+    )
+    .toBe(true);
+  expect(fixture.errors).toEqual([]);
+  expect(
+    fixture.apiRequests.filter(
+      (item) => item.method === 'POST' && /runs|generations/.test(item.path),
+    ),
+  ).toEqual([]);
+});
+
+/** 目录外冻结身份虽可解析版本地址，但没有 MIME；预览入口必须降级图标而非让整页崩溃。 */
+test('PC 目录外冻结引用的光标预览与卡片详情降级图标，节点检索保留 v4', async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const frozenMention = {
+    type: 'mention',
+    mentionId: 'catalog-missing-v4',
+    assetId: 'catalog-missing-frozen',
+    assetVersion: 4,
+    label: '目录外旧版主角',
+    mediaType: 'image',
+  } as const;
+  const canvas = initialCanvas();
+  canvas.nodes[0]!.data.promptDocument = {
+    version: 1,
+    blocks: [{ type: 'text', text: '开场 ' }, frozenMention, { type: 'text', text: ' 收尾' }],
+  };
+  const catalog = [assets[0]!];
+  expect(catalog.some((item) => item.id === frozenMention.assetId)).toBe(false);
+  const fixture = await installFixture(page, baseURL, canvas, catalog);
+  await page.goto('/projects/' + project.id);
+  const { editor, node } = await openQuickEditor(page);
+  const prompt = editor.getByRole('textbox', { name: '提示词' });
+  const originalPrompt = `开场 ${frozenMention.label} 收尾`;
+  await expect(prompt).toHaveValue(originalPrompt);
+  const card = editor.getByRole('article', { name: `参考资源 1：${frozenMention.label}` });
+  await expect(card).toBeVisible();
+  await expect(card).not.toHaveClass(/is-missing/);
+
+  // “开场 ”占 3 个字符；真实键盘右移 4 次，把折叠光标放进冻结引用而非选中整段。
+  await prompt.press('Control+Home');
+  for (let step = 0; step < 4; step += 1) await prompt.press('ArrowRight');
+  await expect
+    .poll(() =>
+      prompt.evaluate((element) => {
+        const input = element as HTMLTextAreaElement;
+        return {
+          start: input.selectionStart,
+          end: input.selectionEnd,
+          focused: document.activeElement === input,
+        };
+      }),
+    )
+    .toEqual({ start: 4, end: 4, focused: true });
+  const hover = page.getByRole('region', { name: `预览 ${frozenMention.label}`, exact: true });
+  await expect(hover).toBeVisible();
+  await expect(hover.locator('.resource-mention-media-icon.is-image')).toBeVisible();
+  await expect(hover.locator('img, video, audio')).toHaveCount(0);
+  await expect(prompt).toHaveValue(originalPrompt);
+  await expect(node).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+
+  await card.getByRole('button', { name: `预览并命名 ${frozenMention.label}` }).click();
+  const dialog = page.getByRole('dialog', { name: '资源预览', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.locator('.resource-mention-dialog-preview .resource-mention-media-icon.is-image'),
+  ).toBeVisible();
+  await expect(
+    dialog.locator('.resource-mention-dialog-preview').locator('img, video, audio'),
+  ).toHaveCount(0);
+  await expect(dialog.getByRole('textbox', { name: '资源名称' })).toHaveValue(frozenMention.label);
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(prompt).toHaveValue(originalPrompt);
+  expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(
+    canvas.nodes[0]!.data.promptDocument,
+  );
+  expect(fixture.errors).toEqual([]);
+
+  await prompt.press('Control+End');
+  await prompt.pressSequentially(' @');
+  const picker = page.locator('.resource-mention-picker');
+  await expect(picker.getByRole('tab', { name: '节点资源', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await picker.getByRole('searchbox', { name: '搜索资源' }).fill(frozenMention.label);
+  await expect(picker.getByRole('option')).toHaveCount(1);
+  const option = picker.getByRole('option', { name: /目录外旧版主角.*v4/ });
+  await expect(option).toBeEnabled();
+  await expect(option.locator('.resource-mention-media-icon.is-image')).toBeVisible();
+  await expect(option.locator('img, video, audio')).toHaveCount(0);
+  expect(fixture.assetQueries.some((query) => query.query === frozenMention.label)).toBe(false);
+  await option.click();
+  await expect(picker).toHaveCount(0);
+  // 再次插入沿用同名引用的编号规则，下面另验资源身份和冻结版本没有变化。
+  await expect(prompt).toHaveValue(`${originalPrompt} ${frozenMention.label}2`);
+  await expect
+    .poll(() =>
+      fixture
+        .canvas()
+        .nodes[0]!.data.promptDocument?.blocks.filter(
+          (block) => block.type === 'mention' && block.assetId === frozenMention.assetId,
+        )
+        .map((block) => block.type === 'mention' && block.assetVersion),
+    )
+    .toEqual([4, 4]);
+  await expect(editor).toBeVisible();
+  await expect(card).not.toHaveClass(/is-missing/);
+  expect(fixture.errors).toEqual([]);
+  expect(
+    fixture.apiRequests.filter((request) =>
+      request.path.startsWith(`/v1/assets/${frozenMention.assetId}/`),
+    ),
+  ).toEqual([]);
+  expect(
+    fixture.apiRequests.filter(
+      (request) => request.method === 'POST' && /runs|generations/.test(request.path),
+    ),
+  ).toEqual([]);
 });
