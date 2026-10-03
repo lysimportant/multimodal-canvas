@@ -71,6 +71,8 @@ import {
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
+  type VideoRecreationConfig,
+  videoRecreationConfigSchema,
   isPortConnectionAllowed,
   getNodeGenerationCount,
   isValidGenerationCount,
@@ -142,6 +144,10 @@ import {
 } from './workspace/fork-generate-node';
 import { fetchNodeEchoText, nodeEchoAssetVersion } from './workspace/node-echo-text';
 import { fetchAssetVersions } from './result-versions';
+import {
+  applyVideoRecreationConfig,
+  recreationGenerationIssue,
+} from './workspace/video-recreation-node';
 import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
 import { ReversePromptPanel } from './workspace/ReversePromptPanel';
 import { prepareGenerationRequests } from './generation-client';
@@ -676,6 +682,10 @@ function WorkspaceApp({
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
+  /** 异步创建复刻节点时防止跨项目或账号的迟到版本查询写入。 */
+  const recreationProjectRef = useRef(projectId);
+  recreationProjectRef.current = projectId;
+  const recreationCreatingRef = useRef(new Set<string>());
   const defaultsQuery = useQuery({
     queryKey: ['node-model-defaults', authUser?.id, authUser?.role, projectId],
     enabled: Boolean(authUser && projectId),
@@ -2811,6 +2821,26 @@ function WorkspaceApp({
     ],
   );
 
+  /** 原子保存复刻状态；分析POST必须等待此保存成功，才能恢复同一幂等请求。 */
+  const updateVideoRecreation = useCallback(
+    async (config: VideoRecreationConfig, nodeId: string) => {
+      const current = nodesRef.current.find((candidate) => candidate.id === nodeId);
+      if (!current?.data.videoRecreation || !projectId || isNodeBusy(nodeId))
+        throw new Error('复刻节点不可编辑，请稍后重试');
+      if (
+        current.data.videoRecreation.source.assetId !== config.source.assetId ||
+        current.data.videoRecreation.source.assetVersion !== config.source.assetVersion
+      )
+        throw new Error('视频来源已变更，请重新打开复刻节点');
+      const next = applyVideoRecreationConfig(current.data, config);
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(nodeId, () => next);
+      await saveCanvas();
+    },
+    [projectId, isNodeBusy, rememberHistory, saveCanvas, updateNodeDataAndMarkDownstreamStale],
+  );
+
   /** 保存结构化提示词，并同步维护旧节点仍读取的纯文本派生字段。 */
   const updateSelectedPromptDocument = useCallback(
     (document: PromptDocument, nodeId?: string) => {
@@ -3486,6 +3516,8 @@ function WorkspaceApp({
     ) => {
       const currentNode = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
       try {
+        const recreationIssue = recreationGenerationIssue(currentNode.data);
+        if (recreationIssue) throw new Error(recreationIssue);
         // 工具栏、命令面板和新节点入口也必须预检，不能仅依靠快捷编辑器禁用按钮。
         if (currentNode.data.mediaType === 'image') {
           resolveImageOutputParameters(
@@ -3959,6 +3991,88 @@ function WorkspaceApp({
       );
     },
     [commitForkGraph, createGenerateNode, isNodeBusy, projectId],
+  );
+
+  /** 从有回显的视频创建专属复刻草稿；冻结版本后打开配置，不执行分析或生成。 */
+  const handleCreateVideoRecreationNode = useCallback(
+    async (sourceNodeId: string) => {
+      if (!projectId || recreationCreatingRef.current.has(sourceNodeId)) return;
+      const source = nodesRef.current.find((item) => item.id === sourceNodeId);
+      if (!source || source.data.mediaType !== 'video' || isNodeBusy(sourceNodeId)) return;
+      const result = source.data.manualOutput ? undefined : source.data.resultAsset;
+      const assetId = result?.assetId ?? source.data.assetId;
+      if (!assetId) {
+        setNotice({ kind: 'error', message: '请先上传或生成参考视频' });
+        return;
+      }
+      const generation = getAuthSessionGeneration();
+      recreationCreatingRef.current.add(sourceNodeId);
+      try {
+        const asset = assets.find((item) => item.id === assetId);
+        const knownVersion = nodeEchoAssetVersion(source) ?? asset?.latestVersion;
+        // 历史回显必须读取对应版本的时长，不能套用资源库中最新视频的元数据。
+        const versions =
+          knownVersion === undefined || knownVersion !== asset?.latestVersion
+            ? await fetchAssetVersions(assetId, API_BASE_URL, apiFetch)
+            : undefined;
+        const version = knownVersion ?? versions?.at(-1)?.version;
+        if (!version || (versions && !versions.some((item) => item.version === version)))
+          throw new Error('无法确认视频版本，请刷新资源后重试');
+        if (generation !== getAuthSessionGeneration() || recreationProjectRef.current !== projectId)
+          return;
+        const latest = nodesRef.current.find((item) => item.id === sourceNodeId);
+        const latestResult = latest?.data.manualOutput ? undefined : latest?.data.resultAsset;
+        if (
+          !latest ||
+          (latestResult?.assetId ?? latest.data.assetId) !== assetId ||
+          (nodeEchoAssetVersion(latest) !== undefined && nodeEchoAssetVersion(latest) !== version)
+        )
+          throw new Error('来源视频已变化，请重新创建复刻节点');
+        const duration =
+          versions?.find((item) => item.version === version)?.metadata?.durationSeconds ??
+          (asset?.latestVersion === version ? asset?.metadata?.durationSeconds : undefined);
+        const config = videoRecreationConfigSchema.parse({
+          version: 1,
+          source: {
+            assetId,
+            assetVersion: version,
+            name: (asset?.name ?? source.data.label).slice(0, 160),
+            sourceNodeId,
+            ...(typeof duration === 'number' && duration > 0 ? { durationSeconds: duration } : {}),
+          },
+          bindings: [],
+        });
+        const position = getNodePlacementRightOf(
+          latest,
+          nodesRef.current,
+          getNewNodeDimensions('video'),
+        );
+        const child = createGenerateNode('video', position, {
+          label: createUniqueNodeLabel(
+            '短视频复刻',
+            nodesRef.current.map((item) => item.data.label),
+          ),
+          videoMode: 'omni_reference',
+          videoRecreation: config,
+          generationCount: 1,
+        });
+        child.data = applyVideoRecreationConfig(child.data, config);
+        commitForkGraph(child, [], sourceNodeId);
+        setNotice({
+          kind: 'success',
+          message: '已创建短视频复刻节点：分析整条视频后绑定人物即可，无需手写提示词',
+        });
+      } catch (error) {
+        if (generation === getAuthSessionGeneration() && recreationProjectRef.current === projectId)
+          setNotice({
+            kind: 'error',
+            message: error instanceof Error ? error.message : '创建复刻节点失败',
+          });
+      } finally {
+        recreationCreatingRef.current.delete(sourceNodeId);
+      }
+    },
+    [assets, projectId, isNodeBusy, createGenerateNode, commitForkGraph],
   );
 
   const retryNodeRun = useCallback(
@@ -4628,6 +4742,8 @@ function WorkspaceApp({
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}
             onEditImage={handleCreateImageEditNode}
+            onRecreateVideo={(nodeId) => void handleCreateVideoRecreationNode(nodeId)}
+            onVideoRecreationChange={updateVideoRecreation}
             onAddConnectedGenerateNode={handleAddConnectedGenerateNode}
             onAddSelectionGenerateNode={handleAddSelectionGenerateNode}
             onOpenRequestPrompt={(nodeId) => void openRequestPrompt(nodeId)}

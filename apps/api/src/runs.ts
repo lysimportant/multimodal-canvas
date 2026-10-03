@@ -964,7 +964,10 @@ export class MemoryRunService implements RunService, RequestPromptStore {
         const { asset: _asset, ...analysisResult } = result;
         result = runResultSchema.parse({
           ...analysisResult,
-          reversePrompt: parseReversePromptOutput(output.content.toString('utf8')),
+          reversePrompt: parseReversePromptOutput(
+            output.content.toString('utf8'),
+            run.snapshot.reversePrompt?.purpose,
+          ),
         });
       }
       const archivedAsset = independent

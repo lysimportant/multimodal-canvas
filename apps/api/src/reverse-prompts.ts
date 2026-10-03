@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import {
+  parseReversePromptOutput,
+  VIDEO_RECREATION_ANALYSIS_INSTRUCTION,
+} from '@multimodal-canvas/domain';
 import type {
   CanvasDocument,
   MediaType,
@@ -74,12 +78,16 @@ const IMAGE_SUMMARY_INSTRUCTION = [
   'Describe only supported visible details; omit obscured or uncertain clothing, makeup and accessories rather than inventing them. Do not infer identities or backstories.',
 ].join('\n');
 
-/** 构造只引用已授权资源版本的分析文档；图片附加角色优先摘要规则，不写回用户画布。 */
+/** 构造已授权完整资源版本的分析文档；复刻使用专用指令且不携带画布裁剪范围。 */
 export function createReversePromptCanvas(input: {
   assetId: string;
   assetVersion: number;
   mediaType: MediaType;
+  purpose?: 'video_recreation';
 }): CanvasDocument {
+  if (input.purpose === 'video_recreation' && input.mediaType !== 'video') {
+    throw new Error('短视频复刻分析仅支持视频资源');
+  }
   return {
     revision: 0,
     nodes: [
@@ -97,8 +105,12 @@ export function createReversePromptCanvas(input: {
               {
                 type: 'text',
                 text: [
-                  REVERSE_PROMPT_INSTRUCTION,
-                  ...(input.mediaType === 'image' ? [IMAGE_SUMMARY_INSTRUCTION] : []),
+                  ...(input.purpose === 'video_recreation'
+                    ? [VIDEO_RECREATION_ANALYSIS_INSTRUCTION]
+                    : [
+                        REVERSE_PROMPT_INSTRUCTION,
+                        ...(input.mediaType === 'image' ? [IMAGE_SUMMARY_INSTRUCTION] : []),
+                      ]),
                   'Resource to analyze:',
                 ].join('\n'),
               },
@@ -119,12 +131,13 @@ export function createReversePromptCanvas(input: {
   };
 }
 
-/** 将用户幂等键限定在资源版本内；自动任务不受模型默认、刷新及重试事件影响。 */
+/** 按资源版本和用途隔离幂等键；省略用途保留旧哈希，自动任务不受模型切换影响。 */
 export function reversePromptIdempotencyKey(input: {
   assetId: string;
   assetVersion: number;
   automatic: boolean;
   requestKey: string;
+  purpose?: 'video_recreation';
 }): string {
   const hash = createHash('sha256')
     .update(
@@ -132,30 +145,43 @@ export function reversePromptIdempotencyKey(input: {
         input.assetId,
         input.assetVersion,
         input.automatic ? 'auto' : input.requestKey,
+        ...(input.purpose ? [input.purpose] : []),
       ]),
     )
     .digest('hex');
   return `reverse-prompt:${input.automatic ? 'auto' : 'manual'}:${hash}`;
 }
 
-/** 精确匹配分析所属项目和资源版本，避免普通运行或其他项目记录进入分析响应。 */
+/** 精确匹配项目、资源版本及用途；普通反推与复刻分析不能互相查询、复用或恢复。 */
 export function isReversePromptRun(
   run: RunRecord,
   projectId: string,
   assetId: string,
   version: number,
+  purpose?: 'video_recreation',
 ): boolean {
   return (
     run.projectId === projectId &&
     run.snapshot.reversePrompt?.assetId === assetId &&
-    run.snapshot.reversePrompt.assetVersion === version
+    run.snapshot.reversePrompt.assetVersion === version &&
+    run.snapshot.reversePrompt.purpose === purpose
   );
 }
 
-/** 返回独立分析，仅有效结构化结果报告成功，不返回内部凭据或请求正文。 */
+/** 返回独立分析及冻结的模型／凭据标识；不返回密钥、凭据版本、授权快照或请求正文。 */
 export function publicReversePromptAnalysis(run: RunRecord) {
   const source = run.snapshot.reversePrompt!;
-  const result = run.result?.reversePrompt;
+  const credentialId =
+    run.snapshot.nodeCredentialReferences?.[run.snapshot.targetNodeId]?.credentialId ??
+    run.snapshot.credentialId;
+  let result: ReturnType<typeof parseReversePromptOutput> | undefined;
+  if (run.status === 'succeeded' && run.result?.reversePrompt) {
+    try {
+      result = parseReversePromptOutput(JSON.stringify(run.result.reversePrompt), source.purpose);
+    } catch {
+      // 持久化或恢复的结果也必须通过对应用途的完整校验，不能仅凭字段存在报告成功。
+    }
+  }
   const status =
     run.status === 'succeeded'
       ? result
@@ -168,9 +194,11 @@ export function publicReversePromptAnalysis(run: RunRecord) {
     runId: run.id,
     assetId: source.assetId,
     assetVersion: source.assetVersion,
+    ...(source.purpose ? { purpose: source.purpose } : {}),
     status,
     automatic: source.automatic,
     modelAlias: run.modelAlias,
+    ...(credentialId ? { credentialId } : {}),
     ...(result && status === 'succeeded' ? result : {}),
     ...(run.error
       ? { error: run.error }

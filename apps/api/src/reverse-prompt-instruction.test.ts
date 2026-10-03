@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createReversePromptCanvas } from './reverse-prompts';
+import { VIDEO_RECREATION_ANALYSIS_INSTRUCTION } from '@multimodal-canvas/domain';
 
 /** 读取冻结的反推文字指令；只校验媒体分支文本，不调用真实视觉模型。 */
 function instructionFor(mediaType: 'text' | 'image' | 'audio' | 'video'): string {
@@ -67,4 +68,40 @@ describe('反推提示词图片摘要指令', () => {
       expect(instruction).not.toContain('Only when no character is visible');
     },
   );
+});
+
+describe('专属整片复刻指令', () => {
+  it('复用领域英文指令并绑定真实视频资源，不混用通用中文字符串指令', () => {
+    const canvas = createReversePromptCanvas({
+      assetId: 'video',
+      assetVersion: 2,
+      mediaType: 'video',
+      purpose: 'video_recreation',
+    });
+    expect(canvas.nodes[0]?.data.promptDocument?.blocks).toEqual([
+      { type: 'text', text: VIDEO_RECREATION_ANALYSIS_INSTRUCTION + '\nResource to analyze:' },
+      {
+        type: 'mention',
+        mentionId: 'reverse_prompt_resource',
+        assetId: 'video',
+        assetVersion: 2,
+        mediaType: 'video',
+        label: 'Resource',
+      },
+    ]);
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('ENTIRE');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('neutral role ids');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('product handling');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('fail explicitly');
+  });
+  it.each(['text', 'image', 'audio'] as const)('%s 不能构造复刻分析文档', (mediaType) => {
+    expect(() =>
+      createReversePromptCanvas({
+        assetId: 'not-video',
+        assetVersion: 1,
+        mediaType,
+        purpose: 'video_recreation',
+      }),
+    ).toThrow('仅支持视频');
+  });
 });

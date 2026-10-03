@@ -45,7 +45,10 @@ import {
 } from './run-persistence';
 import {
   canvasDocumentSchema,
+  buildVideoRecreationPrompt,
   createPromptOptimizationCanvas,
+  getVideoRecreationIssue,
+  parseVideoRecreationTemplate,
   imageEditSourceSchema,
   mediaTypes,
   promptDocumentSchema,
@@ -270,6 +273,7 @@ const reversePromptBodySchema = z
     credentialId: z.string().uuid().optional(),
     idempotencyKey: z.string().trim().min(1).max(200).optional(),
     automatic: z.boolean().default(false),
+    purpose: z.literal('video_recreation').optional(),
   })
   .strict();
 
@@ -2650,6 +2654,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         .object({
           projectId: z.string().trim().min(1).max(512),
           runId: z.string().min(1).max(200).optional(),
+          purpose: z.literal('video_recreation').optional(),
         })
         .safeParse(request.query);
       const version = Number(request.params.version);
@@ -2661,7 +2666,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ) {
         return reply.code(400).send({ error: 'invalid reverse prompt query' });
       }
-      const { projectId, runId } = query.data;
+      const { projectId, runId, purpose } = query.data;
       const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
       if (!project) return reply.code(404).send({ error: 'project not found' });
       const scope: AssetScope = { projectId };
@@ -2682,7 +2687,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ? [await runService.get(runId)].filter((run): run is RunRecord => Boolean(run))
         : await runService.listByProject(projectId);
       const run = runs
-        .filter((candidate) => isReversePromptRun(candidate, projectId, asset.id, version))
+        .filter((candidate) => isReversePromptRun(candidate, projectId, asset.id, version, purpose))
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .at(0);
       if (runId && !run) return reply.code(404).send({ error: 'reverse prompt run not found' });
@@ -2734,6 +2739,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ) {
         return reply.code(404).send({ error: 'asset version not found' });
       }
+      if (body.purpose === 'video_recreation' && asset.mediaType !== 'video')
+        return reply.code(400).send({ error: '短视频复刻分析仅支持视频资源' });
       if (asset.status === 'archived')
         return reply.code(400).send({ error: '已归档资源不能反推提示词' });
       const headerKey = request.headers['idempotency-key'];
@@ -2741,6 +2748,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         assetId: asset.id,
         assetVersion: version,
         automatic: body.automatic,
+        purpose: body.purpose,
         requestKey:
           typeof headerKey === 'string' ? headerKey : (body.idempotencyKey ?? randomUUID()),
       });
@@ -2748,7 +2756,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const existing = projectRuns
         .filter(
           (run) =>
-            isReversePromptRun(run, body.projectId, asset.id, version) &&
+            isReversePromptRun(run, body.projectId, asset.id, version, body.purpose) &&
             (body.automatic ||
               run.idempotencyKey === idempotencyKey ||
               ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
@@ -2792,6 +2800,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           assetId: asset.id,
           assetVersion: version,
           mediaType: asset.mediaType,
+          purpose: body.purpose,
         });
         const resolution = await resolveRunNodeModels({
           settingsStore,
@@ -2830,7 +2839,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             ...(resolution.nodeCredentialReferences[REVERSE_PROMPT_NODE_ID] ?? {}),
             frozenPromptMentions,
           }),
-          reversePrompt: { assetId: asset.id, assetVersion: version, automatic: body.automatic },
+          reversePrompt: {
+            assetId: asset.id,
+            assetVersion: version,
+            automatic: body.automatic,
+            ...(body.purpose ? { purpose: body.purpose } : {}),
+          },
         });
         if (options.newApiAccount)
           snapshot = await options.newApiAccount.freeze(
@@ -3186,6 +3200,109 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         runService,
       });
       const canvasForRun = textInputs.canvas;
+      // 只检查实际执行的复刻节点；已有资产的来源节点不重新生成。
+      const recreationNodeIds = getRunSnapshotIncludedNodeIds(canvasForRun, request.params.nodeId);
+      for (const node of canvasForRun.nodes) {
+        const config = node.data.videoRecreation;
+        if (
+          !config ||
+          !recreationNodeIds.has(node.id) ||
+          isRunAssetSource(node, request.params.nodeId)
+        )
+          continue;
+        const issue = getVideoRecreationIssue(config);
+        if (issue || !config.analysis) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: issue ?? '请先分析整条参考视频',
+          });
+        }
+        const duration = config.analysis.template.durationSeconds;
+        // 当前视频适配器只发送正整数秒数，非整秒不能被省略后落到供应商默认值。
+        if (!Number.isSafeInteger(duration)) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: '当前视频接口仅支持整秒时长，不能取整、裁剪或省略整片分析时长',
+          });
+        }
+        if (
+          node.data.mediaType !== 'video' ||
+          node.data.videoMode !== 'omni_reference' ||
+          node.data.parameters?.duration !== duration ||
+          (node.id === request.params.nodeId &&
+            body.parameters?.duration !== undefined &&
+            body.parameters.duration !== duration)
+        ) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: '视频复刻必须使用全能参考模式和分析得到的完整时长，不能默认或截短为 5 秒',
+          });
+        }
+        // 文本允许编辑，资源身份必须保持领域模板生成的角色映射，含共享人物图的去重规则。
+        let expectedMentions: PromptMention[];
+        try {
+          expectedMentions = buildVideoRecreationPrompt(config).blocks.filter(
+            (block): block is PromptMention => block.type === 'mention',
+          );
+        } catch (error) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: error instanceof Error ? error.message : '复刻提示词无法构造，请检查分析和绑定',
+          });
+        }
+        const actualMentions = (node.data.promptDocument?.blocks ?? []).filter(
+          (block): block is PromptMention => block.type === 'mention',
+        );
+        if (
+          expectedMentions.some((expected) => {
+            const matches = actualMentions.filter(
+              (actual) => actual.mentionId === expected.mentionId,
+            );
+            const actual = matches[0];
+            return (
+              matches.length !== 1 ||
+              actual.assetId !== expected.assetId ||
+              actual.assetVersion !== expected.assetVersion ||
+              actual.mediaType !== expected.mediaType ||
+              actual.semanticRole !== expected.semanticRole
+            );
+          })
+        ) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: '复刻提示词必须保留完整来源视频、人物和商品的资源版本及角色引用，不能删除或换绑',
+          });
+        }
+        const analysisRun = await runService.get(config.analysis.runId);
+        const analysis =
+          analysisRun &&
+          isReversePromptRun(
+            analysisRun,
+            body.projectId,
+            config.source.assetId,
+            config.source.assetVersion,
+            'video_recreation',
+          )
+            ? publicReversePromptAnalysis(analysisRun)
+            : undefined;
+        if (
+          analysis?.status !== 'succeeded' ||
+          !analysis.prompt ||
+          JSON.stringify(parseVideoRecreationTemplate(analysis.prompt)) !==
+            JSON.stringify(parseVideoRecreationTemplate(JSON.stringify(config.analysis.template)))
+        ) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: '请使用当前视频版本已完成的专属复刻分析，普通反推或修改后的模板不能用于复刻',
+          });
+        }
+      }
       const sourceVersions = { ...imageInputs.sourceVersions, ...textInputs.sourceVersions };
       if (maxActiveRunsPerProject !== undefined) {
         const activeRuns = await runService.listByProject(body.projectId);
@@ -3234,6 +3351,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(principal?.userId ? { ownerId: principal.userId } : {}),
         requestId: request.id,
       });
+      // 采用已授权的精确版本探测值，不能只信任客户端配置中可省略或伪造的时长。
+      for (const node of canvasForRun.nodes) {
+        const config = node.data.videoRecreation;
+        if (
+          !config ||
+          !recreationNodeIds.has(node.id) ||
+          isRunAssetSource(node, request.params.nodeId)
+        )
+          continue;
+        const source = frozenPromptMentions.find(
+          (mention) => mention.nodeId === node.id && mention.mentionId === 'recreation_source',
+        );
+        if (
+          !source ||
+          (source.durationSeconds !== undefined &&
+            Math.abs(source.durationSeconds - config.analysis!.template.durationSeconds) > 0.1)
+        ) {
+          return reply.code(400).send({
+            code: 'VIDEO_RECREATION_NOT_READY',
+            nodeId: node.id,
+            error: '分析时长与来源视频指定版本的完整时长不一致，不能只使用部分片段',
+          });
+        }
+      }
       const capabilityDiagnostics = validateRunPromptMentionCapabilities({
         canvas: canvasForRun,
         targetNodeId: request.params.nodeId,

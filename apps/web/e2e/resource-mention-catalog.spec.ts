@@ -167,7 +167,15 @@ async function installFixture(
       const asset = assets.find((entry) => entry.id === path.split('/')[3]);
       if (asset) return json(route, { url: asset.contentUrl });
     }
-    if (method === 'GET' && assets.some((asset) => asset.contentUrl === path))
+    // 原图与缩略图都只服务已声明资产的精确版本，不放行未知图片路由。
+    if (
+      method === 'GET' &&
+      assets.some(
+        (asset) =>
+          asset.contentUrl === path ||
+          asset.contentUrl.replace(/\/content$/, '/derivatives/thumbnail') === path,
+      )
+    )
       return route.fulfill({ contentType: 'image/jpeg', body: image });
     if (method === 'GET' && path.endsWith('/reverse-prompts'))
       return json(route, { analysis: null });

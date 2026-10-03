@@ -1679,6 +1679,176 @@ describe('worker workflow DAG execution', () => {
     expect(provider.execute).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['valid', 'ordinary-text', 'incomplete-duration'] as const)(
+    '专属视频复刻 %s 在执行和密文恢复中按冻结用途校验且不重复请求',
+    async (kind) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174219';
+      const staging = createStagingFixture();
+      const base = createTextSnapshot();
+      const analysisSnapshot: RunSnapshot = {
+        ...base,
+        nodes: base.nodes.filter((node) => node.id === base.targetNodeId),
+        edges: [],
+        inputs: [],
+        reversePrompt: {
+          assetId: 'asset_video',
+          assetVersion: 3,
+          automatic: false,
+          purpose: 'video_recreation',
+        },
+        promptMentions: [
+          {
+            nodeId: base.targetNodeId,
+            mentionId: 'video-source',
+            assetId: 'asset_video',
+            assetVersion: 3,
+            mediaType: 'video',
+            label: '完整视频',
+            blockOrder: 0,
+          },
+        ],
+      };
+      const template = {
+        version: 1,
+        durationSeconds: 12,
+        roles: [{ id: 'character_a', label: '主表演者' }],
+        shots: [
+          {
+            startSeconds: 0,
+            endSeconds: kind === 'incomplete-duration' ? 5 : 12,
+            action: 'character_a 左迈步、抬手展示商品，转身后停步。',
+            camera: '固定全景。',
+          },
+        ],
+        unknowns: ['未确认音轨。'],
+      };
+      const details = {
+        summary: '整片舞步观察。',
+        prompt: kind === 'ordinary-text' ? '普通反推文字不是复刻模板。' : JSON.stringify(template),
+      };
+      const execute = vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
+        ...createExecution(snapshot),
+        output: {
+          mediaType: 'text' as const,
+          kind: 'text' as const,
+          text: JSON.stringify(details),
+          mimeType: 'text/plain',
+        },
+      }));
+      let failReceipt = true;
+      const resultArchiver = vi.fn();
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+        resultArchiver,
+        resultStagingStore: staging.createStore(),
+        execution: {
+          async authorizeRun() {},
+          async authorizeNode() {},
+          async beginSend() {},
+          async finishSend() {
+            if (failReceipt) throw new Error('synthetic receipt unavailable');
+          },
+        },
+      };
+      const job = createJob({
+        runId,
+        snapshot: analysisSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('synthetic receipt unavailable');
+      expect(staging.values.size).toBe(1);
+      failReceipt = false;
+      createRunWorker(options);
+      if (kind === 'valid') {
+        await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+          status: 'succeeded',
+          result: { reversePrompt: details },
+        });
+        delete job.data.workflowState;
+        await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
+          status: 'succeeded',
+          result: { reversePrompt: details },
+        });
+      } else {
+        await expect(bullmqState.processor?.(job)).rejects.toThrow('反推结果格式无效');
+      }
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]![0].snapshot.reversePrompt).toEqual(
+        analysisSnapshot.reversePrompt,
+      );
+      expect(resultArchiver).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, 'video_recreation'] as const)(
+    '%s 独立反推未知响应跨 Worker 恢复不重发',
+    async (purpose) => {
+      bullmqState.jobs.clear();
+      const runId = '123e4567-e89b-42d3-a456-426614174221';
+      const base = createTextSnapshot();
+      const analysisSnapshot: RunSnapshot = {
+        ...base,
+        nodes: base.nodes.filter((node) => node.id === base.targetNodeId),
+        edges: [],
+        inputs: [],
+        reversePrompt: {
+          assetId: 'asset_video',
+          assetVersion: 1,
+          automatic: false,
+          ...(purpose ? { purpose } : {}),
+        },
+        promptMentions: [
+          {
+            nodeId: base.targetNodeId,
+            mentionId: 'source',
+            assetId: 'asset_video',
+            assetVersion: 1,
+            mediaType: 'video',
+            label: '完整视频',
+            blockOrder: 0,
+          },
+        ],
+      };
+      const execute = vi.fn(async () => {
+        throw new TypeError('synthetic provider response lost');
+      });
+      const options: Parameters<typeof createRunWorker>[0] = {
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute },
+        stepDelayMs: 0,
+      };
+      const job = createJob({
+        runId,
+        snapshot: analysisSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: createProviderJobRecord(runId, 'newapi'),
+        cancelRequested: false,
+      });
+      createRunWorker(options);
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        'synthetic provider response lost',
+      );
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        delete job.data.workflowState;
+        createRunWorker(options);
+        await expect(bullmqState.processor?.(job)).rejects.toThrow(
+          '反推请求已发送或发送状态不确定',
+        );
+      }
+      expect(execute).toHaveBeenCalledOnce();
+    },
+  );
+
   it('反推输出缺失 JSON 字段时明确失败，不把普通文字或无效结果当成功', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174182';

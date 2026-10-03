@@ -156,3 +156,64 @@ describe('resource mention OpenAPI contract', () => {
     });
   });
 });
+
+describe('独立短视频复刻分析 OpenAPI', () => {
+  it('POST、GET 和响应声明同一可选用途，prompt 继续为序列化模板字符串', () => {
+    const endpoint = document.paths['/v1/assets/{assetId}/versions/{version}/reverse-prompts'];
+    const body = endpoint.post.requestBody.content['application/json'].schema;
+    expect(body.properties.purpose).toEqual({ type: 'string', enum: ['video_recreation'] });
+    expect(body.required).not.toContain('purpose');
+    expect(endpoint.get.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'purpose',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', enum: ['video_recreation'] },
+        }),
+      ]),
+    );
+    const schema = document.components.schemas.ReversePromptAnalysis;
+    expect(schema.properties.purpose.enum).toEqual(['video_recreation']);
+    expect(schema.required).not.toContain('purpose');
+    expect(schema.properties.prompt.type).toBe('string');
+    expect(schema.properties.prompt.description).toContain('JSON.stringify(template)');
+  });
+});
+
+describe('反推冻结凭据的 HTTP 响应合同', () => {
+  it('普通和专属 POST/GET 使用同一可选 credentialId 字段且不开放 secret 或内部快照', () => {
+    const endpoint = document.paths['/v1/assets/{assetId}/versions/{version}/reverse-prompts'];
+    const postSchema =
+      endpoint.post.responses['202'].content['application/json'].schema.properties.analysis;
+    const getSchema = endpoint.get.responses['200'].content[
+      'application/json'
+    ].schema.properties.analysis.anyOf.find(
+      (schema: { type?: string }) => schema.type === 'object',
+    );
+    for (const schema of [
+      document.components.schemas.ReversePromptAnalysis,
+      postSchema,
+      getSchema,
+    ]) {
+      expect(schema).toBeDefined();
+      expect(schema.properties.credentialId).toMatchObject({ type: 'string' });
+      expect(schema.required).not.toContain('credentialId');
+      expect(schema.additionalProperties).toBe(false);
+      for (const key of [
+        'apiKey',
+        'api_key',
+        'authorization',
+        'baseUrl',
+        'credentialVersion',
+        'nodeCredentialReferences',
+        'snapshot',
+        'requestBody',
+      ]) {
+        expect(schema.properties).not.toHaveProperty(key);
+      }
+    }
+    expect(postSchema).toEqual(document.components.schemas.ReversePromptAnalysis);
+    expect(getSchema).toEqual(document.components.schemas.ReversePromptAnalysis);
+  });
+});

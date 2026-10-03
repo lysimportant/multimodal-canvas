@@ -112,6 +112,8 @@ export const NodeContentContext = createContext<NodeContentHandlers | null>(null
  */
 export type NodeImageEditHandler = (nodeId: string) => void;
 export const NodeImageEditContext = createContext<NodeImageEditHandler | null>(null);
+/** 从当前视频回显创建独立复刻草稿；不覆盖来源，不触发模型调用。 */
+export const NodeVideoRecreationContext = createContext<((nodeId: string) => void) | null>(null);
 /**
  * 打开节点的只读「生成提示词」入口。
  *
@@ -239,6 +241,7 @@ export function AssetNode({
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
   const editImage = useContext(NodeImageEditContext);
+  const recreateVideo = useContext(NodeVideoRecreationContext);
   const openPrompt = useContext(NodePromptContext);
   const batchContext = useContext(GenerationBatchViewContext);
   const batchView = batchContext.views.get(id);
@@ -700,7 +703,11 @@ export function AssetNode({
         modelAlias={data.modelAlias}
       />
       {data.mediaType === 'video' && data.mode === 'generate' ? (
-        <VideoInputSummary nodeId={id} videoMode={data.videoMode} />
+        <VideoInputSummary
+          nodeId={id}
+          videoMode={data.videoMode}
+          isRecreation={Boolean(data.videoRecreation)}
+        />
       ) : null}
       {contentHandlers ? (
         <input
@@ -905,6 +912,23 @@ export function AssetNode({
                 >
                   <WandSparkles size={18} aria-hidden="true" />
                   <NodeFloatingActionLabel>修改图片</NodeFloatingActionLabel>
+                </NodeFloatingActionButton>
+              ) : null}
+              {recreateVideo && data.mediaType === 'video' && previewAsset?.contentUrl ? (
+                <NodeFloatingActionButton
+                  type="button"
+                  className="flow-node-action-button nodrag nopan nowheel"
+                  disabled={writingDisabled}
+                  aria-label={`复刻短视频：${data.label}`}
+                  title="创建短视频复刻节点，原视频保留不变"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!writingDisabled) recreateVideo(id);
+                  }}
+                >
+                  <WandSparkles size={18} aria-hidden="true" />
+                  <NodeFloatingActionLabel>复刻短视频</NodeFloatingActionLabel>
                 </NodeFloatingActionButton>
               ) : null}
               {downloadableMedia && (
@@ -1480,7 +1504,15 @@ export function runStatusLabel(status: RunStatus) {
 /**
  * 视频节点的紧凑输入摘要。绝对定位在预览上方，不参与外部尺寸计算。
  */
-function VideoInputSummary({ nodeId, videoMode }: { nodeId: string; videoMode?: VideoMode }) {
+function VideoInputSummary({
+  nodeId,
+  videoMode,
+  isRecreation,
+}: {
+  nodeId: string;
+  videoMode?: VideoMode;
+  isRecreation?: boolean;
+}) {
   const edges = useNodeConnections({ id: nodeId, handleType: 'target' });
   const roles: PortRole[] = [];
   const counts = new Map<PortRole, number>();
@@ -1501,6 +1533,7 @@ function VideoInputSummary({ nodeId, videoMode }: { nodeId: string; videoMode?: 
   const total = chips.reduce((sum, chip) => sum + chip.count, 0);
   return (
     <div className="flow-node-input-summary" aria-label={`视频输入 ${total} 项`}>
+      {isRecreation ? <span className="flow-node-input-chip">短视频复刻</span> : null}
       <span className="flow-node-input-chip">{videoModeLabels[resolvedMode]}</span>
       {chips.map((chip) => (
         <span key={chip.role} className="flow-node-input-chip">

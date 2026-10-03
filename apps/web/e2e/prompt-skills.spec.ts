@@ -645,7 +645,7 @@ test('长用途说明不挤没选项，鼠标和键盘都可继续选择', async
   await select.click();
   const option = page.getByRole('option', { name: '长说明技能', exact: true });
   await option.getByText('长说明技能', { exact: true }).hover();
-  const hoverTip = page.getByRole('tooltip');
+  const hoverTip = page.getByRole('tooltip').filter({ hasText: '用途说明' });
   await expect(hoverTip).toBeVisible();
   const menu = page.getByRole('listbox');
   await expect(menu).toBeVisible();

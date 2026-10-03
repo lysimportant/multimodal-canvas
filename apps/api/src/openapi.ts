@@ -66,9 +66,20 @@ const reversePromptAnalysisSchema = {
     assetVersion: { type: 'integer', minimum: 1 },
     status: { type: 'string', enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'] },
     automatic: { type: 'boolean' },
+    purpose: { type: 'string', enum: ['video_recreation'] },
     modelAlias: { type: 'string' },
+    credentialId: {
+      type: 'string',
+      minLength: 1,
+      description: '分析任务冻结的连接标识，用于精确匹配分组模型；不含密钥或内部授权。',
+    },
     summary: { type: 'string', maxLength: 2000 },
-    prompt: { type: 'string', maxLength: 20000 },
+    prompt: {
+      type: 'string',
+      maxLength: 20000,
+      description:
+        '普通反推为详细提示词；video_recreation 为通过完整校验的 JSON.stringify(template)。',
+    },
     error: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
@@ -1496,7 +1507,14 @@ export const openApiDocument = {
             in: 'query',
             required: false,
             schema: { type: 'string', minLength: 1 },
-            description: '轮询指定分析；省略时返回最近一次分析。',
+            description: '轮询指定分析且校验用途；省略时返回同用途最近一次分析。',
+          },
+          {
+            name: 'purpose',
+            in: 'query',
+            required: false,
+            schema: { type: 'string', enum: ['video_recreation'] },
+            description: '短视频复刻分析；省略时仅查询普通反推，不返回复刻任务。',
           },
         ],
         responses: {
@@ -1519,7 +1537,7 @@ export const openApiDocument = {
       post: {
         tags: ['assets'],
         summary: '提交独立反推；默认文字模型含凭据，成功结果不归档为新资源',
-        description: `由本人分组授权执行，Canvas 不报价或扣款。仅手动发起分析；相同 idempotencyKey 或仍有运行中的分析时复用任务。失败后必须明确新建分析，普通 Run retry 不适用。`,
+        description: `由本人分组授权执行，Canvas 不报价或扣款。仅手动发起分析；相同 idempotencyKey 或仍有运行中的分析时复用任务。失败后必须明确新建分析，普通 Run retry 不适用。可选 purpose=video_recreation 仅支持完整视频资源，忽略画布选中片段；用途冻结进快照并隔离查询、任务复用与幂等键，省略保持普通反推行为。`,
         parameters: [
           { $ref: '#/components/parameters/AssetId' },
           { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
@@ -1538,6 +1556,7 @@ export const openApiDocument = {
                   credentialId: { type: 'string', format: 'uuid' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
                   automatic: { type: 'boolean', default: false },
+                  purpose: { type: 'string', enum: ['video_recreation'] },
                 },
               },
             },

@@ -2104,7 +2104,10 @@ export function createRunWorker(options: {
             throw new Error(`provider returned no archivable output for workflow node ${node.id}`);
           }
           const reversePrompt = executionSnapshot.reversePrompt
-            ? parseReversePromptOutput(output.kind === 'text' ? output.text : '')
+            ? parseReversePromptOutput(
+                output.kind === 'text' ? output.text : '',
+                executionSnapshot.reversePrompt?.purpose,
+              )
             : undefined;
           const promptOptimization = executionSnapshot.promptOptimization
             ? parsePromptOptimizationOutput(

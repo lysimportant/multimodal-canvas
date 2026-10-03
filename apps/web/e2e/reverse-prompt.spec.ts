@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import type { Asset, CanvasDocument, ModelSelection, RunRecord } from '@multimodal-canvas/domain';
 import type { ReversePromptAnalysis } from '../src/reverse-prompts';
@@ -320,6 +320,14 @@ async function installFixture(
     }
     if (path.endsWith('/access-url'))
       return json(route, { url: path.replace('/access-url', '/versions/1/content') });
+    // 画布小图通过精确版本的衍生图 GET 加载；仅响应夹具已声明的资源版本。
+    if (
+      method === 'GET' &&
+      [...assets.values()].some(
+        (asset) => path === asset.contentUrl.replace(/\/content$/, '/derivatives/thumbnail'),
+      )
+    )
+      return route.fulfill({ contentType: 'image/jpeg', body: imageBytes });
     if (path.endsWith('/content'))
       return route.fulfill({ contentType: 'image/jpeg', body: imageBytes });
     if (path === `/v1/projects/${project.id}/runs`) {
@@ -352,6 +360,13 @@ async function openPrompt(page: Page) {
   return dialog;
 }
 
+/** 点击真实组合框并读取可访问选项，Ant Design 的搜索 input 不承载选中值。 */
+async function openReverseModels(dialog: Locator) {
+  await dialog.getByRole('combobox', { name: '反推文字模型' }).click();
+  const listbox = dialog.getByRole('listbox');
+  await expect(listbox).toBeVisible();
+  return listbox;
+}
 test('反推默认遵循设置，模型与连接可调整，结果独立展示且重开不重发', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const fixture = await installFixture(page, {
@@ -359,10 +374,13 @@ test('反推默认遵循设置，模型与连接可调整，结果独立展示�
   });
   await page.goto(`/projects/${project.id}`);
   const dialog = await openPrompt(page);
-  const model = dialog.getByRole('combobox', { name: '反推文字模型' });
-  await expect(model).toHaveValue(JSON.stringify(['shared-text', 'connection-b']));
-  await expect(model.locator('option')).toHaveCount(3);
-  await model.selectOption(JSON.stringify(['shared-text', 'connection-a']));
+  const listbox = await openReverseModels(dialog);
+  await expect(listbox.getByRole('option')).toHaveCount(3);
+  await expect(listbox.getByRole('option', { selected: true })).toHaveCount(1);
+  await expect(
+    listbox.getByRole('option', { name: '同名文字模型 · beta', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
+  await listbox.getByRole('option', { name: '同名文字模型 · alpha', exact: true }).click();
   await dialog.getByRole('button', { name: '反推提示词', exact: true }).click();
   await expect(dialog.getByRole('region', { name: '反推整体摘要', exact: true })).toContainText(
     reverseSummary,
@@ -403,9 +421,11 @@ test('未设置默认文字模型时选择第一个文字模型', async ({ page 
   const fixture = await installFixture(page);
   await page.goto(`/projects/${project.id}`);
   const dialog = await openPrompt(page);
-  await expect(dialog.getByRole('combobox', { name: '反推文字模型' })).toHaveValue(
-    JSON.stringify(['first-text', 'connection-a']),
-  );
+  const listbox = await openReverseModels(dialog);
+  await expect(
+    listbox.getByRole('option', { name: '第一个文字模型 · alpha', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
+  await dialog.getByRole('combobox', { name: '反推文字模型' }).press('Escape');
   await dialog.getByRole('button', { name: '反推提示词', exact: true }).click();
   await expect(dialog.getByRole('region', { name: '反推详细提示词', exact: true })).toContainText(
     reverseText,
@@ -425,9 +445,11 @@ test('普通账号使用服务端返回的分组默认模型', async ({ page }) 
   });
   await page.goto(`/projects/${project.id}`);
   const dialog = await openPrompt(page);
-  await expect(dialog.getByRole('combobox', { name: '反推文字模型' })).toHaveValue(
-    JSON.stringify(['shared-text', 'connection-b']),
-  );
+  const listbox = await openReverseModels(dialog);
+  await expect(
+    listbox.getByRole('option', { name: '同名文字模型 · beta', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
+  await dialog.getByRole('combobox', { name: '反推文字模型' }).press('Escape');
   expect(fixture.settingsReads).toEqual(['/v1/settings/ai']);
   expect(fixture.reversePosts).toEqual([]);
   expect(fixture.errors).toEqual([]);
@@ -467,16 +489,23 @@ test('提交网络结果未知后关闭重开，显式重试复用原模型与�
   const fixture = await installFixture(page, { failFirstReverse: true });
   await page.goto(`/projects/${project.id}`);
   const dialog = await openPrompt(page);
-  await dialog
-    .getByRole('combobox', { name: '反推文字模型' })
-    .selectOption(JSON.stringify(['shared-text', 'connection-b']));
+  const listbox = await openReverseModels(dialog);
+  await listbox.getByRole('option', { name: '同名文字模型 · beta', exact: true }).click();
   await dialog.getByRole('button', { name: '反推提示词', exact: true }).click();
   await expect(dialog.getByRole('alert')).toBeVisible();
   expect(fixture.reversePosts).toHaveLength(1);
   await dialog.getByRole('button', { name: '关闭生成提示词' }).click();
   const reopened = await openPrompt(page);
   const model = reopened.getByRole('combobox', { name: '反推文字模型' });
-  await expect(model).toHaveValue(JSON.stringify(['shared-text', 'connection-b']));
+  await expect(reopened.locator('.reverse-prompt-model .ant-select')).toContainText(
+    '同名文字模型 · beta',
+  );
+  expect(fixture.reversePosts[0]!.body).toEqual({
+    projectId: project.id,
+    modelAlias: 'shared-text',
+    credentialId: 'connection-b',
+    idempotencyKey: expect.stringMatching(/^reverse-prompt-/),
+  });
   await expect(model).toBeDisabled();
   expect(fixture.reversePosts).toHaveLength(1);
   await reopened.getByRole('button', { name: '反推提示词', exact: true }).click();

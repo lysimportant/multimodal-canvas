@@ -1,0 +1,125 @@
+/* 复用节点编辑器颜色与控件尺度；长摘要和镜头只在面板内滚动。 */
+.video-recreation-panel {
+  display: grid;
+  gap: 12px;
+  /* 浮层高度受限时交给外层编辑器滚动，不能将面板压成零高。 */
+  flex-shrink: 0;
+  min-height: 160px;
+  min-width: 0;
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: 100%;
+  max-height: 640px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--mc-text, #18212f);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.video-recreation-panel h3,
+.video-recreation-panel h4,
+.video-recreation-panel p {
+  margin: 0;
+}
+
+.video-recreation-panel h3 {
+  font-size: 13px;
+}
+.video-recreation-panel h4 {
+  font-size: 12px;
+}
+
+.video-recreation-source,
+.video-recreation-binding,
+.video-recreation-bindings,
+.video-recreation-product,
+.video-recreation-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.video-recreation-source,
+.video-recreation-product,
+.video-recreation-bindings {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--mc-border, #d3dce0);
+}
+
+.video-recreation-source > span,
+.video-recreation-binding > small,
+.video-recreation-hint {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+}
+
+.video-recreation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.video-recreation-actions button {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.video-recreation-panel :is(select, textarea, input) {
+  max-width: 100%;
+}
+.video-recreation-panel :disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.video-recreation-panel textarea {
+  resize: none;
+  height: 82px;
+  overflow: auto;
+}
+.video-recreation-panel :focus-visible {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 2px;
+}
+
+.video-recreation-upload {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mc-text-muted, #687386);
+}
+
+.video-recreation-upload input {
+  font: inherit;
+  width: 100%;
+}
+
+.video-recreation-template {
+  padding: 8px;
+  border: 1px solid var(--mc-border, #d3dce0);
+  border-radius: 5px;
+  background: var(--mc-surface-soft, #f7f8fa);
+}
+
+.video-recreation-template summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.video-recreation-template ol {
+  padding-left: 20px;
+  max-height: 260px;
+  overflow: auto;
+}
+.video-recreation-template li + li {
+  margin-top: 10px;
+}
+.video-recreation-unknowns ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.video-recreation-error {
+  color: var(--mc-danger, #b42318);
+}

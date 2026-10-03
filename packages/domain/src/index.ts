@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { videoRecreationConfigSchema, parseVideoRecreationTemplate } from './video-recreation.js';
+export * from './video-recreation.js';
 
 export * from './prompt-skills.js';
 export * from './newapi-contracts.js';
@@ -926,6 +928,8 @@ export const nodeDataSchema = z.object({
    * 生成节点（旧画布不会被自动推断成编辑节点）。
    */
   imageEditSource: imageEditSourceSchema.optional(),
+  /** 整条短视频复刻专属工作流；保持普通video媒体与Provider合同。 */
+  videoRecreation: videoRecreationConfigSchema.optional(),
 });
 
 /** Legacy canvases omit this field; only an explicit false disables a node. */
@@ -1177,6 +1181,8 @@ export const reversePromptSourceSchema = z.object({
   assetId: z.string().min(1).max(512),
   assetVersion: z.number().int().positive(),
   automatic: z.boolean(),
+  /** 专属视频复刻分析与普通反推隔离，缺省保持旧行为。 */
+  purpose: z.literal('video_recreation').optional(),
 });
 
 /** 反推得到的描述，不代表恢复出的原始生成请求；长度限制以字符数计。 */
@@ -1191,11 +1197,16 @@ export const reversePromptResultSchema = z.object({
  * @returns 已验证且去除多余字段的摘要和详细提示词。
  * @throws JSON、字段或长度不正确时抛出固定错误，不把供应商原文写入错误日志。
  */
-export function parseReversePromptOutput(text: string): z.infer<typeof reversePromptResultSchema> {
+export function parseReversePromptOutput(
+  text: string,
+  purpose?: 'video_recreation',
+): z.infer<typeof reversePromptResultSchema> {
   try {
     const trimmed = text.trim();
     const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed);
-    return reversePromptResultSchema.parse(JSON.parse(fenced?.[1] ?? trimmed));
+    const result = reversePromptResultSchema.parse(JSON.parse(fenced?.[1] ?? trimmed));
+    if (purpose === 'video_recreation') parseVideoRecreationTemplate(result.prompt);
+    return result;
   } catch {
     throw new Error('反推结果格式无效：模型必须返回包含 summary 和 prompt 的 JSON 对象');
   }

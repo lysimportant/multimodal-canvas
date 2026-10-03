@@ -22,6 +22,7 @@ import type {
   VideoCompletionAction,
   VideoModelFamily,
   VideoMode,
+  VideoRecreationConfig,
 } from '@multimodal-canvas/domain';
 import {
   DEFAULT_GENERATION_COUNT,
@@ -50,6 +51,8 @@ import {
 } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
+import { VideoRecreationPanel } from './VideoRecreationPanel';
+import { recreationGenerationIssue } from './video-recreation-node';
 import { AssetPreview } from './AssetPreview';
 import type { ConnectedPromptAsset } from './connected-prompt-assets';
 import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
@@ -119,6 +122,8 @@ export type NodeQuickEditorProps = {
   onPromptDocumentChange?: (document: PromptDocument) => void;
   /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
   onUploadResource?: (file: File) => Promise<Asset>;
+  /** 修改复刻工作流配置；资源引用与生成提示词由父层原子更新。 */
+  onVideoRecreationChange?: (config: VideoRecreationConfig) => void | Promise<void>;
   /** 当前节点连续添加画布参考资源的开关；不触发生成。 */
   referencePickActive?: boolean;
   onReferencePickToggle?: () => void;
@@ -379,6 +384,7 @@ export function NodeQuickEditor({
   onPromptChange,
   onPromptDocumentChange,
   onUploadResource,
+  onVideoRecreationChange,
   referencePickActive,
   onReferencePickToggle,
   onSearchProjectResources,
@@ -633,7 +639,9 @@ export function NodeQuickEditor({
     : hasImageEditInput && imageEditCapability(selectedModel).unsupported
       ? '当前模型明确不支持图片编辑，请更换模型后再运行'
       : undefined;
+  const recreationIssue = recreationGenerationIssue(node.data);
   const mediaParameterIssue =
+    recreationIssue ??
     imageOutputParameterIssue ??
     durationIssue ??
     resolutionIssue ??
@@ -1192,7 +1200,7 @@ export function NodeQuickEditor({
   const controls = (
     <div className="node-quick-editor-controls">
       <div className="node-quick-editor-run-group">
-        {!expandedEditorOpen && skillPanel}
+        {!expandedEditorOpen && !node.data.videoRecreation && skillPanel}
         <NodeParameterSelect
           label="生成数量"
           className="node-quick-editor-generation-count"
@@ -1308,6 +1316,23 @@ export function NodeQuickEditor({
     </div>
   );
 
+  const recreationPanel =
+    node.data.videoRecreation && projectId && onVideoRecreationChange ? (
+      <VideoRecreationPanel
+        key={
+          node.data.videoRecreation.source.assetId +
+          ':' +
+          node.data.videoRecreation.source.assetVersion
+        }
+        projectId={projectId}
+        config={node.data.videoRecreation}
+        assets={assets}
+        models={models}
+        busy={busy}
+        onChange={onVideoRecreationChange}
+        onUploadResource={onUploadResource}
+      />
+    ) : null;
   return (
     <>
       <section
@@ -1320,6 +1345,7 @@ export function NodeQuickEditor({
       >
         {!expandedEditorOpen && (
           <>
+            {recreationPanel}
             {topControls}
             <div className="node-quick-editor-prompt-group">
               {imageEditSourcePreview}
@@ -1387,6 +1413,7 @@ export function NodeQuickEditor({
             </DialogClose>
           </div>
           <div className="node-quick-editor-dialog-body">
+            {expandedEditorOpen && recreationPanel}
             {topControls}
             <div className="node-quick-editor-prompt-group">{promptEditor}</div>
             {expandedEditorOpen && inlineSkillPreview}
