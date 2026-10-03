@@ -6,6 +6,7 @@ import { useCanvasDraft } from './use-canvas-draft';
 import { CanvasHistory } from './canvas-history';
 import { arrangeCanvasNodes } from './canvas-auto-arrange';
 import './workspace/canvas-arrange-button.css';
+import { MobileWorkspacePanel, useMobileWorkspace } from './workspace/MobileWorkspacePanel';
 import { CanvasPersistence, type CanvasSnapshot } from './canvas-persistence';
 import { Dropdown, Modal } from 'antd';
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
@@ -20,6 +21,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   LoaderCircle,
+  Menu,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
@@ -718,6 +720,16 @@ function WorkspaceApp({
   const setCanvasEdgePathStyle = useWorkspacePreferences((state) => state.setCanvasEdgePathStyle);
   const canvasEdgeEffect = useWorkspacePreferences((state) => state.canvasEdgeEffect);
   const setCanvasEdgeEffect = useWorkspacePreferences((state) => state.setCanvasEdgeEffect);
+  const isMobileWorkspace = useMobileWorkspace();
+  /** 手机浮层独立于持久化桌面偏好，每次进入手机断点均默认关闭。 */
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [showMobileResources, setShowMobileResources] = useState(false);
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileResourcesTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    setShowMobileMenu(false);
+    setShowMobileResources(false);
+  }, [isMobileWorkspace]);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -837,9 +849,12 @@ function WorkspaceApp({
   }, []);
 
   useEffect(() => {
-    if (settingsWasOpenRef.current && !showSettings) settingsTriggerRef.current?.focus();
+    if (settingsWasOpenRef.current && !showSettings) {
+      const trigger = isMobileWorkspace ? mobileMenuTriggerRef : settingsTriggerRef;
+      trigger.current?.focus();
+    }
     settingsWasOpenRef.current = showSettings;
-  }, [showSettings]);
+  }, [showSettings, isMobileWorkspace]);
 
   useEffect(() => {
     if (!notice || notice.kind !== 'success') return;
@@ -2350,11 +2365,15 @@ function WorkspaceApp({
   /** 转交当前资源的永久删除操作，保留原有异步处理语义。 */
   const handleDeleteAsset = useCallback((asset: Asset) => void deleteAsset(asset), [deleteAsset]);
 
-  /** 只在显式切换时更新抽屉偏好，使用 store 的当前值。 */
-  const handleToggleResourceCollapsed = useCallback(
-    () => setIsResourceCollapsed((current) => !current),
-    [setIsResourceCollapsed],
-  );
+  /** 手机只切换临时浮层；桌面显式切换才更新持久化收起偏好。 */
+  const handleToggleResourceCollapsed = useCallback(() => {
+    if (isMobileWorkspace) {
+      setShowMobileResources((current) => !current);
+      setShowMobileMenu(false);
+    } else {
+      setIsResourceCollapsed((current) => !current);
+    }
+  }, [isMobileWorkspace, setIsResourceCollapsed]);
 
   const handleAddGenerateNode = useCallback(
     (mediaType: MediaType, position?: { x: number; y: number }) => {
@@ -4036,14 +4055,20 @@ function WorkspaceApp({
       },
       {
         id: 'toggle-resource-panel',
-        label: isResourceCollapsed ? '展开资源栏' : '折叠资源栏',
+        label: isMobileWorkspace
+          ? showMobileResources
+            ? '关闭全部资源'
+            : '打开全部资源'
+          : isResourceCollapsed
+            ? '展开资源栏'
+            : '折叠资源栏',
         category: '布局',
         icon: isResourceCollapsed ? (
           <PanelLeftOpen size={15} aria-hidden="true" />
         ) : (
           <PanelLeftClose size={15} aria-hidden="true" />
         ),
-        onSelect: () => setIsResourceCollapsed((current) => !current),
+        onSelect: handleToggleResourceCollapsed,
       },
     ];
 
@@ -4092,6 +4117,9 @@ function WorkspaceApp({
     isExporting,
     isProjectLoading,
     isResourceCollapsed,
+    isMobileWorkspace,
+    showMobileResources,
+    handleToggleResourceCollapsed,
     selectedNodeBusy,
     nodes,
     onNavigate,
@@ -4208,139 +4236,200 @@ function WorkspaceApp({
               <span className="save-state-label">{saveState}</span>
             </span>
           </div>
-          <div className="topbar-actions">
-            <div className="topbar-tool-cluster" aria-label="画布编辑工具">
-              <UiButton
-                type="button"
-                className="icon-button command-palette-trigger"
-                ref={commandPaletteTriggerRef}
-                aria-label="打开命令面板"
-                title="命令面板（Ctrl/Cmd+K）"
-                onClick={() => setShowCommandPalette(true)}
-              >
-                <Search size={16} aria-hidden="true" />
-                <span className="command-palette-trigger-label">命令</span>
-              </UiButton>
-              <span className="topbar-tool-divider" aria-hidden="true" />
+          {isMobileWorkspace && (
+            <div className="mobile-workspace-triggers" aria-label="手机画布工具">
               <UiButton
                 type="button"
                 className="icon-button"
-                aria-label="撤销"
-                title="撤销"
-                onClick={undoCanvas}
-                disabled={historyRef.current.past.length === 0}
+                ref={mobileResourcesTriggerRef}
+                aria-label="打开全部资源"
+                title="全部资源"
+                aria-haspopup="dialog"
+                aria-expanded={showMobileResources}
+                aria-controls="mobile-workspace-resources"
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  setShowMobileResources(true);
+                }}
               >
-                <Undo2 size={16} />
+                <PanelLeftOpen size={19} aria-hidden="true" />
               </UiButton>
               <UiButton
+                ref={mobileMenuTriggerRef}
                 type="button"
                 className="icon-button"
-                aria-label="重做"
-                title="重做"
-                onClick={redoCanvas}
-                disabled={historyRef.current.future.length === 0}
+                aria-label="打开画布菜单"
+                title="画布菜单"
+                aria-haspopup="dialog"
+                aria-expanded={showMobileMenu}
+                aria-controls="mobile-workspace-menu"
+                onClick={() => {
+                  setShowMobileResources(false);
+                  setShowMobileMenu(true);
+                }}
               >
-                <Redo2 size={16} />
+                <Menu size={19} aria-hidden="true" />
               </UiButton>
-              <span className="topbar-tool-divider" aria-hidden="true" />
-              <UiButton
-                type="button"
-                className="icon-button canvas-arrange-trigger"
-                aria-label="整理节点"
-                title="整理全部节点：从左到右排列，独立节点每行最多 5 个，相连节点按层级排列，父节点居中；保留分组，可撤销"
-                onClick={arrangeCanvas}
-                disabled={!isCanvasReady || isProjectLoading || nodes.length < 2}
-              >
-                <LayoutGrid size={16} aria-hidden="true" />
-                <span>整理</span>
-              </UiButton>
-              <AppearancePicker
-                placement="top"
-                canvasTheme={canvasTheme}
-                onThemeChange={setCanvasTheme}
-                canvasBackground={canvasBackground}
-                onBackgroundChange={setCanvasBackground}
-                canvasEdgePathStyle={canvasEdgePathStyle}
-                onEdgePathStyleChange={setCanvasEdgePathStyle}
-                canvasEdgeEffect={canvasEdgeEffect}
-                onEdgeEffectChange={setCanvasEdgeEffect}
-              />
             </div>
-            <UiButton
-              type="button"
-              className="icon-button"
-              aria-label="打开设置"
-              title="设置"
-              onClick={() => setShowSettings(true)}
-              ref={settingsTriggerRef}
-            >
-              <Settings size={16} />
-            </UiButton>
-            <AccountMenu
-              projectId={projectId}
-              user={authUser}
-              onRequestLogin={onRequestLogin}
-              onLogout={onLoggedOut}
-              onNavigate={handlePageNavigation}
-            />
-            <Dropdown
-              open={showExportMenu}
-              onOpenChange={setShowExportMenu}
-              trigger={['click']}
-              autoFocus
-              destroyOnHidden
-              styles={{ root: { minWidth: 236 } }}
-              menu={{
-                id: 'project-export-menu',
-                'aria-label': '导出选项',
-                items: [
-                  {
-                    key: 'workflow',
-                    label: '导出工作流 JSON',
-                    title: '节点、连线和运行元数据',
-                    icon: <FileText size={15} aria-hidden="true" />,
-                    disabled: isExporting,
-                    onClick: () => void exportProject('workflow'),
-                  },
-                  {
-                    key: 'results',
-                    label: '导出结果 ZIP',
-                    title: '工作流、清单和生成结果文件',
-                    icon: <Archive size={15} aria-hidden="true" />,
-                    disabled: isExporting,
-                    onClick: () => void exportProject('results'),
-                  },
-                ],
-              }}
-            >
+          )}
+          <MobileWorkspacePanel
+            mobile={isMobileWorkspace}
+            open={showMobileMenu}
+            title="画布菜单"
+            id="mobile-workspace-menu"
+            kind="menu"
+            restoreFocusRef={showCommandPalette || showSettings ? undefined : mobileMenuTriggerRef}
+            onClose={() => setShowMobileMenu(false)}
+          >
+            <div className="topbar-actions">
+              <div className="topbar-tool-cluster" aria-label="画布编辑工具">
+                <UiButton
+                  type="button"
+                  className="icon-button command-palette-trigger"
+                  ref={commandPaletteTriggerRef}
+                  aria-label="打开命令面板"
+                  title="命令面板（Ctrl/Cmd+K）"
+                  onClick={() => {
+                    setShowMobileMenu(false);
+                    setShowCommandPalette(true);
+                  }}
+                >
+                  <Search size={16} aria-hidden="true" />
+                  <span className="command-palette-trigger-label">命令</span>
+                </UiButton>
+                <span className="topbar-tool-divider" aria-hidden="true" />
+                <UiButton
+                  type="button"
+                  className="icon-button"
+                  aria-label="撤销"
+                  title="撤销"
+                  onClick={undoCanvas}
+                  disabled={historyRef.current.past.length === 0}
+                >
+                  <Undo2 size={16} />
+                </UiButton>
+                <UiButton
+                  type="button"
+                  className="icon-button"
+                  aria-label="重做"
+                  title="重做"
+                  onClick={redoCanvas}
+                  disabled={historyRef.current.future.length === 0}
+                >
+                  <Redo2 size={16} />
+                </UiButton>
+                <span className="topbar-tool-divider" aria-hidden="true" />
+                <UiButton
+                  type="button"
+                  className="icon-button canvas-arrange-trigger"
+                  aria-label="整理节点"
+                  title="整理全部节点：从左到右排列，独立节点每行最多 5 个，相连节点按层级排列，父节点居中；保留分组，可撤销"
+                  onClick={arrangeCanvas}
+                  disabled={!isCanvasReady || isProjectLoading || nodes.length < 2}
+                >
+                  <LayoutGrid size={16} aria-hidden="true" />
+                  <span>整理</span>
+                </UiButton>
+                <AppearancePicker
+                  placement="top"
+                  canvasTheme={canvasTheme}
+                  onThemeChange={setCanvasTheme}
+                  canvasBackground={canvasBackground}
+                  onBackgroundChange={setCanvasBackground}
+                  canvasEdgePathStyle={canvasEdgePathStyle}
+                  onEdgePathStyleChange={setCanvasEdgePathStyle}
+                  canvasEdgeEffect={canvasEdgeEffect}
+                  onEdgeEffectChange={setCanvasEdgeEffect}
+                />
+              </div>
               <UiButton
                 type="button"
-                className="button button-secondary"
-                aria-haspopup="menu"
-                aria-expanded={showExportMenu}
-                aria-controls="project-export-menu"
-                aria-busy={isExporting}
-                disabled={isExporting || !projectId}
-                title={!projectId ? '项目加载后可导出' : '导出工作流或结果'}
+                className="icon-button"
+                aria-label="打开设置"
+                title="设置"
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  setShowSettings(true);
+                }}
+                ref={settingsTriggerRef}
               >
-                {isExporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
-                {isExporting ? '导出中' : '导出'}
-                <ChevronDown size={13} aria-hidden="true" />
+                <Settings size={16} />
               </UiButton>
-            </Dropdown>
-            <UiButton
-              type="button"
-              className="button button-primary"
-              disabled={!selectedNode || selectedNode.data.enabled === false || selectedNodeBusy}
-              onClick={() => {
-                if (selectedNode) void runNode(selectedNode);
-              }}
-              title={selectedNode ? '运行选中的节点' : '先选择要运行的节点'}
-            >
-              {selectedNodeBusy ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}
-              {selectedNodeBusy ? '运行中' : '运行'}
-            </UiButton>
-          </div>
+              <AccountMenu
+                projectId={projectId}
+                user={authUser}
+                onRequestLogin={onRequestLogin}
+                onLogout={onLoggedOut}
+                onNavigate={handlePageNavigation}
+              />
+              <Dropdown
+                open={showExportMenu}
+                onOpenChange={setShowExportMenu}
+                trigger={['click']}
+                autoFocus
+                destroyOnHidden
+                styles={{ root: { minWidth: 236 } }}
+                menu={{
+                  id: 'project-export-menu',
+                  'aria-label': '导出选项',
+                  items: [
+                    {
+                      key: 'workflow',
+                      label: '导出工作流 JSON',
+                      title: '节点、连线和运行元数据',
+                      icon: <FileText size={15} aria-hidden="true" />,
+                      disabled: isExporting,
+                      onClick: () => void exportProject('workflow'),
+                    },
+                    {
+                      key: 'results',
+                      label: '导出结果 ZIP',
+                      title: '工作流、清单和生成结果文件',
+                      icon: <Archive size={15} aria-hidden="true" />,
+                      disabled: isExporting,
+                      onClick: () => void exportProject('results'),
+                    },
+                  ],
+                }}
+              >
+                <UiButton
+                  type="button"
+                  className="button button-secondary"
+                  aria-haspopup="menu"
+                  aria-expanded={showExportMenu}
+                  aria-controls="project-export-menu"
+                  aria-busy={isExporting}
+                  disabled={isExporting || !projectId}
+                  title={!projectId ? '项目加载后可导出' : '导出工作流或结果'}
+                >
+                  {isExporting ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : (
+                    <Download size={15} />
+                  )}
+                  {isExporting ? '导出中' : '导出'}
+                  <ChevronDown size={13} aria-hidden="true" />
+                </UiButton>
+              </Dropdown>
+              <UiButton
+                type="button"
+                className="button button-primary"
+                disabled={!selectedNode || selectedNode.data.enabled === false || selectedNodeBusy}
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  if (selectedNode) void runNode(selectedNode);
+                }}
+                title={selectedNode ? '运行选中的节点' : '先选择要运行的节点'}
+              >
+                {selectedNodeBusy ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <Play size={15} />
+                )}
+                {selectedNodeBusy ? '运行中' : '运行'}
+              </UiButton>
+            </div>
+          </MobileWorkspacePanel>
         </header>
 
         {notice && (
@@ -4382,7 +4471,7 @@ function WorkspaceApp({
           open={showCommandPalette}
           commands={commandPaletteCommands}
           onClose={() => setShowCommandPalette(false)}
-          restoreFocusRef={commandPaletteTriggerRef}
+          restoreFocusRef={isMobileWorkspace ? mobileMenuTriggerRef : commandPaletteTriggerRef}
         />
 
         {promptDialog ? (
@@ -4448,29 +4537,39 @@ function WorkspaceApp({
         />
 
         <div className="workspace">
-          <ResourcePanel
-            assets={pageAssets}
-            pagination={pagination}
-            collapsed={isResourceCollapsed}
-            isRenameDialogOpen={renamingAsset !== null}
-            showArchived={showArchived}
-            activeFilter={activeFilter}
-            query={query}
-            isUploading={isUploading}
-            uploadProgress={uploadProgress}
-            onToggleArchived={handleToggleArchived}
-            onFilterChange={setActiveFilter}
-            onQueryChange={setQuery}
-            onFilesSelected={handleResourceFilesSelected}
-            onAssetDragStart={handleAssetDragStart}
-            onAddAsset={handleAddAsset}
-            onRenameAsset={handleRenameAsset}
-            onArchiveAsset={handleArchiveAsset}
-            onDeleteAsset={handleDeleteAsset}
-            onDrop={handleResourceDrop}
-            onToggleCollapsed={handleToggleResourceCollapsed}
-            uploadInputRef={uploadInputRef}
-          />
+          <MobileWorkspacePanel
+            mobile={isMobileWorkspace}
+            open={showMobileResources}
+            title="全部资源"
+            id="mobile-workspace-resources"
+            kind="resources"
+            restoreFocusRef={mobileResourcesTriggerRef}
+            onClose={() => setShowMobileResources(false)}
+          >
+            <ResourcePanel
+              assets={pageAssets}
+              pagination={pagination}
+              collapsed={isMobileWorkspace ? false : isResourceCollapsed}
+              isRenameDialogOpen={renamingAsset !== null}
+              showArchived={showArchived}
+              activeFilter={activeFilter}
+              query={query}
+              isUploading={isUploading}
+              uploadProgress={uploadProgress}
+              onToggleArchived={handleToggleArchived}
+              onFilterChange={setActiveFilter}
+              onQueryChange={setQuery}
+              onFilesSelected={handleResourceFilesSelected}
+              onAssetDragStart={handleAssetDragStart}
+              onAddAsset={handleAddAsset}
+              onRenameAsset={handleRenameAsset}
+              onArchiveAsset={handleArchiveAsset}
+              onDeleteAsset={handleDeleteAsset}
+              onDrop={handleResourceDrop}
+              onToggleCollapsed={handleToggleResourceCollapsed}
+              uploadInputRef={uploadInputRef}
+            />
+          </MobileWorkspacePanel>
           <SkillWorkbench
             key={authUser?.id ?? 'anonymous'}
             projectId={projectId ?? undefined}

@@ -1,0 +1,117 @@
+/* 使用独立手机状态，避免把资源面板的桌面固定偏好改成收起。 */
+.mobile-workspace-triggers {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  pointer-events: auto;
+}
+
+.mobile-workspace-triggers > .icon-button {
+  height: 42px;
+  width: 42px;
+}
+
+.mobile-workspace-panel .ant-drawer-section {
+  background: var(--mc-surface);
+  color: var(--mc-text);
+}
+
+.mobile-workspace-panel .ant-drawer-header {
+  border-color: var(--mc-border);
+  padding: 12px 16px;
+}
+
+.mobile-workspace-panel .ant-drawer-title,
+.mobile-workspace-panel .ant-drawer-close {
+  color: var(--mc-text);
+}
+
+.mobile-workspace-panel .ant-drawer-close {
+  height: 40px;
+  width: 40px;
+}
+
+.mobile-workspace-panel .topbar-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+.mobile-workspace-panel .topbar-tool-cluster {
+  display: contents;
+}
+
+.mobile-workspace-panel .topbar-tool-divider {
+  display: none;
+}
+
+.mobile-workspace-panel .topbar-actions button {
+  font-size: 13px;
+  height: 44px;
+  justify-content: center;
+  min-width: 0;
+  width: 100%;
+}
+
+.mobile-workspace-panel .command-palette-trigger-label {
+  display: inline;
+}
+
+.mobile-workspace-panel .icon-button[aria-label='撤销']::after,
+.mobile-workspace-panel .icon-button[aria-label='重做']::after {
+  content: attr(aria-label);
+}
+
+.mobile-workspace-panel .icon-button[aria-label='打开设置']::after {
+  content: '设置';
+}
+
+.mobile-workspace-panel .mc-account-trigger::after {
+  content: '账户';
+}
+
+.mobile-workspace-panel .topbar-actions .icon-button,
+.mobile-workspace-panel .mc-account-trigger {
+  gap: 8px;
+}
+
+.mobile-workspace-resources .ant-drawer-body {
+  overflow: hidden;
+}
+
+.mobile-workspace-resources .mobile-workspace-panel-content {
+  height: 100%;
+  min-height: 0;
+}
+
+.mobile-workspace-resources .resource-panel.resource-drawer {
+  border: 0;
+  border-radius: 0;
+  height: 100%;
+  max-height: none;
+  padding: 12px;
+  width: 100%;
+}
+
+/* 手机面板由抽屉标题关闭，不显示会修改桌面偏好的固定/收起入口。 */
+.mobile-workspace-resources .resource-collapse-button {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .app-shell > .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    padding: 8px 12px 8px 56px;
+    row-gap: 4px;
+  }
+
+  .app-shell > .topbar > .project-context {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
