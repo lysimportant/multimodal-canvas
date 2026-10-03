@@ -360,6 +360,41 @@ function occurrenceCount(value: string, name: string) {
   return value.split(name).length - 1;
 }
 
+/** 验证 picker 第二行的五个图标和两个 Tab 同行、保留最小间隔，且按钮不越出面板。 */
+async function expectPickerControlsLayout(picker: Locator) {
+  const filters = picker.getByRole('group', { name: '节点类型' });
+  const tabs = picker.getByRole('tablist', { name: '资源范围' });
+  await expect(filters.getByRole('button')).toHaveCount(5);
+  await expect(tabs.getByRole('tab')).toHaveCount(2);
+  const panelBox = await picker.boundingBox();
+  const filtersBox = await filters.boundingBox();
+  const tabsBox = await tabs.boundingBox();
+  expect(panelBox).not.toBeNull();
+  expect(filtersBox).not.toBeNull();
+  expect(tabsBox).not.toBeNull();
+  expect(tabsBox!.y).toBeCloseTo(filtersBox!.y, 0);
+  expect(tabsBox!.x - (filtersBox!.x + filtersBox!.width)).toBeGreaterThanOrEqual(16);
+
+  for (const buttons of [filters.getByRole('button'), tabs.getByRole('tab')]) {
+    let previous: { x: number; width: number } | null = null;
+    for (const button of await buttons.all()) {
+      await expect(button).toBeVisible();
+      const box = await button.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.y).toBeCloseTo(filtersBox!.y, 0);
+      expect(box!.x).toBeGreaterThanOrEqual(panelBox!.x);
+      expect(box!.y).toBeGreaterThanOrEqual(panelBox!.y);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(panelBox!.y + panelBox!.height);
+
+      if (previous) {
+        expect(box!.x - (previous.x + previous.width)).toBeGreaterThanOrEqual(6);
+      }
+      previous = box;
+    }
+  }
+}
+
 test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原子删除与撤销', async ({
   page,
   baseURL,
@@ -399,7 +434,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   const caretBox = await caretCharacterRect(prompt);
   expect(promptBox).not.toBeNull();
   expect(pickerBox).not.toBeNull();
-  expect(pickerBox!.width).toBeCloseTo(520, 0);
+  expect(pickerBox!.width).toBeCloseTo(400, 0);
   expect(pickerBox!.height).toBeCloseTo(480, 0);
   expect(pickerBox!.x).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
@@ -421,27 +456,19 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   expect(nodeWithPicker).not.toBeNull();
   expectSameNodeSize(nodeBefore!, nodeWithPicker!);
 
+  await expectPickerControlsLayout(picker);
   const filterNames = ['全部', '图片', '视频', '音频', '文本'] as const;
-  const filterBoxes = [];
   for (const name of filterNames) {
     const filter = picker.getByRole('button', { name, exact: true });
     await expect(filter).toHaveAttribute('aria-pressed');
-    filterBoxes.push((await filter.boundingBox())!);
   }
   await expect(picker.getByRole('button', { name: '全部', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
-  for (let index = 1; index < filterBoxes.length; index += 1) {
-    expect(filterBoxes[index].x).toBeGreaterThan(filterBoxes[index - 1].x);
-    expect(filterBoxes[index].y).toBeCloseTo(filterBoxes[0].y, 0);
-  }
   const filtersBox = await picker.locator('.resource-mention-filters').boundingBox();
   const resultsBox = await listbox.boundingBox();
   expect(resultsBox!.y).toBeGreaterThanOrEqual(filtersBox!.y + filtersBox!.height - 1);
-  const tabsBox = await picker.getByRole('tablist', { name: '资源范围' }).boundingBox();
-  expect(tabsBox!.y).toBeCloseTo(filtersBox!.y, 0);
-  expect(tabsBox!.x).toBeGreaterThan(filtersBox!.x + filtersBox!.width);
 
   await searchbox.fill('采访');
   await expect(prompt).toHaveValue(`${initialPrompt} @`);
@@ -453,6 +480,13 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   });
 
   await searchbox.fill('');
+  await expect(searchbox).toHaveValue('');
+  await expect(listbox).toBeVisible();
+  await expect(listbox.getByRole('option')).toHaveCount(10);
+  await picker.screenshot({
+    path: test.info().outputPath('resource-mention-picker-default-ten.png'),
+    animations: 'disabled',
+  });
   await picker.getByRole('button', { name: '视频', exact: true }).click();
   await expect(picker.getByRole('button', { name: '视频', exact: true })).toHaveAttribute(
     'aria-pressed',
@@ -554,16 +588,32 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
 
   const pickerBox = await picker.boundingBox();
   expect(pickerBox).not.toBeNull();
-  expect(pickerBox!.width).toBeCloseTo(520, 0);
+  expect(pickerBox!.width).toBeCloseTo(400, 0);
   expect(pickerBox!.height).toBeCloseTo(480, 0);
   expect(pickerBox!.x).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.x + pickerBox!.width).toBeLessThanOrEqual(1016);
   expect(pickerBox!.y + pickerBox!.height).toBeLessThanOrEqual(760);
+  await expectPickerControlsLayout(picker);
   await page.screenshot({
     path: test.info().outputPath('resource-mention-picker-dialog.png'),
     animations: 'disabled',
   });
+
+  await searchbox.fill('');
+  await expect(searchbox).toHaveValue('');
+  await expect(searchbox).toBeFocused();
+  await expect(listbox).toBeVisible();
+  await expect(listbox.getByRole('option')).toHaveCount(10);
+  await expect(picker.getByRole('navigation', { name: '项目资源分页' })).toHaveCount(0);
+  await picker.screenshot({
+    path: test.info().outputPath('resource-mention-picker-dialog-default-ten.png'),
+    animations: 'disabled',
+  });
+  await searchbox.fill('需求');
+  await expect(searchbox).toBeFocused();
+  await expect(listbox.getByRole('option', { name: /资料文档/ })).toBeVisible();
+  await expect(listbox.getByRole('option')).toHaveCount(1);
 
   await searchbox.press('Enter');
   await expect(dialog).toBeVisible();

@@ -120,3 +120,16 @@
 $env:WEB_BASE_URL = 'http://localhost:8080'
 pnpm --filter @multimodal-canvas/web exec playwright test node-editor-text-alignment.spec.ts resource-mention-picker.spec.ts --grep '倍长中文引用连续拖选|完整 Dialog 使用相同|1440 PC 节点 picker|1024 PC 放大 Dialog|PC 连续添加参考|项目资源搜索跨越首页|PC 目录外冻结引用' --workers=1 --retries=0 --repeat-each=2 '--reporter=list,json'
 ```
+
+## 搜索框宽度反馈（2026-10-03）
+
+P2，仅输入框 `@` 资源面板的视觉微调；不改搜索、分页、引用、节点尺寸或并行 Skill 工作。
+
+- 基线：`codex/generate-to-new-node @ 3d72fa2`，Node `v24.12.0`、pnpm `11.19.0`，依赖已安装；节点输入布局原有 10/10 单测通过。
+- 面板宽度从 520px 收至 400px，高度仍为 480px，并保留视口边界。第二行图标和 Tab 的组内间隔均为 6px，两组之间至少 16px，保留左右分组。
+- 只修改专用资源控件样式；不碰共享 `index.css`。浏览器测试验证 1440px 画布与 1024px Dialog 的宽度、按钮间隔、焦点与项目默认十项。
+- 本轮证据：`.local-tests/reference-picker-width/`。修改前浏览器 2/2；相关四文件单测 197/197；全仓 lint 9/9、typecheck 15/15、build 9/9 成功；新增几何契约定稿后目标文件 Prettier 与 diff 检查通过。
+- 新包五个相关浏览器场景连续两轮 10/10，零重试、零 skip、零 flaky；覆盖画布与 Dialog 的 400×480px、按钮同行与留白、默认十项、完整项目分页、连续添加排序及未知 MIME 预览。1440px 与 1024px 截图均已目视检查。
+- 已仅更新本机 Web，`8080` 部署后同一几何契约冒烟 2/2 通过，入口 `/assets/index-0MixlCjA.js`；API、Worker、数据库和素材存储未由本轮重建。未刷新或编辑用户正在打开的真实项目提示词，浏览器写操作只使用合成项目和 API Mock。
+- 精确运行前 Web 镜像已保留为 `multimodal-canvas-web:before-picker-width-20261003`，需要时可重新标记为本机 Web 镜像并仅重建 Web，无数据库回滚。临时验证服务 8086 结束后停止。
+- 本轮仅提交专用 CSS、现有 E2E 和本检查点三个文件。并行 Skill、移动端及用户原有改动不暂存；测试结果对应本轮已验证的构建快照，不代表持续变化中的其它任务已验收。提交并推送当前 origin 上游后，将远端核验写入本机 `git-delivery-verification.json`。
