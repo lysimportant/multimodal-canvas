@@ -1,6 +1,8 @@
 import { Button } from '@multimodal-canvas/ui';
+import { Popover } from 'antd';
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import {
+  ChevronUp,
   Group,
   LayoutGrid,
   Maximize2,
@@ -10,7 +12,14 @@ import {
   Upload,
   WandSparkles,
 } from 'lucide-react';
-import { type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 
 import type { CanvasBackground } from '../app-contract-utils';
 import type { CanvasTheme } from '../state/workspace-preferences';
@@ -18,12 +27,14 @@ import type { CanvasEdgeEffect, CanvasEdgePathStyle } from './canvas-edge-appear
 import { AppearancePicker } from './AppearancePicker';
 import { ClearCanvasMenu, type ClearActionCounts } from './ClearCanvasMenu';
 import { mediaIcons, mediaLabels } from './contracts';
+import { useMobileWorkspace } from './MobileWorkspacePanel';
+import './CanvasNodeToolbar.mobile.css';
 
 /**
  * 画布底部工具胶囊。
  *
  * 左侧「创建节点」固定为媒体类型按钮；其余操作收成「节点组」与「系统组」，
- * 两组之间用分隔线分开，避免每个按钮单独成组。
+ * 桌面两组之间用分隔线分开；手机仅显示四个媒体入口与向上展开箭头。
  */
 export function CanvasNodeToolbar({
   onOpenSkillWorkbench,
@@ -99,6 +110,17 @@ export function CanvasNodeToolbar({
   /** 当前是否存在可重做的历史记录。 */
   canRedo?: boolean;
 }) {
+  const mobile = useMobileWorkspace();
+  const [showMore, setShowMore] = useState(false);
+  const moreId = useId();
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+  const morePanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => setShowMore(false), [mobile]);
+  useEffect(() => {
+    if (!showMore) return;
+    const frame = requestAnimationFrame(() => morePanelRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [showMore]);
   /** 节点图相关操作：上传、分组、整理、清空、撤销、重做。 */
   const nodeActions: ReactNode[] = [];
   /** 工作台系统操作：搜索、外观、适配缩放。 */
@@ -114,6 +136,7 @@ export function CanvasNodeToolbar({
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onOpenSkillWorkbench();
         }}
       >
@@ -136,6 +159,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onRequestUpload();
         }}
       >
@@ -155,6 +179,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onCreateGroup();
         }}
       >
@@ -175,6 +200,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onArrangeNodes();
         }}
       >
@@ -195,8 +221,14 @@ export function CanvasNodeToolbar({
             ? { nodes: 1, edges: 0, groups: 0, emptyNodes: 0, emptyNodeEdges: 0 }
             : { nodes: 0, edges: 0, groups: 0, emptyNodes: 0, emptyNodeEdges: 0 })
         }
-        onClearCanvas={onClearCanvas}
-        onClearEmptyNodes={onClearEmptyNodes ?? onClearCanvas}
+        onClearCanvas={() => {
+          setShowMore(false);
+          onClearCanvas();
+        }}
+        onClearEmptyNodes={() => {
+          setShowMore(false);
+          (onClearEmptyNodes ?? onClearCanvas)();
+        }}
       />,
     );
   }
@@ -212,6 +244,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onUndoCanvas();
         }}
         disabled={!canUndo}
@@ -232,6 +265,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onRedoCanvas();
         }}
         disabled={!canRedo}
@@ -252,6 +286,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onOpenSearch();
         }}
       >
@@ -265,7 +300,7 @@ export function CanvasNodeToolbar({
       <AppearancePicker
         key="appearance"
         compact
-        placement="bottom"
+        placement={mobile ? 'top' : 'bottom'}
         canvasTheme={canvasTheme}
         onThemeChange={onThemeChange}
         canvasBackground={canvasBackground}
@@ -289,6 +324,7 @@ export function CanvasNodeToolbar({
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {
           event.stopPropagation();
+          setShowMore(false);
           onFitView();
         }}
       >
@@ -298,7 +334,7 @@ export function CanvasNodeToolbar({
   }
 
   return (
-    <div className="canvas-node-tools" aria-label="画布工具">
+    <div className={`canvas-node-tools${mobile ? ' is-mobile' : ''}`} aria-label="画布工具">
       <div className="canvas-node-tool-group" role="group" aria-label="创建节点">
         {mediaTypes.map((mediaType) => {
           const Icon = mediaIcons[mediaType];
@@ -316,30 +352,102 @@ export function CanvasNodeToolbar({
           );
         })}
       </div>
-      {nodeActions.length > 0 ? (
-        <>
-          <span className="canvas-node-tool-divider" aria-hidden="true" />
-          <div
-            className="canvas-node-tool-group canvas-node-action-group"
-            role="group"
-            aria-label="节点组"
+      {mobile ? (
+        <Popover
+          trigger="click"
+          open={showMore}
+          onOpenChange={setShowMore}
+          placement="topRight"
+          autoAdjustOverflow
+          align={{ overflow: { adjustX: true, adjustY: false, shiftX: true } }}
+          destroyOnHidden
+          classNames={{ root: 'mobile-canvas-tools-popover' }}
+          styles={{ root: { pointerEvents: 'auto', width: 'min(320px, calc(100vw - 24px))' } }}
+          content={
+            <div
+              ref={morePanelRef}
+              id={moreId}
+              className="mobile-canvas-tools-content"
+              role="dialog"
+              aria-label="更多画布工具"
+              tabIndex={-1}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (
+                  event.key !== 'Escape' ||
+                  event.nativeEvent.isComposing ||
+                  event.defaultPrevented
+                )
+                  return;
+                // 子菜单先处理自身 Escape，不把外观窗口的键盘关闭传播到胶囊。
+                if (
+                  (event.target as HTMLElement).closest('[role="dialog"]') !== event.currentTarget
+                )
+                  return;
+                event.preventDefault();
+                event.stopPropagation();
+                setShowMore(false);
+                moreTriggerRef.current?.focus();
+              }}
+            >
+              <div className="mobile-canvas-tools-heading">更多工具</div>
+              {nodeActions.length > 0 && (
+                <div role="group" aria-label="节点组">
+                  {nodeActions}
+                </div>
+              )}
+              {systemActions.length > 0 && (
+                <div role="group" aria-label="系统组">
+                  {systemActions}
+                </div>
+              )}
+            </div>
+          }
+        >
+          <Button
+            ref={moreTriggerRef}
+            type="button"
+            className="canvas-node-tool canvas-node-action-tool mobile-canvas-tools-trigger"
+            aria-label="更多画布工具"
+            title={showMore ? '收起更多工具' : '展开更多工具'}
+            aria-expanded={showMore}
+            aria-haspopup="dialog"
+            aria-controls={moreId}
+            onPointerDown={stopCanvasEvent}
+            onClick={(event) => event.stopPropagation()}
           >
-            {nodeActions}
-          </div>
-        </>
-      ) : null}
-      {systemActions.length > 0 ? (
+            <ChevronUp size={18} aria-hidden="true" />
+          </Button>
+        </Popover>
+      ) : (
         <>
-          <span className="canvas-node-tool-divider" aria-hidden="true" />
-          <div
-            className="canvas-node-tool-group canvas-node-action-group"
-            role="group"
-            aria-label="系统组"
-          >
-            {systemActions}
-          </div>
+          {nodeActions.length > 0 ? (
+            <>
+              <span className="canvas-node-tool-divider" aria-hidden="true" />
+              <div
+                className="canvas-node-tool-group canvas-node-action-group"
+                role="group"
+                aria-label="节点组"
+              >
+                {nodeActions}
+              </div>
+            </>
+          ) : null}
+          {systemActions.length > 0 ? (
+            <>
+              <span className="canvas-node-tool-divider" aria-hidden="true" />
+              <div
+                className="canvas-node-tool-group canvas-node-action-group"
+                role="group"
+                aria-label="系统组"
+              >
+                {systemActions}
+              </div>
+            </>
+          ) : null}
         </>
-      ) : null}
+      )}
     </div>
   );
 }

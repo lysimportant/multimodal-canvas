@@ -1,0 +1,87 @@
+/* 手机只保留四个媒体入口和展开箭头，不再依赖横向滚动寻找动作。 */
+.canvas-node-tools.is-mobile {
+  gap: 6px;
+  left: 12px;
+  max-width: calc(100% - 68px);
+  overflow: visible;
+  padding: 8px;
+  right: auto;
+  touch-action: auto;
+  transform: none;
+  width: max-content;
+}
+
+.canvas-node-tools.is-mobile .canvas-node-tool {
+  flex: 0 0 40px;
+  height: 40px;
+  width: 40px;
+}
+
+.mobile-canvas-tools-trigger[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+
+.mobile-canvas-tools-popover .ant-popover-container {
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  color: var(--mc-text);
+  padding: 12px;
+}
+
+.mobile-canvas-tools-content {
+  outline: none;
+}
+
+.mobile-canvas-tools-heading {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.mobile-canvas-tools-content > [role='group'] {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mobile-canvas-tools-content > [role='group'] + [role='group'] {
+  border-top: 1px solid var(--mc-border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.mobile-canvas-tools-content .canvas-node-tool,
+.mobile-canvas-tools-content .appearance-control.is-compact .appearance-trigger {
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  height: 58px;
+  padding: 6px 2px;
+  width: 100%;
+}
+
+/* 复用原控件的无障碍名称作菜单文案，不复制动作回调或禁用条件。 */
+.mobile-canvas-tools-content .canvas-node-tool::before {
+  content: none;
+}
+
+.mobile-canvas-tools-content .canvas-node-tool::after {
+  background: none;
+  border: 0;
+  box-shadow: none;
+  color: inherit;
+  content: attr(aria-label);
+  font-size: 11px;
+  opacity: 1;
+  padding: 0;
+  position: static;
+  transform: none;
+  white-space: normal;
+}
+
+/* 展开箭头已有可见浮层，不再叠加胶囊的悬停说明。 */
+.canvas-node-tools.is-mobile .mobile-canvas-tools-trigger::before,
+.canvas-node-tools.is-mobile .mobile-canvas-tools-trigger::after {
+  content: none;
+}
