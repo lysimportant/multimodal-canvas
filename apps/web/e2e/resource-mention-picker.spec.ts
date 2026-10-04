@@ -2335,3 +2335,92 @@ test('PC 参考资料与拍照隔离：照片保存重载后保留资产版本�
   });
   await expectReferenceCameraIsolation(page, fixture);
 });
+
+for (const presentation of ['快捷', '完整'] as const) {
+  test('PC ' + presentation + '编辑器三个引用按钮只响应自身点击', async ({ page, baseURL }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const { canvas } = referenceCameraCanvas('image');
+    const fixture = await installFixture(page, baseURL, canvas);
+    let fileChooserCount = 0;
+    page.on('filechooser', () => {
+      fileChooserCount += 1;
+    });
+    await page.goto('/projects/' + project.id);
+    const { node, editor: quickEditor } = await openReferenceCameraEditor(page);
+    const before = (await node.boundingBox())!;
+    if (presentation === '完整') {
+      await quickEditor.getByRole('button', { name: '打开完整编辑器', exact: true }).click();
+    }
+    const editor =
+      presentation === '完整'
+        ? page.getByRole('dialog', { name: '资源引用节点 · 编辑设置', exact: true })
+        : quickEditor;
+    await expect(editor).toBeVisible();
+    const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
+    const originalPrompt = await prompt.inputValue();
+    const strip = editor.locator('.resource-mention-strip');
+    const buttons = ['上传引用资源', '添加参考资料', '拍照引用'].map((name) =>
+      editor.getByRole('button', { name, exact: true }),
+    );
+    await expectReferenceIconButtons(editor);
+    const boxes = await Promise.all(buttons.map((button) => button.boundingBox()));
+    const stripBox = (await strip.boundingBox())!;
+    // 真实坐标覆盖两个按钮间隙和整行尾部，不依赖 label/DOM 结构断言。
+    const points = [
+      {
+        x: (boxes[0]!.x + boxes[0]!.width + boxes[1]!.x) / 2,
+        y: boxes[0]!.y + boxes[0]!.height / 2,
+      },
+      {
+        x: (boxes[1]!.x + boxes[1]!.width + boxes[2]!.x) / 2,
+        y: boxes[1]!.y + boxes[1]!.height / 2,
+      },
+      { x: stripBox.x + stripBox.width - 4, y: stripBox.y + stripBox.height / 2 },
+    ];
+    for (const point of points) {
+      expect(
+        await page.evaluate(({ x, y }) => {
+          const target = document.elementFromPoint(x, y);
+          return Boolean(target?.closest('.resource-mention-strip') && !target.closest('button'));
+        }, point),
+      ).toBe(true);
+      await page.mouse.click(point.x, point.y);
+      await expect(editor).toBeVisible();
+      await expect(buttons[1]!).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.getByRole('dialog', { name: '拍照', exact: true })).toBeHidden();
+    }
+    expect(fileChooserCount).toBe(0);
+    expect((await readReferenceCamera(page)).requests).toEqual([]);
+    await expect(prompt).toHaveValue(originalPrompt);
+    await page.screenshot({
+      path: test.info().outputPath('reference-buttons-hitbox.png'),
+      animations: 'disabled',
+    });
+
+    await buttons[0]!.click();
+    await expect.poll(() => fileChooserCount).toBe(1);
+    await expect(buttons[1]!).toHaveAttribute('aria-pressed', 'false');
+    expect((await readReferenceCamera(page)).requests).toEqual([]);
+    const camera = await openSyntheticReferenceCamera(page, editor);
+    expect(fileChooserCount).toBe(1);
+    await camera.getByRole('button', { name: '关闭拍照', exact: true }).click();
+    await expect(camera).toBeHidden();
+    await expect(editor).toBeVisible();
+    await expect(buttons[1]!).toHaveAttribute('aria-pressed', 'false');
+    await expect
+      .poll(async () => (await readReferenceCamera(page)).tracks.every((track) => track.stops > 0))
+      .toBe(true);
+    const cameraRequests = (await readReferenceCamera(page)).requests.length;
+    await buttons[1]!.click();
+    // 完整编辑器进入画布点选时按原契约收起，快捷编辑器显示已激活状态。
+    await expect(
+      quickEditor.getByRole('button', { name: '添加参考资料', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(fileChooserCount).toBe(1);
+    expect((await readReferenceCamera(page)).requests).toHaveLength(cameraRequests);
+    await page.keyboard.press('Escape');
+    expect(fixture.uploads).toEqual([]);
+    expectSameNodeSize(before, (await node.boundingBox())!);
+    await expectReferenceCameraIsolation(page, fixture);
+  });
+}

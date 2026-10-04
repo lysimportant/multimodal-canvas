@@ -217,6 +217,54 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器引用行空白不代点按钮，三个入口保持独立',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const inputs = makeProps({
+        onUploadResource: vi.fn(),
+        onReferencePickToggle: vi.fn(),
+      });
+      const view = renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const root =
+        presentation === '完整'
+          ? await screen.findByRole('dialog', { name: inputs.node.data.label + ' · 编辑设置' })
+          : view.container;
+      const prompt = root.querySelector<HTMLElement>('.node-quick-editor-prompt')!;
+      const strip = prompt.querySelector<HTMLElement>('.resource-mention-strip')!;
+      const fileInput = prompt.querySelector<HTMLInputElement>('input[type="file"]')!;
+      const openFile = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
+      try {
+        await user.click(strip);
+        await user.click(prompt);
+        expect(openFile).not.toHaveBeenCalled();
+        expect(inputs.onReferencePickToggle).not.toHaveBeenCalled();
+        expect(screen.queryByRole('dialog', { name: '拍照' })).not.toBeInTheDocument();
+        expect(within(prompt).getByRole('textbox', { name: '提示词' })).toBeVisible();
+
+        await user.click(within(strip).getByRole('button', { name: '上传引用资源' }));
+        expect(openFile).toHaveBeenCalledOnce();
+        expect(inputs.onReferencePickToggle).not.toHaveBeenCalled();
+        expect(screen.queryByRole('dialog', { name: '拍照' })).not.toBeInTheDocument();
+        await user.click(within(strip).getByRole('button', { name: '拍照引用' }));
+        const camera = await screen.findByRole('dialog', { name: '拍照' });
+        expect(openFile).toHaveBeenCalledOnce();
+        expect(inputs.onReferencePickToggle).not.toHaveBeenCalled();
+        await user.click(within(camera).getByRole('button', { name: '关闭拍照' }));
+        await user.click(within(strip).getByRole('button', { name: '添加参考资料' }));
+        expect(inputs.onReferencePickToggle).toHaveBeenCalledOnce();
+        expect(openFile).toHaveBeenCalledOnce();
+        expect(inputs.onUploadResource).not.toHaveBeenCalled();
+        expect(inputs.onRun).not.toHaveBeenCalled();
+      } finally {
+        openFile.mockRestore();
+      }
+    },
+  );
+
   it.each(['text', 'image', 'audio', 'video'] as const)(
     '%s 的素材节点和生成节点在快捷与完整编辑器内都显示资料及拍照入口',
     async (mediaType) => {

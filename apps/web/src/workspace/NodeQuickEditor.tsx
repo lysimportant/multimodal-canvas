@@ -708,7 +708,7 @@ export function NodeQuickEditor({
     ) : null;
 
   const promptEditor = (
-    <label className="node-quick-editor-field node-quick-editor-prompt">
+    <div className="node-quick-editor-field node-quick-editor-prompt">
       <TextPromptEditor
         nodeId={node.id}
         value={node.data.prompt ?? ''}
@@ -736,7 +736,7 @@ export function NodeQuickEditor({
         resourceRefs={node.data.resourceRefs}
         onResourceReorder={onResourceReorder}
       />
-    </label>
+    </div>
   );
 
   /** 与提示词编辑器共用结构化文档，采用时走现有历史和保存回调。 */

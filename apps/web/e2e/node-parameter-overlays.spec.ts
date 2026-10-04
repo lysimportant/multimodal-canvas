@@ -20,13 +20,14 @@ async function json(route: Route, body: unknown) {
 
 /**
  * 提供有效 Cookie 会话和合成参数目录；PATCH 只更新本用例的内存画布。
- * modelAlias 选择 Wan3 或 Moon H3 的现有 UI 合同，不请求对应供应商。
+ * modelAlias 选择视频合同或合成图片模型；mediaType 决定节点与模型目录类型，不请求供应商。
  * @returns 错误、请求及当前参数读取器，用于核实交互没有产生任何生成请求。
  */
 async function installFixture(
   page: Page,
   baseURL: string | undefined,
   modelAlias = 'wan3.0-video',
+  mediaType: 'image' | 'video' = 'video',
 ) {
   if (!baseURL) throw new Error('缺少隔离的 Playwright baseURL');
   const webUrl = new URL(baseURL);
@@ -50,21 +51,22 @@ async function installFixture(
     nodes: [
       {
         id: 'parameter-node',
-        type: 'video',
+        type: mediaType,
         position: { x: 390, y: 220 },
         width: 320,
         height: 180,
         data: {
           label: '参数浮层验收节点',
-          mediaType: 'video',
+          mediaType,
           mode: 'generate',
-          videoMode: 'text_to_video',
+          ...(mediaType === 'video' ? { videoMode: 'text_to_video' } : {}),
           enabled: true,
           modelAlias,
           credentialId: 'synthetic-parameter-credential',
           prompt: 'A quiet room with soft daylight.',
           parameters: {
-            resolution: modelAlias === 'minimax-h3' ? '768p' : '720p',
+            resolution:
+              mediaType === 'image' ? '1k' : modelAlias === 'minimax-h3' ? '768p' : '720p',
             aspectRatio: '16:9',
             duration: 5,
           },
@@ -137,8 +139,8 @@ async function installFixture(
         models: [
           {
             id: modelAlias,
-            name: '参数回归视频模型',
-            mediaTypes: ['video'],
+            name: '参数回归模型',
+            mediaTypes: [mediaType],
             credentialId: 'synthetic-parameter-credential',
             group: 'synthetic',
             available: true,
@@ -349,3 +351,38 @@ test('模型长名称保持单列完整换行，不受短枚举排版影响', as
   expect(fixture.errors).toEqual([]);
   expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([]);
 });
+
+for (const width of [1440, 1366]) {
+  for (const presentation of ['快捷', '完整'] as const) {
+    test(
+      width + ' PC ' + presentation + '图片四档清晰度等宽，4K 换行不拉满',
+      async ({ page, baseURL }, info) => {
+        await page.setViewportSize({ width, height: 900 });
+        const fixture = await installFixture(page, baseURL, 'synthetic-image', 'image');
+        const panel = await openParameters(page, presentation);
+        await panel.getByRole('combobox', { name: /^图片清晰度：/ }).click();
+        const list = page.getByRole('listbox', { name: '图片清晰度选项', exact: true });
+        const options = list.getByRole('option');
+        await expect(options).toHaveCount(4);
+        await expectSingleLineOptions(list);
+        const widths = await options.evaluateAll((elements) =>
+          elements.map((element) => element.getBoundingClientRect().width),
+        );
+        expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+        await page.screenshot({
+          path: info.outputPath('image-resolution-four-options.png'),
+          animations: 'disabled',
+        });
+        const fourK = list.getByRole('option', { name: /^4K/i });
+        await expectUnobstructed(fourK);
+        await fourK.click();
+        await expect.poll(() => fixture.parameters()?.resolution).toBe('4k');
+        await expect(panel.getByRole('combobox', { name: /^图片清晰度：/ })).toHaveAccessibleName(
+          '图片清晰度：4K',
+        );
+        expect(fixture.errors).toEqual([]);
+        expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([]);
+      },
+    );
+  }
+}

@@ -3818,13 +3818,15 @@ h2 {
   margin-top: 14px;
 }
 .settings-models-table-wrap {
-  border: 1px solid #e3e9e6;
+  border: 1px solid var(--mc-border);
   border-radius: 8px;
   margin-top: 12px;
   max-height: 260px;
   overflow: auto;
 }
 .settings-models-table {
+  background: var(--mc-surface);
+  color: var(--mc-text);
   border-collapse: collapse;
   font-size: 11px;
   min-width: 100%;
@@ -3832,13 +3834,14 @@ h2 {
 }
 .settings-models-table th,
 .settings-models-table td {
-  border-bottom: 1px solid #edf0f4;
+  color: var(--mc-text);
+  border-bottom: 1px solid var(--mc-border);
   padding: 9px 10px;
   white-space: nowrap;
 }
 .settings-models-table th {
-  background: #f7faf8;
-  color: #657183;
+  background: var(--mc-surface-soft);
+  color: var(--mc-text-muted);
   font-size: 10px;
   font-weight: 700;
   position: sticky;
@@ -3849,7 +3852,7 @@ h2 {
   border-bottom: 0;
 }
 .settings-models-table code {
-  color: #263342;
+  color: var(--mc-text);
   font-size: 11px;
 }
 
