@@ -1184,8 +1184,10 @@ h2 {
   transition:
     opacity 140ms ease,
     visibility 140ms ease;
-  /* Keep node handles above the floating creator controls when their boxes overlap. */
-  z-index: 1;
+  /* 默认胶囊必须高于节点视口（3）：React Flow 根元素的内联 z-index 已被置为 auto，
+     节点视口与胶囊同处一个层叠上下文，胶囊低于 3 时会被拖到画布底部的节点盖住。
+     仍需低于缩放控件（5）与快速编辑器浮层（19），避免遮挡它们；菜单展开态另行提升。 */
+  z-index: 4;
 }
 
 .canvas-area:has(.node-quick-editor) .canvas-node-tools {

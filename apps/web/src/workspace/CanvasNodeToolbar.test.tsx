@@ -1,4 +1,7 @@
 import '@testing-library/jest-dom/vitest';
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -54,5 +57,20 @@ describe('CanvasNodeToolbar', () => {
     expect(onFitView).toHaveBeenCalledOnce();
     expect(parentClick).not.toHaveBeenCalled();
     expect(parentPointerDown).not.toHaveBeenCalled();
+  });
+
+  it('CSS 保证节点被拖到底部时不盖住胶囊，胶囊仍低于快速编辑器浮层', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
+    // React Flow 根元素的层叠上下文已被解除，节点视口与胶囊同处一个上下文，
+    // 因此两者的 z-index 可以直接比较。
+    const capsuleLevel = Number(css.match(/\.canvas-node-tools \{[^}]*z-index: (\d+);/)?.[1]);
+    const nodeLevel = Number(
+      css.match(/\.canvas-area \.react-flow__viewport \{[^}]*z-index: (\d+);/)?.[1],
+    );
+    const quickEditorLevel = Number(
+      css.match(/\.quick-editor-overlay \{[^}]*z-index: (\d+);/)?.[1],
+    );
+    expect(capsuleLevel).toBeGreaterThan(nodeLevel);
+    expect(capsuleLevel).toBeLessThan(quickEditorLevel);
   });
 });
