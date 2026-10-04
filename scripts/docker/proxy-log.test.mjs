@@ -7,9 +7,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-/** 仓库路径与合成令牌只供此测试使用，不连接业务容器或真实 Provider。 */
+/** 仓库路径与合成凭据只供此测试使用，不连接业务容器或真实 Provider。 */
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const token = 'synthetic-proxy-log-token-only';
+const authorizationToken = 'synthetic-proxy-authorization-only';
+const accessToken = 'synthetic-proxy-access-token-only';
+const shareToken = 'synthetic-proxy-share-token-only';
+const sensitiveValues = [authorizationToken, accessToken, shareToken];
 
 /** 执行有界的 Docker 调用；错误保留上下文，所有传入数据均为合成数据。 */
 function docker(args) {
@@ -35,7 +38,11 @@ function getHttps(url, ca) {
       {
         ca,
         servername: 'localhost',
-        headers: { host: 'canvas.example.test', authorization: `Bearer ${token}`, referer: url },
+        headers: {
+          host: 'canvas.example.test',
+          authorization: `Bearer ${authorizationToken}`,
+          referer: url,
+        },
       },
       (res) => {
         res.resume();
@@ -49,7 +56,7 @@ function getHttps(url, ca) {
 }
 
 for (const encrypted of [false, true]) {
-  test(`${encrypted ? 'HTTPS' : 'HTTP'} 代理失败日志隐藏媒体 token 和 Authorization`, async () => {
+  test(`${encrypted ? 'HTTPS' : 'HTTP'} 代理失败日志隐藏访问与分享 token 和 Authorization`, async () => {
     const name = `mc-acceptance-test-proxy-${randomUUID()}`;
     const containerPort = encrypted ? 443 : 8080;
     let container;
@@ -85,7 +92,10 @@ for (const encrypted of [false, true]) {
       const endpoint = docker(['port', container, `${containerPort}/tcp`]);
       assert.match(endpoint, /^127\.0\.0\.1:\d+$/);
       const port = endpoint.split(':')[1];
-      const url = `${encrypted ? 'https' : 'http'}://localhost:${port}/v1/assets/synthetic/content?access_token=${token}&access_token=${token}&safe=diagnostic`;
+      const url =
+        `${encrypted ? 'https' : 'http'}://localhost:${port}/v1/asset-shares/content` +
+        `?access_token=${accessToken}&access_token=${accessToken}` +
+        `&token=${shareToken}&token=${shareToken}&safe=diagnostic`;
       let status;
       for (let attempt = 0; attempt < 30; attempt += 1) {
         try {
@@ -96,7 +106,7 @@ for (const encrypted of [false, true]) {
               )
             : (
                 await fetch(url, {
-                  headers: { authorization: `Bearer ${token}`, referer: url },
+                  headers: { authorization: `Bearer ${authorizationToken}`, referer: url },
                   signal: AbortSignal.timeout(5000),
                 })
               ).status;
@@ -114,7 +124,8 @@ for (const encrypted of [false, true]) {
       });
       assert.equal(output.status, 0);
       const logs = `${output.stdout}\n${output.stderr}`;
-      assert.ok(!logs.includes(token), 'Proxy logs must not expose synthetic credentials');
+      for (const value of sensitiveValues)
+        assert.ok(!logs.includes(value), 'Proxy logs must not expose synthetic credentials');
       const events = logs
         .split('\n')
         .filter(Boolean)
@@ -125,6 +136,7 @@ for (const encrypted of [false, true]) {
       assert.equal(failure.request.headers, undefined);
       const uri = new URL(failure.request.uri, url);
       assert.deepEqual(uri.searchParams.getAll('access_token'), ['REDACTED', 'REDACTED']);
+      assert.deepEqual(uri.searchParams.getAll('token'), ['REDACTED', 'REDACTED']);
       assert.equal(uri.searchParams.get('safe'), 'diagnostic');
     } finally {
       // 只停止本次返回的容器 ID；--rm 仅清理临时容器，无业务卷。

@@ -177,6 +177,7 @@ import { AppNavigation } from './navigation';
 import { AccountMenu, AccountProvider } from './navigation/AccountMenu';
 import { ManagementPage } from './management';
 import { AuthenticationPage } from './authentication/AuthenticationPage';
+import { PublicAssetSharePage } from './pages/PublicAssetSharePage';
 import {
   ContactPage,
   HomePage,
@@ -5217,6 +5218,7 @@ function AppContent() {
 
 export function App() {
   const canvasTheme = useWorkspacePreferences((state) => state.canvasTheme);
+  const route = useAppRoute();
 
   useEffect(() => {
     const root = document.documentElement;
@@ -5231,7 +5233,14 @@ export function App() {
 
   return (
     <AppQueryProvider>
-      <AppContent />
+      {route.id === 'share' ? (
+        <PublicAssetSharePage
+          key={window.location.hash}
+          token={new URLSearchParams(window.location.hash.slice(1)).get('token') ?? ''}
+        />
+      ) : (
+        <AppContent />
+      )}
     </AppQueryProvider>
   );
 }

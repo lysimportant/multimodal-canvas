@@ -37,6 +37,8 @@ describe('application route contracts', () => {
     expect(parseAppRoute('/')).toEqual({ id: 'home', pathname: '/' });
     expect(parseAppRoute('/workspace/')).toEqual({ id: 'workspace', pathname: '/workspace' });
     expect(parseAppRoute('/contact/')).toEqual({ id: 'contact', pathname: '/contact' });
+    expect(parseAppRoute('/share#token=example')).toEqual({ id: 'share', pathname: '/share' });
+    expect(getNavigationSection(parseAppRoute('/share'))).toBeNull();
     expect(parseAppRoute('/settings?project=project%201')).toEqual({
       id: 'settings',
       pathname: '/settings',

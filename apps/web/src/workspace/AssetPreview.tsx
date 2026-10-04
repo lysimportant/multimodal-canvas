@@ -28,6 +28,7 @@ import { downloadProjectExport } from '../export-utils';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
 import { fetchNodeAssetDownload } from './node-asset-download';
+import { AssetShareButton } from './AssetShareButton';
 import { ImagePreviewStage } from './ImagePreviewStage';
 import { getImageThumbnailSource, resolveOriginalImageAsset } from './image-thumbnail-cache';
 import { useImageThumbnail } from './use-image-thumbnail';
@@ -716,6 +717,7 @@ export function AssetViewerDialog({
                   取消下载
                 </Button>
               )}
+              <AssetShareButton asset={asset} />
               <DialogClose asChild>
                 <Button
                   type="button"

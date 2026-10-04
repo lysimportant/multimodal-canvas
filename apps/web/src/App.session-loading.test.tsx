@@ -74,6 +74,34 @@ afterEach(() => {
 });
 
 describe('App 会话恢复反馈', () => {
+  it('分享路由直接读取公开资源，不等待会话恢复或携带账户令牌', async () => {
+    auth.persistAuthSession(session);
+    window.history.replaceState(null, '', '/share#token=synthetic-share-token.signature');
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        asset: {
+          name: '匿名分享作品',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 20,
+          version: 3,
+          contentUrl: '/v1/asset-shares/content?token=synthetic-share-token.signature',
+        },
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole('heading', { name: '匿名分享作品' })).toBeVisible();
+    expect(screen.queryByText('正在恢复登录状态')).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.map(([input]) => requestPath(input))).toEqual(['/v1/asset-shares']);
+    expect(fetcher.mock.calls[0]![1]).toMatchObject({ credentials: 'omit' });
+    expect(new Headers(fetcher.mock.calls[0]![1]?.headers).has('Authorization')).toBe(false);
+  });
+
   it('慢请求期间不开放私有设置，10 秒只更换说明，成功后撤下等待页', async () => {
     auth.persistAuthSession(session);
     useWorkspacePreferences.setState({ canvasTheme: 'dark' });

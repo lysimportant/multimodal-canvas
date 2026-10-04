@@ -124,6 +124,13 @@ import {
 import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
 import { resolveApiProxyTrust } from './proxy-trust';
+import {
+  ASSET_SHARE_TTL_MS,
+  createAssetShareToken,
+  parseAssetByteRange,
+  publicAssetContentType,
+  verifyAssetShareToken,
+} from './asset-shares';
 import { registerAccountRoutes } from './account-routes';
 import { registerGenerationConcurrencyRoutes } from './generation-concurrency-routes';
 import type { GenerationConcurrencyStore } from './generation-concurrency';
@@ -302,6 +309,20 @@ function isGenerationSubmissionPath(path: string): boolean {
 /** 上游短暂不可用时仍允许读取本地资源内容；该接口只签发本地短期访问令牌，不会发起上游写操作。 */
 function isLocalAssetAccessRequest(method: string, path: string): boolean {
   return method === 'POST' && /^\/v1\/assets\/[^/?#]+\/access-url$/.test(path);
+}
+
+/**
+ * 判断请求是否命中无需登录的资源分享只读端点。
+ *
+ * @param method - HTTP 方法。
+ * @param path - 不含查询参数的请求路径。
+ * @returns 仅 GET/HEAD 的两个精确分享路径返回 true。
+ */
+function isPublicAssetShareRequest(method: string, path: string): boolean {
+  return (
+    (method === 'GET' || method === 'HEAD') &&
+    (path === '/v1/asset-shares' || path === '/v1/asset-shares/content')
+  );
 }
 
 function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
@@ -1430,6 +1451,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // credentials; the final fallback is process-local and non-persistent.
   const assetAccessSecret =
     process.env.ASSET_ACCESS_URL_SECRET?.trim() || jwtSecret || authToken || randomUUID();
+  /** 分享令牌复用已有稳定服务端密钥，但通过派生用途与短期访问令牌隔离。 */
+  const assetShareSecret = process.env.ASSET_ACCESS_URL_SECRET?.trim() || jwtSecret || authToken;
   const authStore = options.authStore ?? new MemoryAuthStore();
   const authService =
     options.authService ??
@@ -1532,6 +1555,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         error: '此入口已退出，请刷新并使用 New API 登录',
       });
     if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
+    if (isPublicAssetShareRequest(request.method, pathname)) {
+      const decision = await rateLimiter.consume(`asset-share:${request.ip ?? 'unknown'}`, {
+        limit: 120,
+        windowMs: rateLimitWindowMs,
+      });
+      setRateLimitHeaders(reply, decision);
+      if (!decision.allowed) {
+        return reply.header('retry-after', String(decision.retryAfterSeconds)).code(429).send({
+          error: 'rate limit exceeded',
+          code: 'asset_share_rate_limit_exceeded',
+          retryAfterSeconds: decision.retryAfterSeconds,
+          requestId: request.id,
+        });
+      }
+      return;
+    }
     const authRoute =
       pathname === '/v1/auth/newapi/start' || pathname === '/v1/auth/newapi/callback'
         ? pathname
@@ -3920,6 +3959,159 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     await uploadSessionStore.delete(result.data.uploadId, scope);
     const { content: _content, ...response } = asset;
     return reply.code(201).send({ asset: response });
+  });
+
+  app.post<{ Params: { assetId: string } }>('/v1/assets/:assetId/share', async (request, reply) => {
+    const principal = requestPrincipals.get(request);
+    if (principal?.method !== 'jwt' || !principal.userId) {
+      return reply.code(403).send({ error: 'user authentication required' });
+    }
+    if (!assetShareSecret) {
+      return reply.code(503).send({ error: 'asset sharing is not configured' });
+    }
+    const body = z
+      .object({ version: z.number().int().positive().safe().optional() })
+      .strict()
+      .safeParse(request.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: 'invalid asset share request' });
+
+    const scope = { ownerId: principal.userId };
+    const asset = await assetStore.get(request.params.assetId, scope);
+    if (!asset || asset.status !== 'ready') {
+      return reply.code(404).send({ error: 'asset not found' });
+    }
+    const versions = await assetStore.listVersions(asset.id, scope);
+    const selected = body.data.version
+      ? versions.find((candidate) => candidate.version === body.data.version)
+      : versions.at(-1);
+    if (!selected) return reply.code(404).send({ error: 'asset version not found' });
+    const content = await assetStore.getVersionContent(asset.id, selected.version, scope);
+    if (content === undefined) {
+      return reply.code(404).send({ error: 'asset version not found' });
+    }
+
+    const expiresAt = Date.now() + ASSET_SHARE_TTL_MS;
+    const token = createAssetShareToken(
+      {
+        assetId: asset.id,
+        ownerId: principal.userId,
+        version: selected.version,
+        expiresAt,
+      },
+      assetShareSecret,
+    );
+    return reply
+      .header('cache-control', 'no-store')
+      .send({ token, expiresAt: new Date(expiresAt).toISOString(), version: selected.version });
+  });
+
+  /**
+   * 解析公开分享，但不建立登录主体。资源归档、删除、版本缺失或所有者停用都会立即失效。
+   *
+   * @param token - 查询参数原值；重复参数会成为数组，因此只接受单个字符串。
+   * @returns 可公开读取的固定资源版本，令牌或资源无效时返回 undefined。
+   */
+  const resolvePublicAssetShare = async (token: unknown) => {
+    if (typeof token !== 'string') return undefined;
+    const payload = verifyAssetShareToken(token, assetShareSecret);
+    if (!payload) return undefined;
+    const active = options.authStore
+      ? (await options.authStore.findUserById(payload.ownerId))?.status === 'active'
+      : options.userExists
+        ? await options.userExists(payload.ownerId)
+        : false;
+    if (!active) return undefined;
+    const scope = { ownerId: payload.ownerId };
+    const asset = await assetStore.get(payload.assetId, scope);
+    if (!asset || asset.status !== 'ready') return undefined;
+    const version = (await assetStore.listVersions(asset.id, scope)).find(
+      (candidate) => candidate.version === payload.version,
+    );
+    if (!version) return undefined;
+    return { token, payload, asset, version, scope };
+  };
+
+  app.route<{ Querystring: { token?: unknown } }>({
+    method: ['GET', 'HEAD'],
+    url: '/v1/asset-shares',
+    handler: async (request, reply) => {
+      const share = await resolvePublicAssetShare(request.query.token);
+      if (!share) {
+        return reply
+          .header('cache-control', 'no-store')
+          .code(404)
+          .send({ error: 'asset share not found or expired' });
+      }
+      const response = {
+        asset: {
+          name: share.asset.name,
+          mediaType: share.asset.mediaType,
+          mimeType: share.asset.mimeType,
+          sizeBytes: share.version.sizeBytes,
+          version: share.version.version,
+          contentUrl: `/v1/asset-shares/content?token=${encodeURIComponent(share.token)}`,
+        },
+        expiresAt: new Date(share.payload.expiresAt).toISOString(),
+      };
+      reply
+        .header('cache-control', 'no-store')
+        .header('x-content-type-options', 'nosniff')
+        .header('referrer-policy', 'no-referrer');
+      return request.method === 'HEAD' ? reply.send() : reply.send(response);
+    },
+  });
+
+  app.route<{ Querystring: { token?: unknown } }>({
+    method: ['GET', 'HEAD'],
+    url: '/v1/asset-shares/content',
+    handler: async (request, reply) => {
+      const share = await resolvePublicAssetShare(request.query.token);
+      if (!share) {
+        return reply
+          .header('cache-control', 'no-store')
+          .code(404)
+          .send({ error: 'asset share not found or expired' });
+      }
+      const content = await assetStore.getVersionContent(
+        share.asset.id,
+        share.version.version,
+        share.scope,
+      );
+      if (content === undefined) {
+        return reply
+          .header('cache-control', 'no-store')
+          .code(404)
+          .send({ error: 'asset share not found or expired' });
+      }
+      const range = parseAssetByteRange(request.headers.range, content.byteLength);
+      const contentType = publicAssetContentType(share.asset.mimeType);
+      reply
+        .header('cache-control', 'no-store')
+        .header('accept-ranges', 'bytes')
+        .header('x-content-type-options', 'nosniff')
+        .header('referrer-policy', 'no-referrer')
+        .header(
+          'content-security-policy',
+          "default-src 'none'; sandbox; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        )
+        .type(contentType.mimeType);
+      if (contentType.attachment) {
+        reply.header('content-disposition', attachmentDisposition(share.asset.name));
+      }
+      if (range === null) {
+        return reply.header('content-range', `bytes */${content.byteLength}`).code(416).send();
+      }
+      if (range) {
+        const partial = content.subarray(range.start, range.end + 1);
+        reply
+          .header('content-range', `bytes ${range.start}-${range.end}/${content.byteLength}`)
+          .header('content-length', String(partial.byteLength))
+          .code(206);
+        return request.method === 'HEAD' ? reply.send() : reply.send(partial);
+      }
+      reply.header('content-length', String(content.byteLength));
+      return request.method === 'HEAD' ? reply.send() : reply.send(content);
+    },
   });
 
   app.post<{ Params: { assetId: string } }>(

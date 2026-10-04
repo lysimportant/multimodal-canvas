@@ -880,6 +880,7 @@ export const openApiDocument = {
     { name: 'system' },
     { name: 'projects' },
     { name: 'assets' },
+    { name: 'asset-shares', description: '持链接访问固定资源版本的只读分享' },
     { name: 'runs' },
     { name: 'settings' },
     { name: 'auth' },
@@ -1409,6 +1410,175 @@ export const openApiDocument = {
           }),
           '400': response('Invalid access URL request', errorSchema),
           '404': response('Asset or version not found', errorSchema),
+        },
+      },
+    },
+    '/v1/assets/{assetId}/share': {
+      post: {
+        tags: ['asset-shares'],
+        parameters: [{ $ref: '#/components/parameters/AssetId' }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  version: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('固定版本的七天分享令牌', {
+            type: 'object',
+            required: ['token', 'expiresAt', 'version'],
+            properties: {
+              token: {
+                type: 'string',
+                minLength: 20,
+                maxLength: 4096,
+                pattern: '^[A-Za-z0-9_.-]+$',
+              },
+              expiresAt: { type: 'string', format: 'date-time' },
+              version: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('分享请求无效', errorSchema),
+          '403': response('需要用户身份', errorSchema),
+          '404': response('资源或版本不存在', errorSchema),
+          '503': response('资源分享未配置稳定密钥', errorSchema),
+        },
+      },
+    },
+    '/v1/asset-shares': {
+      get: {
+        tags: ['asset-shares'],
+        security: [],
+        parameters: [
+          {
+            name: 'token',
+            in: 'query',
+            required: true,
+            schema: {
+              type: 'string',
+              minLength: 20,
+              maxLength: 4096,
+              pattern: '^[A-Za-z0-9_.-]+$',
+            },
+          },
+        ],
+        responses: {
+          '200': response('公开分享的资源元数据', {
+            type: 'object',
+            required: ['asset', 'expiresAt'],
+            properties: {
+              asset: {
+                type: 'object',
+                required: ['name', 'mediaType', 'mimeType', 'sizeBytes', 'version', 'contentUrl'],
+                properties: {
+                  name: { type: 'string' },
+                  mediaType: mediaTypeSchema,
+                  mimeType: { type: 'string' },
+                  sizeBytes: { type: 'integer', minimum: 0 },
+                  version: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+                  contentUrl: { type: 'string', format: 'uri-reference' },
+                },
+                additionalProperties: false,
+              },
+              expiresAt: { type: 'string', format: 'date-time' },
+            },
+            additionalProperties: false,
+          }),
+          '404': response('分享不存在或已失效', errorSchema),
+          '429': response('分享访问频率超限', errorSchema),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
+        },
+      },
+      head: {
+        tags: ['asset-shares'],
+        security: [],
+        parameters: [
+          {
+            name: 'token',
+            in: 'query',
+            required: true,
+            schema: {
+              type: 'string',
+              minLength: 20,
+              maxLength: 4096,
+              pattern: '^[A-Za-z0-9_.-]+$',
+            },
+          },
+        ],
+        responses: {
+          '200': response('公开分享的资源元数据响应头'),
+          '404': response('分享不存在或已失效', errorSchema),
+          '429': response('分享访问频率超限', errorSchema),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
+        },
+      },
+    },
+    '/v1/asset-shares/content': {
+      get: {
+        tags: ['asset-shares'],
+        security: [],
+        parameters: [
+          {
+            name: 'token',
+            in: 'query',
+            required: true,
+            schema: {
+              type: 'string',
+              minLength: 20,
+              maxLength: 4096,
+              pattern: '^[A-Za-z0-9_.-]+$',
+            },
+          },
+          { name: 'Range', in: 'header', required: false, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: '分享资源内容',
+            content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
+          },
+          '206': {
+            description: '分享资源的单段字节范围',
+            content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
+          },
+          '404': response('分享不存在或已失效', errorSchema),
+          '416': { description: '请求的字节范围无效' },
+          '429': response('分享访问频率超限', errorSchema),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
+        },
+      },
+      head: {
+        tags: ['asset-shares'],
+        security: [],
+        parameters: [
+          {
+            name: 'token',
+            in: 'query',
+            required: true,
+            schema: {
+              type: 'string',
+              minLength: 20,
+              maxLength: 4096,
+              pattern: '^[A-Za-z0-9_.-]+$',
+            },
+          },
+          { name: 'Range', in: 'header', required: false, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': response('分享资源内容响应头'),
+          '206': response('分享资源字节范围响应头'),
+          '404': response('分享不存在或已失效', errorSchema),
+          '416': { description: '请求的字节范围无效' },
+          '429': response('分享访问频率超限', errorSchema),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
         },
       },
     },

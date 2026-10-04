@@ -46,9 +46,11 @@ function currentLocationSnapshot() {
 function subscribeToLocation(onStoreChange: () => void) {
   if (typeof window === 'undefined') return () => undefined;
   window.addEventListener('popstate', onStoreChange);
+  window.addEventListener('hashchange', onStoreChange);
   window.addEventListener(APP_NAVIGATION_EVENT, onStoreChange);
   return () => {
     window.removeEventListener('popstate', onStoreChange);
+    window.removeEventListener('hashchange', onStoreChange);
     window.removeEventListener(APP_NAVIGATION_EVENT, onStoreChange);
   };
 }

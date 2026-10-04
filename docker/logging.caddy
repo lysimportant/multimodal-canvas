@@ -6,6 +6,7 @@ log default {
 			request>headers delete
 			request>uri query {
 				replace access_token REDACTED
+				replace token REDACTED
 			}
 		}
 	}
