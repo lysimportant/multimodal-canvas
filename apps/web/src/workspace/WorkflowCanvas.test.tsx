@@ -7,7 +7,12 @@ import { memo, useContext } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AssetFlowNode } from '../canvas-utils';
-import { NodeDeleteContext, NodePromptContext, NodeSelectionContext } from './AssetNode';
+import {
+  NodeDeleteContext,
+  NodePromptContext,
+  NodeSelectionContext,
+  NodeVideoRecreationContext,
+} from './AssetNode';
 import { GenerationBatchViewContext } from './generation-batch-view';
 
 /** 记录参数编辑器真正进入渲染的次数，几何拖动不应重新构造整套表单。 */
@@ -1624,12 +1629,13 @@ describe('WorkflowCanvas connection drop create', () => {
   });
 });
 
-/** 节点探针保留真实 Context 订阅，隔离媒体解码和 jsdom 布局耗时。 */
+/** 节点探针保留包括视频复刻在内的真实 Context 订阅，隔离媒体解码和 jsdom 布局耗时。 */
 const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlowNode }) {
   const select = useContext(NodeSelectionContext);
   const batch = useContext(GenerationBatchViewContext);
   const remove = useContext(NodeDeleteContext);
   const prompt = useContext(NodePromptContext);
+  const recreateVideo = useContext(NodeVideoRecreationContext);
   dragNodeRender(node.id);
   return (
     <>
@@ -1645,6 +1651,9 @@ const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlo
       </button>
       {remove && <button onClick={() => remove(node.id)}>{'删除 ' + node.data.label}</button>}
       {prompt && <button onClick={() => prompt(node.id)}>{'提示词 ' + node.data.label}</button>}
+      {recreateVideo && (
+        <button onClick={() => recreateVideo(node.id)}>{'复刻 ' + node.data.label}</button>
+      )}
     </>
   );
 });
@@ -1782,7 +1791,8 @@ describe('WorkflowCanvas 拖动性能', () => {
       position: { x: index * 100, y: 0 },
       data: { ...sourceNode.data, label: '拖动节点 ' + index },
     }));
-    const props = createProps({ nodes });
+    const recreateVideo = vi.fn();
+    const props = createProps({ nodes, onRecreateVideo: recreateVideo });
     const selected = vi.fn();
     const deleted = vi.fn();
     const prompted = vi.fn();
@@ -1804,6 +1814,9 @@ describe('WorkflowCanvas 拖动性能', () => {
     }
     expect(dragNodeRender).toHaveBeenCalledTimes(12);
     expect(dragNodeRender.mock.calls.filter(([id]) => id !== 'drag-0')).toHaveLength(0);
+    expect(recreateVideo).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '复刻 拖动节点 1' }));
+    expect(recreateVideo).toHaveBeenCalledExactlyOnceWith('drag-1');
     fireEvent.click(screen.getByRole('button', { name: '拖动节点 0' }));
     expect(selected).toHaveBeenCalledWith(12, nodes[0]);
     fireEvent.click(screen.getByRole('button', { name: '删除 拖动节点 0' }));

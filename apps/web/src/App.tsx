@@ -4742,7 +4742,7 @@ function WorkspaceApp({
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}
             onEditImage={handleCreateImageEditNode}
-            onRecreateVideo={(nodeId) => void handleCreateVideoRecreationNode(nodeId)}
+            onRecreateVideo={handleCreateVideoRecreationNode}
             onVideoRecreationChange={updateVideoRecreation}
             onAddConnectedGenerateNode={handleAddConnectedGenerateNode}
             onAddSelectionGenerateNode={handleAddSelectionGenerateNode}

@@ -91,7 +91,7 @@ pnpm --filter @multimodal-canvas/web exec playwright test e2e/video-recreation.s
 
 - Web 浏览器测试入口是 `pnpm test:e2e`，配置为 `apps/web/playwright.config.ts`。`WEB_PORT` 默认 5173；设置 `WEB_BASE_URL` 后使用已有站点，不再自动启动 Vite。先确认目标、Mock/拦截覆盖和写入范围，不能把现有用户项目当测试夹具。
 - UI 修改至少验证启动、核心交互和控制台错误；涉及布局需实际检查 PC 截图。性能比较使用相同节点/边/媒体负载、窗口与构建，避免 HMR 或并行构建干扰，不以渲染次数直接冒充 FPS。
-- API 测试需留意 `WEB_PORT=5173` 的默认 CORS 基线及环境泄漏。设施测试使用隔离 `TEST_DATABASE_URL`、Redis namespace、S3 bucket/prefix，不能指向用户数据库或对象。
+- Web 单测按 `VITE_API_BASE_URL=http://localhost:3000` 的开发契约验证；不要把正式构建的同源空值带入单测，运行前隔离环境。API 测试需留意 `WEB_PORT=5173` 的默认 CORS 基线及环境泄漏。设施测试使用隔离 `TEST_DATABASE_URL`、Redis namespace、S3 bucket/prefix，不能指向用户数据库或对象。
 - Windows 隔离验收入口为 `./scripts/verify-isolated.ps1 -Action Start`，随后 `-Action Test`，结束用 `-Action Stop`；首次执行前阅读脚本及端口/项目参数。它需要 Docker，测试阶段会对专用库执行迁移，并涉及 OpenSSL。缺少设施导致的跳过不算集成测试通过。
 - Mock、隔离集成、本机 Docker、真实 Provider、生产部署是不同证据层级；只有实际完成的层级才能标记通过。
 - **纯文档任务**可使用格式、路径/命令核对和差异检查作为等价验证，无需无故触发迁移、部署或付费请求。`.prettierignore` 排除了 `AGENTS.md`，检查本文件须显式运行 `pnpm exec prettier --check AGENTS.md --ignore-path .gitignore`。
@@ -145,5 +145,5 @@ pnpm --filter @multimodal-canvas/web exec playwright test e2e/video-recreation.s
 
 截至 **2026-10-04** 的待办提示（不是完成声明）：
 
-- **拖动回归已定位、未修复。** `App.tsx` 的内联 `onRecreateVideo` 经 `WorkflowCanvas` 的 `NodeVideoRecreationContext` 广播，使未移动节点跟随坐标帧重渲。旧回调清单和渲染探针漏掉这条链；后续修复需补真实订阅回归及同负载前后测量。本指南更新不包含该修复。
+- 短视频复刻入口的拖动广播已通过稳定回调修复；原因、红绿回归、实际构建对照及验收边界见 [拖动回归检查点](docs/canvas-video-recreation-drag-checkpoint.md)。新增节点 Context 时继续保留真实订阅测试，不能只核对外层回调。
 - 供应商真实合同/成片效果、New API 共享或生产切换、目标生产环境、超大画布持续验证及存量 E2E 失败等仍按对应 TODO 和专项检查点推进。修改本指南时同步移除已关闭的临时提醒，但不能只凭旧测试通过记录关闭任务。

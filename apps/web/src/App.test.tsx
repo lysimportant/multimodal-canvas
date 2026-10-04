@@ -348,6 +348,8 @@ describe('App 资源抽屉集成', () => {
     expect(view.canvas!.selectedNode?.id).toBe('empty-one');
     const canvasChanges = {
       onRunNode: 0,
+      // 复刻入口经 Context 传给全部节点，位置帧不能更换引用而广播重渲。
+      onRecreateVideo: 0,
       onOpenSkillWorkbench: 0,
       onRetryNode: 0,
       onNodeLabelChange: 0,
