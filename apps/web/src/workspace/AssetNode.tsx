@@ -3,6 +3,7 @@ import {
   ArrowUpRight,
   Check,
   Circle,
+  Clapperboard,
   Clock3,
   Download,
   FileText,
@@ -369,7 +370,8 @@ export function AssetNode({
   const [draftLabel, setDraftLabel] = useState(data.label);
   const renameTitleId = useId();
   const infoTitleId = useId();
-  const Icon = mediaIcons[data.mediaType];
+  const isVideoRecreation = data.mediaType === 'video' && Boolean(data.videoRecreation);
+  const Icon = isVideoRecreation ? Clapperboard : mediaIcons[data.mediaType];
   const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
   /** 全部节点共用悬浮操作栏，保持内容区域固定尺寸。 */
@@ -702,12 +704,14 @@ export function AssetNode({
         videoMode={data.videoMode}
         modelAlias={data.modelAlias}
       />
+      {isVideoRecreation ? (
+        <span className="flow-node-recreation-badge">
+          <Clapperboard size={14} aria-hidden="true" />
+          短视频复刻
+        </span>
+      ) : null}
       {data.mediaType === 'video' && data.mode === 'generate' ? (
-        <VideoInputSummary
-          nodeId={id}
-          videoMode={data.videoMode}
-          isRecreation={Boolean(data.videoRecreation)}
-        />
+        <VideoInputSummary nodeId={id} videoMode={data.videoMode} />
       ) : null}
       {contentHandlers ? (
         <input
@@ -927,7 +931,7 @@ export function AssetNode({
                     if (!writingDisabled) recreateVideo(id);
                   }}
                 >
-                  <WandSparkles size={18} aria-hidden="true" />
+                  <Clapperboard size={18} aria-hidden="true" />
                   <NodeFloatingActionLabel>复刻短视频</NodeFloatingActionLabel>
                 </NodeFloatingActionButton>
               ) : null}
@@ -1278,6 +1282,7 @@ export function AssetNode({
           retryError={retryError}
           onRetry={() => void handleRetry()}
           emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
+          emptyHint={isVideoRecreation ? '点击节点，按流程开始复刻' : undefined}
           icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
         />
       )}
@@ -1321,6 +1326,7 @@ function NodeStateContent({
   retryError,
   onRetry,
   emptyLabel,
+  emptyHint,
   icon,
 }: {
   state: NodePresentationState;
@@ -1332,6 +1338,8 @@ function NodeStateContent({
   retryError: string | null;
   onRetry: () => void;
   emptyLabel: string;
+  /** 只在空态展示的下一步提示，不改变运行和失败状态。 */
+  emptyHint?: string;
   icon: ReactNode;
 }) {
   if (state === 'running') {
@@ -1395,6 +1403,7 @@ function NodeStateContent({
     <div className="flow-node-placeholder">
       {icon}
       <span>{emptyLabel}</span>
+      {emptyHint ? <span className="flow-node-recreation-hint">{emptyHint}</span> : null}
     </div>
   );
 }
@@ -1504,15 +1513,7 @@ export function runStatusLabel(status: RunStatus) {
 /**
  * 视频节点的紧凑输入摘要。绝对定位在预览上方，不参与外部尺寸计算。
  */
-function VideoInputSummary({
-  nodeId,
-  videoMode,
-  isRecreation,
-}: {
-  nodeId: string;
-  videoMode?: VideoMode;
-  isRecreation?: boolean;
-}) {
+function VideoInputSummary({ nodeId, videoMode }: { nodeId: string; videoMode?: VideoMode }) {
   const edges = useNodeConnections({ id: nodeId, handleType: 'target' });
   const roles: PortRole[] = [];
   const counts = new Map<PortRole, number>();
@@ -1533,7 +1534,6 @@ function VideoInputSummary({
   const total = chips.reduce((sum, chip) => sum + chip.count, 0);
   return (
     <div className="flow-node-input-summary" aria-label={`视频输入 ${total} 项`}>
-      {isRecreation ? <span className="flow-node-input-chip">短视频复刻</span> : null}
       <span className="flow-node-input-chip">{videoModeLabels[resolvedMode]}</span>
       {chips.map((chip) => (
         <span key={chip.role} className="flow-node-input-chip">

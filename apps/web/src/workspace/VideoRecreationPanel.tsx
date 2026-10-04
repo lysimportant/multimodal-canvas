@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Clapperboard } from 'lucide-react';
 import {
   getVideoRecreationIssue,
   parseVideoRecreationTemplate,
@@ -15,6 +16,7 @@ import {
   type VideoRecreationAnalysis,
 } from '../video-recreation';
 import { API_BASE_URL, type ModelEntry, type ModelSelection } from './contracts';
+import { VideoRecreationGuide } from './VideoRecreationGuide';
 import './VideoRecreationPanel.css';
 
 /** 专属编辑区；父级按项目及来源身份设置 key，负责最终提示词和标准生成入口。 */
@@ -635,7 +637,15 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
   return (
     <section className="video-recreation-panel nodrag nowheel" aria-label="短视频复刻">
       <header className="video-recreation-source">
-        <h3>短视频复刻</h3>
+        <h3 className="video-recreation-title">
+          <Clapperboard size={20} aria-hidden="true" />
+          短视频复刻
+        </h3>
+        <p className="video-recreation-path">分析整条视频 → 提供人物 → 可选换商品 → 生成</p>
+        <details className="video-recreation-help">
+          <summary>使用流程</summary>
+          <VideoRecreationGuide />
+        </details>
         <strong>{config.source.name}</strong>
         <span>
           来源版本：

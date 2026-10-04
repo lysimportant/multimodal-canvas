@@ -1,0 +1,39 @@
+.video-recreation-guide {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--mc-text, #18212f);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.video-recreation-guide h4,
+.video-recreation-guide p {
+  margin: 0;
+}
+
+.video-recreation-guide h4 {
+  font-size: 12px;
+}
+
+.video-recreation-guide ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.video-recreation-guide li::marker {
+  color: var(--mc-accent, #18794e);
+  font-weight: 600;
+}
+
+.video-recreation-guide p {
+  color: var(--mc-text-muted, #687386);
+}
+
+.video-recreation-guide .video-recreation-guide-notice {
+  font-size: 11px;
+}

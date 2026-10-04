@@ -3,6 +3,7 @@ import { Popover } from 'antd';
 import { mediaTypes, type MediaType } from '@multimodal-canvas/domain';
 import {
   ChevronUp,
+  Clapperboard,
   Group,
   LayoutGrid,
   Maximize2,
@@ -29,6 +30,7 @@ import { ClearCanvasMenu, type ClearActionCounts } from './ClearCanvasMenu';
 import { mediaIcons, mediaLabels } from './contracts';
 import { useMobileWorkspace } from './MobileWorkspacePanel';
 import './CanvasNodeToolbar.mobile.css';
+import './VideoRecreationLauncher.css';
 
 /**
  * 画布底部工具胶囊。
@@ -38,6 +40,7 @@ import './CanvasNodeToolbar.mobile.css';
  */
 export function CanvasNodeToolbar({
   onOpenSkillWorkbench,
+  onOpenVideoRecreation,
   onAddGenerateNode,
   onFitView,
   onRequestUpload,
@@ -64,6 +67,8 @@ export function CanvasNodeToolbar({
 }: {
   /** 打开所有节点共用的用户技能工作台。 */
   onOpenSkillWorkbench?: () => void;
+  /** 打开整条短视频复刻的使用流程与来源选择；不执行分析或生成。 */
+  onOpenVideoRecreation?: () => void;
   onAddGenerateNode: (mediaType: MediaType) => void;
   /** 将画布缩放并平移到能完整看到所有节点的位置。 */
   onFitView?: () => void;
@@ -147,6 +152,27 @@ export function CanvasNodeToolbar({
   const stopCanvasEvent = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
+
+  if (onOpenVideoRecreation) {
+    nodeActions.push(
+      <Button
+        type="button"
+        className="canvas-node-tool canvas-node-action-tool canvas-video-recreation-tool"
+        aria-label="短视频复刻"
+        title="短视频复刻：查看使用流程并选择原视频"
+        key="video-recreation"
+        onPointerDown={stopCanvasEvent}
+        onClick={(event) => {
+          event.stopPropagation();
+          setShowMore(false);
+          onOpenVideoRecreation();
+        }}
+      >
+        <Clapperboard size={16} aria-hidden="true" />
+        <span>短视频复刻</span>
+      </Button>,
+    );
+  }
 
   if (onRequestUpload) {
     nodeActions.push(

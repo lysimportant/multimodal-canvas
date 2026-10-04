@@ -31,6 +31,43 @@
   font-size: 12px;
 }
 
+.video-recreation-panel .video-recreation-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.video-recreation-title > svg {
+  flex-shrink: 0;
+  color: var(--mc-accent, #18794e);
+}
+
+.video-recreation-path {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+}
+
+.video-recreation-help {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--mc-border, #d3dce0);
+  border-radius: 5px;
+  background: var(--mc-surface-soft, #f7f8fa);
+}
+
+.video-recreation-help > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.video-recreation-help > .video-recreation-guide {
+  margin-top: 8px;
+  max-height: 280px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .video-recreation-source,
 .video-recreation-binding,
 .video-recreation-bindings,

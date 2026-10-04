@@ -348,6 +348,32 @@ afterEach(() => {
 });
 
 describe('WorkflowCanvas context menu', () => {
+  it('底部复刻入口先展示流程，明确创建后才将视频来源交回 App，不调用生成', async () => {
+    const video = {
+      ...sourceNode,
+      id: 'source-video',
+      type: 'video',
+      data: {
+        ...sourceNode.data,
+        mediaType: 'video',
+        label: '原视频',
+        assetId: 'clip',
+        contentUrl: '/clip.mp4',
+      },
+    } as AssetFlowNode;
+    const props = createProps({ nodes: [video], onRecreateVideo: vi.fn() });
+    render(<WorkflowCanvas {...props} />);
+    await userEvent.click(screen.getByRole('button', { name: '短视频复刻' }));
+    const dialog = screen.getByRole('dialog', { name: '短视频复刻 · 使用流程' });
+    await waitFor(() => expect(dialog).toBeVisible());
+    expect(props.onRecreateVideo).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: '创建复刻节点' }));
+    expect(props.onRecreateVideo).toHaveBeenCalledExactlyOnceWith(video.id);
+    expect(props.onRunNode).not.toHaveBeenCalled();
+    expect(props.onAddGenerateNode).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: '短视频复刻 · 使用流程' })).not.toBeInTheDocument();
+  });
+
   it('视口缩放或平移只暂停装饰层，结束后恢复且不改变节点或连线', () => {
     const props = createProps({ nodes: [generateNode] });
     const view = render(<WorkflowCanvas {...props} />);

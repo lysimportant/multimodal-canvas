@@ -237,6 +237,90 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
+  it('复刻节点未选中且未悬浮时保留独立标识与下一步提示，普通视频不显示', () => {
+    const node = makeNode({
+      mediaType: 'video',
+      label: '短视频复刻',
+      videoMode: 'omni_reference',
+      videoRecreation: {
+        version: 1,
+        source: { assetId: 'clip', assetVersion: 2, name: '原视频' },
+        bindings: [],
+      },
+    });
+    const view = renderNode(node);
+    const badge = view.container.querySelector('.flow-node-recreation-badge');
+    expect(badge).toHaveTextContent('短视频复刻');
+    expect(badge?.querySelector('.lucide-clapperboard')).not.toBeNull();
+    expect(badge?.closest('.flow-node-floating-controls')).toBeNull();
+    expect(view.container.querySelector('.flow-asset-node')).not.toHaveClass('is-selected');
+    expect(screen.getByText('点击节点，按流程开始复刻')).toBeVisible();
+    view.unmount();
+    const ordinary = renderNode(makeNode({ mediaType: 'video' }));
+    expect(ordinary.container.querySelector('.flow-node-recreation-badge')).toBeNull();
+    expect(screen.queryByText('点击节点，按流程开始复刻')).not.toBeInTheDocument();
+  });
+
+  it('复刻节点已有结果仍显示专属标识，不把空态引导盖在视频上', () => {
+    const view = renderNode(
+      makeNode({
+        mediaType: 'video',
+        label: '短视频复刻',
+        manualOutput: true,
+        assetId: 'result',
+        contentUrl: '/demo/video.mp4',
+        mimeType: 'video/mp4',
+        videoRecreation: {
+          version: 1,
+          source: { assetId: 'clip', assetVersion: 2, name: '原视频' },
+          bindings: [],
+        },
+      }),
+    );
+    expect(view.container.querySelector('.flow-node-recreation-badge')).toHaveTextContent(
+      '短视频复刻',
+    );
+    expect(view.container.querySelector('video')).not.toBeNull();
+    expect(screen.queryByText('点击节点，按流程开始复刻')).not.toBeInTheDocument();
+  });
+
+  it('大画布缩放摘要保留场记板标识，不依赖悬浮操作栏挂载', () => {
+    viewportMock.zoom = 0.2;
+    const node = makeNode({
+      mediaType: 'video',
+      label: '短视频复刻',
+      videoRecreation: {
+        version: 1,
+        source: { assetId: 'clip', assetVersion: 2, name: '原视频' },
+        bindings: [],
+      },
+    });
+    const view = render(
+      <CanvasPerformanceContext.Provider value={true}>
+        <AssetNode
+          {...({
+            id: node.id,
+            data: node.data,
+            selected: false,
+            positionAbsoluteX: 100,
+            positionAbsoluteY: 100,
+            width: 400,
+            height: 266,
+          } as NodeProps<AssetFlowNode>)}
+        />
+      </CanvasPerformanceContext.Provider>,
+    );
+    expect(view.container.querySelector('.flow-asset-node')).toHaveAttribute(
+      'data-render-detail',
+      'compact',
+    );
+    expect(view.container.querySelector('.flow-node-floating-controls')).toBeNull();
+    expect(view.container.querySelector('.flow-node-recreation-badge')).toHaveTextContent(
+      '短视频复刻',
+    );
+    expect(view.container.querySelector('.flow-node-summary .lucide-clapperboard')).not.toBeNull();
+  });
+
   it('悬浮按钮整项 hover 显示简述，仍直接位于操作栏且不继承描边按钮', async () => {
     const user = userEvent.setup();
     renderNode(

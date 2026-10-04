@@ -1,5 +1,5 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
+import { readFileSync, writeFileSync } from 'node:fs';
 import {
   canvasDocumentSchema,
   PROMPT_SKILLS,
@@ -102,6 +102,8 @@ async function fixture(page: Page, sourceLatestVersion = 2, saveDelayMs = 0) {
     createdAt: '2026-10-04T00:00:00Z',
   };
   const posts: Record<string, unknown>[] = [];
+  /** 媒体 access-url 的 POST 只读取播放票据；除此之外，任何 POST 都必须由明确操作触发。 */
+  const postPaths: string[] = [];
   const generates: RunRecord[] = [];
   const uploads: string[] = [];
   const errors: string[] = [];
@@ -141,6 +143,7 @@ async function fixture(page: Page, sourceLatestVersion = 2, saveDelayMs = 0) {
       url = new URL(req.url()),
       path = url.pathname,
       method = req.method();
+    if (method === 'POST' && !/^\/v1\/assets\/[^/]+\/access-url$/.test(path)) postPaths.push(path);
     if (method === 'GET' && path === '/v1/auth/me')
       return json(route, { user, expiresAt: new Date(Date.now() + 3600000).toISOString() });
     if (path === '/v1/settings/ai')
@@ -306,7 +309,7 @@ async function fixture(page: Page, sourceLatestVersion = 2, saveDelayMs = 0) {
           nodes: canvas.nodes,
           edges: [],
           inputs: [],
-          parameters: target.data.parameters,
+          parameters: target.data.parameters ?? {},
         },
       };
       generates.push(run);
@@ -322,6 +325,7 @@ async function fixture(page: Page, sourceLatestVersion = 2, saveDelayMs = 0) {
   return {
     canvas: () => canvas,
     posts,
+    postPaths,
     generates,
     uploads,
     errors,
@@ -351,6 +355,283 @@ async function openRecreation(page: Page, id: string) {
   await expect(node).toBeVisible();
   await node.getByText('尚未生成', { exact: true }).click();
   return page.getByRole('region', { name: '短视频复刻', exact: true });
+}
+
+/**
+ * 验证共享说明是完整四步有序列表，明确整条视频、人物、可选商品和手动生成边界。
+ * @param guide 具有“短视频复刻使用流程”可访问名称的有序列表。
+ * @returns 全部断言通过后完成；缺少步骤或必要边界时由 Playwright 报错。
+ */
+async function expectRecreationGuide(guide: Locator) {
+  await expect(guide).toBeVisible();
+  await expect(guide).toHaveJSProperty('tagName', 'OL');
+  await expect(guide.getByRole('listitem')).toHaveCount(4);
+  await expect(guide).toContainText('整条视频');
+  await expect(guide).toContainText('人物');
+  await expect(guide).toContainText('商品');
+  await expect(guide).toContainText('可选');
+  await expect(guide.getByRole('listitem').last()).toContainText('生成');
+  await expect(guide).toContainText(/手动|点击.{0,15}生成|明确.{0,15}生成/);
+}
+
+for (const viewport of [
+  { width: 1440, height: 1000 },
+  { width: 1366, height: 768 },
+]) {
+  test(
+    'PC ' +
+      viewport.width +
+      '×' +
+      viewport.height +
+      ' 常驻入口、流程和失焦标识可发现，分析生成须明确点击',
+    async ({ page }, info) => {
+      await page.setViewportSize(viewport);
+      const ctx = await fixture(page);
+      await page.goto('/projects/' + project.id);
+      const source = page.locator('.react-flow__node[data-id="source-video"]');
+      await expect(source).toBeVisible({ timeout: 15000 });
+      const sourceBefore = structuredClone(ctx.canvas().nodes[0]!);
+      await page.mouse.move(0, 0);
+      await expect(source).not.toHaveClass(/\bselected\b/);
+      expect(await source.evaluate((element) => element.matches(':hover'))).toBe(false);
+      const entry = page
+        .getByRole('group', { name: '节点组', exact: true })
+        .getByRole('button', { name: '短视频复刻', exact: true });
+      await expect(entry).toBeVisible();
+      await expect(entry).toBeInViewport({ ratio: 1 });
+      await expect(entry.getByText('短视频复刻', { exact: true })).toBeVisible();
+      await expect(entry.locator('svg.lucide-clapperboard')).toBeVisible();
+      expect(await entry.evaluate((element) => element.matches(':hover'))).toBe(false);
+      await expect(
+        page.getByRole('group', { name: '创建节点', exact: true }).getByRole('button'),
+      ).toHaveCount(4);
+      expect(ctx.postPaths).toEqual([]);
+      await page.screenshot({ path: info.outputPath('recreation-entry.png'), fullPage: true });
+
+      await entry.click();
+      const dialog = page.getByRole('dialog', { name: '短视频复刻 · 使用流程', exact: true });
+      await expect(dialog).toBeVisible();
+      const guide = dialog.getByRole('list', { name: '短视频复刻使用流程', exact: true });
+      await expectRecreationGuide(guide);
+      const reference = dialog.getByRole('combobox', { name: '参考视频节点', exact: true });
+      await expect(reference).toHaveJSProperty('tagName', 'SELECT');
+      await expect(reference).toHaveValue('source-video');
+      await expect(reference.locator('option:checked')).toContainText('参考短视频');
+      await expect(reference.getByRole('option', { name: /参考短视频/ })).toHaveCount(1);
+      expect(ctx.canvas().nodes).toHaveLength(1);
+      expect(ctx.postPaths).toEqual([]);
+      const create = dialog.getByRole('button', { name: '创建复刻节点', exact: true });
+      await expect(create).toBeEnabled();
+      await create.scrollIntoViewIfNeeded();
+      await expect(create).toBeInViewport({ ratio: 1 });
+      await expect(dialog).toBeInViewport({ ratio: 0.99 });
+      const dialogLayout = await dialog.evaluate((element) => {
+        /** 读取布局边界与实际生效的尺寸约束，供裁切失败定位，不修改 DOM 或样式。 */
+        const measure = (target: Element) => {
+          const bounds = target.getBoundingClientRect();
+          const style = getComputedStyle(target);
+          return {
+            bounds: {
+              x: bounds.x,
+              y: bounds.y,
+              width: bounds.width,
+              height: bounds.height,
+              top: bounds.top,
+              right: bounds.right,
+              bottom: bounds.bottom,
+              left: bounds.left,
+            },
+            style: {
+              maxHeight: style.maxHeight,
+              height: style.height,
+              padding: style.padding,
+              paddingBottom: style.paddingBottom,
+              borderBottomWidth: style.borderBottomWidth,
+              display: style.display,
+              minHeight: style.minHeight,
+              boxSizing: style.boxSizing,
+              overflow: style.overflow,
+              flexShrink: style.flexShrink,
+            },
+            clientHeight: target.clientHeight,
+            scrollHeight: target.scrollHeight,
+            scrollTop: target.scrollTop,
+          };
+        };
+        const footer = element.querySelector('footer');
+        const button = [...element.querySelectorAll('button')].find(
+          (candidate) => candidate.textContent?.trim() === '创建复刻节点',
+        );
+        if (!footer || !button) throw new Error('复刻流程缺少 footer 或创建按钮');
+        return {
+          width: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          scrollable: [element, ...element.querySelectorAll('*')].some((child) =>
+            /^(auto|scroll)$/.test(getComputedStyle(child).overflowY),
+          ),
+          dialog: measure(element),
+          footer: measure(footer),
+          createButton: measure(button),
+        };
+      });
+      const layoutPath = info.outputPath('recreation-dialog-layout.json');
+      writeFileSync(layoutPath, JSON.stringify({ viewport, ...dialogLayout }, null, 2));
+      await info.attach('复刻弹窗边界', { path: layoutPath, contentType: 'application/json' });
+      expect(dialogLayout.scrollable).toBe(true);
+      expect(dialogLayout.scrollWidth).toBeLessThanOrEqual(dialogLayout.width + 1);
+      expect(
+        await guide.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+      ).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        viewport.width,
+      );
+      await page.screenshot({ path: info.outputPath('recreation-use-guide.png'), fullPage: true });
+      const paddingBottom = Number.parseFloat(dialogLayout.dialog.style.paddingBottom);
+      const borderBottom = Number.parseFloat(dialogLayout.dialog.style.borderBottomWidth);
+      const innerBottom = dialogLayout.dialog.bounds.bottom - borderBottom - paddingBottom;
+      const buttonBottomGap =
+        dialogLayout.dialog.bounds.bottom - borderBottom - dialogLayout.createButton.bounds.bottom;
+      expect(
+        buttonBottomGap,
+        '创建按钮底部须保留弹窗声明的 padding，且至少留出 12px 安全区',
+      ).toBeGreaterThanOrEqual(Math.max(12, paddingBottom) - 1);
+      expect(
+        dialogLayout.footer.bounds.bottom,
+        'footer 不得进入弹窗底部 padding 或被容器裁切',
+      ).toBeLessThanOrEqual(innerBottom + 1);
+
+      await create.click();
+      await expect(dialog).toBeHidden();
+      await expect.poll(() => ctx.canvas().nodes.length).toBe(2);
+      const saved = ctx.canvas().nodes.find((item) => item.data.videoRecreation)!;
+      const node = page.locator('.react-flow__node[data-id="' + saved.id + '"]');
+      await expect(node).toBeVisible();
+      expect(saved.data.videoRecreation?.source).toMatchObject({
+        sourceNodeId: 'source-video',
+        assetId: 'clip',
+        assetVersion: 2,
+        durationSeconds: 10,
+      });
+      expect(ctx.canvas().nodes.find((item) => item.id === sourceBefore.id)).toEqual(sourceBefore);
+      expect(ctx.posts).toHaveLength(0);
+      expect(ctx.generates).toHaveLength(0);
+      expect(ctx.postPaths).toEqual([]);
+      const size = await node.boundingBox();
+      expect(size).not.toBeNull();
+      // 左上角导航覆盖画布；在资源栏右侧的空白区域取消选择，不使用强制点击。
+      await page.locator('.react-flow__pane').click({ position: { x: 300, y: 220 } });
+      await page.mouse.move(0, 0);
+      await expect(node).not.toHaveClass(/\bselected\b/);
+      expect(await node.evaluate((element) => element.matches(':hover'))).toBe(false);
+      const badge = node.locator('.flow-node-recreation-badge');
+      await expect(badge).toBeVisible();
+      // React Flow 缩放会产生 0.99999982 之类的交集浮点误差；保留百万分之一容差并核对完整边界。
+      await expect(badge).toBeInViewport({ ratio: 1 - 1e-6 });
+      const badgeBounds = await badge.boundingBox();
+      expect(badgeBounds).not.toBeNull();
+      expect(badgeBounds!.x).toBeGreaterThanOrEqual(0);
+      expect(badgeBounds!.y).toBeGreaterThanOrEqual(0);
+      expect(badgeBounds!.x + badgeBounds!.width).toBeLessThanOrEqual(viewport.width);
+      expect(badgeBounds!.y + badgeBounds!.height).toBeLessThanOrEqual(viewport.height);
+      await expect(badge).toContainText('短视频复刻');
+      await expect(badge.locator('svg.lucide-clapperboard')).toBeVisible();
+      // Playwright 的可见性断言不排除 opacity: 0；同时检查祖先，避免隐藏在悬浮工具栏内。
+      expect(
+        await badge.evaluate((element) => {
+          for (let current: Element | null = element; current; current = current.parentElement) {
+            if (Number(getComputedStyle(current).opacity) === 0) return false;
+          }
+          return true;
+        }),
+      ).toBe(true);
+      await expect(node.getByText('尚未生成', { exact: true })).toBeVisible();
+      await expect(node.getByText('点击节点，按流程开始复刻', { exact: true })).toBeVisible();
+      const deselectedSize = await node.boundingBox();
+      expect(deselectedSize?.width).toBeCloseTo(size!.width, 0);
+      expect(deselectedSize?.height).toBeCloseTo(size!.height, 0);
+      await page.screenshot({ path: info.outputPath('recreation-node-badge.png'), fullPage: true });
+
+      await node.getByText('尚未生成', { exact: true }).click();
+      const panel = page.getByRole('region', { name: '短视频复刻', exact: true });
+      await expect(panel).toBeVisible();
+      await expect(
+        panel
+          .getByRole('heading', { name: '短视频复刻', exact: true })
+          .locator('svg.lucide-clapperboard'),
+      ).toBeVisible();
+      const flowPath = panel.locator('.video-recreation-path');
+      await expect(flowPath).toHaveText('分析整条视频 → 提供人物 → 可选换商品 → 生成');
+      await flowPath.scrollIntoViewIfNeeded();
+      await expect(flowPath).toBeInViewport({ ratio: 1 });
+      const flowSummary = panel.locator('summary', { hasText: /^使用流程$/ });
+      await expect(flowSummary).toBeVisible();
+      await flowSummary.click();
+      const panelGuide = panel.getByRole('list', { name: '短视频复刻使用流程', exact: true });
+      await expectRecreationGuide(panelGuide);
+      const panelSteps = panelGuide.getByRole('listitem');
+      await panelSteps.first().scrollIntoViewIfNeeded();
+      await expect(panelSteps.first()).toBeInViewport({ ratio: 1 });
+      await panelSteps.last().scrollIntoViewIfNeeded();
+      await expect(panelSteps.last()).toBeInViewport({ ratio: 1 });
+      expect(
+        await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+      ).toBe(true);
+      expect(ctx.postPaths).toEqual([]);
+      const expandedSize = await node.boundingBox();
+      expect(expandedSize?.width).toBeCloseTo(size!.width, 0);
+      expect(expandedSize?.height).toBeCloseTo(size!.height, 0);
+      await page.screenshot({ path: info.outputPath('recreation-panel-flow.png'), fullPage: true });
+
+      await flowSummary.click();
+      await page.getByRole('button', { name: '打开完整编辑器', exact: true }).click();
+      const fullEditor = page.getByRole('dialog', { name: '短视频复刻 · 编辑设置', exact: true });
+      await expect(fullEditor).toBeVisible();
+      const fullPanel = fullEditor.getByRole('region', { name: '短视频复刻', exact: true });
+      await fullPanel.locator('summary', { hasText: /^使用流程$/ }).click();
+      const fullGuide = fullPanel.getByRole('list', { name: '短视频复刻使用流程', exact: true });
+      await expectRecreationGuide(fullGuide);
+      await fullGuide.scrollIntoViewIfNeeded();
+      await expect(fullGuide).toBeInViewport({ ratio: 1 });
+      await expect(
+        fullPanel.getByRole('heading', { name: '短视频复刻', exact: true }),
+      ).toBeInViewport({ ratio: 1 });
+      expect(ctx.postPaths).toEqual([]);
+      await page.screenshot({
+        path: info.outputPath('recreation-full-editor-flow.png'),
+        fullPage: true,
+      });
+      await fullEditor.getByRole('button', { name: '关闭编辑器', exact: true }).click();
+      await expect(fullEditor).toBeHidden();
+      await expect(panel).toBeVisible();
+      const closedEditorSize = await node.boundingBox();
+      expect(closedEditorSize?.width).toBeCloseTo(size!.width, 0);
+      expect(closedEditorSize?.height).toBeCloseTo(size!.height, 0);
+      await panel.getByRole('button', { name: '分析整条视频', exact: true }).click();
+      await expect(panel.getByRole('combobox', { name: '主角', exact: true })).toBeVisible();
+      expect(ctx.posts).toHaveLength(1);
+      expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
+      expect(ctx.generates).toHaveLength(0);
+      const generate = page
+        .locator('.node-quick-editor')
+        .getByRole('button', { name: '生成', exact: true });
+      await expect(generate).toBeDisabled();
+      await panel.getByRole('combobox', { name: '主角', exact: true }).selectOption('person-a');
+      await expect
+        .poll(() => ctx.canvas().nodes.find((item) => item.id === saved.id)?.data.prompt)
+        .toContain('Full observed duration: 10 seconds');
+      await expect(generate).toBeEnabled();
+      expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
+      expect(ctx.generates).toHaveLength(0);
+      await generate.click();
+      await expect.poll(() => ctx.generates.length).toBe(1);
+      expect(ctx.postPaths).toEqual([
+        '/v1/assets/clip/versions/2/reverse-prompts',
+        '/v1/nodes/' + saved.id + '/runs',
+      ]);
+      expect(ctx.posts).toHaveLength(1);
+      expect(ctx.errors).toEqual([]);
+    },
+  );
 }
 
 test('整条分析、绑定人物、自动组装和明确生成，保存重载不重复分析', async ({ page }, info) => {

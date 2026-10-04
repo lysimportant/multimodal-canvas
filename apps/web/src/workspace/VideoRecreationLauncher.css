@@ -1,0 +1,97 @@
+/* 作为节点操作而非第五种媒体类型；文字常驻，不依赖悬浮提示。 */
+.canvas-node-tools .canvas-node-tool.canvas-video-recreation-tool,
+.mobile-canvas-tools-popover .canvas-node-tool.canvas-video-recreation-tool {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  width: auto;
+  min-width: max-content;
+  padding-inline: 10px;
+  border-radius: 6px;
+  color: var(--mc-accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 覆盖 Modal 居中模式的 inline-block 与零底边距，保留居中和操作区安全留白。 */
+.ant-modal-root .ant-modal.video-recreation-launcher.ui-dialog {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 22px;
+  overflow: hidden;
+  color: var(--mc-text);
+}
+
+.video-recreation-launcher-header,
+.video-recreation-launcher-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.video-recreation-launcher-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 17px;
+}
+
+.video-recreation-launcher-header h2 > svg {
+  flex-shrink: 0;
+  color: var(--mc-accent);
+}
+
+.video-recreation-launcher-description,
+.video-recreation-launcher-hint {
+  margin: 0;
+  color: var(--mc-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.video-recreation-launcher-description {
+  flex-shrink: 0;
+}
+
+.video-recreation-launcher-body {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.video-recreation-source-picker {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.video-recreation-source-picker select {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 6px;
+  background: var(--mc-surface);
+  color: var(--mc-text);
+  font: inherit;
+}
+
+.video-recreation-source-picker select:focus-visible {
+  outline: 2px solid var(--mc-accent);
+  outline-offset: 2px;
+}
+
+.video-recreation-launcher-actions {
+  border-top: 1px solid var(--mc-border);
+  padding-top: 14px;
+}

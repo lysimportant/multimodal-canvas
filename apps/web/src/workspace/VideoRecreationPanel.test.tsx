@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { readFileSync } from 'node:fs';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -214,6 +214,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 /** 直接读取样式源文件，避免 Vitest 将 CSS 导入替换为空模块。 */
@@ -227,7 +228,60 @@ describe('短视频复刻面板', () => {
     expect(styles).toContain('max-height: 640px;');
     expect(styles).toContain('overflow: auto;');
     expect(styles).toContain('grid-column: 1 / -1;');
+    const guideStyles = panelCss.match(
+      /\.video-recreation-help > \.video-recreation-guide\s*\{([^}]+)\}/,
+    )?.[1];
+    expect(guideStyles).toContain('max-height: 280px;');
+    expect(guideStyles).toContain('overflow: auto;');
   });
+
+  it('标题带专属图标，四步路径和折叠的使用流程入口始终可见', async () => {
+    render(<Harness />);
+    await screen.findByRole('option', { name: '默认模型：vision-a' });
+
+    const heading = screen.getByRole('heading', { name: '短视频复刻', level: 3 });
+    expect(heading).toBeVisible();
+    expect(heading.querySelector('.lucide-clapperboard')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('分析整条视频 → 提供人物 → 可选换商品 → 生成')).toBeVisible();
+    const summary = screen.getByText('使用流程', { selector: 'summary' });
+    expect(summary).toBeVisible();
+    expect(summary.closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByText('使用流程', { selector: 'h4' })).not.toBeVisible();
+    expect(screen.getByRole('button', { name: '分析整条视频' })).toBeVisible();
+  });
+
+  it.each([
+    ['未分析', initial],
+    ['已有分析', ready],
+  ] as const)('%s时展开与收起流程不分析、不生成、不改变配置', async (_state, start) => {
+    const save = vi.fn();
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const user = userEvent.setup();
+    render(<Harness start={start} save={save} />);
+    await screen.findByRole('option', { name: '默认模型：vision-a' });
+    const queries = vi.mocked(fetchVideoRecreation).mock.calls.length;
+    const summary = screen.getByText('使用流程', { selector: 'summary' });
+
+    await user.click(summary);
+    expect(summary.closest('details')).toHaveAttribute('open');
+    expect(screen.getByRole('heading', { name: '使用流程' })).toBeVisible();
+    const guide = screen.getByRole('list', { name: '短视频复刻使用流程' });
+    expect(guide).toBeVisible();
+    expect(within(guide).getAllByRole('listitem')).toHaveLength(4);
+    await user.click(summary);
+    expect(summary.closest('details')).not.toHaveAttribute('open');
+    expect(guide).not.toBeVisible();
+
+    expect(fetchVideoRecreation).toHaveBeenCalledTimes(queries);
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(saved()).toEqual(start);
+    expect(screen.queryByRole('button', { name: /^生成/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled();
+  });
+
   it('StrictMode 挂载只 GET，不分析、不生成、不回写已有配置', async () => {
     const save = vi.fn();
     render(

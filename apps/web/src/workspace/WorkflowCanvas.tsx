@@ -85,6 +85,7 @@ import {
   type NodeResizeHandler,
 } from './AssetNode';
 import { CanvasNodeToolbar } from './CanvasNodeToolbar';
+import { VideoRecreationLauncher } from './VideoRecreationLauncher';
 import { CanvasPerformanceContext, LARGE_CANVAS_NODE_COUNT } from './canvas-render-detail';
 import {
   CanvasEdgeAppearanceProvider,
@@ -426,6 +427,7 @@ export function WorkflowCanvas({
 }: WorkflowCanvasProps) {
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const flowStore = useStoreApi();
+  const [recreationLauncherOpen, setRecreationLauncherOpen] = useState(false);
   const canvasAreaRef = useRef<HTMLElement>(null);
   /** 画布相对 React Flow 容器的屏幕边界，移动帧只读缓存，单位为 CSS 像素。 */
   const canvasBoundsRef = useRef<CanvasViewportBounds | null>(null);
@@ -1271,6 +1273,7 @@ export function WorkflowCanvas({
       )}
       <CanvasNodeToolbar
         onOpenSkillWorkbench={onOpenSkillWorkbench}
+        onOpenVideoRecreation={onRecreateVideo ? () => setRecreationLauncherOpen(true) : undefined}
         onAddGenerateNode={handleAddGenerateNode}
         onFitView={handleFitView}
         onRequestUpload={onRequestUpload}
@@ -1295,6 +1298,15 @@ export function WorkflowCanvas({
         canUndo={canUndo}
         canRedo={canRedo}
       />
+      {recreationLauncherOpen && onRecreateVideo ? (
+        <VideoRecreationLauncher
+          nodes={nodes}
+          busyNodeIds={busyNodeIds}
+          onClose={() => setRecreationLauncherOpen(false)}
+          onCreate={onRecreateVideo}
+          onRequestUpload={onRequestUpload}
+        />
+      ) : null}
       <CanvasSelectionModeContext.Provider value={suppressNodeInteractions}>
         <NodeSelectionContext.Provider value={selectNodeByData}>
           <NodeResizeContext.Provider value={onResizeNode}>
