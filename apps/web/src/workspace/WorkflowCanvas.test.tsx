@@ -1768,7 +1768,7 @@ describe('WorkflowCanvas 拖动性能', () => {
     expect(document.querySelector('.quick-editor-overlay')).not.toBeInTheDocument();
   });
 
-  it('参数编辑器在 30 次位置更新中不重渲染，运行时仍读取最新坐标', () => {
+  it('参数编辑器在 30 次位置更新中不重渲染，松手生成时仍读取最新坐标', () => {
     reactFlowMock.nodeProbe = DragRenderProbe;
     let node = { ...generateNode, data: { ...generateNode.data, prompt: 'Draw a boat.' } };
     const props = createProps({ nodes: [node, sourceNode], selectedNode: node });
@@ -1779,6 +1779,9 @@ describe('WorkflowCanvas 拖动性能', () => {
       view.rerender(<WorkflowCanvas {...props} nodes={[node, sourceNode]} selectedNode={node} />);
     }
     expect(quickEditorRender).toHaveBeenCalledTimes(0);
+    node = { ...node, dragging: false };
+    view.rerender(<WorkflowCanvas {...props} nodes={[node, sourceNode]} selectedNode={node} />);
+    expect(quickEditorRender).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /^生成$/ }));
     expect(props.onRunNode).toHaveBeenLastCalledWith(node, 'sameNode');
   });
@@ -1892,6 +1895,172 @@ describe('WorkflowCanvas 拖动性能', () => {
     expect(screen.getByRole('button', { name: '批次节点 0' })).not.toHaveAttribute(
       'data-batch-count',
     );
+  });
+});
+
+describe('WorkflowCanvas 拖动时暂隐编辑器', () => {
+  // 多成员用例只验证共享 dragging 状态；实际组选中会关闭节点编辑器，不断言整组恢复。
+  it.each(['单节点', '多选', '多成员共享状态'])(
+    '%s拖动只隐藏原编辑器，全部松手后恢复草稿光标且位置帧不重渲染',
+    (mode) => {
+      reactFlowMock.nodeProbe = DragRenderProbe;
+      let nodes: AssetFlowNode[] = [generateNode, { ...sourceNode, selected: mode === '多选' }];
+      const props = createProps({
+        nodes,
+        // 选中快照不携带 dragging，不能用它判断实时拖动态。
+        selectedNode: generateNode,
+      });
+      const view = render(<WorkflowCanvas {...props} />);
+      const editor = screen.getByRole('region', { name: '图片生成节点生成设置' });
+      const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+      const textarea = within(editor).getByLabelText<HTMLTextAreaElement>('提示词');
+      fireEvent.change(textarea, { target: { value: '尚未提交的拖动草稿 🙂' } });
+      textarea.focus();
+      textarea.setSelectionRange(3, 7, 'backward');
+      editor.scrollTop = 17;
+      quickEditorRender.mockClear();
+
+      for (let frame = 1; frame <= 12; frame++) {
+        nodes = nodes.map((node, index) =>
+          index === 0 || mode !== '单节点'
+            ? { ...node, position: { x: frame * 10 + index * 40, y: frame * 5 }, dragging: true }
+            : node,
+        );
+        view.rerender(<WorkflowCanvas {...props} nodes={nodes} />);
+        expect(overlay).toHaveAttribute('hidden');
+        expect(overlay).toHaveAttribute('inert');
+        expect(editor).not.toBeVisible();
+        expect(screen.queryByRole('region', { name: '图片生成节点生成设置' })).toBeNull();
+        expect(screen.queryByRole('button', { name: /^生成$/ })).toBeNull();
+        expect(document.querySelector('.quick-editor-overlay')).toBe(overlay);
+        expect(overlay.querySelector('.node-quick-editor')).toBe(editor);
+        expect(editor.querySelector('textarea')).toBe(textarea);
+        expect(textarea).toHaveValue('尚未提交的拖动草稿 🙂');
+        expect([
+          textarea.selectionStart,
+          textarea.selectionEnd,
+          textarea.selectionDirection,
+        ]).toEqual([3, 7, 'backward']);
+        expect(quickEditorRender).not.toHaveBeenCalled();
+      }
+
+      if (mode !== '单节点') {
+        nodes = nodes.map((node, index) => (index === 0 ? { ...node, dragging: false } : node));
+        view.rerender(<WorkflowCanvas {...props} nodes={nodes} />);
+        // 当前编辑节点已松手，其他成员仍在拖动时不能提前恢复浮层。
+        expect(overlay).toHaveAttribute('hidden');
+        expect(overlay).toHaveAttribute('inert');
+        expect(screen.queryByRole('button', { name: /^生成$/ })).toBeNull();
+      }
+
+      nodes = nodes.map((node) => ({ ...node, dragging: false }));
+      view.rerender(<WorkflowCanvas {...props} nodes={nodes} />);
+      expect(props.selectedNode).not.toHaveProperty('dragging');
+      expect(overlay).not.toHaveAttribute('hidden');
+      expect(overlay).not.toHaveAttribute('inert');
+      expect(screen.getByRole('region', { name: '图片生成节点生成设置' })).toBe(editor);
+      expect(editor).toBeVisible();
+      expect(screen.getByLabelText('提示词')).toBe(textarea);
+      expect(textarea).toHaveValue('尚未提交的拖动草稿 🙂');
+      expect([textarea.selectionStart, textarea.selectionEnd, textarea.selectionDirection]).toEqual(
+        [3, 7, 'backward'],
+      );
+      expect(editor.scrollTop).toBe(17);
+      expect(quickEditorRender).not.toHaveBeenCalled();
+      expect(props.onResizeNode).not.toHaveBeenCalled();
+      expect(props.onNodesChange).not.toHaveBeenCalled();
+      expect(props.onRunNode).not.toHaveBeenCalled();
+      expect(props.onAddGenerateNode).not.toHaveBeenCalled();
+    },
+  );
+
+  it('隐藏时断开几何观察并取消待测量帧，松手后重新观察并按最新位置测量', async () => {
+    vi.useFakeTimers();
+    reactFlowMock.nodeProbe = () => null;
+    const resizeObserve = vi.spyOn(ResizeObserver.prototype, 'observe');
+    const resizeDisconnect = vi.spyOn(ResizeObserver.prototype, 'disconnect');
+    const mutationObserve = vi.spyOn(MutationObserver.prototype, 'observe');
+    const mutationDisconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    const props = createProps({ nodes: [generateNode] });
+    const view = render(<WorkflowCanvas {...props} />);
+    const canvas = screen.getByRole('region', { name: '工作流画布' });
+    const canvasNode = screen.getByTestId('canvas-node-' + generateNode.id);
+    const viewport = document.createElement('div');
+    viewport.className = 'react-flow__viewport';
+    canvas.append(viewport);
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(createMockRect(0, 80, 1024, 680));
+    let nodeRect = createMockRect(380, 150, 180, 80);
+    const nodeBounds = vi
+      .spyOn(canvasNode, 'getBoundingClientRect')
+      .mockImplementation(() => nodeRect);
+    view.rerender(<WorkflowCanvas {...props} selectedNode={generateNode} />);
+    const editor = screen.getByRole('region', { name: '图片生成节点生成设置' });
+    const overlay = editor.closest<HTMLDivElement>('.quick-editor-overlay')!;
+    const resizeIndex = resizeObserve.mock.calls.findIndex(([target]) => target === overlay);
+    const mutationIndex = mutationObserve.mock.calls.findIndex(([target]) => target === editor);
+    expect(resizeIndex).toBeGreaterThanOrEqual(0);
+    expect(mutationIndex).toBeGreaterThanOrEqual(0);
+    const overlayResizeObserver = resizeObserve.mock.contexts[resizeIndex];
+    const overlayMutationObserver = mutationObserve.mock.contexts[mutationIndex];
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    nodeBounds.mockClear();
+    resizeObserve.mockClear();
+    mutationObserve.mockClear();
+    quickEditorRender.mockClear();
+
+    // 先排队一帧但不执行，进入拖动必须连同观察器一起清理它。
+    fireEvent.scroll(window);
+    let node = { ...generateNode, dragging: true };
+    view.rerender(<WorkflowCanvas {...props} nodes={[node]} selectedNode={generateNode} />);
+    expect(resizeDisconnect.mock.contexts).toContain(overlayResizeObserver);
+    expect(mutationDisconnect.mock.contexts).toContain(overlayMutationObserver);
+    for (let frame = 1; frame <= 3; frame++) {
+      nodeRect = createMockRect(380 + frame * 10, 150 + frame * 10, 180, 80);
+      node = { ...node, position: { x: frame * 10, y: frame * 10 } };
+      view.rerender(<WorkflowCanvas {...props} nodes={[node]} selectedNode={generateNode} />);
+      await act(async () => {
+        canvasNode.style.transform = 'translate(' + frame * 10 + 'px, ' + frame * 10 + 'px)';
+        viewport.style.transform = 'translateX(' + frame + 'px)';
+        fireEvent.resize(window);
+        fireEvent.scroll(window);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(16);
+      });
+    }
+    expect(nodeBounds).not.toHaveBeenCalled();
+    expect(resizeObserve.mock.calls.filter(([target]) => target === overlay)).toHaveLength(0);
+    expect(mutationObserve.mock.calls.filter(([target]) => target === editor)).toHaveLength(0);
+
+    node = { ...node, dragging: false };
+    view.rerender(<WorkflowCanvas {...props} nodes={[node]} selectedNode={generateNode} />);
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(nodeBounds).toHaveBeenCalled();
+    expect(resizeObserve.mock.calls.filter(([target]) => target === overlay)).toHaveLength(1);
+    expect(mutationObserve.mock.calls.filter(([target]) => target === editor)).toHaveLength(1);
+    expect(screen.getByRole('region', { name: '图片生成节点生成设置' })).toBe(editor);
+    expect(overlay).toHaveStyle({ top: '276px', left: '320px' });
+
+    nodeBounds.mockClear();
+    await act(async () => {
+      nodeRect = createMockRect(420, 190, 180, 80);
+      canvasNode.style.transform = 'translate(40px, 40px)';
+      viewport.style.transform = 'translateX(4px)';
+      fireEvent.resize(window);
+      fireEvent.scroll(window);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(16);
+    });
+    expect(nodeBounds).toHaveBeenCalledTimes(1);
+    expect(overlay).toHaveStyle({ top: '286px', left: '330px' });
+    expect(quickEditorRender).not.toHaveBeenCalled();
+    expect(props.onResizeNode).not.toHaveBeenCalled();
+    expect(props.onRunNode).not.toHaveBeenCalled();
   });
 });
 

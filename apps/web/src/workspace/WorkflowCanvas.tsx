@@ -1431,7 +1431,9 @@ export function WorkflowCanvas({
           key={quickEditorNode.id}
           nodeId={quickEditorNode.id}
           canvasAreaRef={canvasAreaRef}
-          hidden={tabSelectionActive || contextMenu?.kind === 'selection'}
+          hidden={
+            draggingNodeIdsKey !== '[]' || tabSelectionActive || contextMenu?.kind === 'selection'
+          }
         >
           {quickEditor}
         </QuickEditorOverlay>
@@ -1517,7 +1519,7 @@ const MemoizedNodeQuickEditor = memo(NodeQuickEditor);
 
 /** 快速编辑器 portal 所需的节点与画布引用。 */
 type QuickEditorOverlayProps = {
-  /** 框选期间保留表单状态，但不显示或测量浮层。 */
+  /** 节点拖动或框选期间保留表单状态，但不显示或测量浮层。 */
   hidden?: boolean;
   /** 当前编辑节点身份，几何从实时 DOM 读取，不与表单内容绑定。 */
   nodeId: string;

@@ -183,7 +183,11 @@ async function installFixture(
     if (method === 'GET' && path === '/v1/assets') return json(route, { assets });
     if (method === 'POST' && path === '/v1/assets/placement-reference/access-url')
       return json(route, { url: assets[0].contentUrl });
-    if (method === 'GET' && path === assets[0].contentUrl)
+    if (
+      method === 'GET' &&
+      (path === assets[0].contentUrl ||
+        path === '/v1/assets/placement-reference/versions/1/derivatives/thumbnail')
+    )
       return route.fulfill({ contentType: 'image/jpeg', body: poster });
     // 特意不声明生成入口；即使错误点击生成，也只会失败，不会付费。
     errors.push(`未声明的 Mock 接口：${method} ${path}`);
@@ -309,23 +313,37 @@ async function visibleCharacterPoint(textarea: Locator, offset: number) {
 }
 
 /**
- * 按住真实拖动手柄并越过激活阈值，返回屏幕坐标基准；调用方必须释放鼠标。
+ * 从可见工具栏或预览空白处拖动，越过激活阈值后返回屏幕坐标；调用方必须释放鼠标。
  * React Flow 从激活帧而非 mousedown 帧计算位移，不能把第一步激活距离计入节点移动。
  */
 async function startNodeDrag(page: Page) {
   const node = page.locator(nodeSelector);
-  const handle = node.getByRole('button', { name: '拖动移动节点', exact: true });
-  await expect(handle).toBeVisible();
-  const box = (await handle.boundingBox())!;
-  const anchor = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  // 触边时浮层可能遮住工具栏或部分预览，只使用真实可命中的入口。
+  const anchor = await node.evaluate((element) => {
+    for (const target of [
+      element.querySelector('.flow-node-drag-handle'),
+      element.querySelector('.flow-node-placeholder'),
+    ]) {
+      if (!target) continue;
+      const box = target.getBoundingClientRect();
+      for (const fraction of [0.5, 0.15, 0.85]) {
+        const point = { x: box.x + box.width / 2, y: box.y + box.height * fraction };
+        if (target.contains(document.elementFromPoint(point.x, point.y))) return point;
+      }
+    }
+    throw new Error('节点没有可命中的拖动入口');
+  });
   await page.mouse.move(anchor.x, anchor.y);
   await page.mouse.down();
   anchor.x += 6;
   await page.mouse.move(anchor.x, anchor.y);
+  anchor.x += 1;
+  await page.mouse.move(anchor.x, anchor.y);
+  await expect(page.locator('.canvas-area')).toHaveClass(/is-node-dragging/);
   return { node, anchor, from: (await node.boundingBox())! };
 }
 
-/** 使用工具栏的真实鼠标拖动，把节点左上角移到屏幕坐标，不注入几何或 React 状态。 */
+/** 使用真实鼠标拖动，把节点左上角移到屏幕坐标，不注入几何或 React 状态。 */
 async function moveNode(page: Page, x: number, y: number) {
   const { node, anchor, from } = await startNodeDrag(page);
   try {
@@ -376,8 +394,65 @@ test('PC 左右边缘和上下空间不足时只使用 above/below', async ({ pa
   expectIsolated(fixture);
 });
 
+for (const releaseOutside of [false, true]) {
+  test(`拖动时隐藏输入框，${releaseOutside ? '画布外' : '画布内'}松手恢复原草稿和光标`, async ({
+    page,
+    baseURL,
+  }) => {
+    const fixture = await installFixture(page, baseURL);
+    await zoomCanvas(page, 1);
+    const { overlay, textarea } = await openEditor(page);
+    const draft = 'A pending prompt draft 🙂 keep the same input.';
+    await textarea.fill(draft);
+    await textarea.press('Home');
+    await textarea.press('Shift+ArrowRight');
+    // 选中文字会打开引用选择器，先按正常交互关闭，避免遮挡拖动起点。
+    await textarea.press('Escape');
+    await expect(page.locator('.resource-mention-picker')).toBeHidden();
+    const originalInput = await textarea.elementHandle();
+    const selection = await textarea.evaluate((input: HTMLTextAreaElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+    ]);
+    const node = page.locator(nodeSelector);
+    const size = await node.evaluate((element: HTMLElement) => [
+      element.offsetWidth,
+      element.offsetHeight,
+    ]);
+    const before = await node.getAttribute('style');
+    const { anchor } = await startNodeDrag(page);
+    try {
+      await page.mouse.move(anchor.x + 70, anchor.y + 35, { steps: 12 });
+      await expect(overlay).toHaveAttribute('inert', '');
+      expect(await originalInput!.evaluate((input) => input.isConnected)).toBe(true);
+      await expect(overlay).toBeHidden();
+      await expect(node).not.toHaveAttribute('style', before!);
+      if (releaseOutside) await page.mouse.move(-5, -5, { steps: 12 });
+    } finally {
+      await page.mouse.up();
+    }
+    await expect(overlay).toBeVisible();
+    await expect(overlay).not.toHaveAttribute('inert');
+    await expect(textarea).toHaveValue(draft);
+    expect(await textarea.evaluate((input, original) => input === original, originalInput)).toBe(
+      true,
+    );
+    expect(
+      await textarea.evaluate((input: HTMLTextAreaElement) => [
+        input.selectionStart,
+        input.selectionEnd,
+      ]),
+    ).toEqual(selection);
+    expect(
+      await node.evaluate((element: HTMLElement) => [element.offsetWidth, element.offsetHeight]),
+    ).toEqual(size);
+    await originalInput?.dispose();
+    expectIsolated(fixture);
+  });
+}
+
 for (const direction of ['below', 'above'] as const) {
-  test(`PC ${direction} 实际触边后越过节点高度 75% 才换边，反向微动不回切`, async ({
+  test(`PC ${direction} 拖动时隐藏，松手后按触边距离换边且反向微动不回切`, async ({
     page,
     baseURL,
   }) => {
@@ -398,47 +473,48 @@ for (const direction of ['below', 'above'] as const) {
     await moveNode(page, initial.x, startTop);
     await expect(overlay).toHaveAttribute('data-placement', direction);
     const before = (await samplePanel(page, 3)).at(-1)!;
-    const { from, anchor } = await startNodeDrag(page);
+    const from = (await node.boundingBox())!;
     const outward = direction === 'below' ? 1 : -1;
     const contactTop =
       direction === 'below'
         ? bounds.bottom - before.maxHeight - 16 - from.height
         : bounds.top + 64 + before.maxHeight;
     const threshold = from.height * 0.75;
-    try {
-      // 恰好 75% 仍不换边；越过后再反向微动，不能按累计路径立即切回。
-      const offsets = [
-        -24,
-        -2,
-        0,
-        threshold - 2,
-        threshold,
-        threshold + 2,
-        threshold - 1,
-        threshold + 1,
-      ];
-      for (const [step, offset] of offsets.entries()) {
-        const top = contactTop + offset * outward;
-        await page.mouse.move(anchor.x, anchor.y + top - from.y, { steps: 8 });
-        await expect
-          .poll(async () => Math.abs((await node.boundingBox())!.y - top))
-          .toBeLessThan(1);
-        const expected = step >= 5 ? (direction === 'below' ? 'above' : 'below') : direction;
-        await expect(overlay).toHaveAttribute('data-placement', expected);
-        const state = (await samplePanel(page, 2)).at(-1)!;
-        expect(Math.abs(state.overlay.height - before.overlay.height)).toBeLessThan(1);
-        expect(state.overlay.y).toBeGreaterThanOrEqual(bounds.top - 1);
-        expect(state.overlay.y + state.overlay.height).toBeLessThanOrEqual(bounds.bottom + 1);
-        if (step === 2) {
-          const edge =
-            direction === 'below' ? state.overlay.y + state.overlay.height : state.overlay.y;
-          expect(
-            Math.abs(edge - (direction === 'below' ? bounds.bottom : bounds.top)),
-          ).toBeLessThan(2);
-        }
+    // 隐藏期间不再逐帧定位；每次松手测量仍保留 75% 换边阈值与反向滞后。
+    const offsets = [
+      -24,
+      -2,
+      0,
+      threshold - 2,
+      threshold,
+      threshold + 2,
+      threshold - 1,
+      threshold + 1,
+    ];
+    for (const [step, offset] of offsets.entries()) {
+      const top = contactTop + offset * outward;
+      const drag = await startNodeDrag(page);
+      try {
+        await page.mouse.move(drag.anchor.x, drag.anchor.y + top - drag.from.y, { steps: 8 });
+        await expect(overlay).toBeHidden();
+      } finally {
+        await page.mouse.up();
       }
-    } finally {
-      await page.mouse.up();
+      await expect(overlay).toBeVisible();
+      await expect.poll(async () => Math.abs((await node.boundingBox())!.y - top)).toBeLessThan(1);
+      const expected = step >= 5 ? (direction === 'below' ? 'above' : 'below') : direction;
+      await expect(overlay).toHaveAttribute('data-placement', expected);
+      const state = (await samplePanel(page, 2)).at(-1)!;
+      expect(Math.abs(state.overlay.height - before.overlay.height)).toBeLessThan(1);
+      expect(state.overlay.y).toBeGreaterThanOrEqual(bounds.top - 1);
+      expect(state.overlay.y + state.overlay.height).toBeLessThanOrEqual(bounds.bottom + 1);
+      if (step === 2) {
+        const edge =
+          direction === 'below' ? state.overlay.y + state.overlay.height : state.overlay.y;
+        expect(Math.abs(edge - (direction === 'below' ? bounds.bottom : bounds.top))).toBeLessThan(
+          2,
+        );
+      }
     }
     expectIsolated(fixture);
   });
