@@ -8,7 +8,8 @@ import {
   Check,
   FileText,
   Image as ImageIcon,
-  ImagePlus,
+  Camera,
+  FolderPlus,
   Link2,
   Plus,
   Replace,
@@ -53,6 +54,7 @@ import { isImeKeyboardEvent, useImeDraft } from './ime';
 import { PromptCaret } from './PromptCaret';
 import { canPromoteResourceNameAt, createPromptMentionId } from './resource-mention-sync';
 import { AssetPreview } from './workspace/AssetPreview';
+import { CameraCaptureDialog } from './workspace/CameraCaptureDialog';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 import { resultAssetContentUrl } from './workspace/node-echo-text';
 import { ASSET_DRAG_TYPE, formatBytes, mediaLabels } from './workspace/contracts';
@@ -75,7 +77,7 @@ export type ResourceMentionEditorProps = {
 
   /** 画布连到当前节点的资源，进入上方资源条。 */
   connectedAssets?: readonly ConnectedPromptAsset[];
-  /** 连续添加参考图模式的受控状态；只改变入口外观，不在编辑器内添加连线。 */
+  /** 连续添加参考资料模式的受控状态；只改变入口外观，不在编辑器内添加连线。 */
   referencePickActive?: boolean;
   /** 切换画布资源选择模式；未提供时隐藏入口，避免无效操作。 */
   onReferencePickToggle?: () => void;
@@ -219,6 +221,17 @@ export function ResourceMentionEditor({
   const [resourceNameError, setResourceNameError] = useState<string | null>(null);
   const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  /** 每次打开都用独立会话，关闭或切换节点后不接收迟到的照片上传。 */
+  const [cameraNodeId, setCameraNodeId] = useState<string | null>(null);
+  const cameraSessionRef = useRef<{ nodeId: string } | null>(null);
+  const currentNodeIdRef = useRef(nodeId);
+  currentNodeIdRef.current = nodeId;
+  useEffect(() => {
+    setCameraNodeId(null);
+    return () => {
+      cameraSessionRef.current = null;
+    };
+  }, [nodeId]);
   const [dragActive, setDragActive] = useState(false);
   const draggedResourceRef = useRef<string | null>(null);
   const [draggedResourceKey, setDraggedResourceKey] = useState<string | null>(null);
@@ -754,6 +767,23 @@ export function ResourceMentionEditor({
     },
     [disabled, onUploadResource, selectMention],
   );
+
+  /** 关闭预览只取消引用接收；已经开始的上传不会被当作新节点的资料。 */
+  const closeCamera = () => {
+    cameraSessionRef.current = null;
+    setCameraNodeId(null);
+  };
+
+  /** 拍照结果使用既有上传和版本化提及，上传失败交由相机保留照片供重试。 */
+  const captureReference = async (file: File) => {
+    const session = cameraSessionRef.current;
+    if (!session || session.nodeId !== nodeId || disabled || !onUploadResource) {
+      throw new Error('当前节点无法接收照片，请重新打开拍照窗口');
+    }
+    const asset = await onUploadResource(file);
+    if (cameraSessionRef.current !== session || currentNodeIdRef.current !== session.nodeId) return;
+    selectMention(projectSearchEntry(asset));
+  };
 
   /**
    * 解除资源条中同一资源的全部提及，名称保留为普通文字，其他引用范围不变。
@@ -1500,15 +1530,33 @@ export function ResourceMentionEditor({
           <UiButton
             type="button"
             className="resource-mention-thumb resource-mention-thumb-add resource-mention-reference-pick"
-            aria-label="添加参考图"
+            aria-label="添加参考资料"
             aria-pressed={referencePickActive}
-            title={referencePickActive ? '退出添加参考图' : '添加参考图'}
+            title={
+              referencePickActive
+                ? '退出添加参考资料'
+                : '添加参考资料：点击画布中的图片、视频、音频或文字'
+            }
             disabled={disabled}
             onClick={onReferencePickToggle}
           >
-            <ImagePlus size={18} aria-hidden="true" />
+            <FolderPlus size={18} aria-hidden="true" />
           </UiButton>
         )}
+        <UiButton
+          type="button"
+          className="resource-mention-thumb resource-mention-thumb-add"
+          aria-label="拍照引用"
+          title="拍照并添加到参考资料"
+          disabled={disabled || !onUploadResource || uploading}
+          onClick={() => {
+            closePicker();
+            cameraSessionRef.current = { nodeId };
+            setCameraNodeId(nodeId);
+          }}
+        >
+          <Camera size={18} aria-hidden="true" />
+        </UiButton>
         {stripItems.map((item, index) => {
           const mention = mentionRanges.find(
             (range) => range.mention.mentionId === item.mentionId,
@@ -1617,7 +1665,7 @@ export function ResourceMentionEditor({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,video/*,audio/*"
+          accept="image/*,video/*,audio/*,text/plain,text/markdown,.txt,.md"
           hidden
           multiple
           disabled={disabled || !onUploadResource || uploading}
@@ -1628,6 +1676,10 @@ export function ResourceMentionEditor({
           }}
         />
       </div>
+
+      {cameraNodeId === nodeId && (
+        <CameraCaptureDialog onClose={closeCamera} onCapture={captureReference} />
+      )}
 
       <div
         className="resource-mention-composer"

@@ -399,7 +399,8 @@ for (const viewport of [
         .getByRole('button', { name: '短视频复刻', exact: true });
       await expect(entry).toBeVisible();
       await expect(entry).toBeInViewport({ ratio: 1 });
-      await expect(entry.getByText('短视频复刻', { exact: true })).toBeVisible();
+      await expect(entry).toHaveText('');
+      await expect(entry).toHaveAttribute('title', '短视频复刻：查看使用流程并选择原视频');
       await expect(entry.locator('svg.lucide-clapperboard')).toBeVisible();
       expect(await entry.evaluate((element) => element.matches(':hover'))).toBe(false);
       await expect(

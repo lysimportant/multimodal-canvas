@@ -233,7 +233,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('上传与添加参考图入口前置，受控高亮并在缺少回调时隐藏', async () => {
+  it('上传与添加参考资料入口前置，受控高亮并在缺少回调时隐藏', async () => {
     const user = userEvent.setup();
     const onReferencePickToggle = vi.fn();
     const view = render(
@@ -246,17 +246,18 @@ describe('ResourceMentionEditor', () => {
     );
     const strip = screen.getByLabelText('引用资源');
     expect(strip.children[0]).toBe(screen.getByRole('button', { name: '上传引用资源' }));
-    expect(strip.children[1]).toBe(screen.getByRole('button', { name: '添加参考图' }));
-    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveAttribute(
+    expect(strip.children[1]).toBe(screen.getByRole('button', { name: '添加参考资料' }));
+    expect(strip.children[2]).toBe(screen.getByRole('button', { name: '拍照引用' }));
+    expect(screen.getByRole('button', { name: '添加参考资料' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
-    await user.click(screen.getByRole('button', { name: '添加参考图' }));
+    await user.click(screen.getByRole('button', { name: '添加参考资料' }));
     expect(onReferencePickToggle).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('article')).toHaveAttribute('draggable', 'false');
     expect(screen.getByLabelText('引用顺序 1')).toHaveTextContent('1');
     view.rerender(<ResourceMentionEditor nodeId="pick-entry" connectedAssets={[imageAsset]} />);
-    expect(screen.queryByRole('button', { name: '添加参考图' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '添加参考资料' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /预览并命名/ })).not.toHaveAttribute(
       'aria-keyshortcuts',
     );

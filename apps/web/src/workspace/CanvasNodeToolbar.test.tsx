@@ -28,6 +28,92 @@ describe('CanvasNodeToolbar', () => {
     expect(onAddGenerateNode).toHaveBeenCalledTimes(4);
   });
 
+  it('短视频复刻只显示图标并保留可访问名称和提示', () => {
+    render(<CanvasNodeToolbar onAddGenerateNode={vi.fn()} onOpenVideoRecreation={vi.fn()} />);
+    const button = screen.getByRole('button', { name: '短视频复刻' });
+    expect(button).toHaveAttribute('type', 'button');
+    expect(button).toHaveClass(
+      'canvas-node-tool',
+      'canvas-node-action-tool',
+      'canvas-video-recreation-tool',
+    );
+    expect(button).toHaveAttribute('title', '短视频复刻：查看使用流程并选择原视频');
+    expect(button).toHaveAccessibleName('短视频复刻');
+    expect(button.textContent).toBe('');
+    const icon = button.querySelector('svg.lucide-clapperboard');
+    expect(icon).toHaveAttribute('width', '16');
+    expect(icon).toHaveAttribute('height', '16');
+    expect(icon).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('短视频复刻只打开流程，不创建媒体节点或把点击和指针按下传给画布', async () => {
+    const user = userEvent.setup();
+    const onOpenVideoRecreation = vi.fn();
+    const onAddGenerateNode = vi.fn();
+    const parentClick = vi.fn();
+    const parentPointerDown = vi.fn();
+    render(
+      <div onClick={parentClick} onPointerDown={parentPointerDown}>
+        <CanvasNodeToolbar
+          onAddGenerateNode={onAddGenerateNode}
+          onOpenVideoRecreation={onOpenVideoRecreation}
+        />
+      </div>,
+    );
+    const button = screen.getByRole('button', { name: '短视频复刻' });
+    fireEvent.pointerDown(button);
+    await user.click(button);
+    expect(onOpenVideoRecreation).toHaveBeenCalledOnce();
+    expect(onAddGenerateNode).not.toHaveBeenCalled();
+    expect(parentClick).not.toHaveBeenCalled();
+    expect(parentPointerDown).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'Enter', key: '{Enter}' },
+    { label: 'Space', key: ' ' },
+  ])('短视频复刻可通过 Tab 聚焦并用 $label 打开流程', async ({ key }) => {
+    const user = userEvent.setup();
+    const onOpenVideoRecreation = vi.fn();
+    const onAddGenerateNode = vi.fn();
+    const parentClick = vi.fn();
+    render(
+      <div onClick={parentClick}>
+        <CanvasNodeToolbar
+          onAddGenerateNode={onAddGenerateNode}
+          onOpenVideoRecreation={onOpenVideoRecreation}
+        />
+      </div>,
+    );
+    for (const name of [
+      '新建文字生成节点',
+      '新建图片生成节点',
+      '新建音频生成节点',
+      '新建视频生成节点',
+      '短视频复刻',
+    ]) {
+      await user.tab();
+      expect(screen.getByRole('button', { name })).toHaveFocus();
+    }
+    expect(onOpenVideoRecreation).not.toHaveBeenCalled();
+    await user.keyboard(key);
+    expect(onOpenVideoRecreation).toHaveBeenCalledOnce();
+    expect(onAddGenerateNode).not.toHaveBeenCalled();
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('短视频复刻复用胶囊按钮样式及 hover/focus 提示，不单独覆盖宽度和颜色', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
+    const launcherCss = readFileSync(
+      resolve(process.cwd(), 'src/workspace/VideoRecreationLauncher.css'),
+      'utf8',
+    );
+    expect(launcherCss).not.toContain('.canvas-video-recreation-tool');
+    expect(css).toMatch(/\.canvas-node-tool::after \{[^}]*content: attr\(aria-label\);/);
+    expect(css).toMatch(/\.canvas-node-tool:hover::after,[^{]*\{[^}]*opacity: 1;/);
+    expect(css).toMatch(/\.canvas-node-tool:focus-visible::after \{[^}]*opacity: 1;/);
+  });
+
   it('系统按钮不把点击或指针按下传给画布，禁用撤销不会执行', async () => {
     const parentClick = vi.fn();
     const parentPointerDown = vi.fn();

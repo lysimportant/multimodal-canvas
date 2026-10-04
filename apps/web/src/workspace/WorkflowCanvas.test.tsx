@@ -2431,6 +2431,30 @@ describe('WorkflowCanvas 选区资源入口', () => {
 });
 
 describe('当前节点连续添加参考资源', () => {
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 节点统一显示参考资料与拍照入口，并将来源交回锁定目标',
+    async (mediaType) => {
+      const node: AssetFlowNode = {
+        ...generateNode,
+        type: mediaType,
+        data: { ...generateNode.data, mediaType },
+      };
+      const props = createProps({
+        nodes: [node, sourceNode],
+        selectedNode: node,
+        onAddNodeReference: vi.fn(),
+        onUploadResource: vi.fn(),
+      });
+      render(<WorkflowCanvas {...props} />);
+      const picker = await screen.findByRole('button', { name: '添加参考资料' });
+      expect(screen.getByRole('button', { name: '拍照引用' })).toBeEnabled();
+      fireEvent.click(picker);
+      fireEvent.click(screen.getByTestId('canvas-node-' + sourceNode.id));
+      expect(props.onAddNodeReference).toHaveBeenCalledExactlyOnceWith(sourceNode.id, node.id);
+      expect(props.onNodeSelect).not.toHaveBeenCalled();
+    },
+  );
+
   it('连续点击来源不切换选中节点，Esc 后恢复普通选择', async () => {
     const props = createProps({
       nodes: [generateNode, sourceNode],
@@ -2438,7 +2462,7 @@ describe('当前节点连续添加参考资源', () => {
       onAddNodeReference: vi.fn(),
     });
     render(<WorkflowCanvas {...props} />);
-    const button = await screen.findByRole('button', { name: '添加参考图' });
+    const button = await screen.findByRole('button', { name: '添加参考资料' });
     fireEvent.click(button);
     expect(button).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
@@ -2462,10 +2486,10 @@ describe('当前节点连续添加参考资源', () => {
       }),
     });
     render(<WorkflowCanvas {...props} />);
-    fireEvent.click(await screen.findByRole('button', { name: '添加参考图' }));
+    fireEvent.click(await screen.findByRole('button', { name: '添加参考资料' }));
     fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
     expect(screen.getByRole('status')).toHaveTextContent('来源尚无资源');
-    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: '添加参考资料' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
@@ -2481,7 +2505,7 @@ describe('当前节点连续添加参考资源', () => {
       onAddNodeReference: vi.fn(),
     });
     const view = render(<WorkflowCanvas {...props} />);
-    fireEvent.click(await screen.findByRole('button', { name: '添加参考图' }));
+    fireEvent.click(await screen.findByRole('button', { name: '添加参考资料' }));
     fireEvent.click(document.querySelector('.react-flow__pane')!);
     expect(props.onClearNodeSelection).not.toHaveBeenCalled();
     view.rerender(<WorkflowCanvas {...props} selectedNode={sourceNode} />);

@@ -169,7 +169,6 @@ export function CanvasNodeToolbar({
         }}
       >
         <Clapperboard size={16} aria-hidden="true" />
-        <span>短视频复刻</span>
       </Button>,
     );
   }

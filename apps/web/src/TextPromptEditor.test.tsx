@@ -60,7 +60,7 @@ describe('TextPromptEditor', () => {
     expect(onChange).toHaveBeenLastCalledWith('Product shot 2026!');
   });
 
-  it('转发参考图受控入口和版本顺序，键盘排序不回写正文', async () => {
+  it('转发参考资料受控入口和版本顺序，键盘排序不回写正文', async () => {
     const user = userEvent.setup();
     const onReferencePickToggle = vi.fn();
     const onResourceReorder = vi.fn();
@@ -91,7 +91,7 @@ describe('TextPromptEditor', () => {
         onChange={onChange}
       />,
     );
-    const pick = screen.getByRole('button', { name: '添加参考图' });
+    const pick = screen.getByRole('button', { name: '添加参考资料' });
     expect(pick).toHaveAttribute('aria-pressed', 'true');
     await user.click(pick);
     expect(onReferencePickToggle).toHaveBeenCalledTimes(1);

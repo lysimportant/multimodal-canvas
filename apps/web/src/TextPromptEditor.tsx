@@ -11,7 +11,7 @@ import { ResourceMentionEditor } from './ResourceMentionEditor';
 import { projectConnectedPromptDocument } from './resource-mention-sync';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
 
-/** 共享提示词入口参数；资源顺序与参考图选择状态由父层持久化和控制。 */
+/** 共享提示词入口参数；资源顺序与参考资料选择状态由父层持久化和控制。 */
 type TextPromptEditorProps = {
   nodeId: string;
   value: string;
@@ -23,9 +23,9 @@ type TextPromptEditorProps = {
   /** 当前项目资源，用于 `@` 搜索和提及卡片。 */
   assets?: readonly Asset[];
   connectedAssets?: readonly ConnectedPromptAsset[];
-  /** 画布是否正在为当前节点连续添加参考图。 */
+  /** 画布是否正在为当前节点连续添加参考资料。 */
   referencePickActive?: boolean;
-  /** 切换参考图选择模式；缺省时不显示入口。 */
+  /** 切换参考资料选择模式；缺省时不显示入口。 */
   onReferencePickToggle?: () => void;
   /** 资源条优先顺序，按资产与冻结版本匹配，不改变正文顺序。 */
   resourceRefs?: readonly NodeResourceRef[];

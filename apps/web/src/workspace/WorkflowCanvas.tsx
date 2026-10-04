@@ -1258,7 +1258,7 @@ export function WorkflowCanvas({
         <div className="node-reference-pick-banner nodrag nopan nowheel" role="status">
           <span>
             {referencePickMessage ??
-              '添加参考资源：连续点击画布资源，按 Esc 或再次点击添加按钮退出'}
+              '添加参考资料：连续点击画布中的图片、视频、音频或文字，按 Esc 或再次点击添加按钮退出'}
           </span>
           <Button
             type="button"

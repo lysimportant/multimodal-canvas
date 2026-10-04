@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
   canvasDocumentSchema,
   PROMPT_SKILLS,
@@ -134,6 +135,21 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
+/** 上传三阶段审计；记录原始图片字节以校验长度、摘要和真实解码结果。 */
+type ReferenceUpload = {
+  uploadId: string;
+  metadata: { name: string; mimeType: string; sizeBytes: number; sha256: string };
+  stages: string[];
+  bytes?: Buffer;
+  asset?: Asset;
+};
+
+/** 合成相机的请求约束和轨道释放记录，不读取用户设备。 */
+type ReferenceCameraAudit = {
+  requests: MediaStreamConstraints[];
+  tracks: { kind: string; stops: number; readyState: MediaStreamTrackState }[];
+};
+
 /** 安装离线 Mock 并记录浏览器异常；Cookie 会话有效期由 /v1/auth/me 返回。 */
 async function installFixture(
   page: Page,
@@ -141,10 +157,15 @@ async function installFixture(
   initial = initialCanvas(),
   projectCatalog?: Asset[],
 ) {
-  const catalog = projectCatalog ?? assets;
+  const catalog = structuredClone(projectCatalog ?? assets);
+  const uploads: ReferenceUpload[] = [];
+  const assetAccesses: { assetId: string; version: number }[] = [];
   const assetQueries: Record<string, string>[] = [];
   if (!baseURL) throw new Error('请通过 WEB_BASE_URL 指定隔离浏览器验收地址');
   const webOrigin = new URL(baseURL).origin;
+  if (!['127.0.0.1', 'localhost'].includes(new URL(baseURL).hostname)) {
+    throw new Error('浏览器验收只能连接本机隔离 Vite');
+  }
   let canvas = structuredClone(initial);
   const apiRequests: Array<{ method: string; path: string }> = [];
   const errors: string[] = [];
@@ -153,6 +174,53 @@ async function installFixture(
     if (message.type() === 'error') errors.push(message.text());
   });
   await page.addInitScript(() => {
+    const audit: ReferenceCameraAudit = { requests: [], tracks: [] };
+    Object.assign(window, { __referenceCameraAudit: audit });
+    // 不保留原始 getUserMedia，任何相机请求都只能得到本页绘制的合成画面。
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+      configurable: true,
+      value: async (constraints: MediaStreamConstraints) => {
+        audit.requests.push(structuredClone(constraints));
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('合成相机缺少 Canvas 2D 上下文');
+        let frame = 0;
+        const paint = () => {
+          context.fillStyle = '#e0f2fe';
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.fillStyle = '#0369a1';
+          context.fillRect(90 + (frame++ % 30), 80, 400, 260);
+          context.fillStyle = '#ffffff';
+          context.font = '28px sans-serif';
+          context.fillText('SYNTHETIC CAMERA', 145, 220);
+          context.fillStyle = '#fb923c';
+          context.fillRect(30, 400, 580, 24);
+        };
+        paint();
+        const stream = canvas.captureStream(12);
+        const timer = window.setInterval(paint, 80);
+        for (const track of stream.getTracks()) {
+          const record = { kind: track.kind, stops: 0, readyState: track.readyState };
+          audit.tracks.push(record);
+          const stop = track.stop.bind(track);
+          track.stop = () => {
+            record.stops += 1;
+            stop();
+            record.readyState = track.readyState;
+            if (stream.getTracks().every((item) => item.readyState === 'ended')) {
+              window.clearInterval(timer);
+            }
+          };
+        }
+        return stream;
+      },
+    });
+    Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
+      configurable: true,
+      value: () => Promise.reject(new Error('隔离验收禁止访问真实屏幕或设备')),
+    });
     localStorage.setItem(
       'multimodal-canvas:auth-session',
       JSON.stringify({
@@ -164,6 +232,15 @@ async function installFixture(
         },
       }),
     );
+  });
+  await page.context().routeWebSocket('**/*', (socket) => {
+    const url = new URL(socket.url());
+    if (url.protocol === 'ws:' && url.origin.replace(/^ws:/, 'http:') === webOrigin) {
+      socket.connectToServer();
+    } else {
+      errors.push('已阻断未声明的 WebSocket：' + url.origin + url.pathname);
+      socket.close();
+    }
   });
   await page.context().route('**/*', async (route) => {
     const request = route.request();
@@ -181,7 +258,71 @@ async function installFixture(
       errors.push('已阻断未声明的网络请求：' + method + ' ' + url.origin + path);
       return route.abort('blockedbyclient');
     }
+    if (![webOrigin, 'http://localhost:3000'].includes(url.origin)) {
+      errors.push('已阻断非 Mock 来源的 API：' + method + ' ' + url.origin + path);
+      return route.abort('blockedbyclient');
+    }
     apiRequests.push({ method, path });
+    if (method === 'POST' && path === '/v1/assets/uploads/init') {
+      const metadata = request.postDataJSON() as ReferenceUpload['metadata'];
+      if (
+        typeof metadata.name !== 'string' ||
+        !['image/jpeg', 'image/png'].includes(metadata.mimeType) ||
+        !Number.isInteger(metadata.sizeBytes) ||
+        metadata.sizeBytes <= 0 ||
+        !/^[a-f0-9]{64}$/.test(metadata.sha256)
+      ) {
+        errors.push('上传初始化没有提供有效图片元数据');
+        return json(route, { error: '无效上传元数据' }, 400);
+      }
+      const uploadId = 'reference-upload-' + (uploads.length + 1);
+      uploads.push({ uploadId, metadata, stages: ['init'] });
+      return json(route, {
+        uploadId,
+        uploadUrl: '/v1/assets/uploads/' + uploadId + '/bytes',
+        completeUrl: '/v1/assets/uploads/complete',
+      });
+    }
+    const uploadBytesMatch = path.match(new RegExp('^/v1/assets/uploads/([^/]+)/bytes$'));
+    if (method === 'PUT' && uploadBytesMatch) {
+      const upload = uploads.find((item) => item.uploadId === uploadBytesMatch[1]);
+      const bytes = request.postDataBuffer();
+      if (
+        !upload ||
+        request.headers()['content-type'] !== 'application/octet-stream' ||
+        upload.bytes ||
+        !bytes ||
+        bytes.byteLength !== upload.metadata.sizeBytes ||
+        createHash('sha256').update(bytes).digest('hex') !== upload.metadata.sha256
+      ) {
+        errors.push('上传 PUT 的次序、长度或 SHA-256 不匹配');
+        return json(route, { error: '上传字节校验失败' }, 400);
+      }
+      upload.bytes = bytes;
+      upload.stages.push('PUT');
+      return route.fulfill({ status: 204 });
+    }
+    if (method === 'POST' && path === '/v1/assets/uploads/complete') {
+      const body = request.postDataJSON();
+      const upload = uploads.find((item) => item.uploadId === body.uploadId);
+      if (
+        !upload?.bytes ||
+        upload.asset ||
+        Object.entries(upload.metadata).some(([key, value]) => body[key] !== value)
+      ) {
+        errors.push('上传完成请求未复用初始化元数据或缺少唯一 PUT');
+        return json(route, { error: '上传完成校验失败' }, 400);
+      }
+      const id = 'camera-' + upload.uploadId;
+      upload.asset = {
+        ...asset(id, upload.metadata.name, 'image'),
+        mimeType: upload.metadata.mimeType,
+        sizeBytes: upload.bytes.byteLength,
+      };
+      upload.stages.push('complete');
+      catalog.push(upload.asset);
+      return json(route, { asset: upload.asset }, 201);
+    }
     if (method === 'GET' && path === `/v1/projects/${project.id}/events`)
       return route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
     if (method === 'GET' && path === '/v1/auth/me')
@@ -248,7 +389,14 @@ async function installFixture(
     const accessMatch = path.match(/^\/v1\/assets\/([^/]+)\/access-url$/);
     if (method === 'POST' && accessMatch) {
       const id = decodeURIComponent(accessMatch[1]);
-      return json(route, { url: `/v1/assets/${id}/versions/1/content` });
+      const entry = catalog.find((item) => item.id === id);
+      const version = request.postDataJSON()?.version ?? entry?.latestVersion;
+      if (!entry || version !== 1) {
+        errors.push('访问了未声明的资产版本：' + id + '@' + version);
+        return json(route, { error: '资源版本不存在' }, 404);
+      }
+      assetAccesses.push({ assetId: id, version });
+      return json(route, { url: '/v1/assets/' + id + '/versions/' + version + '/content' });
     }
     const thumbnailMatch = path.match(
       /^\/v1\/assets\/([^/]+)\/versions\/1\/derivatives\/thumbnail$/,
@@ -259,8 +407,10 @@ async function installFixture(
       );
       return route.fulfill({
         status: entry ? 200 : 404,
-        contentType: 'image/jpeg',
-        body: entry ? poster : Buffer.alloc(0),
+        contentType: entry?.mimeType === 'image/png' ? 'image/png' : 'image/jpeg',
+        body: entry
+          ? (uploads.find((upload) => upload.asset?.id === entry.id)?.bytes ?? poster)
+          : Buffer.alloc(0),
       });
     }
     const contentMatch = path.match(/^\/v1\/assets\/([^/]+)\/versions\/1\/content$/);
@@ -273,7 +423,9 @@ async function installFixture(
         return route.fulfill({ contentType: 'text/plain', body: `${entry.name} 的本地测试内容。` });
       return route.fulfill({
         contentType: entry.mimeType,
-        body: entry.mediaType === 'video' ? video : poster,
+        body:
+          uploads.find((upload) => upload.asset?.id === entry.id)?.bytes ??
+          (entry.mediaType === 'video' ? video : poster),
       });
     }
     if (method === 'GET' && /^\/v1\/assets\/[^/]+\/versions\/1\/reverse-prompts$/.test(path))
@@ -283,13 +435,20 @@ async function installFixture(
     errors.push(`未声明的 Mock 接口：${method} ${path}`);
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
-  return { errors, apiRequests, assetQueries, canvas: () => structuredClone(canvas) };
+  return {
+    errors,
+    apiRequests,
+    assetQueries,
+    uploads,
+    assetAccesses,
+    canvas: () => structuredClone(canvas),
+  };
 }
 
 /** 通过 PC 画布节点的真实入口打开紧凑编辑器。 */
 async function openQuickEditor(page: Page) {
   const node = page.locator('.react-flow__node[data-id="resource-mention-node"]');
-  await expect(node).toBeVisible();
+  await expect(node).toBeVisible({ timeout: 15_000 });
   await node.getByText('尚未生成', { exact: true }).click();
   const editor = page.locator('.node-quick-editor');
   await expect(editor).toBeVisible();
@@ -1422,7 +1581,7 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
   await page.goto(`/projects/${project.id}`);
   let { editor, node } = await openQuickEditor(page);
   const nodeBefore = await node.boundingBox();
-  const pick = editor.getByRole('button', { name: '添加参考图' });
+  const pick = editor.getByRole('button', { name: '添加参考资料' });
   await pick.click();
   await expect(pick).toHaveAttribute('aria-pressed', 'true');
   for (const index of [1, 2, 1]) {
@@ -1441,9 +1600,9 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
       .filter((child) => child.tagName !== 'INPUT')
       .map((child) => child.getAttribute('aria-label')),
   );
-  expect(children.slice(0, 2)).toEqual(['上传引用资源', '添加参考图']);
-  expect(children[2]).toContain('参考资源 1：');
-  expect(children[3]).toContain('参考资源 2：');
+  expect(children.slice(0, 3)).toEqual(['上传引用资源', '添加参考资料', '拍照引用']);
+  expect(children[3]).toContain('参考资源 1：');
+  expect(children[4]).toContain('参考资源 2：');
   const prompt = editor.getByRole('textbox', { name: '提示词' });
   const originalPrompt = await prompt.inputValue();
   const originalDocument = fixture.canvas().nodes[0]!.data.promptDocument;
@@ -1705,4 +1864,474 @@ test('PC 目录外冻结引用的光标预览与卡片详情降级图标，节�
       (request) => request.method === 'POST' && /runs|generations/.test(request.path),
     ),
   ).toEqual([]);
+});
+
+/** 构造单一目标和可见来源；文字/音频使用文本输入，其余节点使用图片输入。 */
+function referenceCameraCanvas(
+  mediaType: Asset['mediaType'],
+  mode: 'generate' | 'source' = 'generate',
+) {
+  const canvas = initialCanvas();
+  const target = canvas.nodes[0]!;
+  target.type = mediaType;
+  target.position = { x: 360, y: 430 };
+  target.data = {
+    label: '资源引用节点',
+    mediaType,
+    mode,
+    enabled: true,
+    modelAlias: 'mock-' + mediaType,
+    promptDocument: { version: 1, blocks: [{ type: 'text', text: '保留原始提示词。' }] },
+    ...(mediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
+    ...(mode === 'source'
+      ? { assetId: assets[0]!.id, contentUrl: assets[0]!.contentUrl, mimeType: assets[0]!.mimeType }
+      : {}),
+  };
+  const reference = assets.find(
+    (item) =>
+      item.id === (['text', 'audio'].includes(mediaType) ? 'interview-script' : 'scene-image-1'),
+  )!;
+  canvas.nodes.push({
+    id: 'reference-camera-source',
+    type: reference.mediaType,
+    position: { x: 80, y: 100 },
+    width: 240,
+    height: 150,
+    data: {
+      label: reference.name,
+      mediaType: reference.mediaType,
+      mode: 'source',
+      enabled: true,
+      assetId: reference.id,
+      contentUrl: reference.contentUrl,
+      mimeType: reference.mimeType,
+    },
+  });
+  return { canvas: canvasDocumentSchema.parse(canvas), reference };
+}
+
+/** 从边框选择目标，避免 source 预览内的播放器、重命名和全屏按钮。 */
+async function openReferenceCameraEditor(page: Page) {
+  const node = page.locator('.react-flow__node[data-id="resource-mention-node"]');
+  await expect(node).toBeVisible({ timeout: 15_000 });
+  await node.click({ position: { x: 10, y: 10 } });
+  const editor = page.locator('.node-quick-editor');
+  await expect(editor).toBeVisible();
+  return { node, editor };
+}
+
+/** 获取当前页面合成相机的可序列化审计；重载前必须先检查轨道已释放。 */
+async function readReferenceCamera(page: Page): Promise<ReferenceCameraAudit> {
+  return page.evaluate(
+    () =>
+      (window as Window & { __referenceCameraAudit: ReferenceCameraAudit }).__referenceCameraAudit,
+  );
+}
+
+/** 引用入口仅呈现图标，宽高与上传入口一致，且不会越出编辑器。 */
+async function expectReferenceIconButtons(editor: Locator) {
+  const upload = editor.getByRole('button', { name: '上传引用资源', exact: true });
+  const uploadSize = await upload.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { width: parseFloat(style.width), height: parseFloat(style.height) };
+  });
+  for (const name of ['添加参考资料', '拍照引用']) {
+    const button = editor.getByRole('button', { name, exact: true });
+    await expect(button).toBeVisible();
+    await expect(button).toBeEnabled();
+    await expect(button).toHaveText('');
+    await expect(button.locator('svg')).toHaveCount(1);
+    const size = await button.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { width: parseFloat(style.width), height: parseFloat(style.height) };
+    });
+    expect(size).toEqual(uploadSize);
+    await expect
+      .poll(async () => {
+        const [box, editorBox] = await Promise.all([button.boundingBox(), editor.boundingBox()]);
+        return Boolean(
+          box &&
+          editorBox &&
+          box.x >= editorBox.x &&
+          box.x + box.width <= editorBox.x + editorBox.width,
+        );
+      })
+      .toBe(true);
+  }
+}
+
+/** 通过真实画布点选资料，并等待结构化引用保存；不触发生成。 */
+async function pickReferenceCameraSource(
+  page: Page,
+  editor: Locator,
+  fixture: Awaited<ReturnType<typeof installFixture>>,
+  reference: Asset,
+) {
+  const pick = editor.getByRole('button', { name: '添加参考资料', exact: true });
+  await pick.click();
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
+  await page
+    .locator('.react-flow__node[data-id="reference-camera-source"]')
+    .click({ position: { x: 40, y: 50 } });
+  await expect(
+    editor.getByRole('article', { name: '参考资源 1：' + reference.name, exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => fixture.canvas().nodes[0]!.data.resourceRefs)
+    .toEqual([
+      expect.objectContaining({
+        assetId: reference.id,
+        assetVersion: 1,
+        mediaType: reference.mediaType,
+      }),
+    ]);
+  await page.keyboard.press('Escape');
+  await expect(pick).toHaveAttribute('aria-pressed', 'false');
+  await expect(editor).toBeVisible();
+}
+
+/** 必须等合成帧真正进入 video 后才拍摄，防止只有假权限、没有有效视频帧的测试通过。 */
+async function openSyntheticReferenceCamera(page: Page, editor: Locator) {
+  await editor.getByRole('button', { name: '拍照引用', exact: true }).click();
+  const camera = page.getByRole('dialog', { name: '拍照', exact: true });
+  await expect(camera).toBeVisible();
+  await expect(camera.getByRole('button', { name: '拍照', exact: true })).toBeEnabled();
+  await expect
+    .poll(() =>
+      camera.locator('video').evaluate((element) => {
+        const video = element as HTMLVideoElement;
+        return { ready: video.readyState >= 2, width: video.videoWidth, height: video.videoHeight };
+      }),
+    )
+    .toEqual({ ready: true, width: 640, height: 480 });
+  return camera;
+}
+
+/** 真实执行拍照、重拍和确认上传，核对三阶段字节与有效图片解码，并检查相机关闭后停止所有轨道。 */
+async function useSyntheticReferencePhoto(
+  page: Page,
+  editor: Locator,
+  fixture: Awaited<ReturnType<typeof installFixture>>,
+  screenshotName: string,
+) {
+  const originalRefs = fixture.canvas().nodes[0]!.data.resourceRefs;
+  const camera = await openSyntheticReferenceCamera(page, editor);
+  await page.screenshot({
+    path: test.info().outputPath(screenshotName + '-camera-live.png'),
+    animations: 'disabled',
+  });
+  await camera.getByRole('button', { name: '拍照', exact: true }).click();
+  await expect(camera.getByRole('button', { name: '使用照片', exact: true })).toBeEnabled();
+  expect(fixture.uploads).toEqual([]);
+  await expect
+    .poll(async () =>
+      (await readReferenceCamera(page)).tracks.every(
+        (track) => track.stops > 0 && track.readyState === 'ended',
+      ),
+    )
+    .toBe(true);
+  await camera.getByRole('button', { name: '重拍', exact: true }).click();
+  await expect(camera.getByRole('button', { name: '拍照', exact: true })).toBeEnabled();
+  await expect
+    .poll(() =>
+      camera.locator('video').evaluate((element) => (element as HTMLVideoElement).readyState >= 2),
+    )
+    .toBe(true);
+  await camera.getByRole('button', { name: '拍照', exact: true }).click();
+  await expect(camera.getByRole('button', { name: '使用照片', exact: true })).toBeEnabled();
+  expect(fixture.uploads).toEqual([]);
+  await page.screenshot({
+    path: test.info().outputPath(screenshotName + '-camera-review.png'),
+    animations: 'disabled',
+  });
+  await camera.getByRole('button', { name: '使用照片', exact: true }).click();
+  await expect(camera).toBeHidden();
+  await expect
+    .poll(() => fixture.uploads.map((upload) => upload.stages))
+    .toEqual([['init', 'PUT', 'complete']]);
+  const upload = fixture.uploads[0]!;
+  expect((await readReferenceCamera(page)).requests.length).toBeGreaterThanOrEqual(2);
+  expect(upload.metadata.name).toMatch(/^camera-[0-9]+[.](jpg|png)$/);
+  expect(upload.bytes!.byteLength).toBeGreaterThan(1000);
+  const dimensions = await page.evaluate(
+    async ({ bytes, mimeType }) => {
+      const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: mimeType }));
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(bitmap, 0, 0);
+      const center = Array.from(context.getImageData(320, 240, 1, 1).data);
+      const marker = Array.from(context.getImageData(320, 410, 1, 1).data);
+      const result = { width: bitmap.width, height: bitmap.height, center, marker };
+      bitmap.close();
+      return result;
+    },
+    { bytes: Array.from(upload.bytes!), mimeType: upload.metadata.mimeType },
+  );
+  expect(dimensions.width).toBe(640);
+  expect(dimensions.height).toBe(480);
+  expect(dimensions.center[0]).toBeLessThan(40);
+  expect(dimensions.center[2]).toBeGreaterThan(100);
+  expect(dimensions.marker[0]).toBeGreaterThan(200);
+  await expect
+    .poll(async () =>
+      (await readReferenceCamera(page)).tracks.every(
+        (track) => track.readyState === 'ended' && track.stops > 0,
+      ),
+    )
+    .toBe(true);
+  await expect
+    .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks)
+    .toContainEqual(
+      expect.objectContaining({
+        type: 'mention',
+        assetId: upload.asset!.id,
+        assetVersion: 1,
+        mediaType: 'image',
+      }),
+    );
+  await expect(
+    editor
+      .getByRole('article')
+      .filter({ has: page.getByRole('img', { name: upload.asset!.name, exact: true }) }),
+  ).toBeVisible();
+  expect(fixture.canvas().nodes[0]!.data.resourceRefs).toEqual(originalRefs);
+  return upload.asset!;
+}
+
+/** 每项验收都保留请求/相机审计，并拒绝未声明网络、控制台异常和任何生成请求。 */
+async function expectReferenceCameraIsolation(
+  page: Page,
+  fixture: Awaited<ReturnType<typeof installFixture>>,
+) {
+  const camera = await readReferenceCamera(page);
+  await test.info().attach('reference-camera-audit', {
+    body: JSON.stringify(
+      {
+        errors: fixture.errors,
+        requests: fixture.apiRequests,
+        assetAccesses: fixture.assetAccesses,
+        uploads: fixture.uploads.map(({ uploadId, metadata, stages }) => ({
+          uploadId,
+          metadata,
+          stages,
+        })),
+        camera,
+      },
+      null,
+      2,
+    ),
+    contentType: 'application/json',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(
+    fixture.apiRequests.filter(
+      (request) =>
+        request.method === 'POST' &&
+        !request.path.endsWith('/access-url') &&
+        !['/v1/assets/uploads/init', '/v1/assets/uploads/complete'].includes(request.path),
+    ),
+  ).toEqual([]);
+  for (const request of camera.requests) {
+    expect(request.audio).toBe(false);
+    expect(request.video).toBeTruthy();
+  }
+  for (const track of camera.tracks) {
+    expect(track.kind).toBe('video');
+    expect(track.stops).toBeGreaterThan(0);
+    expect(track.readyState).toBe('ended');
+  }
+}
+
+for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
+  test(
+    'PC 参考资料与拍照隔离：' + mediaType + ' 节点添加资料、重拍并上传版本化引用',
+    async ({ page, baseURL }) => {
+      await page.setViewportSize({ width: 1600, height: 1000 });
+      const { canvas, reference } = referenceCameraCanvas(mediaType);
+      const fixture = await installFixture(page, baseURL, canvas);
+      await page.goto('/projects/' + project.id);
+      const { node, editor } = await openReferenceCameraEditor(page);
+      const before = (await node.boundingBox())!;
+      expect((await readReferenceCamera(page)).requests).toEqual([]);
+      await expectReferenceIconButtons(editor);
+      await pickReferenceCameraSource(page, editor, fixture, reference);
+      await expect
+        .poll(() => fixture.canvas().edges)
+        .toEqual([
+          expect.objectContaining({
+            sourceNodeId: 'reference-camera-source',
+            targetNodeId: 'resource-mention-node',
+          }),
+        ]);
+      expect((await readReferenceCamera(page)).requests).toEqual([]);
+      const photo = await useSyntheticReferencePhoto(page, editor, fixture, mediaType);
+      const persisted = fixture.canvas();
+      expect(persisted.nodes).toHaveLength(2);
+      expect(persisted.edges).toHaveLength(1);
+      expect(persisted.nodes[1]).toEqual(canvas.nodes[1]);
+      expect(persisted.nodes[0]!.data.mediaType).toBe(mediaType);
+      expect(persisted.nodes[0]!.data.mode).toBe('generate');
+      expect(persisted.nodes[0]!.data.promptDocument!.blocks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'mention', assetId: reference.id, assetVersion: 1 }),
+          expect.objectContaining({ type: 'mention', assetId: photo.id, assetVersion: 1 }),
+        ]),
+      );
+      expectSameNodeSize(before, (await node.boundingBox())!);
+      await expectReferenceIconButtons(editor);
+      await page.screenshot({
+        path: test.info().outputPath(mediaType + '-reference-icons.png'),
+        animations: 'disabled',
+      });
+      await expectReferenceCameraIsolation(page, fixture);
+    },
+  );
+}
+
+test('PC 参考资料与拍照隔离：source 节点引用和拍照不连边、不替换原素材', async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const { canvas, reference } = referenceCameraCanvas('image', 'source');
+  const fixture = await installFixture(page, baseURL, canvas);
+  await page.goto('/projects/' + project.id);
+  const { node, editor } = await openReferenceCameraEditor(page);
+  const before = (await node.boundingBox())!;
+  await expect
+    .poll(() =>
+      node
+        .locator('img')
+        .first()
+        .evaluate((element) => (element as HTMLImageElement).naturalWidth),
+    )
+    .toBeGreaterThan(0);
+  const originalPreview = await node.locator('img').first().getAttribute('src');
+  await expectReferenceIconButtons(editor);
+  await pickReferenceCameraSource(page, editor, fixture, reference);
+  expect(fixture.canvas().edges).toEqual([]);
+  await useSyntheticReferencePhoto(page, editor, fixture, 'source');
+  const saved = fixture.canvas();
+  expect(saved.edges).toEqual([]);
+  expect(saved.nodes).toHaveLength(2);
+  expect(saved.nodes[1]).toEqual(canvas.nodes[1]);
+  expect(saved.nodes[0]!.data).toMatchObject({
+    mode: 'source',
+    mediaType: 'image',
+    assetId: canvas.nodes[0]!.data.assetId,
+    contentUrl: canvas.nodes[0]!.data.contentUrl,
+    mimeType: canvas.nodes[0]!.data.mimeType,
+  });
+  expect(saved.nodes[0]!.data.resultAsset).toBeUndefined();
+  expect(saved.nodes[0]!.data.resourceRefs).toEqual([
+    expect.objectContaining({ assetId: reference.id, assetVersion: 1 }),
+  ]);
+  await expect(node.locator('.react-flow__handle-target')).toHaveCount(0);
+  await expect(node.locator('img').first()).toHaveAttribute('src', originalPreview!);
+  expectSameNodeSize(before, (await node.boundingBox())!);
+  await page.screenshot({
+    path: test.info().outputPath('source-preserved.png'),
+    animations: 'disabled',
+  });
+  await expectReferenceCameraIsolation(page, fixture);
+});
+
+test('PC 参考资料与拍照隔离：完整编辑器嵌套相机 Escape 只关前层并释放轨道', async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const { canvas } = referenceCameraCanvas('image');
+  const fixture = await installFixture(page, baseURL, canvas);
+  await page.goto('/projects/' + project.id);
+  const { node, editor } = await openReferenceCameraEditor(page);
+  const before = (await node.boundingBox())!;
+  await editor.getByRole('button', { name: '打开完整编辑器', exact: true }).click();
+  const fullEditor = page.getByRole('dialog', { name: '资源引用节点 · 编辑设置', exact: true });
+  await expect(fullEditor).toBeVisible();
+  await expectReferenceIconButtons(fullEditor);
+  const prompt = fullEditor.getByRole('textbox', { name: '提示词', exact: true });
+  const originalPrompt = await prompt.inputValue();
+  expect((await readReferenceCamera(page)).requests).toEqual([]);
+  const camera = await openSyntheticReferenceCamera(page, fullEditor);
+  await page.screenshot({
+    path: test.info().outputPath('full-editor-nested-camera.png'),
+    animations: 'disabled',
+  });
+  await page.keyboard.press('Escape');
+  await expect(camera).toBeHidden();
+  await expect(fullEditor).toBeVisible();
+  await expect(prompt).toHaveValue(originalPrompt);
+  expect(fixture.uploads).toEqual([]);
+  await expect
+    .poll(async () =>
+      (await readReferenceCamera(page)).tracks.every(
+        (track) => track.stops > 0 && track.readyState === 'ended',
+      ),
+    )
+    .toBe(true);
+  // 再次开启并确认使用，证明 Escape 后后方编辑器仍可正常接收照片。
+  await useSyntheticReferencePhoto(page, fullEditor, fixture, 'full-editor-reopen');
+  await expect(fullEditor).toBeVisible();
+  expectSameNodeSize(before, (await node.boundingBox())!);
+  await expectReferenceCameraIsolation(page, fixture);
+});
+
+test('PC 参考资料与拍照隔离：照片保存重载后保留资产版本且不重复上传或开启相机', async ({
+  page,
+  baseURL,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const { canvas } = referenceCameraCanvas('image');
+  const fixture = await installFixture(page, baseURL, canvas);
+  await page.goto('/projects/' + project.id);
+  let { node, editor } = await openReferenceCameraEditor(page);
+  const before = (await node.boundingBox())!;
+  const photo = await useSyntheticReferencePhoto(page, editor, fixture, 'reload');
+  const saved = fixture.canvas();
+  const savedDocument = saved.nodes[0]!.data.promptDocument;
+  const savedRefs = saved.nodes[0]!.data.resourceRefs;
+  await expect
+    .poll(() => fixture.assetAccesses.filter((item) => item.assetId === photo.id))
+    .not.toHaveLength(0);
+  expect(
+    fixture.assetAccesses
+      .filter((item) => item.assetId === photo.id)
+      .every((item) => item.version === 1),
+  ).toBe(true);
+  await expectReferenceCameraIsolation(page, fixture);
+  const accessCount = fixture.assetAccesses.filter((item) => item.assetId === photo.id).length;
+  await page.reload();
+  ({ node, editor } = await openReferenceCameraEditor(page));
+  const card = editor
+    .getByRole('article')
+    .filter({ has: page.getByRole('img', { name: photo.name, exact: true }) });
+  await expect(card).toBeVisible();
+  const preview = card.locator('img');
+  await expect
+    .poll(() =>
+      preview.evaluate((element) => ({
+        loaded: (element as HTMLImageElement).complete,
+        width: (element as HTMLImageElement).naturalWidth,
+      })),
+    )
+    .toEqual({ loaded: true, width: 640 });
+  await expect
+    .poll(() => fixture.assetAccesses.filter((item) => item.assetId === photo.id).length)
+    .toBeGreaterThan(accessCount);
+  expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(savedDocument);
+  expect(fixture.canvas().nodes[0]!.data.resourceRefs).toEqual(savedRefs);
+  expect(fixture.canvas().edges).toEqual([]);
+  expect(fixture.canvas().nodes).toHaveLength(2);
+  expect(fixture.uploads.map((upload) => upload.stages)).toEqual([['init', 'PUT', 'complete']]);
+  expect((await readReferenceCamera(page)).requests).toEqual([]);
+  expectSameNodeSize(before, (await node.boundingBox())!);
+  await expectReferenceIconButtons(editor);
+  await page.screenshot({
+    path: test.info().outputPath('photo-reference-reloaded.png'),
+    animations: 'disabled',
+  });
+  await expectReferenceCameraIsolation(page, fixture);
 });

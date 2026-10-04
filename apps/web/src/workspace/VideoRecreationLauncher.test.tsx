@@ -31,7 +31,7 @@ function callbacks() {
 }
 
 describe('短视频复刻常驻入口', () => {
-  it('显示图标与文字且不改变四种媒体类型，点击不冒泡或创建普通节点', async () => {
+  it('显示纯图标且不改变四种媒体类型，点击不冒泡或创建普通节点', async () => {
     const onOpenVideoRecreation = vi.fn();
     const onAddGenerateNode = vi.fn();
     const parentClick = vi.fn();
@@ -48,7 +48,8 @@ describe('短视频复刻常驻入口', () => {
       within(screen.getByRole('group', { name: '创建节点' })).getAllByRole('button'),
     ).toHaveLength(4);
     const button = screen.getByRole('button', { name: '短视频复刻' });
-    expect(button).toHaveTextContent('短视频复刻');
+    expect(button).toHaveTextContent(/^$/);
+    expect(button).toHaveAccessibleName('短视频复刻');
     expect(button.querySelector('.lucide-clapperboard')).not.toBeNull();
     expect(onOpenVideoRecreation).not.toHaveBeenCalled();
     fireEvent.pointerDown(button);

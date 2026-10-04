@@ -63,6 +63,113 @@ function legacyAliasGraph(): { nodes: AssetFlowNode[]; edges: FlowEdge[] } {
 const assets: Asset[] = [];
 
 describe('addNodeResourceReference', () => {
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 生成节点支持图片、视频和音频资料，冻结版本并保留节点类型',
+    (mediaType) => {
+      const destination: AssetFlowNode = {
+        ...target(),
+        type: mediaType,
+        data: { ...target().data, mediaType, videoMode: undefined },
+      };
+      for (const sourceType of ['image', 'audio', 'video'] as const) {
+        const input = source('a');
+        input.type = sourceType;
+        input.data.mediaType = sourceType;
+        const next = addNodeResourceReference(
+          [input, destination],
+          [],
+          [],
+          destination.id,
+          input.id,
+        );
+        expect(next.nodes[1].data.mediaType).toBe(mediaType);
+        expect(next.nodes[1].data.promptDocument?.blocks).toContainEqual(
+          expect.objectContaining({
+            type: 'mention',
+            assetId: 'a',
+            assetVersion: 1,
+            mediaType: sourceType,
+          }),
+        );
+        expect(next.edges).toHaveLength(1);
+        expect(next.nodes[0]).toBe(input);
+      }
+    },
+  );
+
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 素材节点只保存资料提及，不改原素材、不创建工作流输入边，重复添加幂等',
+    (mediaType) => {
+      const destination: AssetFlowNode = {
+        ...target(),
+        type: mediaType,
+        data: {
+          label: '素材节点',
+          mediaType,
+          mode: 'source',
+          assetId: 'original',
+          contentUrl: '/original',
+          prompt: '原有说明',
+        },
+      };
+      const next = addNodeResourceReference(
+        [source('a'), destination],
+        [],
+        [],
+        destination.id,
+        'a',
+      );
+      expect(next.edges).toEqual([]);
+      expect(next.nodes[1].data).toMatchObject({
+        mode: 'source',
+        assetId: 'original',
+        contentUrl: '/original',
+        mediaType,
+      });
+      expect(next.nodes[1].data.promptDocument?.blocks).toContainEqual(
+        expect.objectContaining({ type: 'mention', assetId: 'a', assetVersion: 1 }),
+      );
+      expect(next.nodes[1].data.resourceRefs?.[0].id).toMatch(/^reference:/);
+      expect(
+        addNodeResourceReference(next.nodes, next.edges, [], destination.id, 'a').changed,
+      ).toBe(false);
+    },
+  );
+
+  it('图片修改节点保留冻结原图和编辑连线，额外资料只进入正文引用', () => {
+    const destination: AssetFlowNode = {
+      ...target(),
+      type: 'image',
+      data: {
+        label: '图片修改',
+        mediaType: 'image',
+        mode: 'generate',
+        imageEditSource: { assetId: 'original', version: 1, sourceNodeId: 'parent' },
+      },
+    };
+    const edges: FlowEdge[] = [
+      {
+        id: 'edit-source',
+        source: 'parent',
+        target: destination.id,
+        sourceHandle: 'output:image',
+        targetHandle: 'input:imageEdit',
+      },
+    ];
+    const next = addNodeResourceReference(
+      [source('parent', 'original'), source('a'), destination],
+      edges,
+      [],
+      destination.id,
+      'a',
+    );
+    expect(next.edges).toEqual(edges);
+    expect(next.nodes[2].data.imageEditSource).toEqual(destination.data.imageEditSource);
+    expect(next.nodes[2].data.promptDocument?.blocks).toContainEqual(
+      expect.objectContaining({ type: 'mention', assetId: 'a', assetVersion: 1 }),
+    );
+  });
+
   it('连续点击原子添加引用和边，保留目标选择、原文和源节点', () => {
     const original = [source('a'), source('b'), target()];
     const first = addNodeResourceReference(original, [], assets, 'video', 'a');

@@ -217,6 +217,33 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 的素材节点和生成节点在快捷与完整编辑器内都显示资料及拍照入口',
+    async (mediaType) => {
+      for (const mode of ['source', 'generate'] as const) {
+        const node: AssetFlowNode = {
+          ...imageNode,
+          type: mediaType,
+          data: { ...imageNode.data, mediaType, mode },
+        };
+        const props = makeProps({
+          node,
+          onUploadResource: vi.fn(),
+          onReferencePickToggle: vi.fn(),
+        });
+        const view = renderRaw(<NodeQuickEditor {...props} />);
+        expect(screen.getByRole('button', { name: '添加参考资料' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: '拍照引用' })).toBeEnabled();
+        fireEvent.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+        const dialog = await screen.findByRole('dialog', { name: node.data.label + ' · 编辑设置' });
+        expect(within(dialog).getByRole('button', { name: '拍照引用' })).toBeEnabled();
+        fireEvent.click(within(dialog).getByRole('button', { name: '添加参考资料' }));
+        expect(props.onReferencePickToggle).toHaveBeenCalledOnce();
+        view.unmount();
+      }
+    },
+  );
+
   it.each([
     { label: '图片', node: imageNode, settings: ['模型', '媒体参数'] },
     { label: '视频', node: videoNode, settings: ['模型', '生成模式', '媒体参数'] },

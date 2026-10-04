@@ -127,7 +127,8 @@ function referencePool(
  * @param targetId 保持选中的生成节点，不允许选择自身或无资源来源。
  * @param sourceId 被点击的画布节点；引用其当前已确定版本，不生成新资源。
  * @returns 新图及 changed 标志；原数组和节点不变，成功变更可作为一个撤销步骤保存。
- * 视频文字资源尚无 mention 映射，需使用提示词连线；已有帧连线不得转成参考 mention。
+ * 素材/图片修改节点只保存正文提及，不添加输入边；其他节点原子添加连线。
+ * 视频生成节点的文字资料尚无 mention 映射，需使用提示词连线；已有帧连线不得转成参考 mention。
  * @throws 资源缺失、版本未知、循环、输入类型不兼容、文档或引用数量超限时整次拒绝。
  */
 export function addNodeResourceReference(
@@ -141,9 +142,8 @@ export function addNodeResourceReference(
   const source = nodes.find((node) => node.id === sourceId);
   if (!target || !source) throw new Error('节点已不存在，请退出添加模式后重试');
   if (targetId === sourceId) throw new Error('不能把节点自身添加为参考资源');
-  if (target.data.mode === 'source') throw new Error('只能向生成节点添加参考资源');
-  if (target.data.imageEditSource)
-    throw new Error('图片修改节点请使用原图和提示词引用，不能添加额外来源连线');
+  // 素材节点没有输入口；图片修改节点保留原图连线，额外资料与上传一样保存为正文提及。
+  const referenceOnly = target.data.mode === 'source' || Boolean(target.data.imageEditSource);
   const currentSource = source.data.manualOutput
     ? { ...source, data: { ...source.data, resultAsset: undefined } }
     : source;
@@ -151,10 +151,11 @@ export function addNodeResourceReference(
     (block): block is PromptMention => block.type === 'mention',
   );
   if (!picked) throw new Error('来源节点没有可引用的资源');
-  if (target.data.mediaType === 'video' && picked.mediaType === 'text') {
+  if (!referenceOnly && target.data.mediaType === 'video' && picked.mediaType === 'text') {
     throw new Error('视频节点尚不支持文字资源提及，请使用提示词连线；原连线和生成模式未改变');
   }
   if (
+    !referenceOnly &&
     target.data.mediaType === 'video' &&
     edges.some(
       (edge) =>
@@ -190,9 +191,11 @@ export function addNodeResourceReference(
     mediaType: picked.mediaType,
     name,
   };
-  const boundReference = existing?.id.replace(/^(?:ordered:)+/, '').startsWith('connected:source:')
-    ? existing
-    : bindReferenceSource(reference, sourceId);
+  const boundReference = referenceOnly
+    ? reference
+    : existing?.id.replace(/^(?:ordered:)+/, '').startsWith('connected:source:')
+      ? existing
+      : bindReferenceSource(reference, sourceId);
   if (
     pool.some(
       (item) =>
@@ -216,9 +219,9 @@ export function addNodeResourceReference(
         item.mediaType === saved.mediaType
       );
     });
-  if (hasEdge && alreadyMentioned && !projected && unchangedReferences)
+  if ((hasEdge || referenceOnly) && alreadyMentioned && !projected && unchangedReferences)
     return { nodes: [...nodes], edges: [...edges], changed: false };
-  // 添加参考图不删除原有首尾帧连接；兼容性必须在写入图之前整体检查。
+  // 添加参考资料不删除原有首尾帧连接；兼容性必须在写入图之前整体检查。
   const nextTarget: AssetFlowNode = {
     ...target,
     data: {
@@ -229,7 +232,8 @@ export function addNodeResourceReference(
         prompt: renderPromptDocument(nextDocument),
         resourceRefs,
         stale: true,
-        ...(!hasEdge &&
+        ...(!referenceOnly &&
+        !hasEdge &&
         target.data.mediaType === 'video' &&
         !['omni_reference', 'video_edit', 'video_extend'].includes(target.data.videoMode ?? '')
           ? { videoMode: 'omni_reference' as const }
@@ -255,7 +259,7 @@ export function addNodeResourceReference(
       }
     }
   }
-  if (!hasEdge) {
+  if (!hasEdge && !referenceOnly) {
     const validation = validateResolvedCanvasConnection(
       { source: sourceId, target: targetId, sourceHandle: null, targetHandle: null },
       nextNodes,

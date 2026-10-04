@@ -1,18 +1,3 @@
-/* 作为节点操作而非第五种媒体类型；文字常驻，不依赖悬浮提示。 */
-.canvas-node-tools .canvas-node-tool.canvas-video-recreation-tool,
-.mobile-canvas-tools-popover .canvas-node-tool.canvas-video-recreation-tool {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 6px;
-  width: auto;
-  min-width: max-content;
-  padding-inline: 10px;
-  border-radius: 6px;
-  color: var(--mc-accent);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
 /* 覆盖 Modal 居中模式的 inline-block 与零底边距，保留居中和操作区安全留白。 */
 .ant-modal-root .ant-modal.video-recreation-launcher.ui-dialog {
   display: inline-flex;
