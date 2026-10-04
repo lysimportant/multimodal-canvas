@@ -113,12 +113,15 @@ const expectedPrompt =
   '未提供画面描述的视频：[[_SKILL_REF_3]]';
 
 describe('三套工具包的应用预设目录', () => {
-  it('保留旧十八项顺序，按约定升级十六项并追加十四项且无重复', () => {
+  it('保留旧十八项及工具包十四项顺序，后续独立预设追加且无重复', () => {
     const ids = PROMPT_SKILLS.map((skill) => skill.id);
-    expect(ids).toEqual([...originalIds, ...additions.map(([id]) => id)]);
-    expect(new Set(ids).size).toBe(32);
-    expect(new Set(PROMPT_SKILLS.map((skill) => skill.name)).size).toBe(32);
-    expect(new Set(PROMPT_SKILLS.map((skill) => skill.instruction.trim())).size).toBe(32);
+    expect(ids.slice(0, 32)).toEqual([...originalIds, ...additions.map(([id]) => id)]);
+    expect(ids.slice(32)).toEqual(['soft-anime-atmosphere']);
+    expect(new Set(ids).size).toBe(PROMPT_SKILLS.length);
+    expect(new Set(PROMPT_SKILLS.map((skill) => skill.name)).size).toBe(PROMPT_SKILLS.length);
+    expect(new Set(PROMPT_SKILLS.map((skill) => skill.instruction.trim())).size).toBe(
+      PROMPT_SKILLS.length,
+    );
     for (const id of originalIds) {
       expect(getPromptSkill(id)?.version, id).toBe(
         id === 'xianxia-dress-character' || id === 'skill-authoring' ? '1.0.0' : '1.1.0',

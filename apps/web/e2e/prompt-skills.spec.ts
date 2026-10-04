@@ -1,9 +1,12 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
+  PROMPT_OPTIMIZATION_NODE_ID,
   PROMPT_SKILLS,
   SKILL_AUTHORING_SKILL_ID,
   canvasDocumentSchema,
+  createPromptOptimizationCanvas,
+  type CanvasDocument,
   type MediaType,
   type PromptDocument,
   type PromptSkill,
@@ -86,6 +89,13 @@ async function installFixture(page: Page, mediaType: MediaType = 'image') {
     revision: 1,
   }));
   const submissions: Record<string, unknown>[] = [];
+  /** 用真实 domain 构造器记录合成服务端的冻结文字输入，不代表真实 API 或 Provider 执行。 */
+  const optimizationRuns: Array<{
+    runId: string;
+    modelAlias: string;
+    skill: PromptSkill;
+    canvas: CanvasDocument;
+  }> = [];
   /** 记录数据修改；获取合成媒体访问 URL 的 POST 不属于持久化或生成操作。 */
   const writes: Array<{ method: string; path: string; body: unknown }> = [];
   const errors: string[] = [];
@@ -260,6 +270,18 @@ async function installFixture(page: Page, mediaType: MediaType = 'image') {
         ...(body.credentialId ? { credentialId: body.credentialId } : {}),
         ...(isAuthoring ? { simulated: true } : {}),
       };
+      const frozenSkill = structuredClone(skill);
+      optimizationRuns.push({
+        runId,
+        modelAlias: result.modelAlias,
+        skill: frozenSkill,
+        canvas: createPromptOptimizationCanvas({
+          skillId: frozenSkill.id,
+          skill: frozenSkill,
+          input: body.promptDocument,
+          mediaType: body.mediaType,
+        }),
+      });
       optimizations.set(runId, {
         ...result,
         promptDocument: isAuthoring
@@ -284,6 +306,7 @@ async function installFixture(page: Page, mediaType: MediaType = 'image') {
   return {
     errors,
     submissions,
+    optimizationRuns,
     writes,
     canvas: () => canvas,
     skills: () => skills,
@@ -434,21 +457,34 @@ test('完整编辑器不嵌套 Skill 配置，保持提示词编辑可用', asyn
 for (const skill of [
   { id: 'character', name: '生成人物' },
   { id: 'xianxia-dress-character', name: '仙妖同款裙装' },
+  { id: 'soft-anime-atmosphere', name: '柔光日系氛围插画' },
   { id: 'extract-assets-3d', name: '三维动画资产提取' },
   { id: 'storyboard-15s', name: '十五秒分镜编排' },
   { id: 'video-breakdown', name: '视频逐镜拆解' },
 ]) {
-  test(`${skill.name} 优化直写可撤销、资源不变、选择与结果可保存重载`, async ({
+  test(`${skill.name} 显式优化为独立文字任务、冻结指令与引用不变、直写可撤销和保存重载`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const fixture = await installFixture(page);
+    const definition = structuredClone(fixture.skills().find((entry) => entry.id === skill.id)!);
     await page.goto('/projects/' + project.id);
     const panel = await editor(page);
     await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
     const settings = page.getByRole('group', { name: 'Skill 配置', exact: true });
-    await settings.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
+    const select = settings.getByRole('combobox', { name: '提示词 Skill', exact: true });
+    await select.click();
+    await page.getByRole('option', { name: '生成场景', exact: true }).click();
+    await expect.poll(() => fixture.canvas().nodes[0]!.data.promptSkillId).toBe('scene');
+    expect(fixture.submissions).toEqual([]);
+    expect(fixture.optimizationRuns).toEqual([]);
+    await select.click();
     await page.getByRole('option', { name: skill.name, exact: true }).click();
+    await expect.poll(() => fixture.canvas().nodes[0]!.data.promptSkillId).toBe(skill.id);
+    expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(original);
+    expect(fixture.submissions).toEqual([]);
+    expect(fixture.optimizationRuns).toEqual([]);
+    expect(fixture.writes.filter((write) => write.method === 'POST')).toEqual([]);
     const optimize = settings.getByRole('button', { name: '优化提示词', exact: true });
     await optimize.click();
     const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
@@ -456,9 +492,38 @@ for (const skill of [
     await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
     expect(fixture.submissions).toHaveLength(1);
     expect(fixture.submissions[0]).toMatchObject({
+      nodeId: 'skill-node',
+      mediaType: 'image',
       skillId: skill.id,
-      skillVersion: PROMPT_SKILLS.find((entry) => entry.id === skill.id)!.version,
+      skillVersion: definition.version,
       promptDocument: original,
+    });
+    expect(fixture.optimizationRuns).toHaveLength(1);
+    const run = fixture.optimizationRuns[0]!;
+    expect(run).toMatchObject({
+      runId: 'optimization-1',
+      modelAlias: 'mock-text',
+      skill: definition,
+    });
+    expect(run.canvas.nodes).toHaveLength(1);
+    expect(run.canvas.edges).toEqual([]);
+    expect(run.canvas.nodes[0]).toMatchObject({
+      id: PROMPT_OPTIMIZATION_NODE_ID,
+      type: 'text',
+      data: {
+        mediaType: 'text',
+        mode: 'generate',
+        promptDocument: {
+          version: 1,
+          blocks: [{ type: 'text', text: expect.stringContaining(definition.instruction) }],
+        },
+      },
+    });
+    const input = run.canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+    if (input.type !== 'text') throw new Error('独立优化任务必须使用文字输入');
+    expect(JSON.parse(input.text.split('\n').at(-1)!)).toEqual({
+      prompt: '以庭院为背景，保持角色 [[SKILL_REF_1]] 的服饰。',
+      references: [{ token: '[[SKILL_REF_1]]', label: '人物参考', mediaType: 'image' }],
     });
     await expect
       .poll(() => fixture.canvas().nodes[0]!.data.promptDocument?.blocks[0])
@@ -500,9 +565,107 @@ for (const skill of [
       '优化后：',
     );
     expect(fixture.submissions).toHaveLength(2);
+    expect(fixture.optimizationRuns).toHaveLength(2);
+    expect(fixture.optimizationRuns.map((entry) => entry.skill)).toEqual([definition, definition]);
+    expect(
+      fixture
+        .canvas()
+        .nodes[0]!.data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
+    ).toEqual(original.blocks.filter((block) => block.type === 'mention'));
+    expect(
+      fixture.writes.filter((write) => write.method === 'POST').map((write) => write.path),
+    ).toEqual([
+      `/v1/projects/${project.id}/prompt-optimizations`,
+      `/v1/projects/${project.id}/prompt-optimizations`,
+    ]);
     expect(fixture.errors).toEqual([]);
   });
 }
+
+/** 稀疏输入只验证本地 Mock 的提交、冻结与直写合同，不把预设扩写作为真实模型效果证据。 */
+test('柔光日系氛围插画稀疏输入保留原文和完整指令，仅显式优化文字任务（Mock）', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const fixture = await installFixture(page);
+  const skill = structuredClone(
+    fixture.skills().find((entry) => entry.id === 'soft-anime-atmosphere')!,
+  );
+  const brief = '黑发成年人类女性，雨夜书店窗边';
+  const source: PromptDocument = { version: 1, blocks: [{ type: 'text', text: brief }] };
+  fixture.canvas().nodes[0]!.data.promptDocument = source;
+  const mockPrompt =
+    '黑发成年人类女性站在雨夜书店窗边，身穿奶油白褶皱连衣裙与宽松针织开衫，领口少量蕾丝点缀。日系 2D 手绘插画，细浅线稿、柔和渐变与轻微纸纹；竖幅全身构图，人物略偏右，窗框与书架形成前中后景，手扶书页，发丝与裙摆轻微飘动。前景虚化书页，中景人物与窗沿清晰，远处雨滴与街灯柔焦。暖色阅读灯勾勒发丝和衣褶，窗外保留蓝灰雨夜及深色书架，不把夜景漂白成白昼，低饱和冷暖对比、安静生活氛围，无兽耳尾巴、文字或水印。';
+  const optimized: PromptDocument = { version: 1, blocks: [{ type: 'text', text: mockPrompt }] };
+  testInfo.annotations.push({
+    type: 'evidence',
+    description: '仅本地 Mock 合同与交互；扩写为预设文字，未调用真实模型或生图。',
+  });
+  await page.route('**/prompt-optimizations/optimization-1', (route) =>
+    json(route, {
+      optimization: {
+        runId: 'optimization-1',
+        nodeId: 'skill-node',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        status: 'succeeded',
+        modelAlias: 'mock-text',
+        simulated: true,
+        promptDocument: optimized,
+      },
+    }),
+  );
+  await page.goto(`/projects/${project.id}`);
+  const panel = await editor(page);
+  const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
+  await expect(prompt).toContainText(brief);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+  const settings = page.getByRole('group', { name: 'Skill 配置', exact: true });
+  await settings.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
+  await page.getByRole('option', { name: skill.name, exact: true }).click();
+  await expect.poll(() => fixture.canvas().nodes[0]!.data.promptSkillId).toBe(skill.id);
+  expect(fixture.submissions).toEqual([]);
+  expect(fixture.optimizationRuns).toEqual([]);
+  expect(fixture.writes.filter((write) => write.method === 'POST')).toEqual([]);
+  await settings.getByRole('button', { name: '优化提示词', exact: true }).click();
+  await expect(prompt).toHaveText(mockPrompt);
+  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
+  expect(fixture.submissions).toHaveLength(1);
+  expect(fixture.submissions[0]).toMatchObject({
+    nodeId: 'skill-node',
+    mediaType: 'image',
+    skillId: skill.id,
+    skillVersion: '1.0.0',
+    promptDocument: source,
+  });
+  expect(fixture.optimizationRuns).toHaveLength(1);
+  const run = fixture.optimizationRuns[0]!;
+  expect(run.skill).toEqual(skill);
+  expect(run.modelAlias).toBe('mock-text');
+  expect(run.canvas.nodes).toHaveLength(1);
+  expect(run.canvas.edges).toEqual([]);
+  expect(run.canvas.nodes[0]).toMatchObject({
+    id: PROMPT_OPTIMIZATION_NODE_ID,
+    type: 'text',
+    data: {
+      mediaType: 'text',
+      mode: 'generate',
+      promptDocument: {
+        version: 1,
+        blocks: [{ type: 'text', text: expect.stringContaining(skill.instruction) }],
+      },
+    },
+  });
+  const input = run.canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+  if (input.type !== 'text') throw new Error('独立优化任务必须使用文字输入');
+  expect(JSON.parse(input.text.split('\n').at(-1)!)).toEqual({ prompt: brief, references: [] });
+  await expect.poll(() => fixture.canvas().nodes[0]!.data.promptDocument).toEqual(optimized);
+  await page.screenshot({ path: testInfo.outputPath('soft-anime-sparse-mock-desktop.png') });
+  expect(
+    fixture.writes.filter((write) => write.method === 'POST').map((write) => write.path),
+  ).toEqual([`/v1/projects/${project.id}/prompt-optimizations`]);
+  expect(fixture.errors).toEqual([]);
+});
 
 test('工作台升级要求变化后旧预览不可覆盖，丢弃不改画布或指令', async ({ page }) => {
   const fixture = await installFixture(page);
@@ -1247,11 +1410,54 @@ for (const sourceKind of ['custom', 'builtin'] as const) {
 }
 
 /** 核对工具包扩充后的真实工作台目录；只验证界面与合同，不代表模型输出质量。 */
-test('三工具包目录保留三十二项并提供匹配版本的中文说明', async ({ page }, testInfo) => {
+test('应用内 Skill 目录保留三十三项及原有顺序并提供匹配版本的中文说明', async ({
+  page,
+}, testInfo) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const fixture = await installFixture(page);
-  expect(fixture.skills()).toHaveLength(32);
+  expect(fixture.skills()).toHaveLength(33);
+  expect(fixture.skills().map((skill) => skill.id)).toEqual([
+    'novel-premise',
+    'novel-outline',
+    'novel-draft',
+    'novel-revise',
+    'character',
+    'xianxia-dress-character',
+    'character-views',
+    'scene',
+    'scene-views',
+    'prop',
+    'extract-assets',
+    'screenplay',
+    'storyboard',
+    'image-quality',
+    'camera',
+    'expression',
+    'action',
+    SKILL_AUTHORING_SKILL_ID,
+    'novel-adaptation',
+    'story-analysis',
+    'video-breakdown',
+    'short-video',
+    'extract-assets-3d',
+    'extract-assets-live-action',
+    'prop-views',
+    'screenplay-urban',
+    'screenplay-historical',
+    'screenplay-xianxia',
+    'screenplay-fantasy',
+    'storyboard-10s',
+    'storyboard-15s',
+    'visual-effects',
+    'soft-anime-atmosphere',
+  ]);
+  expect(fixture.skills().at(-1)).toMatchObject({
+    id: 'soft-anime-atmosphere',
+    name: '柔光日系氛围插画',
+    version: '1.0.0',
+    category: '人物与场景',
+  });
   await page.goto('/projects/' + project.id);
   const panel = await editor(page);
   await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
@@ -1262,6 +1468,13 @@ test('三工具包目录保留三十二项并提供匹配版本的中文说明',
     const chinese = workbench.getByRole('region', { name: '指令中文说明' });
     await expect(chinese).toBeVisible();
     await expect(chinese).toContainText(/[一-鿿]/);
+    if (skill.id === 'soft-anime-atmosphere') {
+      await expect(chinese).toContainText('日系');
+      await expect(chinese).toContainText('2D');
+      await expect(chinese).toContainText('针织');
+      await expect(chinese).toContainText('蕾丝');
+      await expect(chinese).toContainText(/雨夜[^。]*不[^。]*(?:漂白|高曝光|日景)/);
+    }
     await workbench.getByRole('button', { name: '执行原文', exact: true }).click();
     await expect(workbench.getByRole('textbox', { name: '指令', exact: true })).toHaveValue(
       skill.instruction,

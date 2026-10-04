@@ -120,6 +120,69 @@ const instructionExpectations: Readonly<Record<string, readonly string[]>> = {
     '回收状态',
   ],
   'visual-effects': ['触发、蓄势、释放、环境交互与消散', '不虚构能力'],
+  'soft-anime-atmosphere': [
+    '少量人物、场景词',
+    '一段完整提示词，不生图、不写故事',
+    '保留用户明确的身份、物种、年龄、肤色、发色、性别、服装、动作',
+    '季节、天气、时间、情绪、场景、镜头、画幅、语言、字面量和资源身份',
+    '未指定类人角色年龄时默认成年',
+    '适龄、不暴露且非性化的服装与姿态',
+    '人类不自动添加猫耳或尾巴',
+    '男性或其他角色不强制穿女裙',
+    '明确要求无人场景时不添加人物',
+    '精细日系 2D 插画',
+    '轻细浅色线条、柔和渐变、细分发束与飞发、细腻布料纹理',
+    '少量纸感或绘画纹理',
+    '动画化但不 Q 版的面部',
+    '不强制白发、大眼、同一张脸或固定身材',
+    '控制高光',
+    '不堆叠引擎标签',
+    '避免写实摄影脸、CG 塑料脸',
+    '浅色轻柔的日常幻想衣橱，不是固定仙侠裁剪',
+    '褶皱或荷叶边裙、蕾丝或细蝴蝶结、软针织开衫、薄纱外罩等选择少数组合',
+    '里层不透视，保留明确裙长',
+    '不强加侧开衩、交叠裙片、长拖尾、露腹、硬束腰或高跟鞋',
+    '长垂外罩或飘带不臆认为主体长拖尾',
+    '袜装、赤足、兽耳和尾巴均非强制',
+    '不同穿搭共享画法与材质语言，不要求同一裁剪',
+    '用户指定的裤装、外套、制服或其他服饰也用同一画法表达',
+    '光线一致的单一场景，不混成拼贴',
+    '室内白紫纱帘窗光',
+    '水边浅蓝雏菊粼光',
+    '书房金色窗光、深木书架、书本与奶油针织',
+    '雨夜蓝灰木廊、浅色裙装与软开衫、暖灯、潮湿反光及檐边水滴',
+    '可扩展例子，不是封闭菜单，不擅自替换用户场景',
+    '日景柔明但不糊白',
+    '书房与雨夜保留深色环境，雨夜不强制明亮',
+    '不改成高曝光粉彩日景',
+    '单一可信主光配合环境色',
+    '局部暖色实用灯',
+    '衣褶边缘与针织、蕾丝纹理',
+    '微粒只在环境合适时出现',
+    '默认单人、竖幅清晰全身的环境构图，优先 9:16',
+    '3:4 等用户指定画幅照办',
+    '头脚留安全边距',
+    '人物主导但保留地点',
+    '前景框景、中景人物、后景建筑、植物或水面',
+    '发丝与衣摆保持同一风向或运动方向',
+    '用户明确的横幅、近景、机位、人数、无人场景和动作优先',
+    '无人场景保留环境层次，不套人物构图模板',
+    '不使用身体部位特写或偷窥机位',
+    '一段连贯画面',
+    '人物、服装、姿态、景别、场景、光色和画法都要有具体依据',
+    '简单输入无需问卷',
+    '合理设计补全，不冒称参考事实，不锁定四图角色或服装',
+    '优先保留用户明确要求的输出语言，未指定则沿用原输入语言',
+    '英文或双语须明确请求',
+    '只在现有 prompt 值内返回改进后的图像指令',
+    '不调用生图，也不承诺像素级一致',
+    '不证明运行时收到参考图',
+    '不能声称看过图片或推断未见的背面',
+    '资源占位符每个精确保留一次、顺序不变',
+    '保持外层现有 JSON 合同',
+    '供应商语法、参数、权重或独立 negative-prompt 字段',
+    '不添加未经要求的水印或画面文字',
+  ],
 };
 
 beforeEach(() => {
@@ -222,12 +285,18 @@ describe('Skill 指令中文说明', () => {
     );
   });
 
-  it('当前目录包含十六项 1.1.0 和十六项 1.0.0，保留既有特殊技能版本', () => {
-    expect(PROMPT_SKILLS).toHaveLength(32);
+  it('当前目录包含十六项 1.1.0 和十七项 1.0.0，新技能追加到末尾并保留既有版本', () => {
+    expect(PROMPT_SKILLS).toHaveLength(33);
     expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.1.0')).toHaveLength(16);
-    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(16);
+    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(17);
     for (const id of ['xianxia-dress-character', 'skill-authoring'])
       expect(PROMPT_SKILLS.find((skill) => skill.id === id)?.version).toBe('1.0.0');
+    expect(PROMPT_SKILLS.at(-1)).toMatchObject({
+      id: 'soft-anime-atmosphere',
+      name: '柔光日系氛围插画',
+      category: '人物与场景',
+      version: '1.0.0',
+    });
   });
 
   it.each(PROMPT_SKILLS)(
@@ -251,22 +320,24 @@ describe('Skill 指令中文说明', () => {
     },
   );
 
-  it.each([
-    ['原文不符', { instruction: 'Imported {{asset}} with original wording.' }],
-    ['版本不符', { version: '1.1.0' }],
-    ['显式导入', { builtin: false }],
-  ] as const)('新增技能%s时保持原文，不借用本地中文说明', async (_, override) => {
-    const local = PROMPT_SKILLS.find((skill) => skill.id === 'storyboard-15s');
-    expect(local?.version).toBe('1.0.0');
-    const skill: PromptSkill = { ...local!, builtin: true, revision: 1, ...override };
-    vi.mocked(fetchSkillLibrary).mockResolvedValue([skill]);
-    setup();
-    expect(await screen.findByRole('textbox', { name: /^指令$/ })).toHaveValue(skill.instruction);
-    expect(screen.queryByRole('region', { name: '指令中文说明' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '中文说明' })).not.toBeInTheDocument();
-    expect(createSkill).not.toHaveBeenCalled();
-    expect(updateSkill).not.toHaveBeenCalled();
-    expect(submitPromptOptimization).not.toHaveBeenCalled();
+  describe.each(['storyboard-15s', 'soft-anime-atmosphere'])('%s 新增内置技能', (id) => {
+    it.each([
+      ['原文不符', { instruction: 'Imported {{asset}} with original wording.' }],
+      ['版本不符', { version: '1.1.0' }],
+      ['显式导入', { builtin: false }],
+    ] as const)('%s时保持原文，不借用本地中文说明', async (_, override) => {
+      const local = PROMPT_SKILLS.find((skill) => skill.id === id);
+      expect(local?.version).toBe('1.0.0');
+      const skill: PromptSkill = { ...local!, builtin: true, revision: 1, ...override };
+      vi.mocked(fetchSkillLibrary).mockResolvedValue([skill]);
+      setup();
+      expect(await screen.findByRole('textbox', { name: /^指令$/ })).toHaveValue(skill.instruction);
+      expect(screen.queryByRole('region', { name: '指令中文说明' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '中文说明' })).not.toBeInTheDocument();
+      expect(createSkill).not.toHaveBeenCalled();
+      expect(updateSkill).not.toHaveBeenCalled();
+      expect(submitPromptOptimization).not.toHaveBeenCalled();
+    });
   });
 
   it('用户已存和导入指令按原文编辑保存，切回内置时显示对应摘要', async () => {
