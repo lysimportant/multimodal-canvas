@@ -17,6 +17,14 @@
   text-align: center;
 }
 
+.session-loading-mascot {
+  display: block;
+  width: 128px;
+  height: 128px;
+  border-radius: 24px;
+  object-fit: contain;
+}
+
 .session-loading .session-loading-spinner {
   color: var(--mc-accent, #18794e);
 }

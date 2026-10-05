@@ -216,6 +216,21 @@
   padding: 24px 24px 22px;
 }
 
+.mc-navigation-drawer-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mc-navigation-drawer-mark {
+  display: block;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
 .mc-navigation-drawer-kicker {
   color: var(--mc-accent, #18794e);
   font-size: 10px;

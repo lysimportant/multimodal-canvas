@@ -18,6 +18,13 @@ export function SessionLoading() {
   return (
     <main className="session-loading">
       <div className="session-loading-content" role="status" aria-live="polite" aria-atomic="true">
+        <img
+          className="session-loading-mascot"
+          src="/brand/lovetv-mascot.webp"
+          alt="LoveTV 大肥鱼"
+          width={128}
+          height={128}
+        />
         <Spin className="session-loading-spinner" size="large" aria-hidden="true" />
         <h1 className="session-loading-title">正在恢复登录状态</h1>
         <p className="session-loading-hint">

@@ -286,11 +286,21 @@ export function AppNavigation({
           footer: 'mc-navigation-drawer-footer',
         }}
         title={
-          <div>
-            <span className="mc-navigation-drawer-kicker" aria-hidden="true">
-              NAVIGATION
-            </span>
-            <h2>LoveTV</h2>
+          <div className="mc-navigation-drawer-brand">
+            <img
+              className="mc-navigation-drawer-mark"
+              src="/brand/lovetv-mascot.webp"
+              alt=""
+              width={40}
+              height={40}
+              aria-hidden="true"
+            />
+            <div>
+              <span className="mc-navigation-drawer-kicker" aria-hidden="true">
+                NAVIGATION
+              </span>
+              <h2>LoveTV</h2>
+            </div>
           </div>
         }
         closable={{ placement: 'end', 'aria-label': '关闭主菜单' }}

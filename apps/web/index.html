@@ -92,12 +92,17 @@
       }
       .app-startup-brand {
         display: flex;
+        flex-direction: column;
         align-items: center;
         gap: 12px;
         font-weight: 700;
       }
       .app-startup-brand img {
-        border-radius: 12px;
+        display: block;
+        width: 128px;
+        height: 128px;
+        border-radius: 24px;
+        object-fit: contain;
       }
       .lovetv-static-intro {
         box-sizing: border-box;
@@ -175,7 +180,7 @@
     <div id="root">
       <main id="app-startup" class="app-startup" aria-labelledby="app-startup-title">
         <p class="app-startup-brand">
-          <img src="/brand/lovetv-icon-192.png" alt="" width="48" height="48" />LoveTV
+          <img src="/brand/lovetv-mascot.webp" alt="LoveTV 大肥鱼" width="128" height="128" />LoveTV
         </p>
         <div role="status" aria-live="polite" aria-atomic="true">
           <h2 id="app-startup-title">正在加载工作区</h2>
