@@ -394,6 +394,69 @@ describe('NodeQuickEditor', () => {
     },
   );
 
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器的模型分组只显示在组标题，选项保留唯一的无障碍分组名',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const inputs = makeProps({
+        models: ['svip', '生图'].map((group) => ({
+          id: 'image-model',
+          name: '图片模型',
+          credentialId: group === 'svip' ? testCredentialId : 'image-group',
+          group,
+          mediaTypes: ['image'],
+          availability: 'available',
+        })),
+      });
+      renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const trigger = screen.getByRole('combobox', { name: '模型：图片模型 · svip' });
+      await user.click(trigger);
+      const listbox = await screen.findByRole('listbox', { name: '模型选项' });
+      for (const group of ['svip', '生图']) {
+        expect(within(listbox).getAllByText(group, { exact: true })).toHaveLength(1);
+        const option = within(listbox).getByRole('option', { name: `图片模型 ${group}` });
+        expect(option.querySelector('small')).toBeNull();
+      }
+      await user.click(within(listbox).getByRole('option', { name: '图片模型 生图' }));
+      expect(inputs.onModelChange).toHaveBeenCalledExactlyOnceWith({
+        modelAlias: 'image-model',
+        credentialId: 'image-group',
+      });
+      expect(inputs.onRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['needs_review', '待管理员确认'],
+    ['unavailable', '暂不可用'],
+  ] as const)('模型 %s 时只显示状态说明并保留禁用语义', async (availability, status) => {
+    const user = userEvent.setup();
+    const inputs = makeProps({
+      models: [
+        { id: 'image-model', name: '图片模型', mediaTypes: ['image'] },
+        {
+          id: 'review-model',
+          name: '待审模型',
+          mediaTypes: ['image'],
+          availability,
+        },
+      ],
+    });
+    renderRaw(<NodeQuickEditor {...inputs} />);
+    await user.click(screen.getByRole('combobox', { name: /^模型：/ }));
+    const option = screen.getByRole('option', { name: `待审模型 ${status} 测试分组` });
+    expect(option).toHaveAttribute('aria-disabled', 'true');
+    expect(option.querySelectorAll('small')).toHaveLength(1);
+    expect(within(option).getByText(status, { exact: true })).toBeInTheDocument();
+    expect(within(option).queryByText('测试分组')).not.toBeInTheDocument();
+    await user.click(option);
+    expect(inputs.onModelChange).not.toHaveBeenCalled();
+    expect(inputs.onRun).not.toHaveBeenCalled();
+  });
+
   it('原分组失效时不能静默改用其它组的同名模型', () => {
     render(
       <NodeQuickEditor

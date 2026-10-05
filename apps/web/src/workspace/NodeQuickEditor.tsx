@@ -1972,7 +1972,6 @@ function NodeParameterSelect({
             <span className="node-quick-editor-option-copy">
               <strong>{option.data.label}</strong>
               {option.data.description && <small>{option.data.description}</small>}
-              {option.data.trailingLabel && <small>{option.data.trailingLabel}</small>}
             </span>
           </span>
         )}
@@ -2537,17 +2536,11 @@ function buildModelOptions(
           credentialId: model.credentialId,
         }),
         label: model.name,
-        description: model.group ?? model.credentialLabel ?? '未知分组',
         trailingLabel: model.group ?? model.credentialLabel,
         ...(model.availability && model.availability !== 'available'
           ? {
               disabled: true,
-              description: [
-                model.group ?? model.credentialLabel,
-                model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
-              ]
-                .filter(Boolean)
-                .join(' · '),
+              description: model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
             }
           : {}),
         groupLabel: group.label,

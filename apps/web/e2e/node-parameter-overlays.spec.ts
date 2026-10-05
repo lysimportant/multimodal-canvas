@@ -331,6 +331,32 @@ for (const presentation of ['快捷', '完整'] as const) {
   }
 }
 
+for (const presentation of ['快捷', '完整'] as const) {
+  test(`${presentation}模型列表分组只显示一次，切换模型不触发生成`, async ({
+    page,
+    baseURL,
+  }, info) => {
+    const fixture = await installFixture(page, baseURL);
+    if (presentation === '完整') {
+      await page.getByRole('button', { name: '打开完整编辑器' }).click();
+    }
+    const trigger = page.getByRole('combobox', { name: /^模型：/ });
+    await expect(trigger).toHaveAttribute('aria-label', '模型：参数回归模型 · synthetic');
+    await trigger.click();
+    const models = page.getByRole('listbox', { name: '模型选项', exact: true });
+    await expect(models.getByText('synthetic', { exact: true })).toHaveCount(1);
+    await expect(models.getByRole('option')).toHaveCount(2);
+    await expect(models.locator('small')).toHaveCount(0);
+    const target = models.getByRole('option', { name: `${longModelName} synthetic`, exact: true });
+    await page.screenshot({ path: info.outputPath('model-groups.png'), fullPage: true });
+    await target.click();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(trigger).toHaveAttribute('aria-label', `模型：${longModelName} · synthetic`);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([]);
+  });
+}
+
 test('模型长名称保持单列完整换行，不受短枚举排版影响', async ({ page, baseURL }) => {
   const fixture = await installFixture(page, baseURL);
   await page.getByRole('combobox', { name: /^模型：/ }).click();
