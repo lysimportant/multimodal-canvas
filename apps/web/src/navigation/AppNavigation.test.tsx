@@ -29,6 +29,11 @@ describe('AppNavigation', () => {
     render(<AppNavigation route={parseAppRoute('/projects/project-1')} projectId="project-1" />);
 
     expect(screen.queryByRole('navigation', { name: '主导航' })).not.toBeInTheDocument();
+    const brand = screen.getByRole('link', { name: 'LoveTV 主页' });
+    expect(brand).toHaveTextContent('LoveTV');
+    expect(brand.querySelector('img')).toHaveAttribute('src', '/brand/lovetv-mascot.webp');
+    expect(brand.querySelector('img')).toHaveAttribute('width', '30');
+    expect(brand.querySelector('img')).toHaveAttribute('height', '30');
 
     await user.click(screen.getByRole('button', { name: '打开主菜单' }));
     const drawerNavigation = screen.getByRole('navigation', { name: '菜单导航' });
@@ -52,7 +57,7 @@ describe('AppNavigation', () => {
 
     await user.click(contactLink!);
     expect(window.location.pathname).toBe('/contact');
-    expect(screen.queryByRole('dialog', { name: 'Multimodal Canvas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'LoveTV' })).not.toBeInTheDocument();
   });
 
   it('supports Escape, focus restoration, body locking, and Tab wrapping', async () => {
@@ -65,7 +70,7 @@ describe('AppNavigation', () => {
     const trigger = screen.getByRole('button', { name: '打开主菜单' });
 
     await user.click(trigger);
-    const dialog = screen.getByRole('dialog', { name: 'Multimodal Canvas' });
+    const dialog = screen.getByRole('dialog', { name: 'LoveTV' });
     await waitFor(() => expect(screen.getByRole('link', { name: /工作台/ })).toHaveFocus());
     expect(window.getComputedStyle(document.body).overflowY).toBe('hidden');
 
@@ -81,7 +86,7 @@ describe('AppNavigation', () => {
     expect(last).toHaveFocus();
 
     fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27 });
-    expect(screen.queryByRole('dialog', { name: 'Multimodal Canvas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'LoveTV' })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(window.getComputedStyle(document.body).overflowY).not.toBe('hidden');
   });
@@ -92,10 +97,10 @@ describe('AppNavigation', () => {
     await user.click(screen.getByRole('button', { name: '打开主菜单' }));
 
     fireEvent.keyDown(document, { key: 'Escape', keyCode: 229, isComposing: true });
-    expect(screen.getByRole('dialog', { name: 'Multimodal Canvas' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'LoveTV' })).toBeInTheDocument();
 
     fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27 });
-    expect(screen.queryByRole('dialog', { name: 'Multimodal Canvas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'LoveTV' })).not.toBeInTheDocument();
   });
 
   it('navigates from the drawer, closes it, and exposes an integration callback', async () => {

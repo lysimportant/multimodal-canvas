@@ -41,23 +41,22 @@ export function PublicAssetSharePage({ token }: { token: string }) {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    const previousTitle = document.title;
     const previousReferrer = document.querySelector<HTMLMetaElement>('meta[name=referrer]');
     const referrer = previousReferrer ?? document.createElement('meta');
     const previousPolicy = referrer.content;
     referrer.name = 'referrer';
     referrer.content = 'no-referrer';
     if (!previousReferrer) document.head.append(referrer);
-    document.title = '共享资源 · 多模态画布';
+    document.title = '共享资源 · LoveTV';
     return () => {
-      document.title = previousTitle;
       if (previousReferrer) referrer.content = previousPolicy;
       else referrer.remove();
     };
   }, []);
 
   useEffect(() => {
-    document.title = share && !error ? `${share.asset.name} · 共享资源` : '共享资源 · 多模态画布';
+    document.title =
+      share && !error ? `${share.asset.name} · LoveTV 共享资源` : '共享资源 · LoveTV';
   }, [share, error]);
 
   useEffect(() => {
@@ -127,7 +126,7 @@ export function PublicAssetSharePage({ token }: { token: string }) {
       <header className="public-asset-share-topbar">
         <span className="public-asset-share-brand">
           <Share2 size={18} aria-hidden="true" />
-          共享资源
+          LoveTV · 共享资源
         </span>
         <span className="public-asset-share-readonly">只读预览</span>
       </header>

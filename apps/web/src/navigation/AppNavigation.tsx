@@ -218,15 +218,20 @@ export function AppNavigation({
           <AppLink
             className="mc-navigation-brand"
             to={appPaths.withProject(appPaths.home, returnProjectId)}
-            aria-label="Multimodal Canvas 主页"
+            aria-label="LoveTV 主页"
             onClick={handleNavigation(appPaths.withProject(appPaths.home, returnProjectId))}
           >
-            <span className="mc-navigation-brand-mark" aria-hidden="true">
-              MC
-            </span>
+            <img
+              className="mc-navigation-brand-mark"
+              src="/brand/lovetv-mascot.webp"
+              alt=""
+              width={30}
+              height={30}
+              aria-hidden="true"
+            />
             <span className="mc-navigation-brand-copy">
-              <strong>Multimodal Canvas</strong>
-              <small>生成工作流</small>
+              <strong>LoveTV</strong>
+              <small>AI 多模态画布</small>
             </span>
           </AppLink>
         </div>
@@ -285,7 +290,7 @@ export function AppNavigation({
             <span className="mc-navigation-drawer-kicker" aria-hidden="true">
               NAVIGATION
             </span>
-            <h2>Multimodal Canvas</h2>
+            <h2>LoveTV</h2>
           </div>
         }
         closable={{ placement: 'end', 'aria-label': '关闭主菜单' }}

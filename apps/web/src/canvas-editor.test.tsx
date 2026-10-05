@@ -890,7 +890,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     window.history.replaceState(null, '', '/');
     render(createElement(App));
 
-    expect(await screen.findByRole('heading', { name: 'Multimodal Canvas' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'LoveTV' })).toBeVisible();
     expect(screen.getByRole('link', { name: /进入工作台/ })).toHaveAttribute('href', '/workspace');
     expect(
       fetchMock.mock.calls.some(

@@ -954,8 +954,10 @@ test.beforeEach(async ({ page, baseURL }) => {
       url.origin === webUrl.origin &&
       request.method() === 'GET' &&
       !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
-      (['/', projectPath, '/not-a-real-page', '/projects/missing-project'].includes(url.pathname) ||
-        /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|demo\/|favicon\.)/.test(
+      (['/', '/workspace', projectPath, '/not-a-real-page', '/projects/missing-project'].includes(
+        url.pathname,
+      ) ||
+        /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|brand\/|demo\/|favicon\.)/.test(
           url.pathname,
         ))
     )
@@ -1547,9 +1549,11 @@ test('资源预览按衍生图加载，筛选不改变返回项目且跨页前�
 test('主页进入工作台和项目深链，并在刷新后恢复画布', async ({ page }) => {
   await page.goto('/');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible();
   await expect(page.getByLabel('多模态生成工作流预览')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '从第一个想法，到最终画面。' })).toBeVisible();
+  await expect(page.getByRole('paragraph').filter({ hasText: '连接已授权的 API' })).toContainText(
+    '连接已授权的 API，在同一张画布组织提示词与参考资料。',
+  );
 
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   await expect(page).toHaveURL('/workspace');
@@ -1575,19 +1579,20 @@ test('主菜单支持键盘关闭、当前页高亮，并可进入设置和错�
 
   const menuTrigger = page.getByRole('button', { name: '打开主菜单' });
   await menuTrigger.click();
-  let menu = page.getByRole('dialog', { name: 'Multimodal Canvas' });
+  let menu = page.getByRole('dialog', { name: 'LoveTV' });
   await expect(menu).toBeVisible();
   await expect(menu.getByRole('link', { name: /主页/ })).toHaveAttribute('aria-current', 'page');
+  await expect(menu.getByRole('link', { name: /主页/ })).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await expect(menuTrigger).toBeFocused();
 
   await menuTrigger.click();
-  menu = page.getByRole('dialog', { name: 'Multimodal Canvas' });
+  menu = page.getByRole('dialog', { name: 'LoveTV' });
   await menu.getByRole('link', { name: /设置/ }).click();
   await expect(page).toHaveURL('/settings');
-  await expect(page.getByRole('heading', { name: '连接与模型设置' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New API 与模型设置' })).toBeVisible();
 
   await page.goto('/not-a-real-page');
   await expect(page.getByRole('heading', { name: '页面不存在' })).toBeVisible();
@@ -1716,20 +1721,23 @@ test('独立登录页支持键盘和浏览器返回，不锁住工作台焦点',
 
   await page.getByRole('button', { name: '账户菜单' }).click();
   await page.getByRole('menuitem', { name: '退出登录' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   const trigger = page.locator('.mc-workspace-heading').getByRole('button', { name: '新建项目' });
   await trigger.click();
-  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '使用 New API 登录' })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe('/auth/login');
   expect(new URL(page.url()).searchParams.get('next')).toBe('/workspace?create=1');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.getByLabel('邮箱', { exact: true }).focus();
-  await page.keyboard.press('Tab');
-  await expect(page.getByLabel('密码', { exact: true })).toBeFocused();
+  await expect(page.getByLabel('邮箱', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('密码', { exact: true })).toHaveCount(0);
+  const loginAction = page.getByRole('button', { name: '使用 New API 登录' });
+  await loginAction.focus();
+  await expect(loginAction).toBeFocused();
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('heading', { name: '登录工作台' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '使用 New API 登录' })).toBeVisible();
+  await expect(loginAction).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL('/workspace');
   await expect(page.getByRole('heading', { name: '项目工作台' })).toBeVisible();
@@ -1738,21 +1746,7 @@ test('独立登录页支持键盘和浏览器返回，不锁住工作台焦点',
 });
 
 test('匿名新建项目在登录后恢复表单，显式提交才创建并进入画布', async ({ page }) => {
-  // 登录和创建均命中模拟 API，不创建真实账户或项目。
-  await page.route('**/v1/auth/login', async (route) => {
-    await json(route, {
-      accessToken: 'e2e-synthetic-token',
-      tokenType: 'Bearer',
-      expiresIn: 3600,
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      user: {
-        id: 'e2e-user',
-        email: 'e2e@example.com',
-        role: 'user',
-        createdAt: '2026-01-01T00:00:00.000Z',
-      },
-    });
-  });
+  // 认证回跳和创建均使用本地夹具，不访问真实 New API 或创建真实项目。
   await page.goto(projectPath);
   await page.getByRole('button', { name: '账户菜单' }).click();
   await page.getByRole('menuitem', { name: '退出登录' }).click();
@@ -1769,14 +1763,29 @@ test('匿名新建项目在登录后恢复表单，显式提交才创建并进�
   });
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   await page.locator('.mc-workspace-heading').getByRole('button', { name: '新建项目' }).click();
-  const loginHeading = page.getByRole('heading', { name: '登录工作台' });
+  const loginHeading = page.getByRole('heading', { name: '使用 New API 登录' });
   await expect(loginHeading).toBeVisible();
   expect(new URL(page.url()).pathname).toBe('/auth/login');
   expect(new URL(page.url()).searchParams.get('next')).toBe('/workspace?create=1');
   expect(projectPosts).toHaveLength(0);
-  await page.getByLabel('邮箱', { exact: true }).fill('e2e@example.com');
-  await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
-  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByRole('button', { name: '使用 New API 登录' })).toBeEnabled();
+  await expect(page.getByLabel('邮箱', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('密码', { exact: true })).toHaveCount(0);
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      'multimodal-canvas:auth-session',
+      JSON.stringify({
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        user: {
+          id: 'e2e-user',
+          email: 'e2e@example.com',
+          role: 'user',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+  });
+  await page.goto('/workspace?create=1');
   const createDialog = page.getByRole('dialog', { name: '新建项目' });
   await expect(createDialog).toBeVisible();
   await expect(loginHeading).toHaveCount(0);
@@ -1786,9 +1795,7 @@ test('匿名新建项目在登录后恢复表单，显式提交才创建并进�
   await createDialog.getByRole('button', { name: '创建项目', exact: true }).click();
   await expect(page).toHaveURL(projectPath);
   await expect(page.locator('.react-flow')).toBeVisible();
-  expect(projectPosts).toEqual([
-    { authorization: 'Bearer e2e-synthetic-token', body: { name: project.name } },
-  ]);
+  expect(projectPosts).toEqual([{ authorization: undefined, body: { name: project.name } }]);
 });
 
 test('exports the workflow JSON and result ZIP from the header menu', async ({ page }) => {
@@ -2498,6 +2505,96 @@ test('模型目录首个有效清晰度比例和默认 10 秒写入新节点，�
     prompt: '目录参数必须保存并用于生成',
     ...savedNode.data.parameters,
   });
+});
+
+test('生成按钮在创建中与运行中都能停止，停止后可重新生成', async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  let releaseCreate!: () => void;
+  const creationGate = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const runs = new Map<string, RunRecord>();
+  const cancellations: string[] = [];
+  let created = 0;
+  await page.route('**/v1/nodes/*/runs', async (route) => {
+    const request = route.request();
+    expect(request.method()).toBe('POST');
+    const targetNodeId = new URL(request.url()).pathname.split('/')[3]!;
+    const body = request.postDataJSON();
+    const now = new Date().toISOString();
+    created += 1;
+    const run: RunRecord = {
+      id: `synthetic-stop-${created}`,
+      projectId: project.id,
+      targetNodeId,
+      status: 'running',
+      progress: 10,
+      attempt: 1,
+      provider: 'mock',
+      modelAlias: 'mock-image',
+      snapshot: {
+        projectId: project.id,
+        canvasRevision: 1,
+        targetNodeId,
+        modelAlias: 'mock-image',
+        parameters: body.parameters,
+        submittedAt: now,
+        nodes: [],
+        edges: [],
+        inputs: [],
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+    runs.set(run.id, run);
+    if (created === 1) await creationGate;
+    await json(route, { run }, 202);
+  });
+  await page.route('**/v1/runs/synthetic-stop-**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const id = path.split('/')[3]!;
+    const run = runs.get(id)!;
+    if (path.endsWith('/cancel')) {
+      expect(route.request().method()).toBe('POST');
+      cancellations.push(id);
+      runs.set(id, { ...run, status: 'cancelled', updatedAt: new Date().toISOString() });
+    }
+    await json(route, { run: runs.get(id) });
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建图片生成节点' }).click();
+  const editor = page.locator('.node-quick-editor');
+  await editor
+    .getByRole('textbox', { name: '提示词', exact: true })
+    .fill('Synthetic cancellation smoke test');
+  await editor.getByRole('button', { name: '生成', exact: true }).click();
+  await expect.poll(() => created).toBe(1);
+  const stop = editor.getByRole('button', { name: '停止生成', exact: true });
+  await expect(stop).toBeEnabled();
+  await page.screenshot({
+    path: info.outputPath('node-stop-creating.png'),
+    animations: 'disabled',
+  });
+  await stop.click();
+  await expect(editor.getByRole('button', { name: '停止中', exact: true })).toBeDisabled();
+  expect(cancellations).toEqual([]);
+  releaseCreate();
+  await expect.poll(() => cancellations).toEqual(['synthetic-stop-1']);
+  const generate = editor.getByRole('button', { name: '生成', exact: true });
+  await expect(generate).toBeEnabled();
+  await generate.click();
+  await expect.poll(() => created).toBe(2);
+  await expect(stop).toBeEnabled();
+  await stop.click();
+  await expect.poll(() => cancellations).toEqual(['synthetic-stop-1', 'synthetic-stop-2']);
+  await expect(generate).toBeEnabled();
+  expect(created).toBe(2);
+  expect(errors).toEqual([]);
 });
 
 test('四类节点都可以填写提示词、运行并显示对应结果预览', async ({ page }) => {

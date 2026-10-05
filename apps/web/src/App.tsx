@@ -32,6 +32,7 @@ import {
   Search,
   Settings,
   Redo2,
+  Square,
   Undo2,
   Upload,
   UserCircle,
@@ -211,6 +212,11 @@ import { SettingsPanel } from './workspace/SettingsPanel';
 import { AppearancePicker } from './workspace/AppearancePicker';
 import { WorkflowCanvas } from './workspace/WorkflowCanvas';
 import {
+  createNodeRunControlStore,
+  type NodeRunControlStore,
+  useNodeRunControl,
+} from './workspace/node-run-control';
+import {
   applyNodeGenerationDefaults,
   getAudioParameterIssue,
   resolvePreviousOperationSeed,
@@ -266,6 +272,22 @@ const FORK_NODE_ELEVATION_MS = 4000;
 
 type CanvasApiDocument = CanvasDocument;
 type LocalCanvasDraft = CanvasDocument;
+
+/** 画布运行相关异步任务共享的本地生命周期令牌。 */
+type RunPollingLifecycle = { active: boolean };
+
+/** 一次用户生成动作的本地边界；批量目标共享停止意图，但不关联其它节点历史 Run。 */
+type NodeRunOperation = {
+  id: string;
+  sourceNodeId: string;
+  nodeIds: Set<string>;
+  runs: Map<string, RunRecord>;
+  cancellingRunIds: Set<string>;
+  stopRequested: boolean;
+  lifecycle: RunPollingLifecycle;
+  authGeneration: number;
+  projectId: string;
+};
 
 /** 本地草稿按当前用户与项目隔离，旧版无归属草稿不自动导入其他账户。 */
 function canvasDraftKey(projectId: string, userId?: string) {
@@ -683,6 +705,9 @@ function WorkspaceApp({
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
+  /** 运行响应必须回到发起时的项目，不能按迟到响应覆盖当前工作区。 */
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
   /** 异步创建复刻节点时防止跨项目或账号的迟到版本查询写入。 */
   const recreationProjectRef = useRef(projectId);
   recreationProjectRef.current = projectId;
@@ -760,6 +785,13 @@ function WorkspaceApp({
   const saveRequestRef = useRef<Promise<void> | null>(null);
   const refreshedResultAssetKeysRef = useRef(new Set<string>());
   const runRecordsRef = useRef<Record<string, RunRecord>>({});
+  const nodeRunControlStoreRef = useRef<NodeRunControlStore | null>(null);
+  if (!nodeRunControlStoreRef.current) {
+    nodeRunControlStoreRef.current = createNodeRunControlStore();
+  }
+  const nodeRunControlStore = nodeRunControlStoreRef.current;
+  /** 节点只映射到当前由本页发起的操作；恢复的 Run 不伪装成本地批次。 */
+  const nodeRunOperationByNodeRef = useRef(new Map<string, NodeRunOperation>());
   /** 同节点写入锁覆盖上传、文本保存和生成提交的异步窗口。 */
   const nodeContentLocksRef = useRef(new Set<string>());
   const nodeRunLocksRef = useRef(new Set<string>());
@@ -772,7 +804,7 @@ function WorkspaceApp({
   /** 保存失败重试复用已上传资源，避免重复创建相同草稿资产。 */
   const pendingNodeUploadsRef = useRef(new Map<string, { file: File; asset: Asset }>());
   /** 当前画布生命周期的轮询令牌，离开画布时终止后台等待。 */
-  const runPollingLifecycleRef = useRef({ active: true });
+  const runPollingLifecycleRef = useRef<RunPollingLifecycle>({ active: true });
   const initializedRef = useRef(false);
   const nodesRef = useRef<AssetFlowNode[]>([]);
   /** 分叉节点抬升定时器，按节点 ID 记录，避免重复叠加。 */
@@ -838,6 +870,7 @@ function WorkspaceApp({
     return ids;
   }, [lockedNodeIds, nodes, runRecords]);
   const selectedNodeBusy = Boolean(selectedNode && busyNodeIds.has(selectedNode.id));
+  const selectedRunControl = useNodeRunControl(nodeRunControlStore, selectedNode?.id);
 
   /** 事件入口读取实时锁和运行记录，不能依赖按钮渲染时的闭包。 */
   const isNodeBusy = useCallback(
@@ -850,14 +883,34 @@ function WorkspaceApp({
   );
 
   useEffect(() => {
-    const lifecycle = { active: true };
+    runPollingLifecycleRef.current.active = false;
+    const lifecycle: RunPollingLifecycle = { active: true };
     runPollingLifecycleRef.current = lifecycle;
+    nodeRunControlStore.clearAll();
+    nodeRunOperationByNodeRef.current.clear();
+    nodeRunLocksRef.current.clear();
+    syncNodeLocks();
     return () => {
       lifecycle.active = false;
-      for (const timer of forkElevationTimersRef.current.values()) window.clearTimeout(timer);
-      forkElevationTimersRef.current.clear();
+      if (runPollingLifecycleRef.current === lifecycle) {
+        nodeRunControlStore.clearAll();
+        nodeRunOperationByNodeRef.current.clear();
+        nodeRunLocksRef.current.clear();
+        for (const timer of forkElevationTimersRef.current.values()) window.clearTimeout(timer);
+        forkElevationTimersRef.current.clear();
+      }
     };
-  }, []);
+  }, [authUser?.id, nodeRunControlStore, projectId, syncNodeLocks]);
+
+  /** 仅接纳仍属于当前账号、项目和画布生命周期的生成操作。 */
+  const isOperationCurrent = useCallback(
+    (operation: NodeRunOperation) =>
+      operation.lifecycle.active &&
+      operation.lifecycle === runPollingLifecycleRef.current &&
+      operation.authGeneration === getAuthSessionGeneration() &&
+      operation.projectId === projectIdRef.current,
+    [],
+  );
 
   useEffect(() => {
     if (settingsWasOpenRef.current && !showSettings) {
@@ -3286,6 +3339,15 @@ function WorkspaceApp({
       runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
       pendingRunUpdateRef.current.delete(nodeId);
       setRunRecords(runRecordsRef.current);
+      if (isActiveRunStatus(run.status)) {
+        const currentControl = nodeRunControlStore.getSnapshot(nodeId);
+        nodeRunControlStore.set(nodeId, {
+          stoppable: true,
+          stopRequested: currentControl.stopRequested || run.status === 'cancel_requested',
+        });
+      } else if (!nodeRunOperationByNodeRef.current.has(nodeId)) {
+        nodeRunControlStore.clear(nodeId);
+      }
       const resultAsset = run.status === 'succeeded' ? run.result?.asset : undefined;
       const resultAssetKey = resultAsset
         ? `${resultAsset.assetId}:${resultAsset.version ?? 0}:${resultAsset.contentUrl ?? ''}`
@@ -3347,7 +3409,139 @@ function WorkspaceApp({
           : updated;
       });
     },
-    [loadAssets, setNodes],
+    [loadAssets, nodeRunControlStore, setNodes],
+  );
+
+  /**
+   * 请求取消一个已经确认属于目标节点的 Run。服务端会再次校验项目权限。
+   * @param run 已知 Run；targetNodeId 必须与节点一致，避免误取消其它运行。
+   * @param nodeId 该操作的目标节点。
+   * @returns 服务端返回的 cancel_requested/cancelled 运行记录。
+   */
+  const cancelKnownRun = useCallback(
+    async (run: RunRecord, nodeId: string, operation: NodeRunOperation) => {
+      if (!isOperationCurrent(operation)) return undefined;
+      if (run.targetNodeId !== nodeId) throw new Error('运行目标与节点不一致，已拒绝停止');
+      const currentRun = runRecordsRef.current[nodeId];
+      const latestRun = currentRun?.id === run.id ? currentRun : run;
+      if (latestRun.status === 'cancel_requested' || !isActiveRunStatus(latestRun.status)) {
+        operation.runs.set(nodeId, latestRun);
+        return latestRun;
+      }
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/runs/${encodeURIComponent(latestRun.id)}/cancel`,
+        {
+          method: 'POST',
+        },
+        { expectedAuthGeneration: operation.authGeneration },
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        run?: RunRecord;
+        error?: string;
+      };
+      if (!isOperationCurrent(operation)) return undefined;
+      if (!response.ok || !result.run) throw new Error(result.error ?? '停止运行失败');
+      if (result.run.targetNodeId !== nodeId) throw new Error('停止响应目标与节点不一致');
+      updateNodeRunState(nodeId, result.run);
+      return result.run;
+    },
+    [isOperationCurrent, updateNodeRunState],
+  );
+
+  /** 当前操作已经取得的 Run 逐一取消；同一 Run 只发送一次取消请求。 */
+  const cancelOperationRuns = useCallback(
+    async (operation: NodeRunOperation) => {
+      if (!isOperationCurrent(operation)) return;
+      const requests: Promise<void>[] = [];
+      for (const [nodeId, run] of operation.runs) {
+        const currentRun = runRecordsRef.current[nodeId];
+        const latestRun = currentRun?.id === run.id ? currentRun : run;
+        if (latestRun !== run) operation.runs.set(nodeId, latestRun);
+        if (latestRun.status === 'cancel_requested' || !isActiveRunStatus(latestRun.status))
+          continue;
+        if (operation.cancellingRunIds.has(latestRun.id)) continue;
+        operation.cancellingRunIds.add(latestRun.id);
+        requests.push(
+          cancelKnownRun(latestRun, nodeId, operation)
+            .then((updated) => {
+              if (updated && isOperationCurrent(operation)) operation.runs.set(nodeId, updated);
+            })
+            .catch((error: unknown) => {
+              operation.cancellingRunIds.delete(latestRun.id);
+              throw error;
+            }),
+        );
+      }
+      const results = await Promise.allSettled(requests);
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    },
+    [cancelKnownRun, isOperationCurrent],
+  );
+
+  /** 节点入口统一停止当前本地操作，或取消恢复后该节点最新的活动 Run。 */
+  const handleStopNode = useCallback(
+    async (nodeId: string) => {
+      const operation = nodeRunOperationByNodeRef.current.get(nodeId);
+      if (operation) {
+        if (!isOperationCurrent(operation)) return;
+        operation.stopRequested = true;
+        for (const operationNodeId of operation.nodeIds) {
+          nodeRunControlStore.set(operationNodeId, { stoppable: true, stopRequested: true });
+        }
+        setNotice({
+          kind: 'success',
+          message: '已请求停止：未发起的生成不会继续，已知运行正在取消；不保证远端任务终止或退款',
+        });
+        try {
+          await cancelOperationRuns(operation);
+        } catch (error) {
+          if (!isOperationCurrent(operation)) return;
+          for (const operationNodeId of operation.nodeIds) {
+            nodeRunControlStore.set(operationNodeId, { stoppable: true, stopRequested: false });
+          }
+          setNotice({
+            kind: 'error',
+            message: `${error instanceof Error ? error.message : '停止运行失败'}；不保证远端任务终止或退款`,
+          });
+        }
+        return;
+      }
+      // 恢复的 Run 没有本地生成 operation；同步读取停止意图，拦住重渲染前的重复入口。
+      if (nodeRunControlStore.getSnapshot(nodeId).stopRequested) return;
+      const run = runRecordsRef.current[nodeId];
+      if (!run || run.targetNodeId !== nodeId || !isActiveRunStatus(run.status)) return;
+      if (run.status === 'cancel_requested') return;
+      const currentProjectId = projectIdRef.current;
+      if (!currentProjectId) return;
+      const standaloneOperation: NodeRunOperation = {
+        id: `node-stop-${Date.now()}-${nodeId}`,
+        sourceNodeId: nodeId,
+        nodeIds: new Set([nodeId]),
+        runs: new Map([[nodeId, run]]),
+        cancellingRunIds: new Set(),
+        stopRequested: true,
+        lifecycle: runPollingLifecycleRef.current,
+        authGeneration: getAuthSessionGeneration(),
+        projectId: currentProjectId,
+      };
+      nodeRunControlStore.set(nodeId, { stoppable: true, stopRequested: true });
+      setNotice({
+        kind: 'success',
+        message: '已请求停止运行；不保证远端任务终止或退款',
+      });
+      try {
+        await cancelKnownRun(run, nodeId, standaloneOperation);
+      } catch (error) {
+        if (!isOperationCurrent(standaloneOperation)) return;
+        nodeRunControlStore.set(nodeId, { stoppable: true, stopRequested: false });
+        setNotice({
+          kind: 'error',
+          message: `${error instanceof Error ? error.message : '停止运行失败'}；不保证远端任务终止或退款`,
+        });
+      }
+    },
+    [cancelKnownRun, cancelOperationRuns, isOperationCurrent, nodeRunControlStore],
   );
 
   useEffect(() => {
@@ -3434,17 +3628,22 @@ function WorkspaceApp({
   }, []);
 
   const fetchRun = useCallback(
-    async (runId: string, nodeId: string) => {
-      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${runId}`);
+    async (runId: string, nodeId: string, operation: NodeRunOperation) => {
+      if (!isOperationCurrent(operation)) throw new Error('已离开画布，停止等待运行结果');
+      const response = await apiFetch(`${API_BASE_URL}/v1/runs/${runId}`, undefined, {
+        expectedAuthGeneration: operation.authGeneration,
+      });
       const result = (await response.json().catch(() => ({}))) as {
         run?: RunRecord;
         error?: string;
       };
+      if (!isOperationCurrent(operation)) throw new Error('已离开画布，停止等待运行结果');
       if (!response.ok || !result.run) throw new Error(result.error ?? '运行状态加载失败');
+      if (result.run.targetNodeId !== nodeId) throw new Error('运行状态响应目标与节点不一致');
       updateNodeRunState(nodeId, result.run);
       return result.run;
     },
-    [updateNodeRunState],
+    [isOperationCurrent, updateNodeRunState],
   );
 
   // Restore the latest run/result for every node when a project is opened.
@@ -3487,11 +3686,10 @@ function WorkspaceApp({
   }, [isCanvasReady, projectId, updateNodeRunState]);
 
   const pollRun = useCallback(
-    async (runId: string, nodeId: string) => {
-      const lifecycle = runPollingLifecycleRef.current;
+    async (runId: string, nodeId: string, operation: NodeRunOperation) => {
       // 服务端控制生成超时；队列等待和自定义长任务不能被浏览器固定次数误判失败。
-      for (let attempt = 0; lifecycle.active; attempt += 1) {
-        const run = await fetchRun(runId, nodeId);
+      for (let attempt = 0; isOperationCurrent(operation); attempt += 1) {
+        const run = await fetchRun(runId, nodeId, operation);
         if (['succeeded', 'failed', 'cancelled'].includes(run.status)) return run;
         // SSE normally delivers updates immediately; this REST fallback backs
         // off gradually so an unavailable stream does not hammer the API.
@@ -3500,7 +3698,7 @@ function WorkspaceApp({
       }
       throw new Error('已离开画布，停止等待运行结果');
     },
-    [fetchRun],
+    [fetchRun, isOperationCurrent],
   );
 
   /**
@@ -3514,6 +3712,7 @@ function WorkspaceApp({
       node: AssetFlowNode,
       target: NodeRunTarget = 'sameNode',
       promptOverride?: NodeRunPromptOverride,
+      existingOperation?: NodeRunOperation,
     ) => {
       const currentNode = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
       try {
@@ -3564,6 +3763,19 @@ function WorkspaceApp({
           return;
         }
 
+        const operation: NodeRunOperation = {
+          id: `node-run-${Date.now()}-${source.id}`,
+          sourceNodeId: source.id,
+          nodeIds: new Set([source.id]),
+          runs: new Map(),
+          cancellingRunIds: new Set(),
+          stopRequested: false,
+          lifecycle: runPollingLifecycleRef.current,
+          authGeneration: getAuthSessionGeneration(),
+          projectId,
+        };
+        nodeRunOperationByNodeRef.current.set(source.id, operation);
+        nodeRunControlStore.set(source.id, { stoppable: true, stopRequested: false });
         nodeRunLocksRef.current.add(source.id);
         syncNodeLocks();
         try {
@@ -3591,6 +3803,7 @@ function WorkspaceApp({
               return;
             }
           }
+          if (!isOperationCurrent(operation) || operation.stopRequested) return;
 
           const mediaType = source.data.mediaType;
           const dimensions = getNewNodeDimensions(mediaType);
@@ -3702,14 +3915,22 @@ function WorkspaceApp({
 
           nodePreferenceNoticeRef.current = preferredModelNotice;
           commitForkGraph(child, extraEdges, source.id);
+          operation.nodeIds.add(child.id);
+          nodeRunOperationByNodeRef.current.set(child.id, operation);
+          nodeRunControlStore.set(child.id, { stoppable: true, stopRequested: false });
           setNotice(
             preferredModelNotice
               ? { kind: 'error', message: `已创建新节点；${preferredModelNotice}` }
               : { kind: 'success', message: `已创建${child.data.label}并开始生成` },
           );
-          await runNode(child, 'sameNode', runPromptOverride);
+          await runNode(child, 'sameNode', runPromptOverride, operation);
         } finally {
-          nodeRunLocksRef.current.delete(source.id);
+          for (const operationNodeId of operation.nodeIds) {
+            if (nodeRunOperationByNodeRef.current.get(operationNodeId) !== operation) continue;
+            nodeRunOperationByNodeRef.current.delete(operationNodeId);
+            nodeRunLocksRef.current.delete(operationNodeId);
+            nodeRunControlStore.clear(operationNodeId);
+          }
           syncNodeLocks();
         }
         return;
@@ -3737,11 +3958,28 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: (error as Error).message });
         return;
       }
+      const operation: NodeRunOperation = existingOperation ?? {
+        id: `node-run-${Date.now()}-${node.id}`,
+        sourceNodeId: node.id,
+        nodeIds: new Set([node.id]),
+        runs: new Map(),
+        cancellingRunIds: new Set(),
+        stopRequested: false,
+        lifecycle: runPollingLifecycleRef.current,
+        authGeneration: getAuthSessionGeneration(),
+        projectId,
+      };
+      if (!isOperationCurrent(operation)) return;
+      operation.nodeIds.add(node.id);
+      nodeRunOperationByNodeRef.current.set(node.id, operation);
+      nodeRunControlStore.set(node.id, {
+        stoppable: true,
+        stopRequested: operation.stopRequested,
+      });
       nodeRunLocksRef.current.add(node.id);
       syncNodeLocks();
       setNotice(null);
       let targets = [nodeSnapshot];
-      const batchLifecycle = runPollingLifecycleRef.current;
       const submitted: Array<{ node: AssetFlowNode; run: RunRecord }> = [];
       let submissionError: string | undefined;
       try {
@@ -3765,10 +4003,19 @@ function WorkspaceApp({
             setGroups(nextGroups);
           }
           canvasDirtyRef.current = true;
-          for (const targetNode of targets) nodeRunLocksRef.current.add(targetNode.id);
+          for (const targetNode of targets) {
+            nodeRunLocksRef.current.add(targetNode.id);
+            operation.nodeIds.add(targetNode.id);
+            nodeRunOperationByNodeRef.current.set(targetNode.id, operation);
+            nodeRunControlStore.set(targetNode.id, {
+              stoppable: true,
+              stopRequested: operation.stopRequested,
+            });
+          }
           syncNodeLocks();
         }
         await saveCanvas();
+        if (!isOperationCurrent(operation)) return;
         const plannedRequests = targets.map((target) => {
           const promptDocument = projectConnectedPromptDocument(
             {
@@ -3786,7 +4033,7 @@ function WorkspaceApp({
           return {
             path: `/v1/nodes/${target.id}/runs`,
             body: {
-              projectId,
+              projectId: operation.projectId,
               ...(target.data.modelAlias
                 ? {
                     modelAlias: target.data.modelAlias,
@@ -3803,9 +4050,17 @@ function WorkspaceApp({
           };
         });
         const confirmedRequests = prepareGenerationRequests(plannedRequests);
+        if (
+          confirmedRequests.some((request) => request.authGeneration !== operation.authGeneration)
+        )
+          return;
         // 每份只发送一次创建请求；中途拒绝或断网时停止后续提交，已取得运行 ID 的任务继续跟踪。
         for (const [targetIndex, targetNode] of targets.entries()) {
-          if (!batchLifecycle.active || batchLifecycle !== runPollingLifecycleRef.current) {
+          if (operation.stopRequested) {
+            submissionError = '已停止提交剩余任务';
+            break;
+          }
+          if (!isOperationCurrent(operation)) {
             submissionError = '已离开画布，停止提交剩余任务';
             break;
           }
@@ -3835,10 +4090,15 @@ function WorkspaceApp({
               error?: string;
               issues?: Array<{ message?: string }>;
             };
+            if (!isOperationCurrent(operation)) return;
             if (!response.ok || !result.run) {
               throw new Error(result.issues?.[0]?.message ?? result.error ?? '运行提交失败');
             }
+            if (result.run.targetNodeId !== nodeSnapshot.id) {
+              throw new Error('运行提交响应目标与节点不一致');
+            }
             submitted.push({ node: nodeSnapshot, run: result.run });
+            operation.runs.set(nodeSnapshot.id, result.run);
             if (nodeSnapshot.data.manualOutput) {
               nodesRef.current = nodesRef.current.map((candidate) =>
                 candidate.id === nodeSnapshot.id
@@ -3848,16 +4108,40 @@ function WorkspaceApp({
               setNodes(nodesRef.current);
               canvasDirtyRef.current = true;
               await saveCanvas();
+              if (!isOperationCurrent(operation)) return;
             }
             updateNodeRunState(nodeSnapshot.id, result.run, 'submitted');
+            if (operation.stopRequested) {
+              try {
+                await cancelOperationRuns(operation);
+              } catch (error) {
+                if (!isOperationCurrent(operation)) return;
+                for (const operationNodeId of operation.nodeIds) {
+                  if (nodeRunOperationByNodeRef.current.get(operationNodeId) === operation) {
+                    nodeRunControlStore.set(operationNodeId, {
+                      stoppable: true,
+                      stopRequested: false,
+                    });
+                  }
+                }
+                setNotice({
+                  kind: 'error',
+                  message: `${error instanceof Error ? error.message : '停止运行失败'}；可重试停止，但不保证远端任务终止或退款`,
+                });
+                submissionError = error instanceof Error ? error.message : '停止运行失败';
+                break;
+              }
+            }
           } catch (error) {
+            if (!isOperationCurrent(operation)) return;
             submissionError = error instanceof Error ? error.message : '运行提交失败';
             break;
           }
         }
         const completed = await Promise.allSettled(
-          submitted.map((entry) => pollRun(entry.run.id, entry.node.id)),
+          submitted.map((entry) => pollRun(entry.run.id, entry.node.id, operation)),
         );
+        if (!isOperationCurrent(operation)) return;
         const succeeded = completed.filter(
           (entry) => entry.status === 'fulfilled' && entry.value.status === 'succeeded',
         ).length;
@@ -3889,17 +4173,34 @@ function WorkspaceApp({
               },
         );
       } catch (error) {
+        if (!isOperationCurrent(operation)) return;
         setNotice({ kind: 'error', message: error instanceof Error ? error.message : '运行失败' });
       } finally {
-        for (const targetNode of targets) nodeRunLocksRef.current.delete(targetNode.id);
+        for (const operationNodeId of operation.nodeIds) {
+          if (nodeRunOperationByNodeRef.current.get(operationNodeId) !== operation) continue;
+          nodeRunOperationByNodeRef.current.delete(operationNodeId);
+          nodeRunLocksRef.current.delete(operationNodeId);
+          const currentRun = runRecordsRef.current[operationNodeId];
+          if (currentRun && isActiveRunStatus(currentRun.status)) {
+            nodeRunControlStore.set(operationNodeId, {
+              stoppable: true,
+              stopRequested: currentRun.status === 'cancel_requested',
+            });
+          } else {
+            nodeRunControlStore.clear(operationNodeId);
+          }
+        }
         syncNodeLocks();
       }
     },
     [
       commitForkGraph,
+      cancelOperationRuns,
       createGenerateNode,
+      isOperationCurrent,
       isNodeBusy,
       modelCatalog,
+      nodeRunControlStore,
       pollRun,
       promoteSourceNodeToGenerate,
       projectId,
@@ -4212,15 +4513,24 @@ function WorkspaceApp({
     });
 
     if (selectedNode) {
+      const stopping = selectedRunControl.stopRequested;
+      const stoppable = selectedNodeBusy && selectedRunControl.stoppable;
       commands.unshift({
         id: 'run-selected-node',
-        label: `运行「${selectedNode.data.label}」`,
+        label: `${stopping ? '停止中' : stoppable ? '停止' : '运行'}「${selectedNode.data.label}」`,
         category: '运行',
-        description: '使用当前提示词、模型和推理强度',
+        description: stoppable
+          ? '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
+          : '使用当前提示词、模型和推理强度',
         shortcut: 'R',
-        icon: <Play size={15} aria-hidden="true" />,
-        disabled: selectedNodeBusy || selectedNode.data.enabled === false,
-        onSelect: () => runNode(selectedNode),
+        icon: stoppable ? (
+          <Square size={15} aria-hidden="true" />
+        ) : (
+          <Play size={15} aria-hidden="true" />
+        ),
+        disabled:
+          stopping || (!stoppable && (selectedNodeBusy || selectedNode.data.enabled === false)),
+        onSelect: () => (stoppable ? void handleStopNode(selectedNode.id) : runNode(selectedNode)),
       });
     }
     return commands;
@@ -4236,6 +4546,8 @@ function WorkspaceApp({
     showMobileResources,
     handleToggleResourceCollapsed,
     selectedNodeBusy,
+    selectedRunControl,
+    handleStopNode,
     nodes,
     onNavigate,
     projectId,
@@ -4529,19 +4841,43 @@ function WorkspaceApp({
               <UiButton
                 type="button"
                 className="button button-primary"
-                disabled={!selectedNode || selectedNode.data.enabled === false || selectedNodeBusy}
+                disabled={
+                  !selectedNode ||
+                  selectedRunControl.stopRequested ||
+                  (!selectedRunControl.stoppable &&
+                    (selectedNode.data.enabled === false || selectedNodeBusy))
+                }
                 onClick={() => {
                   setShowMobileMenu(false);
-                  if (selectedNode) void runNode(selectedNode);
+                  if (!selectedNode) return;
+                  if (selectedNodeBusy && selectedRunControl.stoppable)
+                    void handleStopNode(selectedNode.id);
+                  else void runNode(selectedNode);
                 }}
-                title={selectedNode ? '运行选中的节点' : '先选择要运行的节点'}
+                title={
+                  selectedNodeBusy && selectedRunControl.stoppable
+                    ? '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
+                    : selectedNode
+                      ? '运行选中的节点'
+                      : '先选择要运行的节点'
+                }
               >
-                {selectedNodeBusy ? (
+                {selectedRunControl.stopRequested ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : selectedNodeBusy && selectedRunControl.stoppable ? (
+                  <Square size={15} />
+                ) : selectedNodeBusy ? (
                   <LoaderCircle className="spin" size={15} />
                 ) : (
                   <Play size={15} />
                 )}
-                {selectedNodeBusy ? '运行中' : '运行'}
+                {selectedRunControl.stopRequested
+                  ? '停止中'
+                  : selectedNodeBusy && selectedRunControl.stoppable
+                    ? '停止'
+                    : selectedNodeBusy
+                      ? '运行中'
+                      : '运行'}
               </UiButton>
             </div>
           </MobileWorkspacePanel>
@@ -4711,6 +5047,7 @@ function WorkspaceApp({
             assets={assets}
             models={reversePromptModels}
             busyNodeIds={busyNodeIds}
+            nodeRunControlStore={nodeRunControlStore}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
@@ -4739,6 +5076,7 @@ function WorkspaceApp({
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={handleRunNode}
+            onStopNode={handleStopNode}
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}

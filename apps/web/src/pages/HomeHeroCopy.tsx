@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowRight, AudioLines, FileImage, Film, GitBranch, Type } from 'lucide-react';
+import { ArrowDown, ArrowRight, FileImage, Film, GitBranch, Layers3 } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import { AppLink, appPaths } from '../routing';
 
@@ -19,20 +19,19 @@ export function HomeHeroCopy({ continueProject, onNavigate, reveal = false }: Ho
   return (
     <div className="mc-home-hero-copy mc-home-hero-overlay">
       <p className="mc-home-kicker">
-        <span /> IDEAS, CONNECTED.
+        <img src="/brand/lovetv-icon-192.png" alt="" aria-hidden="true" />
+        CREATE WITH CONTEXT.
       </p>
       <Heading id={reveal ? undefined : 'mc-home-title'} className="mc-home-title">
-        Multimodal
-        <br />
-        Canvas
+        LoveTV
         <span className="mc-home-title-period" aria-hidden="true">
           .
         </span>
       </Heading>
       <p className="mc-home-lead">
-        灵感有了新的形状。
+        连接已授权的 API，在同一张画布组织提示词与参考资料。
         <br />
-        把文字、图像与声音，连接成你的下一部作品。
+        生成图片和视频，复刻整条短视频，并用 Skill 与版本记录继续迭代。
       </p>
       <div className="mc-home-hero-actions">
         <AppLink
@@ -60,27 +59,27 @@ export function HomeHeroCopy({ continueProject, onNavigate, reveal = false }: Ho
       <dl className="mc-home-hero-facts">
         <div>
           <dt>
-            <Type size={14} aria-hidden="true" /> 文字
+            <GitBranch size={14} aria-hidden="true" /> API
           </dt>
-          <dd>构思</dd>
+          <dd>连接</dd>
         </div>
         <div>
           <dt>
             <FileImage size={14} aria-hidden="true" /> 图像
           </dt>
-          <dd>定格</dd>
-        </div>
-        <div>
-          <dt>
-            <AudioLines size={14} aria-hidden="true" /> 音频
-          </dt>
-          <dd>表达</dd>
+          <dd>生成</dd>
         </div>
         <div>
           <dt>
             <Film size={14} aria-hidden="true" /> 视频
           </dt>
-          <dd>成片</dd>
+          <dd>生成</dd>
+        </div>
+        <div>
+          <dt>
+            <Layers3 size={14} aria-hidden="true" /> 版本
+          </dt>
+          <dd>回看</dd>
         </div>
       </dl>
     </div>

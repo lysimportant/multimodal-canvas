@@ -15,24 +15,25 @@ export type ContactPageProps = {
 const capabilities = [
   {
     index: '01',
-    title: '多模态工作流',
-    description: '在无限画布中连接文字、图片、音频与视频节点，组织生成和转换链路。',
+    title: 'API 模型与多模态画布',
+    description: '连接已配置的 API 模型，在同一画布组织 AI 图片、AI 视频及文字、音频节点。',
     icon: Network,
   },
   {
     index: '02',
-    title: '真实产物回显',
-    description: '直接查看文本、图像、音频和视频结果，并保留运行状态与错误信息。',
-    icon: Film,
+    title: '提示词 Skill 与参考资料',
+    description: '把提示词 Skill、参考资料和资源引用带入生成流程，并保留明确的操作上下文。',
+    icon: FileImage,
   },
   {
     index: '03',
-    title: '模型与资产管理',
-    description: '统一配置模型入口，追踪生成资产的来源、版本、参数和项目归属。',
-    icon: FileImage,
+    title: '短视频复刻与素材版本',
+    description: '按现有流程分析整条短视频、绑定参考素材，并追踪素材版本、运行状态和项目归属。',
+    icon: Film,
   },
 ] as const;
 
+/** 联系页只透传站内导航回调，不改变现有路由或访问权限。 */
 export function ContactPage({ onNavigate }: ContactPageProps) {
   return (
     <PageFrame route={contactRoute} onNavigate={onNavigate} mainClassName="mc-contact-page">
@@ -40,15 +41,18 @@ export function ContactPage({ onNavigate }: ContactPageProps) {
         <header className="mc-contact-heading">
           <p>CONTACT &amp; SUPPORT</p>
           <h1>联系我们</h1>
-          <span>Multimodal Canvas 面向需要编排多模型、多媒体生成流程的创作者与团队。</span>
+          <span>
+            LoveTV 是连接 API 模型的 AI 图片、AI 视频多模态画布，面向需要组织创作流程的个人与团队。
+          </span>
         </header>
 
         <section className="mc-contact-layout" aria-labelledby="mc-contact-capabilities-title">
           <div className="mc-contact-introduction">
             <p>PRODUCT CAPABILITIES</p>
-            <h2 id="mc-contact-capabilities-title">把分散的生成步骤整理成可追踪的工作流</h2>
+            <h2 id="mc-contact-capabilities-title">把模型、提示词和参考素材放进同一条可追踪流程</h2>
             <span>
-              从参考素材、提示词和模型选择，到异步生成、结果回看与资产归档，项目中的每一步都保留明确上下文。
+              LoveTV 已提供提示词
+              Skill、参考资料、短视频复刻和素材版本等能力，让生成、回看与归档保留明确上下文。
             </span>
 
             <div className="mc-contact-capabilities">
@@ -71,7 +75,7 @@ export function ContactPage({ onNavigate }: ContactPageProps) {
           <aside className="mc-contact-panel" aria-labelledby="mc-contact-channel-title">
             <span className="mc-contact-panel-index">SUPPORT / 01</span>
             <h2 id="mc-contact-channel-title">产品咨询与问题反馈</h2>
-            <p>如需反馈使用问题、讨论模型接入或了解项目能力，请通过邮件联系。</p>
+            <p>如需反馈使用问题、了解画布能力或讨论已配置模型的使用，请通过邮件联系。</p>
             <a className="mc-contact-email" href="mailto:lysimportant@Outlook.com">
               <Mail size={18} aria-hidden="true" />
               <span>

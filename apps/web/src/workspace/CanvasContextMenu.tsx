@@ -10,6 +10,7 @@ import {
   Redo2,
   Search,
   Sparkles,
+  Square,
   Trash2,
   Undo2,
   Upload,
@@ -30,6 +31,7 @@ import {
 } from '../connection-utils';
 import { mediaIcons, mediaLabels } from './contracts';
 import { nodeHasPrompt, type NodeRunTarget } from './fork-generate-node';
+import { type NodeRunControlStore, useNodeRunControl } from './node-run-control';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 
 import './canvas-context-menu.css';
@@ -76,6 +78,8 @@ type CanvasContextMenuProps = {
   busy: boolean;
   canDeleteNode: boolean;
   onRunNode: (node: AssetFlowNode, target?: NodeRunTarget) => void;
+  onStopNode?: (nodeId: string) => void | Promise<void>;
+  runControlStore?: NodeRunControlStore;
   onCenterNode: (node: AssetFlowNode) => void;
   onNodeEnabledChange: (nodeId: string, enabled: boolean) => void;
   onDeleteNode: (nodeId: string) => void;
@@ -107,6 +111,10 @@ type CanvasContextMenuProps = {
 /** 使用 Ant Design 菜单处理定位与键盘导航，保留画布动作和关闭原因。 */
 export function CanvasContextMenu(props: CanvasContextMenuProps) {
   const { target, onClose } = props;
+  const runControl = useNodeRunControl(
+    props.runControlStore,
+    target.kind === 'node' ? target.node.id : undefined,
+  );
   const tooltipId = useId();
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
   const [focusedItem, setFocusedItem] = useState<string | null>(null);
@@ -172,7 +180,7 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
     });
   const items = withTooltips(
     target.kind === 'node'
-      ? nodeMenuItems(props, target.node, runAction)
+      ? nodeMenuItems(props, target.node, runControl, runAction)
       : target.kind === 'connection-drop'
         ? connectionDropItems(target, (option) =>
             runAction(() =>
@@ -286,6 +294,7 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
 function nodeMenuItems(
   props: CanvasContextMenuProps,
   node: AssetFlowNode,
+  runControl: ReturnType<typeof useNodeRunControl>,
   run: (action: () => void) => void,
 ): MenuProps['items'] {
   const enabled = node.data.enabled !== false;
@@ -293,6 +302,8 @@ function nodeMenuItems(
     node.data.runStatus ?? '',
   );
   const unavailable = !enabled || props.busy || running;
+  const stoppable = runControl.stoppable || running;
+  const stopRequested = runControl.stopRequested || node.data.runStatus === 'cancel_requested';
   return [
     {
       type: 'group',
@@ -300,21 +311,27 @@ function nodeMenuItems(
       label: '节点操作',
       children: [
         menuItem(
-          'run',
-          Play,
-          '开始生成',
-          '使用当前配置生成，结果保留在此节点',
-          () => run(() => props.onRunNode(node)),
-          unavailable,
+          stoppable ? 'stop' : 'run',
+          stoppable ? Square : Play,
+          stopRequested ? '停止中' : stoppable ? '停止生成' : '开始生成',
+          stoppable
+            ? '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
+            : '使用当前配置生成，结果保留在此节点',
+          () => run(() => (stoppable ? void props.onStopNode?.(node.id) : props.onRunNode(node))),
+          stoppable ? !props.onStopNode || stopRequested : unavailable,
         ),
-        menuItem(
-          'run-new',
-          CopyPlus,
-          '生成到新节点',
-          '保留当前节点，将结果生成到新节点',
-          () => run(() => props.onRunNode(node, 'newNode')),
-          unavailable,
-        ),
+        ...(stoppable
+          ? []
+          : [
+              menuItem(
+                'run-new',
+                CopyPlus,
+                '生成到新节点',
+                '保留当前节点，将结果生成到新节点',
+                () => run(() => props.onRunNode(node, 'newNode')),
+                unavailable,
+              ),
+            ]),
         ...(props.onOpenRequestPrompt
           ? [
               menuItem('prompt', FileText, '提示词', '查看提示词记录与资源分析', () =>

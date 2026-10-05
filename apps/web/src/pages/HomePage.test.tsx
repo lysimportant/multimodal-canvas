@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { clearAuthSession } from '../auth-client';
 import {
   useWorkspacePreferences,
   workspacePreferenceDefaults,
@@ -13,21 +14,29 @@ import { HomePage } from './HomePage';
 describe('HomePage', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '/');
+    window.localStorage.clear();
+    clearAuthSession();
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
   });
 
   afterEach(() => {
     cleanup();
+    clearAuthSession();
+    vi.unstubAllGlobals();
     useWorkspacePreferences.setState(workspacePreferenceDefaults);
   });
 
   it('presents the product, declared public demo media, and numbered capabilities', () => {
     render(<HomePage continueProject={{ id: 'project / 1', name: '雨夜短片' }} />);
 
-    const hero = screen.getByRole('region', { name: 'Multimodal Canvas' });
+    const hero = screen.getByRole('region', { name: 'LoveTV' });
     expect(hero).toHaveClass('mc-home-hero-immersive');
     expect(hero.querySelector('.mc-home-hero-overlay')).toBeVisible();
-    expect(screen.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+    expect(screen.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible();
+    expect(hero.querySelector('.mc-home-kicker img')).toHaveAttribute(
+      'src',
+      '/brand/lovetv-icon-192.png',
+    );
     expect(screen.getByRole('link', { name: /进入工作台/ })).toHaveAttribute('href', '/workspace');
     expect(screen.getByRole('link', { name: '继续「雨夜短片」' })).toHaveAttribute(
       'href',
@@ -54,10 +63,32 @@ describe('HomePage', () => {
     for (const number of ['01', '02', '03', '04']) {
       expect(screen.getByText(number)).toBeVisible();
     }
-    expect(screen.getByText('field-study.mp4')).toBeVisible();
+    expect(screen.getByText('LOVE TV / PUBLIC DEMO')).toBeVisible();
     expect(hero.querySelector(':scope > .mc-home-scene-caption')).toHaveTextContent(
       '公开素材 · 独立演示',
     );
+    expect(screen.getByRole('heading', { name: '连接 API，也接住参考资料。' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'AI 生成图片，也生成视频。' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '短视频复刻，分析和生成分开确认。' })).toBeVisible();
+    expect(
+      screen.getByRole('heading', { name: '提示词 Skill 可复用，版本管理可回看。' }),
+    ).toBeVisible();
+    expect(screen.getByText('LoveTV 会自动调用 API 或开始生成吗？')).toBeVisible();
+
+    const gallery = screen.getByLabelText('LoveTV 生成作品预览');
+    expect(within(gallery).getByRole('img', { name: '公开自然观察演示画面' })).toBeVisible();
+    expect(within(gallery).getAllByRole('img')).toHaveLength(4);
+    expect(gallery).toHaveTextContent('登录后可显示你自己的生成缩略图');
+  });
+
+  it('keeps anonymous visits on public media without requesting account assets', () => {
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetcher);
+
+    render(<HomePage />);
+
+    expect(screen.getByLabelText('LoveTV 生成作品预览')).toHaveTextContent('公开演示与私有占位');
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('omits the continue action without a project and exposes navigation callbacks', () => {

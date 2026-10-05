@@ -151,6 +151,7 @@ describe('OpenAPI endpoint', () => {
     const response = await app.inject({ method: 'GET', url: '/documentation/json' });
 
     expect(response.statusCode).toBe(200);
+    expect(response.json().info.title).toBe('LoveTV API');
     expect(response.json().paths['/v1/runs/{runId}/retry']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/runs']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/models/defaults']).toBeDefined();

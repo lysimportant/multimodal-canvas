@@ -16,13 +16,16 @@
 	}
 	@api path /v1/* /health /documentation /documentation/*
 	handle @api {
+		header X-Robots-Tag "noindex, nofollow"
 		reverse_proxy api:3000 {
 			flush_interval -1
 		}
 	}
 	handle {
-		try_files {path} /index.html
-		@index path /index.html
+		@private not path / /index.html /contact /contact/ /contact/index.html /assets/* /brand/* /demo/* /robots.txt /sitemap.xml /site.webmanifest
+		header @private X-Robots-Tag "noindex, nofollow"
+		try_files {path} {path}/index.html /index.html
+		@index path / /index.html /contact /contact/ /contact/index.html
 		header @index Cache-Control no-cache
 		file_server
 	}

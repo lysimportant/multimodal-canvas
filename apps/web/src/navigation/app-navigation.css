@@ -70,16 +70,13 @@
 }
 
 .mc-navigation-brand-mark {
-  align-items: center;
-  background: var(--mc-text-strong, #172033);
-  color: var(--mc-surface, #ffffff);
-  display: inline-flex;
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 5px;
+  display: block;
+  filter: none;
   flex: 0 0 30px;
-  font-size: 10px;
-  font-weight: 800;
   height: 30px;
-  justify-content: center;
-  letter-spacing: 0;
+  object-fit: cover;
   width: 30px;
 }
 

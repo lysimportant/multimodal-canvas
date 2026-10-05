@@ -38,6 +38,8 @@ describe('公开资源分享预览', () => {
       'src',
       `http://localhost:3000/v1/asset-shares/content?token=${token}`,
     );
+    expect(screen.getByText('LoveTV · 共享资源')).toBeVisible();
+    expect(document.title).toBe('分享的作品 · LoveTV 共享资源');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
       `http://localhost:3000/v1/asset-shares?token=${token}`,
@@ -84,6 +86,7 @@ describe('公开资源分享预览', () => {
     vi.stubGlobal('fetch', fetchMock);
     const view = render(<PublicAssetSharePage token="" />);
     expect(screen.getByRole('alert')).toHaveTextContent('分享链接不完整');
+    expect(document.title).toBe('共享资源 · LoveTV');
     expect(fetchMock).not.toHaveBeenCalled();
     view.rerender(<PublicAssetSharePage token={token} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('分享链接已失效');
@@ -165,5 +168,17 @@ describe('公开资源分享预览', () => {
     view.unmount();
     expect(meta.content).toBe('same-origin');
     meta.remove();
+  });
+
+  it('退出分享页时不覆盖全局路由写入的新标题', async () => {
+    document.title = '进入分享页前的标题';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(makeShare())));
+    const view = render(<PublicAssetSharePage token={token} />);
+    await waitFor(() => expect(screen.getByRole('img')).toBeVisible());
+
+    document.title = 'LoveTV · 首页';
+    view.unmount();
+
+    expect(document.title).toBe('LoveTV · 首页');
   });
 });

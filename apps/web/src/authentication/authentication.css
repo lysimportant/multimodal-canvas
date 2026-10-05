@@ -48,15 +48,14 @@
   overflow-wrap: anywhere;
 }
 .auth-entry-brand-mark {
-  display: grid;
-  place-items: center;
+  border: 1px solid var(--mc-border-strong, #d3dce0);
+  border-radius: 7px;
+  display: block;
+  filter: none;
   width: 34px;
   height: 34px;
   flex: 0 0 34px;
-  background: var(--mc-text-strong, #172033);
-  color: var(--mc-surface, #fff);
-  font-size: 12px;
-  font-weight: 750;
+  object-fit: cover;
 }
 .auth-entry-back {
   position: absolute;

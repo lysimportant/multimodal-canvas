@@ -4,7 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#eff4ed" />
-    <title>Multimodal Canvas</title>
+    <link rel="icon" href="/brand/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" href="/brand/lovetv-icon-48.png" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <!--lovetv-meta:start-->
+    <title>LoveTV</title>
+    <meta
+      name="description"
+      content="LoveTV 是连接 API 模型的多模态创作画布，支持 AI 生成图片、AI 生成视频、参考资料、提示词 Skill 和素材版本管理。"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://love.lolicon.beer/" />
+    <!--lovetv-meta:end-->
+    <script>
+      /** 私有与未知入口在主模块加载前禁止收录，不将查询参数或令牌写入元数据。 */
+      if (!['/', '/contact'].includes(location.pathname.replace(/\/+$/, '') || '/')) {
+        document.querySelector('meta[name="robots"]').content = 'noindex, nofollow';
+        document.querySelector('link[rel="canonical"]')?.remove();
+        document.querySelector('meta[property="og:url"]')?.remove();
+        document.getElementById('lovetv-structured-data')?.remove();
+      }
+    </script>
     <script>
       // 首屏不等待应用脚本；仅读取既有主题偏好，存储不可用时沿用默认主题。
       try {
@@ -69,11 +90,36 @@
           sans-serif;
         text-align: center;
       }
+      .app-startup-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 700;
+      }
+      .app-startup-brand img {
+        border-radius: 12px;
+      }
+      .lovetv-static-intro {
+        box-sizing: border-box;
+        max-width: 920px;
+        padding: 40px 24px;
+        margin: 0 auto;
+        color: var(--startup-text);
+        font:
+          16px/1.8 system-ui,
+          sans-serif;
+      }
+      .lovetv-static-intro img {
+        border-radius: 16px;
+      }
+      .lovetv-static-intro a {
+        color: var(--startup-accent);
+      }
       .app-startup p,
-      .app-startup h1 {
+      .app-startup h2 {
         margin: 0;
       }
-      .app-startup h1 {
+      .app-startup h2 {
         font-size: 22px;
         font-weight: 600;
       }
@@ -128,9 +174,11 @@
   <body>
     <div id="root">
       <main id="app-startup" class="app-startup" aria-labelledby="app-startup-title">
-        <p>Multimodal Canvas</p>
+        <p class="app-startup-brand">
+          <img src="/brand/lovetv-icon-192.png" alt="" width="48" height="48" />LoveTV
+        </p>
         <div role="status" aria-live="polite" aria-atomic="true">
-          <h1 id="app-startup-title">正在加载工作区</h1>
+          <h2 id="app-startup-title">正在加载工作区</h2>
           <p id="app-startup-detail">正在准备界面，请稍候…</p>
         </div>
         <div id="app-startup-track" aria-hidden="true">
@@ -138,6 +186,15 @@
         </div>
         <button id="app-startup-retry" type="button" hidden>重新加载</button>
       </main>
+      <!--lovetv-intro:start-->
+      <section class="lovetv-static-intro" aria-label="LoveTV 产品介绍">
+        <h1>LoveTV：AI 生成图片与 AI 生成视频</h1>
+        <p>
+          连接 API 模型，在多模态画布上组织参考资料、提示词和生成资源，保留素材版本与创作上下文。
+        </p>
+        <a href="/contact">了解 LoveTV 与使用支持</a>
+      </section>
+      <!--lovetv-intro:end-->
       <noscript>
         <style>
           #app-startup {
@@ -145,7 +202,7 @@
           }
         </style>
         <main class="app-startup">
-          <h1>请启用 JavaScript</h1>
+          <h2>请启用 JavaScript</h2>
           <p>工作区需要 JavaScript 才能运行，请在浏览器中启用后重新加载。</p>
         </main>
       </noscript>

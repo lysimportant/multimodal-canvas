@@ -14,6 +14,12 @@ import {
   NodeVideoRecreationContext,
 } from './AssetNode';
 import { GenerationBatchViewContext } from './generation-batch-view';
+import {
+  createNodeRunControlStore,
+  NodeRunControlStoreContext,
+  NodeStopContext,
+  useNodeRunControl,
+} from './node-run-control';
 
 /** 记录参数编辑器真正进入渲染的次数，几何拖动不应重新构造整套表单。 */
 const quickEditorRender = vi.hoisted(() => vi.fn());
@@ -353,6 +359,36 @@ afterEach(() => {
 });
 
 describe('WorkflowCanvas context menu', () => {
+  it('快捷编辑器和节点菜单都把停止动作交回当前节点', async () => {
+    const user = userEvent.setup();
+    const onStopNode = vi.fn();
+    const nodeRunControlStore = createNodeRunControlStore();
+    nodeRunControlStore.set(generateNode.id, { stoppable: true, stopRequested: false });
+    const node = {
+      ...generateNode,
+      data: { ...generateNode.data, prompt: 'Draw a boat.', runStatus: 'processing' as const },
+    };
+    const props = createProps({
+      nodes: [node],
+      selectedNode: node,
+      busyNodeIds: new Set([node.id]),
+      nodeRunControlStore,
+      onStopNode,
+    });
+    render(<WorkflowCanvas {...props} />);
+
+    await user.click(screen.getByRole('button', { name: '停止生成' }));
+    expect(onStopNode).toHaveBeenCalledExactlyOnceWith(node.id);
+    fireEvent.contextMenu(screen.getByTestId(`canvas-node-${node.id}`), {
+      clientX: 160,
+      clientY: 130,
+    });
+    await user.click(screen.getByRole('menuitem', { name: '停止生成' }));
+    expect(onStopNode).toHaveBeenCalledTimes(2);
+    expect(onStopNode).toHaveBeenLastCalledWith(node.id);
+    expect(props.onRunNode).not.toHaveBeenCalled();
+  });
+
   it('底部复刻入口先展示流程，明确创建后才将视频来源交回 App，不调用生成', async () => {
     const video = {
       ...sourceNode,
@@ -719,7 +755,7 @@ describe('WorkflowCanvas context menu', () => {
   });
 
   it.each(['queued', 'preparing', 'running', 'processing', 'cancel_requested'] as const)(
-    '恢复 %s 时同步禁用快捷编辑器和已经打开的右键菜单，终态恢复可用',
+    '恢复 %s 时同步切换快捷编辑器和已打开菜单的停止入口，终态恢复生成',
     (status) => {
       const node: AssetFlowNode = {
         ...generateNode,
@@ -735,9 +771,12 @@ describe('WorkflowCanvas context menu', () => {
           },
         },
       };
+      const nodeRunControlStore = createNodeRunControlStore();
       const props = createProps({
         nodes: [node],
         selectedNode: node,
+        nodeRunControlStore,
+        onStopNode: vi.fn(),
         models: [
           {
             id: 'image-model',
@@ -751,18 +790,29 @@ describe('WorkflowCanvas context menu', () => {
       const view = render(<WorkflowCanvas {...props} />);
       fireEvent.contextMenu(screen.getByTestId('canvas-node-' + node.id));
       const active = { ...node, data: { ...node.data, runStatus: status } };
+      act(() =>
+        nodeRunControlStore.set(node.id, {
+          stoppable: true,
+          stopRequested: status === 'cancel_requested',
+        }),
+      );
       view.rerender(<WorkflowCanvas {...props} nodes={[active]} selectedNode={active} />);
-      expect(screen.getByRole('button', { name: '生成中' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
-      expect(screen.getByRole('menuitem', { name: '开始生成' })).toHaveAttribute(
-        'aria-disabled',
-        'true',
-      );
-      expect(screen.getByRole('menuitem', { name: '生成到新节点' })).toHaveAttribute(
-        'aria-disabled',
-        'true',
-      );
+      const stopName = status === 'cancel_requested' ? '停止中' : '停止生成';
+      const stopButton = screen.getByRole('button', { name: stopName });
+      const stopMenu = screen.getByRole('menuitem', { name: stopName });
+      if (status === 'cancel_requested') {
+        expect(stopButton).toBeDisabled();
+        expect(stopMenu).toHaveAttribute('aria-disabled', 'true');
+      } else {
+        expect(stopButton).toBeEnabled();
+        expect(stopMenu).not.toHaveAttribute('aria-disabled', 'true');
+      }
+      expect(screen.queryByRole('button', { name: '新节点' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: '开始生成' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: '生成到新节点' })).not.toBeInTheDocument();
+      expect(props.onRunNode).not.toHaveBeenCalled();
       const completed = { ...node, data: { ...node.data, runStatus: 'succeeded' as const } };
+      act(() => nodeRunControlStore.clear(node.id));
       view.rerender(<WorkflowCanvas {...props} nodes={[completed]} selectedNode={completed} />);
       expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
       expect(screen.getByRole('menuitem', { name: '开始生成' })).not.toHaveAttribute(
@@ -814,7 +864,7 @@ describe('WorkflowCanvas context menu', () => {
     expect(source.data.label).toBe('图片来源节点');
   });
 
-  it('运行中的节点禁用生成与图片编辑，仍可查看提示词', async () => {
+  it('未接入停止回调时运行节点禁用停止和图片编辑，仍可查看提示词', async () => {
     const node = {
       ...generateNode,
       data: {
@@ -831,7 +881,9 @@ describe('WorkflowCanvas context menu', () => {
     });
     render(<WorkflowCanvas {...props} />);
     fireEvent.contextMenu(screen.getByTestId(`canvas-node-${node.id}`));
-    for (const name of ['开始生成', '生成到新节点', '修改图片']) {
+    expect(screen.queryByRole('menuitem', { name: '开始生成' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: '生成到新节点' })).not.toBeInTheDocument();
+    for (const name of ['停止生成', '修改图片']) {
       const item = screen.getByRole('menuitem', { name });
       expect(item).toHaveAttribute('aria-disabled', 'true');
       await userEvent.click(item);
@@ -1660,8 +1712,83 @@ const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlo
 
 /** 每次节点内容提交的计数器；测试不触发项目保存或真实生成。 */
 const dragNodeRender = vi.fn();
+const runControlProbeRender = vi.fn();
+
+/** 订阅单节点停止状态，验证外部存储更新不会广播到其它节点。 */
+const RunControlProbe = memo(function RunControlProbe({
+  id,
+  data,
+}: {
+  id: string;
+  data: AssetFlowNode['data'];
+}) {
+  const store = useContext(NodeRunControlStoreContext);
+  const stop = useContext(NodeStopContext);
+  const runControl = useNodeRunControl(store, id);
+  runControlProbeRender(id, runControl, store, stop);
+  return (
+    <button type="button" onClick={() => stop?.(id)}>
+      {'停止 ' + data.label}
+    </button>
+  );
+});
 
 describe('WorkflowCanvas 拖动性能', () => {
+  it('坐标变化保持 onStopNode 和 nodeRunControlStore 引用稳定，状态只更新目标节点', () => {
+    reactFlowMock.nodeProbe = RunControlProbe;
+    const nodeRunControlStore = createNodeRunControlStore();
+    const onStopNode = vi.fn();
+    const nodes = [
+      generateNode,
+      { ...sourceNode, id: 'node-unrelated', data: { ...sourceNode.data, label: '未运行节点' } },
+    ];
+    const props = createProps({ nodes, nodeRunControlStore, onStopNode });
+    const view = render(<WorkflowCanvas {...props} />);
+    runControlProbeRender.mockClear();
+
+    for (let frame = 1; frame <= 12; frame += 1) {
+      view.rerender(
+        <WorkflowCanvas
+          {...props}
+          nodes={[
+            {
+              ...generateNode,
+              position: { x: frame * 10, y: frame * 5 },
+              dragging: true,
+            },
+            nodes[1],
+          ]}
+        />,
+      );
+    }
+    const coordinateCalls = runControlProbeRender.mock.calls.filter(
+      ([id]) => id === generateNode.id,
+    );
+    expect(coordinateCalls).toHaveLength(12);
+    for (const [, , observedStore, observedStop] of coordinateCalls) {
+      expect(observedStore).toBe(nodeRunControlStore);
+      expect(observedStop).toBe(onStopNode);
+    }
+    expect(runControlProbeRender.mock.calls.filter(([id]) => id === 'node-unrelated')).toHaveLength(
+      0,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '停止 图片生成节点' }));
+    expect(onStopNode).toHaveBeenCalledExactlyOnceWith(generateNode.id);
+
+    runControlProbeRender.mockClear();
+    act(() => nodeRunControlStore.set(generateNode.id, { stoppable: true, stopRequested: false }));
+    expect(runControlProbeRender).toHaveBeenCalledTimes(1);
+    expect(runControlProbeRender).toHaveBeenLastCalledWith(
+      generateNode.id,
+      expect.objectContaining({ stoppable: true, stopRequested: false }),
+      nodeRunControlStore,
+      onStopNode,
+    );
+    expect(runControlProbeRender.mock.calls.filter(([id]) => id === 'node-unrelated')).toHaveLength(
+      0,
+    );
+  });
+
   it('位置帧不更换 store 配置和事件引用，稳定入口仍读取最新节点变化回调', () => {
     reactFlowMock.nodeProbe = DragRenderProbe;
     const props = createProps({

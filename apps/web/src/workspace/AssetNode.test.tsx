@@ -119,6 +119,11 @@ import {
   type NodeImageEditHandler,
   type NodePromptHandler,
 } from './AssetNode';
+import {
+  createNodeRunControlStore,
+  NodeRunControlStoreContext,
+  NodeStopContext,
+} from './node-run-control';
 
 /** 更新测试视口并广播一次变更；调用返回前完成由订阅触发的 React 更新。 */
 function updateViewport(patch: Partial<Pick<typeof viewportMock, 'x' | 'y' | 'zoom'>>) {
@@ -1348,6 +1353,34 @@ describe('AssetNode result presentation', () => {
     expect(screen.getByRole('status')).toHaveTextContent('处理中');
     expect(screen.getByLabelText('运行进度 48%')).toHaveTextContent('48%');
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
+  });
+
+  it('运行占位的停止按钮只调用当前节点处理器，并在停止意图提交后禁用', async () => {
+    const node = makeNode({ runStatus: 'processing', runProgress: 48 });
+    const onStop = vi.fn();
+    const runControlStore = createNodeRunControlStore();
+    runControlStore.set(node.id, { stoppable: true, stopRequested: false });
+    render(
+      <NodeRunControlStoreContext.Provider value={runControlStore}>
+        <NodeStopContext.Provider value={onStop}>
+          <AssetNode
+            {...({ id: node.id, data: node.data, selected: false } as NodeProps<AssetFlowNode>)}
+          />
+        </NodeStopContext.Provider>
+      </NodeRunControlStoreContext.Provider>,
+    );
+
+    const stop = screen.getByRole('button', { name: '停止' });
+    expect(stop).toBeEnabled();
+    expect(stop).toHaveAttribute(
+      'title',
+      '停止本地后续提交并取消已知运行；不保证远端任务终止或退款',
+    );
+    await userEvent.click(stop);
+    expect(onStop).toHaveBeenCalledExactlyOnceWith(node.id);
+
+    act(() => runControlStore.set(node.id, { stoppable: true, stopRequested: true }));
+    expect(screen.getByRole('button', { name: '停止中' })).toBeDisabled();
   });
 
   it('shows the generation error and invokes the optional retry callback', async () => {

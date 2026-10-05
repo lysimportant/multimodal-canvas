@@ -120,8 +120,10 @@ describe('contact page route target', () => {
     render(<ContactPage />);
 
     expect(screen.getByRole('heading', { level: 1, name: '联系我们' })).toBeVisible();
-    expect(screen.getByText('多模态工作流')).toBeVisible();
-    expect(screen.getByText('真实产物回显')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'API 模型与多模态画布' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '提示词 Skill 与参考资料' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '短视频复刻与素材版本' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '产品咨询与问题反馈' })).toBeVisible();
     expect(screen.getByRole('link', { name: /lysimportant@Outlook.com/i })).toHaveAttribute(
       'href',
       'mailto:lysimportant@Outlook.com',

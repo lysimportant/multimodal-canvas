@@ -17,10 +17,10 @@ const revealConnections = [
 
 /** 仅表现构思与媒体之间的结构关系，不代表实际任务、模型能力或运行状态。 */
 const revealNodes = [
-  { x: 616, y: 102, width: 188, height: 64, label: 'REFERENCE', accent: '#a2c9b7' },
-  { x: 592, y: 342, width: 150, height: 64, label: 'COMPOSITION', accent: '#d9ec99' },
-  { x: 742, y: 374, width: 134, height: 56, label: 'DETAIL', accent: '#e1927e' },
-  { x: 694, y: 576, width: 156, height: 60, label: 'SEQUENCE', accent: '#a2c9b7' },
+  { x: 616, y: 102, width: 188, height: 64, label: 'API CONTEXT', accent: '#a2c9b7' },
+  { x: 592, y: 342, width: 150, height: 64, label: 'PROMPT SKILL', accent: '#d9ec99' },
+  { x: 742, y: 374, width: 134, height: 56, label: 'REFERENCE', accent: '#e1927e' },
+  { x: 694, y: 576, width: 156, height: 60, label: 'VERSION', accent: '#a2c9b7' },
 ];
 
 /**

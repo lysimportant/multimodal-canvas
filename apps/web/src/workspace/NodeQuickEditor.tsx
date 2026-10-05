@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Play,
   SlidersHorizontal,
+  Square,
   X,
 } from 'lucide-react';
 import { Checkbox, Popover, Select, type SelectProps } from 'antd';
@@ -56,6 +57,7 @@ import { recreationGenerationIssue } from './video-recreation-node';
 import { AssetPreview } from './AssetPreview';
 import type { ConnectedPromptAsset } from './connected-prompt-assets';
 import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
+import { type NodeRunControlStore, useNodeRunControl } from './node-run-control';
 import {
   imageEditSourcePreviewAsset,
   type ImageEditSourcePreview,
@@ -116,6 +118,8 @@ export type NodeQuickEditorProps = {
   onPromptSkillChange?: (skillId: string | undefined) => void;
   models: ModelEntry[];
   busy: boolean;
+  /** 节点级停止状态；创建请求尚未返回 Run 时也可立即记录停止意图。 */
+  runControlStore?: NodeRunControlStore;
   /** 旧纯文本提示词回调；有结构化回调时可省略。 */
   onPromptChange?: (value: string) => void;
   /** 保存节点的结构化提示词文档。 */
@@ -136,6 +140,8 @@ export type NodeQuickEditorProps = {
   onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRun: () => void;
+  /** 停止当前节点关联的本次操作，不保证 Provider 远端任务终止或退款。 */
+  onStop?: () => void | Promise<void>;
   /** 有回显时把修改结果写到新建子节点并立刻运行。 */
   onRunNewNode?: () => void;
   /** 当前节点是否有可供转换/生成的连线输入。 */
@@ -381,6 +387,7 @@ export function NodeQuickEditor({
   onPromptSkillChange,
   models,
   busy,
+  runControlStore,
   onPromptChange,
   onPromptDocumentChange,
   onUploadResource,
@@ -393,6 +400,7 @@ export function NodeQuickEditor({
   onModelChange,
   onInferenceStrengthChange,
   onRun,
+  onStop,
   onRunNewNode,
   hasConnectedInput = false,
   connectedAssets = [],
@@ -407,6 +415,8 @@ export function NodeQuickEditor({
   imageEditSource,
   onFocusImageEditSource,
 }: NodeQuickEditorProps) {
+  const runControl = useNodeRunControl(runControlStore, node.id);
+  const canStop = busy && runControl.stoppable && Boolean(onStop);
   const showImageEditSourceCard = useWorkspacePreferences((state) => state.showImageEditSourceCard);
   const setShowImageEditSourceCard = useWorkspacePreferences(
     (state) => state.setShowImageEditSourceCard,
@@ -1216,102 +1226,126 @@ export function NodeQuickEditor({
             onGenerationCountChange?.(Number(value));
           }}
         />
-        {canRunSameNode(node) ? (
+        {canStop ? (
           <Button
             type="button"
             className="button button-primary node-quick-editor-run"
-            aria-label={busy ? '生成中' : '生成'}
+            aria-label={runControl.stopRequested ? '停止中' : '停止生成'}
             title={
-              busy
-                ? '生成中'
-                : !enabled
-                  ? '节点已停用'
-                  : (modelIssue ??
-                    generationCountIssue ??
-                    mediaParameterIssue ??
-                    (!hasRunnableParameters
-                      ? imageEditPromptRequired
-                        ? '请先填写想用这张图修改什么'
-                        : '请先填写提示词或连接输入节点'
-                      : '生成'))
+              runControl.stopRequested
+                ? '正在停止；不保证远端任务终止或退款'
+                : '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
             }
-            onClick={onRun}
-            disabled={
-              busy ||
-              !enabled ||
-              !hasRunnableParameters ||
-              Boolean(modelIssue || generationCountIssue || mediaParameterIssue)
-            }
+            onClick={() => void onStop?.()}
+            disabled={runControl.stopRequested}
           >
-            {busy ? (
+            {runControl.stopRequested ? (
               <LoaderCircle className="spin" size={16} aria-hidden="true" />
             ) : (
-              <Play size={16} aria-hidden="true" />
+              <Square size={16} aria-hidden="true" />
             )}
-            <span>{busy ? '生成中' : '生成'}</span>
+            <span>{runControl.stopRequested ? '停止中' : '停止'}</span>
           </Button>
-        ) : null}
-        {canForkNewNode(node) ? (
-          <Button
-            type="button"
-            className="button node-quick-editor-run node-quick-editor-run-new"
-            aria-label="新节点"
-            title={
-              busy
-                ? '生成中'
-                : !enabled
-                  ? '节点已停用'
-                  : !currentModel
-                    ? '请先选择本人可用的分组模型'
-                    : modelIssue ||
-                        generationCountIssue ||
-                        durationIssue ||
-                        resolutionIssue ||
-                        aspectRatioIssue ||
-                        videoContractParameterIssue
-                      ? (modelIssue ??
+        ) : (
+          <>
+            {canRunSameNode(node) ? (
+              <Button
+                type="button"
+                className="button button-primary node-quick-editor-run"
+                aria-label={busy ? '生成中' : '生成'}
+                title={
+                  busy
+                    ? '生成中'
+                    : !enabled
+                      ? '节点已停用'
+                      : (modelIssue ??
                         generationCountIssue ??
-                        durationIssue ??
-                        resolutionIssue ??
-                        aspectRatioIssue ??
-                        videoContractParameterIssue)
-                      : !nodeHasPrompt(node.data)
-                        ? '请先填写提示词'
-                        : node.data.mediaType === 'image' &&
-                            selectedModel &&
-                            imageEditCapability(selectedModel).unsupported
-                          ? '当前模型明确不支持图片编辑，请更换模型后再运行'
-                          : mediaParameterIssue
-                            ? mediaParameterIssue
-                            : '把修改结果写到新节点'
-            }
-            onClick={() => onRunNewNode?.()}
-            disabled={
-              busy ||
-              !enabled ||
-              !onRunNewNode ||
-              !currentModel ||
-              Boolean(
-                modelIssue ||
-                generationCountIssue ||
-                durationIssue ||
-                resolutionIssue ||
-                aspectRatioIssue ||
-                videoContractParameterIssue,
-              ) ||
-              !nodeHasPrompt(node.data) ||
-              Boolean(
-                node.data.mediaType === 'image' &&
-                selectedModel &&
-                imageEditCapability(selectedModel).unsupported,
-              ) ||
-              Boolean(mediaParameterIssue)
-            }
-          >
-            <GitFork size={16} aria-hidden="true" />
-            <span>新节点</span>
-          </Button>
-        ) : null}
+                        mediaParameterIssue ??
+                        (!hasRunnableParameters
+                          ? imageEditPromptRequired
+                            ? '请先填写想用这张图修改什么'
+                            : '请先填写提示词或连接输入节点'
+                          : '生成'))
+                }
+                onClick={onRun}
+                disabled={
+                  busy ||
+                  !enabled ||
+                  !hasRunnableParameters ||
+                  Boolean(modelIssue || generationCountIssue || mediaParameterIssue)
+                }
+              >
+                {busy ? (
+                  <LoaderCircle className="spin" size={16} aria-hidden="true" />
+                ) : (
+                  <Play size={16} aria-hidden="true" />
+                )}
+                <span>{busy ? '生成中' : '生成'}</span>
+              </Button>
+            ) : null}
+            {canForkNewNode(node) ? (
+              <Button
+                type="button"
+                className="button node-quick-editor-run node-quick-editor-run-new"
+                aria-label="新节点"
+                title={
+                  busy
+                    ? '生成中'
+                    : !enabled
+                      ? '节点已停用'
+                      : !currentModel
+                        ? '请先选择本人可用的分组模型'
+                        : modelIssue ||
+                            generationCountIssue ||
+                            durationIssue ||
+                            resolutionIssue ||
+                            aspectRatioIssue ||
+                            videoContractParameterIssue
+                          ? (modelIssue ??
+                            generationCountIssue ??
+                            durationIssue ??
+                            resolutionIssue ??
+                            aspectRatioIssue ??
+                            videoContractParameterIssue)
+                          : !nodeHasPrompt(node.data)
+                            ? '请先填写提示词'
+                            : node.data.mediaType === 'image' &&
+                                selectedModel &&
+                                imageEditCapability(selectedModel).unsupported
+                              ? '当前模型明确不支持图片编辑，请更换模型后再运行'
+                              : mediaParameterIssue
+                                ? mediaParameterIssue
+                                : '把修改结果写到新节点'
+                }
+                onClick={() => onRunNewNode?.()}
+                disabled={
+                  busy ||
+                  !enabled ||
+                  !onRunNewNode ||
+                  !currentModel ||
+                  Boolean(
+                    modelIssue ||
+                    generationCountIssue ||
+                    durationIssue ||
+                    resolutionIssue ||
+                    aspectRatioIssue ||
+                    videoContractParameterIssue,
+                  ) ||
+                  !nodeHasPrompt(node.data) ||
+                  Boolean(
+                    node.data.mediaType === 'image' &&
+                    selectedModel &&
+                    imageEditCapability(selectedModel).unsupported,
+                  ) ||
+                  Boolean(mediaParameterIssue)
+                }
+              >
+                <GitFork size={16} aria-hidden="true" />
+                <span>新节点</span>
+              </Button>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );

@@ -33,6 +33,11 @@ afterEach(() => cleanup());
 describe('New API 认证页', () => {
   it('只显示唯一外部登录入口', () => {
     renderPage();
+    const brand = screen.getByRole('link', { name: 'LoveTV 主页' });
+    expect(brand).toHaveTextContent('LoveTV');
+    expect(brand.querySelector('img')).toHaveAttribute('src', '/brand/lovetv-mascot.webp');
+    expect(brand.querySelector('img')).toHaveAttribute('width', '34');
+    expect(brand.querySelector('img')).toHaveAttribute('height', '34');
     expect(screen.getByRole('heading', { name: '使用 New API 登录' })).toBeVisible();
     expect(screen.getByRole('button', { name: '使用 New API 登录' })).toBeEnabled();
     expect(screen.queryByLabelText('邮箱')).not.toBeInTheDocument();

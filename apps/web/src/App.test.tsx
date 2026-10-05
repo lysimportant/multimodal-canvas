@@ -675,9 +675,10 @@ describe('App 组件库迁移', () => {
     });
     await waitFor(() => expect(pending.posts).toEqual(['a']));
     expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
-    expect(screen.getByRole('button', { name: '运行中' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();
     await userEvent.click(screen.getByRole('button', { name: '打开命令面板' }));
-    expect(screen.getByRole('option', { name: /运行「图片生成节点」/ })).toBeDisabled();
+    expect(screen.getByRole('option', { name: /停止「图片生成节点」/ })).toBeEnabled();
+    expect(screen.queryByRole('option', { name: /运行「图片生成节点」/ })).not.toBeInTheDocument();
     act(() => view.canvas!.onNodeSelect(b));
     expect(screen.getByRole('option', { name: /运行「图片生成节点」/ })).toBeEnabled();
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
@@ -710,7 +711,7 @@ describe('App 组件库迁移', () => {
   });
 
   it.each(['queued', 'preparing', 'running', 'processing', 'cancel_requested'] as const)(
-    '恢复 %s 任务后只禁用其节点，直接回调和重试也不能重复提交',
+    '恢复 %s 任务后显示停止入口，直接回调和重试不能重复提交且不阻断其它节点',
     async (status) => {
       canvas.nodes = [imageNode('a', 'image-model'), imageNode('b', 'image-model')];
       projectRuns = [runRecord({ id: 'restored-a', targetNodeId: 'a', status })];
@@ -726,7 +727,11 @@ describe('App 组件库迁移', () => {
       await act(async () => {
         await view.canvas!.onRetryNode(a.id);
       });
-      expect(screen.getByRole('button', { name: '运行中' })).toBeDisabled();
+      const stop = screen.getByRole('button', {
+        name: status === 'cancel_requested' ? '停止中' : '停止',
+      });
+      if (status === 'cancel_requested') expect(stop).toBeDisabled();
+      else expect(stop).toBeEnabled();
       act(() => view.canvas!.onNodeSelect(b));
       expect(screen.getByRole('button', { name: '运行' })).toBeEnabled();
       act(() => view.canvas!.onRunNode(b));
@@ -771,7 +776,7 @@ describe('App 组件库迁移', () => {
       await waitFor(() => expect(pending.posts).toEqual(['a']));
       expect(view.canvas!.nodes[0].data.runStatus).toBe(status);
       expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
-      expect(screen.getByRole('button', { name: '运行中' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();
       act(() => {
         view.canvas!.onRunNode(a);
         view.canvas!.onNodeSelect(b);
@@ -836,6 +841,218 @@ describe('App 组件库迁移', () => {
     expect(posts).toHaveLength(1);
     expect(view.canvas!.nodes).toHaveLength(3);
     expect(view.canvas!.busyNodeIds?.size).toBe(0);
+  });
+
+  it('创建响应未返回时立即停止，取得 runId 后只取消一次', async () => {
+    canvas.nodes = [imageNode('a', 'image-model')];
+    const api = fetchMock.getMockImplementation()!;
+    const create = pendingResponse();
+    const poll = pendingResponse();
+    const run = runRecord({
+      id: 'run-stop-pending',
+      targetNodeId: 'a',
+      status: 'running',
+      progress: 10,
+      error: undefined,
+    });
+    let createCalls = 0;
+    let cancelCalls = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/nodes/a/runs' && init?.method === 'POST') {
+        createCalls += 1;
+        return create.promise;
+      }
+      if (path === '/v1/runs/' + run.id + '/cancel' && init?.method === 'POST') {
+        cancelCalls += 1;
+        return Promise.resolve(json({ run: { ...run, status: 'cancel_requested' } }));
+      }
+      if (path === '/v1/runs/' + run.id && (!init?.method || init.method === 'GET'))
+        return poll.promise;
+      return api(input, init);
+    });
+
+    await renderCanvas(1);
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await waitFor(() => expect(createCalls).toBe(1));
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a')).toMatchObject({
+      stoppable: true,
+      stopRequested: true,
+    });
+
+    await act(async () => create.resolve(json({ run }, 202)));
+    await waitFor(() => expect(cancelCalls).toBe(1));
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    expect(cancelCalls).toBe(1);
+    expect(createCalls).toBe(1);
+
+    await act(async () =>
+      poll.resolve(json({ run: { ...run, status: 'cancelled', progress: 10 } })),
+    );
+    await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+  });
+
+  it('批量停止的取消失败可重试，且不会继续提交剩余创建请求', async () => {
+    const node = imageNode('a', 'image-model');
+    canvas.nodes = [{ ...node, data: { ...node.data, generationCount: 3 } }];
+    const api = fetchMock.getMockImplementation()!;
+    const create = pendingResponse();
+    const poll = pendingResponse();
+    const posts: string[] = [];
+    let cancelCalls = 0;
+    let createdRun: RunRecord | undefined;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      const match = path.match(/^\/v1\/nodes\/([^/]+)\/runs$/);
+      if (match && init?.method === 'POST') {
+        posts.push(match[1]!);
+        return create.promise;
+      }
+      if (
+        createdRun &&
+        path === '/v1/runs/' + createdRun.id + '/cancel' &&
+        init?.method === 'POST'
+      ) {
+        cancelCalls += 1;
+        return cancelCalls === 1
+          ? Promise.resolve(json({ error: '合成取消失败' }, 503))
+          : Promise.resolve(json({ run: { ...createdRun, status: 'cancel_requested' } }));
+      }
+      if (
+        createdRun &&
+        path === '/v1/runs/' + createdRun.id &&
+        (!init?.method || init.method === 'GET')
+      )
+        return poll.promise;
+      return api(input, init);
+    });
+
+    await renderCanvas(1);
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    createdRun = runRecord({
+      id: 'run-batch-stop-retry',
+      targetNodeId: posts[0]!,
+      status: 'running',
+      progress: 10,
+      error: undefined,
+    });
+    await act(async () => create.resolve(json({ run: createdRun }, 202)));
+
+    await screen.findByText(/合成取消失败；可重试停止/);
+    expect(cancelCalls).toBe(1);
+    expect(posts).toHaveLength(1);
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
+
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    await waitFor(() => expect(cancelCalls).toBe(2));
+    expect(posts).toHaveLength(1);
+    await act(async () =>
+      poll.resolve(json({ run: { ...createdRun, status: 'cancelled', progress: 10 } })),
+    );
+    await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+  });
+
+  it('账号切换后丢弃迟到的创建响应和原会话停止意图', async () => {
+    canvas.nodes = [imageNode('a', 'image-model')];
+    const api = fetchMock.getMockImplementation()!;
+    const create = pendingResponse();
+    const run = runRecord({
+      id: 'run-stale-session',
+      targetNodeId: 'a',
+      status: 'running',
+      progress: 10,
+      error: undefined,
+    });
+    let cancelCalls = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/nodes/a/runs' && init?.method === 'POST') return create.promise;
+      if (path === '/v1/runs/' + run.id + '/cancel' && init?.method === 'POST') {
+        cancelCalls += 1;
+        return Promise.resolve(json({ run: { ...run, status: 'cancel_requested' } }));
+      }
+      return api(input, init);
+    });
+
+    await renderCanvas(1);
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) => String(url).endsWith('/v1/nodes/a/runs') && init?.method === 'POST',
+        ),
+      ).toHaveLength(1),
+    );
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    act(() =>
+      auth.persistAuthSession({ ...session, user: { ...session.user, id: 'next-account' } }),
+    );
+    await waitFor(() =>
+      expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stoppable).toBe(false),
+    );
+
+    await act(async () => create.resolve(json({ run }, 202)));
+    await waitFor(() => expect(cancelCalls).toBe(0));
+    expect(view.canvas!.nodes.find((entry) => entry.id === 'a')?.data.runStatus).toBeUndefined();
+    expect(screen.queryByText(/run-stale-session|已请求停止运行/)).not.toBeInTheDocument();
+  });
+
+  it('恢复运行的停止请求并发去重，失败后允许重试', async () => {
+    canvas.nodes = [imageNode('a', 'image-model')];
+    const run = runRecord({ id: 'restored-stop-a', targetNodeId: 'a', status: 'running' });
+    projectRuns = [run];
+    const api = fetchMock.getMockImplementation()!;
+    const cancellation = pendingResponse();
+    let cancelCalls = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/v1/runs/restored-stop-a/cancel') && init?.method === 'POST') {
+        cancelCalls += 1;
+        return cancelCalls === 1
+          ? cancellation.promise
+          : Promise.resolve(json({ run: { ...run, status: 'cancel_requested' } }));
+      }
+      return api(input, init);
+    });
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe('running'));
+    let first: void | Promise<void>;
+    let second: void | Promise<void>;
+    act(() => {
+      first = view.canvas!.onStopNode?.('a');
+      second = view.canvas!.onStopNode?.('a');
+    });
+    expect(cancelCalls).toBe(1);
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(true);
+    await act(async () => {
+      cancellation.resolve(json({ error: '合成取消失败' }, 503));
+      await Promise.all([first, second]);
+    });
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    expect(cancelCalls).toBe(2);
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(true);
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    expect(cancelCalls).toBe(2);
+  });
+
+  it('已是 cancel_requested 的恢复运行不重复发送取消请求', async () => {
+    canvas.nodes = [imageNode('a', 'image-model')];
+    projectRuns = [
+      runRecord({ id: 'run-cancel-requested', targetNodeId: 'a', status: 'cancel_requested' }),
+    ];
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe('cancel_requested'));
+
+    await act(async () => view.canvas!.onStopNode?.('a'));
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).endsWith('/run-cancel-requested/cancel') && init?.method === 'POST',
+      ),
+    ).toHaveLength(0);
   });
 
   it('多个生成等待同一次保存后仍串行保存新修订，不并行 PATCH 或重发生成', async () => {

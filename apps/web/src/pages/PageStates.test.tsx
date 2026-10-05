@@ -7,6 +7,7 @@ import {
   useWorkspacePreferences,
   workspacePreferenceDefaults,
 } from '../state/workspace-preferences';
+import { ContactPage } from './ContactPage';
 import { NotFoundPage } from './NotFoundPage';
 import { ProjectCanvasPage } from './ProjectCanvasPage';
 import { SettingsPage } from './SettingsPage';
@@ -76,6 +77,19 @@ describe('route page states', () => {
     expect(screen.getByText('画布读取失败')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('介绍 LoveTV 已有能力并保留联系与工作台入口', () => {
+    render(<ContactPage />);
+
+    expect(screen.getByText(/LoveTV 是连接 API 模型的 AI 图片、AI 视频多模态画布/)).toBeVisible();
+    expect(screen.getByText('提示词 Skill 与参考资料')).toBeVisible();
+    expect(screen.getByText('短视频复刻与素材版本')).toBeVisible();
+    expect(screen.getByRole('link', { name: /lysimportant@Outlook.com/ })).toHaveAttribute(
+      'href',
+      'mailto:lysimportant@Outlook.com',
+    );
+    expect(screen.getByRole('link', { name: '进入工作台' })).toHaveAttribute('href', '/workspace');
   });
 
   it('renders a useful 404 page for unknown routes', () => {

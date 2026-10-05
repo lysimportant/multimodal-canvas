@@ -60,8 +60,8 @@ export function HomeDemoMedia() {
         />
       )}
       <figcaption>
-        <span>FIELD STUDY / 01</span>
-        <span>960 × 540 · 5 秒</span>
+        <span>LOVE TV / PUBLIC DEMO</span>
+        <span>960 × 540 · 5 秒公开样片</span>
       </figcaption>
     </figure>
   );

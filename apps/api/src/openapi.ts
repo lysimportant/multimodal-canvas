@@ -869,7 +869,7 @@ const envelope = (key: string, schema: unknown) => ({
 export const openApiDocument = {
   openapi: '3.1.0',
   info: {
-    title: 'Multimodal Canvas API',
+    title: 'LoveTV API',
     version: '0.1.0',
     description:
       '项目、资源、AI 设置与运行的 REST/SSE API。生产全局限流依赖故障时，New API 登录、SSE 及启用限流的普通 API 返回 503/rate_limit_unavailable，并携带 Retry-After、retryAfterSeconds 和 requestId；额度耗尽仍返回 429。健康检查、Webhook 和已验证的签名资源访问保持独立边界。',

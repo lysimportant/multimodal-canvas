@@ -26,6 +26,7 @@ import {
   NodeQuickEditor,
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
+import { createNodeRunControlStore } from './node-run-control';
 
 /** 禁用库动画以同步检查可见性；仍渲染真实 Ant Design 控件和 portal。 */
 const renderRaw = (
@@ -217,6 +218,109 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器在节点生成中提供可点击停止，并在停止意图提交后禁用',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const onStop = vi.fn();
+      const runControlStore = createNodeRunControlStore();
+      runControlStore.set(imageNode.id, { stoppable: true, stopRequested: false });
+      const inputs = makeProps({ busy: true, onStop, runControlStore });
+      renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const root =
+        presentation === '完整'
+          ? screen.getByRole('dialog', { name: inputs.node.data.label + ' · 编辑设置' })
+          : document.body;
+      const stop = within(root).getByRole('button', { name: '停止生成' });
+      expect(stop).toBeEnabled();
+      expect(stop).toHaveAttribute(
+        'title',
+        '停止本地后续提交并取消已知运行；不保证远端任务终止或退款',
+      );
+      await user.click(stop);
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(inputs.onRun).not.toHaveBeenCalled();
+
+      act(() => runControlStore.set(imageNode.id, { stoppable: true, stopRequested: true }));
+      expect(within(root).getByRole('button', { name: '停止中' })).toBeDisabled();
+    },
+  );
+
+  it.each(['快捷', '完整'] as const)(
+    '%s编辑器停止入口不受停用、空提示词、目录缺失或非法参数影响',
+    async (presentation) => {
+      const user = userEvent.setup();
+      const onStop = vi.fn();
+      const runControlStore = createNodeRunControlStore();
+      const node = {
+        ...imageNode,
+        data: {
+          ...imageNode.data,
+          enabled: false,
+          prompt: undefined,
+          modelAlias: 'missing-model',
+          parameters: { width: -1 },
+        },
+      } as AssetFlowNode;
+      runControlStore.set(node.id, { stoppable: true, stopRequested: false });
+      const inputs = makeProps({
+        node,
+        models: [],
+        busy: true,
+        onStop,
+        runControlStore,
+      });
+      renderRaw(<NodeQuickEditor {...inputs} />);
+      if (presentation === '完整') {
+        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
+      }
+      const root =
+        presentation === '完整'
+          ? screen.getByRole('dialog', { name: node.data.label + ' · 编辑设置' })
+          : document.body;
+      const stop = within(root).getByRole('button', { name: '停止生成' });
+      expect(stop).toBeEnabled();
+      await user.click(stop);
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(inputs.onRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it('已有回显的 fork 来源运行后只显示停止，不保留禁用的新节点按钮', async () => {
+    const onStop = vi.fn();
+    const runControlStore = createNodeRunControlStore();
+    const node = {
+      ...imageNode,
+      data: {
+        ...imageNode.data,
+        mode: 'source',
+        assetId: 'asset_upload',
+        contentUrl: '/c',
+        resultAsset: { assetId: 'asset_result' },
+      },
+    } as AssetFlowNode;
+    runControlStore.set(node.id, { stoppable: true, stopRequested: false });
+    const inputs = makeProps({
+      node,
+      busy: true,
+      onStop,
+      onRunNewNode: vi.fn(),
+      runControlStore,
+    });
+    renderRaw(<NodeQuickEditor {...inputs} />);
+
+    expect(screen.getByRole('button', { name: '停止生成' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '生成中' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '新节点' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '停止生成' }));
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(inputs.onRun).not.toHaveBeenCalled();
+    expect(inputs.onRunNewNode).not.toHaveBeenCalled();
+  });
+
   it.each(['快捷', '完整'] as const)(
     '%s编辑器引用行空白不代点按钮，三个入口保持独立',
     async (presentation) => {

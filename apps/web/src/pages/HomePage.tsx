@@ -3,13 +3,15 @@ import { Tooltip } from 'antd';
 import {
   ArrowDown,
   ArrowRight,
-  AudioLines,
   Check,
+  FileCode2,
   FileImage,
   Film,
   Focus,
+  KeyRound,
   Layers3,
   MoveUpRight,
+  RefreshCcw,
   SlidersHorizontal,
   Sparkles,
   Type,
@@ -19,6 +21,7 @@ import { useState } from 'react';
 import { AppLink, appPaths, type AppRoute } from '../routing';
 import { HomeDemoMedia } from './HomeDemoMedia';
 import { HomeDemoImage } from './HomeDemoImage';
+import { HomeGallery, useHomeGeneratedGallery } from './HomeGallery';
 import { useHomeMotion } from './HomeMotion';
 import { HomeHeroCopy, type HomeHeroCopyProps } from './HomeHeroCopy';
 import { HomeRevealField } from './HomeRevealField';
@@ -32,11 +35,41 @@ const homeRoute: AppRoute = { id: 'home', pathname: '/' };
 /** 首页入口数据；继续项目只提供现有路由，不创建项目或触发生成。 */
 export type HomePageProps = Omit<HomeHeroCopyProps, 'reveal'>;
 
-/** 展示公开演示工作流与工作台入口；所有媒体均为本地公开样例。 */
+/** 首页公共 FAQ 文案；SEO 可直接复用 question/answer 字段生成 JSON-LD。 */
+export const homeFaqItems = [
+  {
+    question: 'LoveTV 会自动调用 API 或开始生成吗？',
+    answer:
+      '不会。分析、提示词优化、图片生成和视频生成都由用户明确操作；浏览首页、切换预览或恢复会话不会触发生成。',
+  },
+  {
+    question: '可以把哪些内容作为参考资料？',
+    answer:
+      '可以在画布中组织当前账户有权访问的文字、图片、音频和视频。资源仍受账户与项目权限约束，仅凭分享链接不会进入公共素材库。',
+  },
+  {
+    question: 'AI 生成图片和 AI 生成视频如何使用？',
+    answer:
+      '登录后使用当前账户已授权的 API 与可用模型目录，在目标节点确认输入和参数后再提交。实际能力以实时目录与服务端校验为准。',
+  },
+  {
+    question: '短视频复刻会因为更换人物或商品而重复分析吗？',
+    answer:
+      '不会自动重复分析。原视频分析与最终生成分别确认；更换已绑定的人物或商品时，只在本地重组提示词，是否再次生成由用户决定。',
+  },
+  {
+    question: '提示词 Skill 和版本管理分别解决什么问题？',
+    answer:
+      '提示词 Skill 用于复用经过确认的创作指令；版本管理保留资源版本、运行输入与设置，方便回看已有结果并继续迭代。',
+  },
+] as const;
+
+/** 展示公开演示、当前账户生成缩略图与工作台入口；不会触发生成或公开私有资源。 */
 export function HomePage({ continueProject, onNavigate }: HomePageProps) {
   /** 本次页面访问的动效开关；系统减少动态效果设置始终优先。 */
   const [motionEnabled, setMotionEnabled] = useState(true);
   const motionRoot = useHomeMotion(motionEnabled);
+  const galleryState = useHomeGeneratedGallery();
   /** 两层复用同一场景标识和素材说明，圆圈经过边缘文字时仍保持可读。 */
   const sceneTitle = (
     <span>
@@ -151,8 +184,8 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
         >
           <div className="mc-home-section-heading" data-home-reveal>
             <div>
-              <p className="mc-home-eyebrow">THE CONNECTED PROCESS</p>
-              <h2 id="capabilities-title">从第一个想法，到最终画面。</h2>
+              <p className="mc-home-eyebrow">CREATE WITH CONTEXT</p>
+              <h2 id="capabilities-title">从 API 到成片，每一步都有上下文。</h2>
             </div>
             <span>
               01 — 04 <ArrowDown size={18} aria-hidden="true" />
@@ -161,22 +194,22 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
           <article className="mc-home-feature-row" data-home-reveal>
             <span className="mc-home-feature-number">01</span>
             <div className="mc-home-feature-copy">
-              <p>INFINITE CANVAS</p>
-              <h3>灵感，不必排成一行。</h3>
-              <span>把参考、提示词和创作结果放在同一张画布，让每一次尝试都有清晰的来路。</span>
+              <p>API + REFERENCES</p>
+              <h3>连接 API，也接住参考资料。</h3>
+              <span>使用当前账户已授权的服务，把提示词、图片、音频和视频参考放在同一张画布。</span>
             </div>
             <div className="mc-home-mini-canvas" aria-label="多参考输入画布示例">
               <span className="mini-node mini-node-text">
-                <Type size={15} aria-hidden="true" /> 创作设定
+                <KeyRound size={15} aria-hidden="true" /> API 与模型
               </span>
               <span className="mini-node mini-node-image">
-                <FileImage size={15} aria-hidden="true" /> 参考画面
+                <FileImage size={15} aria-hidden="true" /> 图片参考
               </span>
               <span className="mini-node mini-node-audio">
-                <AudioLines size={15} aria-hidden="true" /> 旁白音轨
+                <Film size={15} aria-hidden="true" /> 视频参考
               </span>
               <span className="mini-node mini-node-target">
-                <Film size={18} aria-hidden="true" /> 下一段镜头
+                <Sparkles size={18} aria-hidden="true" /> AI 生成结果
               </span>
               <i className="mini-edge edge-one" aria-hidden="true" />
               <i className="mini-edge edge-two" aria-hidden="true" />
@@ -186,86 +219,123 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
           <article className="mc-home-feature-row" id="home-demo-media" data-home-reveal>
             <span className="mc-home-feature-number">02</span>
             <div className="mc-home-feature-copy">
-              <p>MEDIA IN MOTION</p>
-              <h3>让画面，接着讲述。</h3>
-              <span>图像与镜头彼此呼应，创作结果随时回看。</span>
-              <small>自然观察 / 公开演示样片</small>
+              <p>IMAGE + VIDEO</p>
+              <h3>AI 生成图片，也生成视频。</h3>
+              <span>在目标节点确认提示词、参考资料和参数后再提交；首页演示不会创建任务。</span>
+              <small>自然观察 / 本地公开演示样片</small>
             </div>
             <HomeDemoMedia />
           </article>
           <article className="mc-home-feature-row" data-home-reveal>
             <span className="mc-home-feature-number">03</span>
             <div className="mc-home-feature-copy">
-              <p>YOUR CREATIVE CONTROL</p>
-              <h3>每一步，都由你决定。</h3>
-              <span>为不同创作环节选择合适的模型，保留每次运行的输入与设置。</span>
+              <p>VIDEO RECREATION</p>
+              <h3>短视频复刻，分析和生成分开确认。</h3>
+              <span>冻结原视频与参考资源版本，逐角色绑定人物；分析完成后再决定是否生成成片。</span>
             </div>
             <div className="mc-home-model-console" aria-label="模型配置示例">
               <header>
-                <SlidersHorizontal size={17} aria-hidden="true" />
-                <strong>创作配置</strong>
-                <span>示例</span>
+                <RefreshCcw size={17} aria-hidden="true" />
+                <strong>整条短视频复刻</strong>
+                <span>显式操作</span>
               </header>
               <dl>
                 <div>
-                  <dt>构思与脚本</dt>
+                  <dt>原视频</dt>
                   <dd>
-                    文字模型 <Type size={15} aria-hidden="true" />
+                    冻结资源版本 <Film size={15} aria-hidden="true" />
                   </dd>
                 </div>
                 <div>
-                  <dt>视觉与风格</dt>
+                  <dt>人物与商品</dt>
                   <dd>
-                    图像模型 <FileImage size={15} aria-hidden="true" />
+                    逐项绑定 <FileImage size={15} aria-hidden="true" />
                   </dd>
                 </div>
                 <div>
-                  <dt>动态与镜头</dt>
+                  <dt>最终成片</dt>
                   <dd>
-                    视频模型 <Film size={15} aria-hidden="true" />
+                    单独确认生成 <SlidersHorizontal size={15} aria-hidden="true" />
                   </dd>
                 </div>
               </dl>
               <footer>
-                <Check size={14} aria-hidden="true" /> 输入与设置随运行记录保留
+                <Check size={14} aria-hidden="true" /> 更换绑定不会自动重复分析或生成
               </footer>
             </div>
           </article>
           <article className="mc-home-feature-row" data-home-reveal>
             <span className="mc-home-feature-number">04</span>
             <div className="mc-home-feature-copy">
-              <p>EVERY VERSION MATTERS</p>
-              <h3>好作品，值得留下每一版。</h3>
-              <span>让上传素材和创作结果有序归档，下一次灵感从已有的积累开始。</span>
+              <p>SKILL + VERSIONS</p>
+              <h3>提示词 Skill 可复用，版本管理可回看。</h3>
+              <span>
+                先预览 Skill 的优化结果，再采用到草稿；资源、输入和设置按运行记录继续迭代。
+              </span>
             </div>
             <div className="mc-home-asset-ledger" aria-label="演示资源列表">
               <header>
-                <Layers3 size={17} aria-hidden="true" />
-                <strong>自然观察</strong>
-                <span>2 份演示素材</span>
+                <FileCode2 size={17} aria-hidden="true" />
+                <strong>创作记录</strong>
+                <span>Skill + 版本</span>
               </header>
               <div>
-                <HomeDemoImage alt="" />
+                <Type size={18} aria-hidden="true" />
                 <span>
-                  field-study.jpg<small>参考画面</small>
+                  提示词 Skill<small>预览后采用到草稿，可继续编辑</small>
                 </span>
-                <FileImage size={16} aria-hidden="true" />
+                <FileCode2 size={16} aria-hidden="true" />
               </div>
               <div>
-                <HomeDemoImage alt="" />
+                <Layers3 size={18} aria-hidden="true" />
                 <span>
-                  field-study.mp4<small>公开样片 · 5 秒</small>
+                  资源与运行版本<small>回看已确认的输入、设置与生成结果</small>
                 </span>
-                <Film size={16} aria-hidden="true" />
+                <Layers3 size={16} aria-hidden="true" />
               </div>
             </div>
           </article>
+        </section>
+        <section
+          className="mc-home-gallery-section mc-page-container"
+          aria-labelledby="home-gallery-title"
+          data-home-reveal
+        >
+          <div className="mc-home-section-heading">
+            <div>
+              <p className="mc-home-eyebrow">PRIVATE BY DEFAULT</p>
+              <h2 id="home-gallery-title">生成结果，只在该看的地方出现。</h2>
+            </div>
+            <span>当前会话 · 只读预览</span>
+          </div>
+          <p className="mc-home-section-intro">
+            登录后，首页只从当前账户可见的一页资源中随机选择带生成来源的图片或视频缩略图；退出、换号或离开首页会立即停止旧请求。
+          </p>
+          <HomeGallery state={galleryState} />
+        </section>
+        <section
+          className="mc-home-faq mc-page-container"
+          aria-labelledby="home-faq-title"
+          data-home-reveal
+        >
+          <div className="mc-home-faq-heading">
+            <h2 id="home-faq-title">常见问题</h2>
+            <p>这里说明首页会做什么，也说明哪些操作不会自动发生。</p>
+          </div>
+          <div className="mc-home-faq-list">
+            {homeFaqItems.map((item) => (
+              <details key={item.question}>
+                <summary>{item.question}</summary>
+                <p>{item.answer}</p>
+              </details>
+            ))}
+          </div>
         </section>
         <section className="mc-home-final-cta" data-home-reveal>
           <div className="mc-page-container">
             <div>
               <p className="mc-home-eyebrow">YOUR NEXT CREATION</p>
-              <h2>下一件作品，从这里开始。</h2>
+              <h2>把下一次生成，留在有上下文的画布里。</h2>
             </div>
             <AppLink
               className="mc-home-primary-action"

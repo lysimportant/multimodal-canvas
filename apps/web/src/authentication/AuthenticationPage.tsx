@@ -23,11 +23,16 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
   return (
     <div className={`auth-entry-page${leaving ? ' is-leaving' : ''}`}>
       <header className="auth-entry-header">
-        <AppLink to="/" className="auth-entry-brand" aria-label="Multimodal Canvas 主页">
-          <span className="auth-entry-brand-mark" aria-hidden="true">
-            MC
-          </span>
-          <strong>Multimodal Canvas</strong>
+        <AppLink to="/" className="auth-entry-brand" aria-label="LoveTV 主页">
+          <img
+            className="auth-entry-brand-mark"
+            src="/brand/lovetv-mascot.webp"
+            alt=""
+            width={34}
+            height={34}
+            aria-hidden="true"
+          />
+          <strong>LoveTV</strong>
         </AppLink>
       </header>
       <main className="auth-entry-main">
@@ -51,7 +56,7 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             <h1 id="auth-entry-title">使用 New API 登录</h1>
           </header>
           <p className="auth-entry-description">
-            使用 New API 账号登录，全部可用分组与模型会自动同步到画布。
+            使用 New API 账号登录后，LoveTV 会同步已授权的分组与模型到画布。
           </p>
           {failure && (
             <p className="notice notice-error" role="alert">

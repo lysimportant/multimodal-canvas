@@ -96,9 +96,10 @@ test('会话校验超过 10 秒后仍能进入页面，不重复请求', async (
   });
 
   await page.goto('/');
-  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible({
+  await expect(page.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible({
     timeout: 20_000,
   });
+  await expect(page.getByRole('button', { name: '账户菜单' })).toBeVisible({ timeout: 20_000 });
   expect(checks).toBe(1);
   await expect(page.getByLabel('关闭账户提示')).toHaveCount(0);
   expect(pageErrors).toEqual([]);
@@ -147,7 +148,7 @@ test('已缓存登录遇到暂时故障不退出，焦点恢复后自动续期',
     return json(route, { error: 'unavailable' }, 503);
   });
   await page.goto('/');
-  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('当前内容已保留');
   expect(
     await page.evaluate(

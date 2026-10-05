@@ -13,6 +13,7 @@ import {
   Pencil,
   Power,
   RefreshCw,
+  Square,
   Trash2,
   Upload,
   TriangleAlert,
@@ -76,6 +77,7 @@ import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import { GenerationBatchViewContext } from './generation-batch-view';
 import { getNodeInfoTimes } from './node-info';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
+import { NodeRunControlStoreContext, NodeStopContext, useNodeRunControl } from './node-run-control';
 import './asset-node.css';
 
 /** 节点本体把点击修饰键交给画布，避免捕获阶段覆盖 React Flow 的多选。 */
@@ -244,6 +246,9 @@ export function AssetNode({
   const editImage = useContext(NodeImageEditContext);
   const recreateVideo = useContext(NodeVideoRecreationContext);
   const openPrompt = useContext(NodePromptContext);
+  const runControlStore = useContext(NodeRunControlStoreContext);
+  const stopNode = useContext(NodeStopContext);
+  const runControl = useNodeRunControl(runControlStore, id);
   const batchContext = useContext(GenerationBatchViewContext);
   const batchView = batchContext.views.get(id);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1281,6 +1286,9 @@ export function AssetNode({
           isRetrying={isRetrying}
           retryError={retryError}
           onRetry={() => void handleRetry()}
+          stoppable={Boolean(stopNode) && (runControl.stoppable || isNodeRunning(data.runStatus))}
+          stopRequested={runControl.stopRequested || data.runStatus === 'cancel_requested'}
+          onStop={stopNode ? () => stopNode(id) : undefined}
           emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
           emptyHint={isVideoRecreation ? '点击节点，按流程开始复刻' : undefined}
           icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
@@ -1325,6 +1333,9 @@ function NodeStateContent({
   isRetrying,
   retryError,
   onRetry,
+  stoppable,
+  stopRequested,
+  onStop,
   emptyLabel,
   emptyHint,
   icon,
@@ -1337,6 +1348,9 @@ function NodeStateContent({
   isRetrying: boolean;
   retryError: string | null;
   onRetry: () => void;
+  stoppable: boolean;
+  stopRequested: boolean;
+  onStop?: () => void | Promise<void>;
   emptyLabel: string;
   /** 只在空态展示的下一步提示，不改变运行和失败状态。 */
   emptyHint?: string;
@@ -1355,6 +1369,22 @@ function NodeStateContent({
           <span className="flow-node-progress" aria-label={`运行进度 ${progress}%`}>
             {progress}%
           </span>
+        ) : null}
+        {stoppable ? (
+          <Button
+            type="button"
+            className="button button-secondary flow-node-stop nodrag nopan"
+            onClick={() => void onStop?.()}
+            disabled={stopRequested}
+            title="停止本地后续提交并取消已知运行；不保证远端任务终止或退款"
+          >
+            {stopRequested ? (
+              <LoaderCircle className="spin" size={13} aria-hidden="true" />
+            ) : (
+              <Square size={13} aria-hidden="true" />
+            )}
+            {stopRequested ? '停止中' : '停止'}
+          </Button>
         ) : null}
       </div>
     );

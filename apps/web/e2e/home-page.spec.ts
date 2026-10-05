@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
 /** 独立首页测试入口，使用真实页面组件和公开本地素材，避免读取用户项目。 */
-async function openHome(page: Page, projectName?: string) {
+async function openHome(page: Page, projectName?: string, signedIn = false) {
   await page.route('**/__home-check', (route) =>
     route.fulfill({
       contentType: 'text/html',
@@ -15,6 +15,8 @@ window.__vite_plugin_react_preamble_installed__ = true;
 const { default: React } = await import('/node_modules/.vite/deps/react.js');
 const { default: ReactDOM } = await import('/node_modules/.vite/deps/react-dom_client.js');
 const { HomePage } = await import('/src/pages/HomePage.tsx');
+const auth = await import('/src/auth-client.ts');
+${signedIn ? `auth.persistAuthSession({ user: { id: 'home-user', role: 'user', createdAt: '2026-10-05T00:00:00Z' } });` : 'auth.clearAuthSession();'}
 const root = ReactDOM.createRoot(document.getElementById('root'));
 const props = { continueProject: ${projectName ? JSON.stringify({ id: 'demo-project', name: projectName }).replaceAll('<', '\\u003c') : 'null'}, onNavigate: (href, event) => { event.preventDefault(); window.__homeNavigation = href; } };
 window.__unmountHome = () => root.render(null);
@@ -24,7 +26,7 @@ window.__mountHome();
     }),
   );
   await page.goto('/__home-check');
-  await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible();
   await expect(page.locator('.node-image img')).toHaveJSProperty('naturalWidth', 960);
 }
 
@@ -49,6 +51,10 @@ test('homepage has stable desktop layouts, real image pixels and working entry p
       const output = document.querySelector('.node-video')!.getBoundingClientRect();
       const caption = document.querySelector('.mc-home-scene-caption')!.getBoundingClientRect();
       const imageElement = document.querySelector<HTMLImageElement>('.node-image img')!;
+      const brandIcon = document.querySelector<HTMLImageElement>('.mc-home-kicker img')!;
+      const galleryTiles = [...document.querySelectorAll<HTMLElement>('.mc-home-gallery-tile')].map(
+        (tile) => tile.getBoundingClientRect(),
+      );
       const canvas = document.createElement('canvas');
       canvas.width = 32;
       canvas.height = 18;
@@ -69,27 +75,115 @@ test('homepage has stable desktop layouts, real image pixels and working entry p
         captionVisible: caption.bottom <= hero.bottom,
         nodesSeparated: prompt.bottom < image.top && image.bottom < output.top,
         colors: colors.size,
+        brandFilter: getComputedStyle(brandIcon).filter,
+        galleryTiles: galleryTiles.map(({ width, height }) => ({ width, height })),
       };
     });
-    expect(geometry).toEqual({
+    expect(geometry).toMatchObject({
       nextSectionVisible: true,
       copyImageOverlap: false,
       horizontalOverflow: false,
       captionVisible: true,
       nodesSeparated: true,
       colors: expect.any(Number),
+      brandFilter: 'none',
     });
     expect(geometry.colors).toBeGreaterThan(120);
+    expect(geometry.galleryTiles).toHaveLength(4);
+    for (const tile of geometry.galleryTiles) {
+      expect(tile.width).toBeGreaterThan(150);
+      expect(tile.width / tile.height).toBeCloseTo(4 / 3, 1);
+    }
     await page.screenshot({
       path: testInfo.outputPath(`home-${width}x${height}.png`),
       fullPage: true,
     });
   }
+  const faq = page.locator('.mc-home-faq-list details').first();
+  const question = faq.locator('summary');
+  await question.focus();
+  await page.keyboard.press('Enter');
+  await expect(faq).toHaveAttribute('open', '');
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   expect(
     await page.evaluate(() => (window as Window & { __homeNavigation?: string }).__homeNavigation),
   ).toBe('/workspace');
   expect(errors).toEqual([]);
+});
+
+test('signed-in gallery reads one scoped page and preview changes stay read-only', async ({
+  page,
+}) => {
+  let listRequests = 0;
+  const posts: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST') posts.push(request.url());
+  });
+  await page.route('**/v1/assets**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/v1/assets') {
+      listRequests++;
+      const assets = Array.from({ length: 8 }, (_, index) => ({
+        id: `home-generated-${index}`,
+        name: `生成结果 ${index + 1}`,
+        mediaType: index % 2 ? 'video' : 'image',
+        mimeType: index % 2 ? 'video/mp4' : 'image/png',
+        sizeBytes: 100 + index,
+        status: 'ready',
+        contentUrl: `/v1/assets/home-generated-${index}/content`,
+        tags: [],
+        metadata: { generated: true, runId: `run-${index}` },
+      }));
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          assets: [
+            ...assets,
+            {
+              ...assets[0],
+              id: 'uploaded-only',
+              name: '上传素材',
+              metadata: { generated: false },
+            },
+          ],
+          total: assets.length + 1,
+          page: 1,
+          pageSize: 48,
+        }),
+      });
+      return;
+    }
+    const color = url.pathname.includes('poster') ? '#b94d3c' : '#236947';
+    await route.fulfill({
+      contentType: 'image/svg+xml',
+      body: `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><rect width="320" height="240" fill="${color}"/></svg>`,
+    });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openHome(page, undefined, true);
+  await expect(page.getByText('你的生成结果')).toBeVisible();
+  await expect(page.locator('.mc-home-gallery-tile')).toHaveCount(4);
+  const primaryImages = page.locator(
+    '.mc-home-gallery-preview:not(.is-alternate):not(.is-placeholder) > img',
+  );
+  await expect(primaryImages).toHaveCount(4);
+  await expect(page.locator('.mc-home-gallery-preview.is-placeholder')).toHaveCount(0);
+  for (let index = 0; index < 4; index += 1) {
+    await expect(primaryImages.nth(index)).toHaveJSProperty('naturalWidth', 320);
+  }
+  const tile = page.getByRole('img', { name: /聚焦显示另一项生成结果/ }).first();
+  await expect(tile).toBeVisible();
+  const alternate = tile.locator('.mc-home-gallery-preview.is-alternate');
+  await expect(alternate).toHaveCSS('opacity', '0');
+  await tile.focus();
+  await expect(alternate).toHaveCSS('opacity', '1');
+  await page.locator('.mc-home-faq-heading').hover();
+  await tile.hover();
+  await expect(alternate).toHaveCSS('opacity', '1');
+
+  expect(listRequests).toBe(1);
+  expect(posts).toEqual([]);
 });
 
 test('homepage releases repeated scenes and remains responsive under CPU throttling', async ({
@@ -457,7 +551,7 @@ test('the application home route stays usable through repeated visits without cr
   await page.setViewportSize({ width: 1440, height: 900 });
   for (let index = 0; index < 3; index += 1) {
     await page.goto('/');
-    await expect(page.getByRole('heading', { level: 1, name: 'Multimodal Canvas' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'LoveTV' })).toBeVisible();
     await expect(page.locator('.node-image img')).toHaveJSProperty('naturalWidth', 960);
     await page.getByRole('link', { name: '查看演示', exact: true }).click();
     await expect(page.getByLabel('自然观察演示视频', { exact: true })).toBeInViewport();

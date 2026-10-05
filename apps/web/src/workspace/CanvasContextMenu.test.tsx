@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AssetFlowNode } from '../canvas-utils';
 import { getConnectionDropNodePosition } from '../connection-utils';
 import { CanvasContextMenu } from './CanvasContextMenu';
+import { createNodeRunControlStore } from './node-run-control';
 
 /** 使用实际画布命令契约，未设置的回调保持缺省。 */
 function props(
@@ -62,6 +63,34 @@ function exposeMenuItems() {
 afterEach(cleanup);
 
 describe('CanvasContextMenu', () => {
+  it('运行节点菜单调用节点停止，并在取消意图提交后显示停止中且禁止重复触发', async () => {
+    const user = userEvent.setup();
+    const asset = node({ runStatus: 'running' });
+    const onStopNode = vi.fn();
+    const runControlStore = createNodeRunControlStore();
+    runControlStore.set(asset.id, { stoppable: true, stopRequested: false });
+    const inputs = props({
+      target: { kind: 'node', node: asset, clientPosition: { x: 40, y: 80 }, returnFocusTo: null },
+      onStopNode,
+      runControlStore,
+    });
+    render(<CanvasContextMenu {...inputs} />);
+
+    const stop = screen.getByRole('menuitem', { name: '停止生成' });
+    expect(stop).not.toHaveAttribute('aria-disabled', 'true');
+    await user.click(stop);
+    expect(onStopNode).toHaveBeenCalledExactlyOnceWith(asset.id);
+    expect(inputs.onRunNode).not.toHaveBeenCalled();
+    expect(inputs.onClose).toHaveBeenCalledExactlyOnceWith('action');
+
+    act(() => runControlStore.set(asset.id, { stoppable: true, stopRequested: true }));
+    const stopping = screen.getByRole('menuitem', { name: '停止中' });
+    expect(stopping).toHaveAttribute('aria-disabled', 'true');
+    await user.click(stopping);
+    fireEvent.keyDown(stopping, { key: 'Enter', keyCode: 13, which: 13 });
+    expect(onStopNode).toHaveBeenCalledOnce();
+  });
+
   it('整行悬停显示功能简述，移开后关闭且不触发动作', async () => {
     const user = userEvent.setup();
     const inputs = props();
@@ -206,10 +235,14 @@ describe('CanvasContextMenu', () => {
   });
 
   it.each(['queued', 'preparing', 'running', 'processing', 'cancel_requested'] as const)(
-    '%s 节点不能重复运行，但仍能查看提示词记录',
+    '%s 节点提供停止入口且防止重复停止，同时仍能查看提示词记录',
     async (runStatus) => {
       const user = userEvent.setup();
       const asset = node({ runStatus });
+      const runControlStore = createNodeRunControlStore();
+      const onStopNode = vi.fn((nodeId: string) => {
+        runControlStore.set(nodeId, { stoppable: true, stopRequested: true });
+      });
       const inputs = props({
         target: {
           kind: 'node',
@@ -220,10 +253,22 @@ describe('CanvasContextMenu', () => {
         onOpenRequestPrompt: vi.fn(),
         onEditImage: vi.fn(),
         canDeleteNode: false,
+        runControlStore,
       });
-      render(<CanvasContextMenu {...inputs} />);
+      const view = render(<CanvasContextMenu {...inputs} />);
       expect(screen.getByRole('menu', { name: '产品图节点操作' })).toBeInTheDocument();
-      for (const name of ['开始生成', '生成到新节点', '修改图片', '删除节点']) {
+      expect(screen.queryByRole('menuitem', { name: '开始生成' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: '生成到新节点' })).not.toBeInTheDocument();
+
+      const stopName = runStatus === 'cancel_requested' ? '停止中' : '停止生成';
+      const stopWithoutHandler = screen.getByRole('menuitem', { name: stopName });
+      expect(stopWithoutHandler).toHaveAttribute('aria-disabled', 'true');
+      await user.click(stopWithoutHandler);
+      fireEvent.keyDown(stopWithoutHandler, { key: 'Enter', keyCode: 13, which: 13 });
+      expect(onStopNode).not.toHaveBeenCalled();
+      expect(inputs.onClose).not.toHaveBeenCalled();
+
+      for (const name of ['修改图片', '删除节点']) {
         const item = screen.getByRole('menuitem', { name });
         expect(item).toHaveAttribute('aria-disabled', 'true');
         await user.click(item);
@@ -232,9 +277,31 @@ describe('CanvasContextMenu', () => {
       expect(inputs.onRunNode).not.toHaveBeenCalled();
       expect(inputs.onEditImage).not.toHaveBeenCalled();
       expect(inputs.onDeleteNode).not.toHaveBeenCalled();
+
+      view.rerender(<CanvasContextMenu {...inputs} onStopNode={onStopNode} />);
+      const stopWithHandler = screen.getByRole('menuitem', { name: stopName });
+      if (runStatus === 'cancel_requested') {
+        expect(stopWithHandler).toHaveAttribute('aria-disabled', 'true');
+        await user.click(stopWithHandler);
+        fireEvent.keyDown(stopWithHandler, { key: 'Enter', keyCode: 13, which: 13 });
+        expect(onStopNode).not.toHaveBeenCalled();
+      } else {
+        expect(stopWithHandler).not.toHaveAttribute('aria-disabled', 'true');
+        await user.click(stopWithHandler);
+        expect(onStopNode).toHaveBeenCalledExactlyOnceWith(asset.id);
+        expect(inputs.onClose).toHaveBeenCalledExactlyOnceWith('action');
+
+        const stopping = screen.getByRole('menuitem', { name: '停止中' });
+        expect(stopping).toHaveAttribute('aria-disabled', 'true');
+        await user.click(stopping);
+        fireEvent.keyDown(stopping, { key: 'Enter', keyCode: 13, which: 13 });
+        expect(onStopNode).toHaveBeenCalledOnce();
+      }
+
       await user.click(screen.getByRole('menuitem', { name: '提示词' }));
       expect(inputs.onOpenRequestPrompt).toHaveBeenCalledWith(asset.id);
-      expect(inputs.onClose).toHaveBeenCalledExactlyOnceWith('action');
+      expect(inputs.onClose).toHaveBeenCalledTimes(runStatus === 'cancel_requested' ? 1 : 2);
+      expect(inputs.onClose).toHaveBeenLastCalledWith('action');
     },
   );
 
