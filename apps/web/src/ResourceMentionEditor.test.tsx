@@ -867,7 +867,7 @@ describe('ResourceMentionEditor', () => {
     },
   );
 
-  it('反复解绑连线资源只清理文字绑定，不修改资源、连线输入或触发请求', async () => {
+  it('未接入画布移除回调的独立编辑器只清理文字绑定，不原地修改连线输入', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const onConnectedResourceRename = vi.fn();
@@ -915,6 +915,113 @@ describe('ResourceMentionEditor', () => {
     expect({ assets, connectedAssets }).toEqual(originalInputs);
     expect(onConnectedResourceRename).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([imageAsset, audioAsset, videoAsset, textAsset])(
+    '没有正文提及的 $mediaType 连线仍可通过移除回调解绑，文字保持原样',
+    async (asset) => {
+      const user = userEvent.setup();
+      const onResourceRemove = vi.fn();
+      const onDocumentChange = vi.fn();
+      const value = '  原始提示词🙂\n含标点，和空白\t';
+      render(
+        <ResourceMentionEditor
+          nodeId="remove-connected-only"
+          value={value}
+          connectedAssets={[{ ...asset, assetVersion: 2 }]}
+          onResourceRemove={onResourceRemove}
+          onDocumentChange={onDocumentChange}
+        />,
+      );
+      await user.click(screen.getByRole('button', { name: `删除 ${asset.name}` }));
+      expect(onResourceRemove).toHaveBeenCalledExactlyOnceWith(
+        { assetId: asset.id, assetVersion: 2 },
+        { version: 1, blocks: [{ type: 'text', text: value }] },
+      );
+      expect(onDocumentChange).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox')).toHaveValue(value);
+    },
+  );
+
+  it('移除仅命中所点版本，父层整体保存前不清空文字或提交第二次文档变更', async () => {
+    const user = userEvent.setup();
+    const onResourceRemove = vi.fn();
+    const onDocumentChange = vi.fn();
+    const oldMention: PromptMention = {
+      type: 'mention',
+      mentionId: 'old-version',
+      assetId: imageAsset.id,
+      assetVersion: 1,
+      label: imageAsset.name,
+      entityName: '旧图',
+      mediaType: 'image',
+    };
+    const newMention: PromptMention = {
+      ...oldMention,
+      mentionId: 'new-version',
+      assetVersion: 2,
+      entityName: '新图',
+    };
+    const promptDocument: PromptDocument = {
+      version: 1,
+      blocks: [oldMention, { type: 'text', text: ' 与 ' }, newMention],
+    };
+    const props = {
+      nodeId: 'remove-version',
+      assets: [imageAsset],
+      promptDocument,
+      onResourceRemove,
+      onDocumentChange,
+    };
+    const view = render(<ResourceMentionEditor {...props} />);
+    await user.click(screen.getByRole('button', { name: '删除 旧图' }));
+    const nextDocument: PromptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: '旧图 与 ' }, newMention],
+    };
+    expect(onResourceRemove).toHaveBeenCalledExactlyOnceWith(
+      { assetId: imageAsset.id, assetVersion: 1 },
+      nextDocument,
+    );
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    view.rerender(<ResourceMentionEditor {...props} promptDocument={nextDocument} />);
+    expect(screen.queryByRole('button', { name: '删除 旧图' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '删除 新图' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveValue('旧图 与 新图');
+    expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(1);
+  });
+
+  it('移除被父层拒绝时显示原因，保留原文、提及和缩略图', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="remove-rejected"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'keep-reference',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: 'image',
+            },
+          ],
+        }}
+        assets={[imageAsset]}
+        onResourceRemove={() => {
+          throw new Error('节点正在生成，请完成后再移除引用');
+        }}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '删除 产品图' }));
+    expect(screen.getByRole('status')).toHaveTextContent('节点正在生成，请完成后再移除引用');
+    expect(screen.getByRole('textbox')).toHaveValue('产品图');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+    expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(1);
+    expect(onDocumentChange).not.toHaveBeenCalled();
   });
 
   it('reorders mentions while preserving surrounding text and structured identities', async () => {

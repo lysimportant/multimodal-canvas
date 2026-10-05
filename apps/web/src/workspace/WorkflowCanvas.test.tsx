@@ -864,6 +864,37 @@ describe('WorkflowCanvas context menu', () => {
     expect(source.data.label).toBe('图片来源节点');
   });
 
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 节点资源移除带上实际编辑节点 ID，并保留编辑器返回的完整文字文档',
+    (mediaType) => {
+      const node: AssetFlowNode = {
+        ...generateNode,
+        type: mediaType,
+        data: {
+          ...generateNode.data,
+          label: mediaType + ' 节点',
+          mediaType,
+          prompt: '开场 引用名称 收尾',
+        },
+      };
+      const onResourceRemove = vi.fn();
+      const props = createProps({ nodes: [node], selectedNode: node, onResourceRemove });
+      render(<WorkflowCanvas {...props} />);
+      const editor = quickEditorRender.mock
+        .lastCall![0] as import('./NodeQuickEditor').NodeQuickEditorProps;
+      const resource = { assetId: mediaType + '-asset', assetVersion: 4 };
+      const document = {
+        version: 1 as const,
+        blocks: [{ type: 'text' as const, text: '开场 引用名称 收尾' }],
+      };
+
+      editor.onResourceRemove?.(resource, document);
+
+      expect(onResourceRemove).toHaveBeenCalledExactlyOnceWith(resource, document, node.id);
+      expect(props.onPromptDocumentChange).toBeUndefined();
+    },
+  );
+
   it('未接入停止回调时运行节点禁用停止和图片编辑，仍可查看提示词', async () => {
     const node = {
       ...generateNode,
@@ -1890,6 +1921,15 @@ describe('WorkflowCanvas 拖动性能', () => {
     expect(currentEditor().assets?.[0]?.name).toBe('目录资源');
     currentEditor().onPromptChange?.('更新');
     expect(replacement).toHaveBeenLastCalledWith('更新', changed.id);
+    const removed = vi.fn();
+    props = { ...props, onResourceRemove: removed };
+    view.rerender(<WorkflowCanvas {...props} />);
+    const unlinkedDocument = {
+      version: 1 as const,
+      blocks: [{ type: 'text' as const, text: '保留引用文字' }],
+    };
+    currentEditor().onResourceRemove?.({ assetId: 'upstream' }, unlinkedDocument);
+    expect(removed).toHaveBeenLastCalledWith({ assetId: 'upstream' }, unlinkedDocument, changed.id);
     props = { ...props, nodes: [input], selectedNode: null };
     view.rerender(<WorkflowCanvas {...props} />);
     expect(document.querySelector('.quick-editor-overlay')).not.toBeInTheDocument();

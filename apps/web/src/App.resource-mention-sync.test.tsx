@@ -37,6 +37,9 @@ vi.mock('./workspace/WorkflowCanvas', () => ({
         onConnectedResourceRename={(assetId, name) =>
           props.onConnectedResourceRename?.(assetId, name, target.id)
         }
+        onResourceRemove={(resource, document) =>
+          props.onResourceRemove?.(resource, document, target.id)
+        }
         onDocumentChange={(document) => props.onPromptDocumentChange?.(document, target.id)}
         ariaLabel="提示词"
       />
@@ -342,12 +345,19 @@ describe('连线资源别名同步到提示词', () => {
   });
 
   it.each(['unlink', 'plain'] as const)(
-    '明确%s后保存冻结引用，刷新不复活旧别名',
+    '明确%s后保存引用状态，刷新不复活旧别名',
     async (action) => {
       restoreLegacyCanvas();
       const app = await openLegacyEditor();
       const text = '良站在窗前，良转身';
       const edges = structuredClone(view.canvas!.edges);
+      const removedEdge = edges.find((edge) => edge.source === 'image-node-six')!;
+      const retainedEdges = edges.filter((edge) => edge.id !== removedEdge.id);
+      const originalRefs = structuredClone(view.canvas!.nodes[2].data.resourceRefs);
+      const persistedEdges = structuredClone(canvas.edges);
+      const retainedPersistedEdges = persistedEdges.filter(
+        (edge) => edge.sourceNodeId !== 'image-node-six',
+      );
       if (action === 'unlink') fireEvent.click(screen.getByRole('button', { name: '删除 良' }));
       else
         act(() =>
@@ -357,17 +367,43 @@ describe('连线资源别名同步到提示词', () => {
           ),
         );
       expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
-      await waitFor(() =>
-        expect(canvas.nodes[2].data.resourceRefs).toContainEqual({
-          id: `connected:${image.id}`,
-          assetId: image.id,
-          mediaType: 'image',
-          name: '良',
-          assetVersion: 1,
-        }),
-      );
+      if (action === 'unlink') {
+        await waitFor(() =>
+          expect(
+            canvas.nodes[2].data.resourceRefs?.some((reference) => reference.assetId === image.id),
+          ).toBe(false),
+        );
+        expect(view.canvas!.edges).toEqual(retainedEdges);
+        expect(canvas.edges).toEqual(retainedPersistedEdges);
+        expect(view.canvas!.nodes.map((node) => node.id)).toEqual([
+          'image-node-six',
+          'image-node-mansui',
+          'video-target',
+        ]);
+
+        act(() => view.canvas!.onUndoCanvas?.());
+        expect(view.canvas!.edges).toEqual(edges);
+        expect(view.canvas!.nodes[2].data.resourceRefs).toEqual(originalRefs);
+        act(() => view.canvas!.onRedoCanvas?.());
+        expect(view.canvas!.edges).toEqual(retainedEdges);
+        expect(
+          view.canvas!.nodes[2].data.resourceRefs?.some(
+            (reference) => reference.assetId === image.id,
+          ),
+        ).toBe(false);
+      } else {
+        await waitFor(() =>
+          expect(canvas.nodes[2].data.resourceRefs).toContainEqual({
+            id: `connected:${image.id}`,
+            assetId: image.id,
+            mediaType: 'image',
+            name: '良',
+            assetVersion: 1,
+          }),
+        );
+        expect(view.canvas!.edges).toEqual(edges);
+      }
       expect(canvas.nodes[2].data.promptDocument!.blocks).toEqual([{ type: 'text', text }]);
-      expect(view.canvas!.edges).toEqual(edges);
       app.unmount();
       view.canvas = null;
       render(<App />);
@@ -375,7 +411,12 @@ describe('连线资源别名同步到提示词', () => {
       await waitFor(() => expect(view.canvas?.nodes[0].data.resultAsset?.version).toBe(1));
       expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(text);
       expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
-      expect(view.canvas!.edges).toEqual(edges);
+      expect(view.canvas!.edges).toEqual(action === 'unlink' ? retainedEdges : edges);
+      expect(
+        view.canvas!.nodes[2].data.resourceRefs?.some(
+          (reference) => reference.assetId === image.id,
+        ),
+      ).toBe(action === 'plain');
     },
   );
 

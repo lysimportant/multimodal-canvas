@@ -123,6 +123,7 @@ import {
 import { projectGenerationBatches } from './workspace/generation-batch-view';
 import {
   addNodeResourceReference,
+  removeNodeResourceReference,
   reorderNodeResources,
   type NodeResourceIdentity,
 } from './workspace/node-resource-actions';
@@ -2875,6 +2876,31 @@ function WorkspaceApp({
     ],
   );
 
+  /** 移除指定版本的引用和连线，原文不变；整次操作共用一个画布撤销与保存。 */
+  const handleResourceRemove = useCallback(
+    (resource: NodeResourceIdentity, document: PromptDocument, nodeId?: string) => {
+      const targetId = nodeId ?? effectiveSelectedNodeId;
+      if (!targetId) throw new Error('节点已不存在，请重新打开编辑器');
+      if (isNodeBusy(targetId)) throw new Error('节点正在生成，请完成后再移除引用');
+      const next = removeNodeResourceReference(
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+        targetId,
+        resource,
+        document,
+      );
+      if (!next.changed) return;
+      rememberHistory();
+      nodesRef.current = next.nodes;
+      edgesRef.current = next.edges;
+      setNodes(next.nodes);
+      setEdges(next.edges);
+      canvasDirtyRef.current = true;
+    },
+    [assets, effectiveSelectedNodeId, isNodeBusy, rememberHistory, setNodes, setEdges],
+  );
+
   /** 原子保存复刻状态；分析POST必须等待此保存成功，才能恢复同一幂等请求。 */
   const updateVideoRecreation = useCallback(
     async (config: VideoRecreationConfig, nodeId: string) => {
@@ -5064,6 +5090,7 @@ function WorkspaceApp({
             onConnectedResourceRename={renameConnectedResource}
             onAddNodeReference={handleAddNodeReference}
             onResourceReorder={handleResourceReorder}
+            onResourceRemove={handleResourceRemove}
             onSearchProjectResources={handleSearchProjectResources}
             onPromptSkillChange={updateSelectedPromptSkill}
             onUploadResource={uploadProjectAsset}

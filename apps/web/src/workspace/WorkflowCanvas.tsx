@@ -254,6 +254,12 @@ export type WorkflowCanvasProps = {
     resources: readonly { assetId: string; assetVersion?: number }[],
     nodeId?: string,
   ) => void;
+  /** 原子移除目标节点的资源连线及引用，保留文档文字和源节点。 */
+  onResourceRemove?: (
+    resource: { assetId: string; assetVersion?: number },
+    document: PromptDocument,
+    nodeId?: string,
+  ) => void;
   /** 保存目标节点的技能选择，不触发生成。 */
   onPromptSkillChange?: (skillId: string | undefined, nodeId?: string) => void;
   /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
@@ -384,6 +390,7 @@ export function WorkflowCanvas({
   onAddNodeReference,
   onSearchProjectResources,
   onResourceReorder,
+  onResourceRemove,
   onPromptSkillChange,
   onUploadResource,
   onParametersChange,
@@ -1131,6 +1138,11 @@ export function WorkflowCanvas({
         onResourceReorder={
           onResourceReorder ? (resources) => onResourceReorder(resources, editorNode.id) : undefined
         }
+        onResourceRemove={
+          onResourceRemove
+            ? (resource, document) => onResourceRemove(resource, document, editorNode.id)
+            : undefined
+        }
         onPromptSkillChange={
           onPromptSkillChange ? (id) => onPromptSkillChange(id, editorNode.id) : undefined
         }
@@ -1213,6 +1225,7 @@ export function WorkflowCanvas({
     onConnectedResourceRename,
     onSearchProjectResources,
     onResourceReorder,
+    onResourceRemove,
     onAddNodeReference,
     referenceTargetId,
     cancelSelectionGesture,

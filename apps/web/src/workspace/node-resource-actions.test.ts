@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { renderPromptDocument, type Asset, type PromptDocument } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
-import { addNodeResourceReference, reorderNodeResources } from './node-resource-actions';
+import {
+  addNodeResourceReference,
+  removeNodeResourceReference,
+  reorderNodeResources,
+} from './node-resource-actions';
 import {
   collectConnectedPromptAssets,
   createConnectedResourceReferenceId,
@@ -61,6 +65,230 @@ function legacyAliasGraph(): { nodes: AssetFlowNode[]; edges: FlowEdge[] } {
 
 /** 空目录只允许引用来源节点明确提供的版本，不读取真实资产。 */
 const assets: Asset[] = [];
+
+describe('removeNodeResourceReference', () => {
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 节点移除同版本全部来源，保留原文、其他版本与目标、原图和源节点',
+    (mediaType) => {
+      const document: PromptDocument = {
+        version: 1,
+        blocks: [
+          { type: 'text', text: '  开头🙂\n' },
+          {
+            type: 'mention',
+            mentionId: 'a-one',
+            assetId: 'a',
+            assetVersion: 1,
+            label: '原图',
+            entityName: '主角',
+            mediaType: 'image',
+          },
+          { type: 'text', text: ' 与 ' },
+          {
+            type: 'mention',
+            mentionId: 'a-two',
+            assetId: 'a',
+            assetVersion: 2,
+            label: '新图',
+            entityName: '新版本',
+            mediaType: 'image',
+          },
+          { type: 'text', text: '\t，结尾。\n' },
+        ],
+      };
+      const destination: AssetFlowNode = {
+        ...target(),
+        type: mediaType,
+        data: {
+          ...target().data,
+          mediaType,
+          promptDocument: document,
+          prompt: renderPromptDocument(document),
+          resourceRefs: [
+            {
+              id: createConnectedResourceReferenceId('old', 'a'),
+              assetId: 'a',
+              assetVersion: 1,
+              mediaType: 'image',
+              name: '主角',
+            },
+            {
+              id: createConnectedResourceReferenceId('duplicate', 'a'),
+              assetId: 'a',
+              assetVersion: 1,
+              mediaType: 'image',
+              name: '主角',
+            },
+            {
+              id: createConnectedResourceReferenceId('new', 'a'),
+              assetId: 'a',
+              assetVersion: 2,
+              mediaType: 'image',
+              name: '新版本',
+            },
+          ],
+        },
+      };
+      const nodes = [
+        source('old', 'a'),
+        source('duplicate', 'a'),
+        source('new', 'a', 2),
+        destination,
+        { ...target(), id: 'other' },
+      ];
+      const edges: FlowEdge[] = [
+        ...['old', 'duplicate', 'new'].map((id) => ({
+          id,
+          source: id,
+          target: destination.id,
+          targetHandle: 'input:referenceImage',
+        })),
+        { id: 'other-target', source: 'old', target: 'other' },
+        {
+          id: 'original-image',
+          source: 'old',
+          target: destination.id,
+          targetHandle: 'input:imageEdit',
+        },
+        { id: 'downstream', source: destination.id, target: 'other' },
+      ];
+      const before = structuredClone({ nodes, edges });
+      const result = removeNodeResourceReference(nodes, edges, assets, destination.id, {
+        assetId: 'a',
+        assetVersion: 1,
+      });
+      expect(result.changed).toBe(true);
+      expect(result.edges.map((edge) => edge.id)).toEqual([
+        'new',
+        'other-target',
+        'original-image',
+        'downstream',
+      ]);
+      expect(result.nodes).toHaveLength(nodes.length);
+      expect(result.nodes.slice(0, 3)).toEqual(nodes.slice(0, 3));
+      expect(result.nodes[0]).toBe(nodes[0]);
+      expect(result.nodes[3].data.prompt).toBe(destination.data.prompt);
+      expect(renderPromptDocument(result.nodes[3].data.promptDocument!)).toBe(
+        destination.data.prompt,
+      );
+      expect(
+        result.nodes[3].data.promptDocument!.blocks.filter((block) => block.type === 'mention'),
+      ).toEqual([document.blocks[3]]);
+      expect(result.nodes[3].data.resourceRefs).toEqual([destination.data.resourceRefs![2]]);
+      expect(result.nodes[3].data.videoMode).toBe(destination.data.videoMode);
+      expect(result.nodes[3].data.stale).toBe(true);
+      expect(result.nodes[4].data.stale).toBe(true);
+      expect({ nodes, edges }).toEqual(before);
+    },
+  );
+
+  it('旧未冻结别名随连线一起移除；另一资源的引用与连线保留', () => {
+    const graph = legacyAliasGraph();
+    const result = removeNodeResourceReference(graph.nodes, graph.edges, assets, 'video', {
+      assetId: 'a',
+      assetVersion: 1,
+    });
+    expect(result.edges.map((edge) => edge.id)).toEqual(['edge-b']);
+    expect(result.nodes[2].data.resourceRefs).toEqual([graph.nodes[2].data.resourceRefs![1]]);
+    expect(result.nodes[2].data.prompt).toBe(graph.nodes[2].data.prompt);
+    expect(
+      collectConnectedPromptAssets('video', result.nodes, result.edges, assets).map(
+        (input) => input.id,
+      ),
+    ).toEqual(['b']);
+  });
+
+  it('只有正文提及也可移除并保留多处别名文字；再次移除不产生变更', () => {
+    const destination = target();
+    destination.data.promptDocument = {
+      version: 1,
+      blocks: ['正面', '侧面'].map((name) => ({
+        type: 'mention',
+        mentionId: name,
+        assetId: 'a',
+        assetVersion: 1,
+        label: '角色',
+        mediaType: 'image',
+        entityName: name,
+      })),
+    };
+    const result = removeNodeResourceReference([destination], [], assets, 'video', {
+      assetId: 'a',
+      assetVersion: 1,
+    });
+    expect(result.changed).toBe(true);
+    expect(result.nodes[0].data.promptDocument?.blocks).toEqual([
+      { type: 'text', text: '正面侧面' },
+    ]);
+    expect(result.nodes[0].data.prompt).toBe('正面侧面');
+    expect(result.edges).toEqual([]);
+    expect(
+      removeNodeResourceReference(result.nodes, result.edges, assets, 'video', {
+        assetId: 'a',
+        assetVersion: 1,
+      }).changed,
+    ).toBe(false);
+  });
+
+  it('未知版本仅移除未知版本来源，保留同资产的已知版本连接', () => {
+    const unknown = source('unknown', 'a');
+    unknown.data.resultAsset = undefined;
+    unknown.data.assetId = 'a';
+    const nodes = [unknown, source('known', 'a', 3), target()];
+    const edges: FlowEdge[] = ['unknown', 'known'].map((id) => ({
+      id,
+      source: id,
+      target: 'video',
+    }));
+    const result = removeNodeResourceReference(nodes, edges, assets, 'video', { assetId: 'a' });
+    expect(result.edges.map((edge) => edge.id)).toEqual(['known']);
+    expect(result.nodes[2].data.prompt).toBe(nodes[2].data.prompt);
+  });
+
+  it('来源已切换结果版本时按目标冻结绑定移除，不误删新版来源', () => {
+    const destination = target();
+    destination.data.resourceRefs = [
+      {
+        id: 'ordered:' + createConnectedResourceReferenceId('old', 'a'),
+        assetId: 'a',
+        assetVersion: 1,
+        mediaType: 'image',
+        name: '旧版',
+      },
+      {
+        id: createConnectedResourceReferenceId('new', 'a'),
+        assetId: 'a',
+        assetVersion: 2,
+        mediaType: 'image',
+        name: '新版',
+      },
+    ];
+    const nodes = [source('old', 'a', 5), source('new', 'a', 2), destination];
+    const edges: FlowEdge[] = ['old', 'new'].map((id) => ({ id, source: id, target: 'video' }));
+    const result = removeNodeResourceReference(nodes, edges, assets, 'video', {
+      assetId: 'a',
+      assetVersion: 1,
+    });
+    expect(result.edges.map((edge) => edge.id)).toEqual(['new']);
+    expect(result.nodes[2].data.resourceRefs).toEqual([destination.data.resourceRefs[1]]);
+  });
+
+  it('拒绝会删改提示词文字的文档，原图保持不变', () => {
+    const graph = legacyAliasGraph();
+    const before = structuredClone(graph);
+    expect(() =>
+      removeNodeResourceReference(
+        graph.nodes,
+        graph.edges,
+        assets,
+        'video',
+        { assetId: 'a', assetVersion: 1 },
+        { version: 1, blocks: [{ type: 'text', text: '' }] },
+      ),
+    ).toThrow('当前文字未修改');
+    expect(graph).toEqual(before);
+  });
+});
 
 describe('addNodeResourceReference', () => {
   it.each(['text', 'image', 'audio', 'video'] as const)(

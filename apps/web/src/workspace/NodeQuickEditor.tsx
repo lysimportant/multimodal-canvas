@@ -135,6 +135,11 @@ export type NodeQuickEditorProps = {
   onSearchProjectResources?: ProjectResourceSearch;
   /** 保存资源条的完整版本化顺序，不移动正文引用。 */
   onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
+  /** 一次移除资源连线及引用，文档保留全部可见文字。 */
+  onResourceRemove?: (
+    resource: { assetId: string; assetVersion?: number },
+    document: PromptDocument,
+  ) => void;
   /** 当前项目可访问资源，用于提示词中的 `@` 搜索。 */
   assets?: readonly Asset[];
   onModelChange: (value: ModelSelection) => void;
@@ -396,6 +401,7 @@ export function NodeQuickEditor({
   onReferencePickToggle,
   onSearchProjectResources,
   onResourceReorder,
+  onResourceRemove,
   assets = [],
   onModelChange,
   onInferenceStrengthChange,
@@ -745,6 +751,7 @@ export function NodeQuickEditor({
         }
         resourceRefs={node.data.resourceRefs}
         onResourceReorder={onResourceReorder}
+        onResourceRemove={onResourceRemove}
       />
     </div>
   );

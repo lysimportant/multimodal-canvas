@@ -130,6 +130,124 @@ function initialCanvas(): CanvasDocument {
   });
 }
 
+/** 为解绑回归构造一个目标节点和两条同类型来源，第二条用于验证其它引用不受影响。 */
+function resourceRemovalAssets(mediaType: Asset['mediaType']): [Asset, Asset] {
+  const sourceAssets: Record<Asset['mediaType'], [Asset, Asset]> = {
+    text: [
+      assets.find((item) => item.id === 'interview-script')!,
+      assets.find((item) => item.id === 'brief-document')!,
+    ],
+    image: [
+      assets.find((item) => item.id === 'product-image')!,
+      assets.find((item) => item.id === 'scene-image-1')!,
+    ],
+    audio: [
+      assets.find((item) => item.id === 'voice-sample')!,
+      assets.find((item) => item.id === 'music-audio-1')!,
+    ],
+    video: [
+      assets.find((item) => item.id === 'product-video')!,
+      assets.find((item) => item.id === 'motion-video-1')!,
+    ],
+  };
+  return sourceAssets[mediaType];
+}
+
+/** 为解绑回归构造一个目标节点和两条同类型来源，第二条用于验证其它引用不受影响。 */
+function resourceRemovalCanvas(mediaType: Asset['mediaType']): CanvasDocument {
+  const [primary, retained] = resourceRemovalAssets(mediaType);
+  const targetId = `resource-removal-target-${mediaType}`;
+  const sourceIds = [
+    `resource-removal-primary-${mediaType}`,
+    `resource-removal-retained-${mediaType}`,
+  ];
+  const target = {
+    id: targetId,
+    type: mediaType,
+    position: { x: 560, y: 220 },
+    width: 340,
+    height: 240,
+    data: {
+      label: `${mediaType} 引用删除目标`,
+      mediaType,
+      mode: 'generate' as const,
+      enabled: true,
+      modelAlias: `mock-${mediaType}`,
+      promptDocument: {
+        version: 1 as const,
+        blocks: [
+          { type: 'text' as const, text: `保留开头-${mediaType} ` },
+          {
+            type: 'mention' as const,
+            mentionId: `resource-removal-primary-mention-${mediaType}`,
+            assetId: primary.id,
+            assetVersion: 1,
+            label: primary.name,
+            mediaType: primary.mediaType,
+          },
+          { type: 'text' as const, text: ' 中间文字 ' },
+          {
+            type: 'mention' as const,
+            mentionId: `resource-removal-retained-mention-${mediaType}`,
+            assetId: retained.id,
+            assetVersion: 1,
+            label: retained.name,
+            mediaType: retained.mediaType,
+          },
+          { type: 'text' as const, text: ` 保留结尾-${mediaType}` },
+        ],
+      },
+      resourceRefs: [
+        {
+          id: `connected:source:${sourceIds[0]}:${primary.id}`,
+          assetId: primary.id,
+          assetVersion: 1,
+          mediaType: primary.mediaType,
+          name: primary.name,
+        },
+        {
+          id: `connected:source:${sourceIds[1]}:${retained.id}`,
+          assetId: retained.id,
+          assetVersion: 1,
+          mediaType: retained.mediaType,
+          name: retained.name,
+        },
+      ],
+    },
+  } satisfies CanvasDocument['nodes'][number];
+  const sourceNodes = [primary, retained].map(
+    (entry, index) =>
+      ({
+        id: sourceIds[index]!,
+        type: entry.mediaType,
+        position: { x: 120 + index * 330, y: 520 },
+        width: 260,
+        height: 190,
+        data: {
+          label: entry.name,
+          mediaType: entry.mediaType,
+          mode: 'source' as const,
+          enabled: true,
+          assetId: entry.id,
+          contentUrl: entry.contentUrl,
+          mimeType: entry.mimeType,
+        },
+      }) satisfies CanvasDocument['nodes'][number],
+  );
+  return canvasDocumentSchema.parse({
+    revision: 1,
+    nodes: [target, ...sourceNodes],
+    edges: sourceNodes.map((source, index) => ({
+      id: `resource-removal-edge-${mediaType}-${index}`,
+      sourceNodeId: source.id,
+      sourceHandle: `output:${mediaType}`,
+      targetNodeId: targetId,
+      targetHandle: 'input:content',
+      order: index,
+    })),
+  });
+}
+
 /** 以 JSON 返回浏览器 Mock，避免测试命中任何真实 API。 */
 async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -455,6 +573,77 @@ async function openQuickEditor(page: Page) {
   return { node, editor };
 }
 
+/** 打开指定目标节点的编辑器；资源删除回归不依赖节点在画布中的选中状态。 */
+async function openResourceRemovalEditor(page: Page, targetId: string, expanded = false) {
+  const node = page.locator(`.react-flow__node[data-id="${targetId}"]`);
+  await expect(node).toBeVisible({ timeout: 15_000 });
+  await node.getByText('尚未生成', { exact: true }).click();
+  const editor = page.locator('.node-quick-editor');
+  await expect(editor).toBeVisible();
+  if (!expanded) return { node, editor, scope: editor };
+  await editor.getByRole('button', { name: '打开完整编辑器' }).click();
+  const dialog = page.getByRole('dialog', { name: /· 编辑设置$/, exact: true });
+  await expect(dialog).toBeVisible();
+  return { node, editor, scope: dialog };
+}
+
+/** 断言删除后只解绑目标资源，正文、其它资源、来源节点和其它边均保留。 */
+function expectResourceRemoved(
+  canvas: CanvasDocument,
+  mediaType: Asset['mediaType'],
+  primary: Asset,
+  retained: Asset,
+) {
+  const targetId = `resource-removal-target-${mediaType}`;
+  const primarySourceId = `resource-removal-primary-${mediaType}`;
+  const retainedSourceId = `resource-removal-retained-${mediaType}`;
+  const target = canvas.nodes.find((node) => node.id === targetId)!;
+  const targetEdges = canvas.edges.filter((edge) => edge.targetNodeId === targetId);
+  expect(targetEdges.map((edge) => edge.sourceNodeId)).toEqual([retainedSourceId]);
+  expect(target.data.resourceRefs?.map((reference) => reference.assetId)).toEqual([retained.id]);
+  expect(target.data.promptDocument?.blocks).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'mention', assetId: retained.id }),
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining(`保留开头-${mediaType}`),
+      }),
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining(`保留结尾-${mediaType}`),
+      }),
+    ]),
+  );
+  expect(target.data.promptDocument?.blocks).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ type: 'mention', assetId: primary.id })]),
+  );
+  expect(canvas.nodes.find((node) => node.id === primarySourceId)).toBeDefined();
+  expect(canvas.nodes.find((node) => node.id === retainedSourceId)).toBeDefined();
+}
+
+/** 断言画布撤销恢复完整绑定，供同一次历史记录的红绿回归。 */
+function expectResourceRestored(
+  canvas: CanvasDocument,
+  mediaType: Asset['mediaType'],
+  primary: Asset,
+  retained: Asset,
+) {
+  const targetId = `resource-removal-target-${mediaType}`;
+  const target = canvas.nodes.find((node) => node.id === targetId)!;
+  expect(
+    canvas.edges.filter((edge) => edge.targetNodeId === targetId).map((edge) => edge.sourceNodeId),
+  ).toEqual([`resource-removal-primary-${mediaType}`, `resource-removal-retained-${mediaType}`]);
+  expect(target.data.resourceRefs?.map((reference) => reference.assetId)).toEqual([
+    primary.id,
+    retained.id,
+  ]);
+  expect(
+    target.data.promptDocument?.blocks
+      .filter((block) => block.type === 'mention')
+      .map((block) => block.assetId),
+  ).toEqual([primary.id, retained.id]);
+}
+
 /** 读取提示词中当前光标前一个字符的实际矩形，用于验证 picker 贴近 @。 */
 async function caretCharacterRect(textarea: Locator) {
   return textarea.evaluate((element) => {
@@ -553,6 +742,121 @@ async function expectPickerControlsLayout(picker: Locator) {
     }
   }
 }
+
+for (const mediaType of ['text', 'image', 'audio'] as const) {
+  test(`PC ${mediaType} 节点资源条解绑引用、连线和冻结资源且刷新不复活`, async ({
+    page,
+    baseURL,
+  }) => {
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    const initial = resourceRemovalCanvas(mediaType);
+    const [primary, retained] = resourceRemovalAssets(mediaType);
+    const fixture = await installFixture(page, baseURL, initial);
+    const targetId = `resource-removal-target-${mediaType}`;
+    await page.goto(`/projects/${project.id}`);
+    let { editor, scope } = await openResourceRemovalEditor(page, targetId);
+    const prompt = scope.getByRole('textbox', { name: '提示词', exact: true });
+    const originalPrompt = await prompt.inputValue();
+    await expect(
+      scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+    ).toBeVisible();
+    await expect(
+      scope.getByRole('button', { name: `删除 ${retained.name}`, exact: true }),
+    ).toBeVisible();
+
+    const removedRevision = fixture.canvas().revision;
+    await scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }).click();
+    await expect(prompt).toHaveValue(originalPrompt);
+    await expect(
+      scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      scope.getByRole('button', { name: `删除 ${retained.name}`, exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press('Control+s');
+    await expect.poll(() => fixture.canvas().revision).toBeGreaterThan(removedRevision);
+    expectResourceRemoved(fixture.canvas(), mediaType, primary, retained);
+
+    if (mediaType === 'text') {
+      const restoredRevision = fixture.canvas().revision;
+      await page.getByRole('button', { name: '撤销', exact: true }).click();
+      await expect(prompt).toHaveValue(originalPrompt);
+      await expect(
+        scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+      ).toBeVisible();
+      await page.keyboard.press('Control+s');
+      await expect.poll(() => fixture.canvas().revision).toBeGreaterThan(restoredRevision);
+      expectResourceRestored(fixture.canvas(), mediaType, primary, retained);
+
+      const redoneRevision = fixture.canvas().revision;
+      await page.getByRole('button', { name: '重做', exact: true }).click();
+      await expect(prompt).toHaveValue(originalPrompt);
+      await expect(
+        scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+      ).toHaveCount(0);
+      await page.keyboard.press('Control+s');
+      await expect.poll(() => fixture.canvas().revision).toBeGreaterThan(redoneRevision);
+      expectResourceRemoved(fixture.canvas(), mediaType, primary, retained);
+    }
+
+    await page.reload();
+    ({ editor, scope } = await openResourceRemovalEditor(page, targetId));
+    await expect(scope.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+      originalPrompt,
+    );
+    await expect(
+      scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      scope.getByRole('button', { name: `删除 ${retained.name}`, exact: true }),
+    ).toBeVisible();
+    expectResourceRemoved(fixture.canvas(), mediaType, primary, retained);
+    await expect(editor).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
+test('PC video 完整编辑器解绑资源引用、连线和冻结资源且刷新不复活', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const mediaType = 'video' as const;
+  const initial = resourceRemovalCanvas(mediaType);
+  const [primary, retained] = resourceRemovalAssets(mediaType);
+  const fixture = await installFixture(page, baseURL, initial);
+  const targetId = `resource-removal-target-${mediaType}`;
+  await page.goto(`/projects/${project.id}`);
+  let { scope } = await openResourceRemovalEditor(page, targetId, true);
+  const prompt = scope.getByRole('textbox', { name: '提示词', exact: true });
+  const originalPrompt = await prompt.inputValue();
+
+  const removedRevision = fixture.canvas().revision;
+  await scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }).click();
+  await expect(prompt).toHaveValue(originalPrompt);
+  await expect(
+    scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    scope.getByRole('button', { name: `删除 ${retained.name}`, exact: true }),
+  ).toBeVisible();
+  await scope.getByRole('button', { name: '关闭编辑器', exact: true }).click();
+  await expect(scope).toHaveCount(0);
+  await page.keyboard.press('Control+s');
+  await expect.poll(() => fixture.canvas().revision).toBeGreaterThan(removedRevision);
+  expectResourceRemoved(fixture.canvas(), mediaType, primary, retained);
+
+  await page.reload();
+  ({ scope } = await openResourceRemovalEditor(page, targetId, true));
+  await expect(scope.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+    originalPrompt,
+  );
+  await expect(
+    scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    scope.getByRole('button', { name: `删除 ${retained.name}`, exact: true }),
+  ).toBeVisible();
+  expectResourceRemoved(fixture.canvas(), mediaType, primary, retained);
+  expect(fixture.errors).toEqual([]);
+});
 
 test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原子删除与撤销', async ({
   page,

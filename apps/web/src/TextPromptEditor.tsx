@@ -33,6 +33,11 @@ type TextPromptEditorProps = {
   onSearchProjectResources?: ProjectResourceSearch;
   /** 回传完整资源条顺序；保存失败可同步抛错，由编辑器显示原始错误。 */
   onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
+  /** 一次移除资源连线及引用，文档保留全部可见文字。 */
+  onResourceRemove?: (
+    resource: { assetId: string; assetVersion?: number },
+    document: PromptDocument,
+  ) => void;
   /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
   onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 结构化文档保存回调。 */
@@ -66,6 +71,7 @@ export function TextPromptEditor({
   resourceRefs,
   onSearchProjectResources,
   onResourceReorder,
+  onResourceRemove,
   onConnectedResourceRename,
   onDocumentChange,
   onUploadResource,
@@ -116,6 +122,7 @@ export function TextPromptEditor({
         onReferencePickToggle={onReferencePickToggle}
         resourceRefs={resourceRefs}
         onResourceReorder={onResourceReorder}
+        onResourceRemove={onResourceRemove}
         onConnectedResourceRename={onConnectedResourceRename}
         // 结构化文档是唯一执行来源；避免新编辑同时触发两个父层更新。
         onChange={onDocumentChange ? undefined : onChange}

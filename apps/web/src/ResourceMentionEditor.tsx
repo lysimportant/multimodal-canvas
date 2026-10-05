@@ -85,6 +85,11 @@ export type ResourceMentionEditorProps = {
   resourceRefs?: readonly NodeResourceRef[];
   /** 回传完整资源条顺序；同步保存错误显示在编辑警告区，不修改正文或连线。 */
   onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
+  /** 原子移除指定版本的连线和引用；文档保留全部文字，失败可同步抛错。 */
+  onResourceRemove?: (
+    resource: { assetId: string; assetVersion?: number },
+    document: PromptDocument,
+  ) => void;
   /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
   onConnectedResourceRename?: (assetId: string, name: string) => void;
   /** 纯文本兼容回调；始终接收当前文档渲染后的文字。 */
@@ -162,6 +167,7 @@ export function ResourceMentionEditor({
   onReferencePickToggle,
   resourceRefs = [],
   onResourceReorder,
+  onResourceRemove,
   onConnectedResourceRename,
   onChange,
   onDocumentChange,
@@ -786,18 +792,34 @@ export function ResourceMentionEditor({
   };
 
   /**
-   * 解除资源条中同一资源的全部提及，名称保留为普通文字，其他引用范围不变。
-   * @param assetId 要解绑的资源 ID；没有提及时不提交变更，也不删除资源或连线。
-   * @returns 无返回值；所有别名合并为一次可撤销的文档更新。
+   * 移除资源条中指定版本的引用，所有名称保留为普通文字，其他版本和文字范围不变。
+   * @param resource 当前缩略图的资产及冻结版本；只有连线没有提及时仍通知父层。
+   * @returns 父层将文档、引用和连线合并为一次撤销；独立编辑器只更新文档。
    */
   const unlinkResource = useCallback(
-    (assetId: string) => {
-      const nextRanges = rangesRef.current.filter((range) => range.mention.assetId !== assetId);
-      if (nextRanges.length === rangesRef.current.length) return;
-      commitState(textRef.current, nextRanges);
-      setTrigger(null);
+    (resource: { assetId: string; assetVersion?: number }) => {
+      if (disabled) return;
+      const nextRanges = rangesRef.current.filter(
+        (range) =>
+          range.mention.assetId !== resource.assetId ||
+          range.mention.assetVersion !== resource.assetVersion,
+      );
+      try {
+        if (onResourceRemove) {
+          // 等待父层整体更新；不先提交文档，避免把一次解绑拆成两个撤销步骤。
+          onResourceRemove(resource, documentFromRanges(textRef.current, nextRanges));
+        } else if (nextRanges.length !== rangesRef.current.length) {
+          commitState(textRef.current, nextRanges);
+        }
+        setTrigger(null);
+        setProtectedEditMessage(null);
+      } catch (error) {
+        setProtectedEditMessage(
+          error instanceof Error ? error.message : '资源引用移除失败，请重试',
+        );
+      }
     },
-    [commitState],
+    [commitState, disabled, onResourceRemove],
   );
 
   const openBinding = useCallback((range: MentionRange) => {
@@ -1651,10 +1673,11 @@ export function ResourceMentionEditor({
                 type="button"
                 className="resource-mention-thumb-delete"
                 aria-label={`删除 ${item.name}`}
+                title="移除引用，保留文字"
                 disabled={disabled}
                 onClick={(event) => {
                   event.stopPropagation();
-                  unlinkResource(item.assetId);
+                  unlinkResource({ assetId: item.assetId, assetVersion: item.assetVersion });
                 }}
               >
                 <X size={11} aria-hidden="true" />

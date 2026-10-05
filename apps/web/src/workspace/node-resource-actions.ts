@@ -1,4 +1,4 @@
-/** 为当前节点添加画布资源及保存引用顺序；纯计算，不触发上传或生成。 */
+/** 为当前节点添加、移除画布资源及保存引用顺序；纯计算，不触发上传或生成。 */
 import {
   getEffectivePromptDocument,
   isPortConnectionAllowed,
@@ -317,4 +317,83 @@ export function reorderNodeResources(
   const data = { ...target.data, ...(projected ? { promptDocument: document } : {}), resourceRefs };
   nodeDataSchema.parse(data);
   return data;
+}
+
+/**
+ * 移除目标资源的文字绑定、冻结引用和入边，保留全部提示词文字及源节点。
+ * @param targetId 当前被编辑的节点 ID；不会操作同来源连接的其他目标。
+ * @param resource 被点击卡片的资产及版本；未知版本只匹配未知版本卡片。
+ * @param document 编辑器解除绑定后的文档；省略时将目标提及转换为普通文字。
+ * @returns 新图及 changed 标志，供父层一次记录撤销和自动保存；不修改输入数据。
+ * @throws 目标不存在、文档改变原文或数据不合法时拒绝整次操作。
+ */
+export function removeNodeResourceReference(
+  nodes: readonly AssetFlowNode[],
+  edges: readonly FlowEdge[],
+  assets: readonly Asset[],
+  targetId: string,
+  resource: NodeResourceIdentity,
+  document?: PromptDocument,
+): { nodes: AssetFlowNode[]; edges: FlowEdge[]; changed: boolean } {
+  const target = nodes.find((node) => node.id === targetId);
+  if (!target) throw new Error('节点已不存在，请重新打开编辑器');
+  const key = identity(resource);
+  // 每条边独立解析，避免资源条去重后漏掉同资产同版本的其他来源。
+  const removedInputs = edges.flatMap((edge) => {
+    if (edge.target !== targetId || edge.targetHandle === 'input:imageEdit') return [];
+    const input = collectConnectedPromptAssets(targetId, nodes, [edge], assets)[0];
+    return input && identity({ assetId: input.id, assetVersion: input.assetVersion }) === key
+      ? [{ edge, input }]
+      : [];
+  });
+  const removedEdges = new Set(removedInputs.map(({ edge }) => edge.id));
+  const references = target.data.resourceRefs;
+  const resourceRefs = references?.filter((reference) => {
+    if (identity(reference) === key) return false;
+    if (reference.assetId !== resource.assetId || reference.assetVersion !== undefined) return true;
+    const referenceId = reference.id.replace(/^(?:ordered:)+/, '');
+    return !removedInputs.some(({ edge, input }) =>
+      referenceId.startsWith('connected:source:')
+        ? referenceId === createConnectedResourceReferenceId(edge.source, input.id)
+        : input.referenceNeedsSync && input.referenceName === reference.name,
+    );
+  });
+  const previousDocument = getEffectivePromptDocument(target.data);
+  const hasMention = previousDocument.blocks.some(
+    (block) => block.type === 'mention' && identity(block) === key,
+  );
+  if (!removedEdges.size && resourceRefs?.length === references?.length && !hasMention) {
+    return { nodes: [...nodes], edges: [...edges], changed: false };
+  }
+  const blocks: PromptDocument['blocks'] = [];
+  for (const block of (document ?? previousDocument).blocks) {
+    const next =
+      block.type === 'mention' && identity(block) === key
+        ? { type: 'text' as const, text: mentionDisplayName(block) }
+        : block;
+    const last = blocks.at(-1);
+    if (next.type === 'text' && last?.type === 'text') {
+      blocks[blocks.length - 1] = { type: 'text', text: last.text + next.text };
+    } else blocks.push(next);
+  }
+  const nextDocument: PromptDocument = { ...(document ?? previousDocument), blocks };
+  const prompt = renderPromptDocument(nextDocument);
+  if (prompt !== renderPromptDocument(previousDocument)) {
+    throw new Error('提示词已变化，请重新点击移除引用；当前文字未修改');
+  }
+  const data = {
+    ...target.data,
+    promptDocument: nextDocument,
+    prompt,
+    ...(references ? { resourceRefs } : {}),
+    stale: true,
+  };
+  nodeDataSchema.parse(data);
+  const nextEdges = edges.filter((edge) => !removedEdges.has(edge.id));
+  const nextNodes = nodes.map((node) => (node.id === targetId ? { ...node, data } : node));
+  return {
+    nodes: markDownstreamNodesStale(nextNodes, nextEdges, [targetId]),
+    edges: nextEdges,
+    changed: true,
+  };
 }

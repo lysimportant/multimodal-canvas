@@ -356,6 +356,7 @@ describe('App 资源抽屉集成', () => {
       onNodeEnabledChange: 0,
       onPromptDocumentChange: 0,
       onConnectedResourceRename: 0,
+      onResourceRemove: 0,
       onPromptSkillChange: 0,
       onUploadResource: 0,
       onParametersChange: 0,
