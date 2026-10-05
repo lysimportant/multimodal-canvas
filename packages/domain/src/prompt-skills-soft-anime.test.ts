@@ -1,4 +1,4 @@
-/** 四张参考提炼的独立画风契约；断言指令与引用协议，不冒充真实生图效果。 */
+/** 五张参考提炼的独立画风契约；断言指令与引用协议，不冒充真实生图效果。 */
 import { describe, expect, it } from 'vitest';
 import {
   canvasDocumentSchema,
@@ -50,13 +50,13 @@ const source: PromptDocument = {
 };
 
 describe('柔光日系氛围插画', () => {
-  it('独立追加到既有三十二项之后，名称和版本可冻结、复制到工作台', () => {
+  it('保持末尾稳定 ID 与目录数量，只升级当前定义到 1.1.0', () => {
     expect(PROMPT_SKILLS).toHaveLength(33);
     expect(PROMPT_SKILLS.at(-1)).toMatchObject({
       id: skillId,
       name: '柔光日系氛围插画',
       category: '人物与场景',
-      version: '1.0.0',
+      version: '1.1.0',
     });
     expect(getPromptSkill('xianxia-dress-character')).toMatchObject({
       name: '仙妖同款裙装',
@@ -64,6 +64,35 @@ describe('柔光日系氛围插画', () => {
     });
     expect(instruction().length).toBeLessThanOrEqual(12_000);
     expect(instruction()).not.toBe(getPromptSkill('xianxia-dress-character')?.instruction);
+  });
+
+  it('历史 1.0.0 冻结快照仍按原指令构造任务，新目录请求使用 1.1.0', () => {
+    const current = getPromptSkill(skillId);
+    if (!current) throw new Error('缺少柔光日系氛围插画 Skill');
+    const historical = {
+      ...current,
+      version: '1.0.0',
+      instruction: 'Historical soft-anime-atmosphere 1.0.0 frozen instruction.',
+    };
+    const input: PromptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: '奶油色窗边客厅，沙发自然坐姿' }],
+    };
+    const historicalCanvas = createPromptOptimizationCanvas({
+      skillId,
+      skill: historical,
+      input,
+      mediaType: 'image',
+    });
+    const currentCanvas = createPromptOptimizationCanvas({ skillId, input, mediaType: 'image' });
+    const historicalBlock = historicalCanvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+    const currentBlock = currentCanvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+    if (historicalBlock.type !== 'text' || currentBlock.type !== 'text')
+      throw new Error('优化必须是文字任务');
+    expect(current.version).toBe('1.1.0');
+    expect(historicalBlock.text).toContain(historical.instruction);
+    expect(historicalBlock.text).not.toContain('a fifth pairing uses ivory upholstery');
+    expect(currentBlock.text).toContain('a fifth pairing uses ivory upholstery');
   });
 
   it.each([
@@ -76,11 +105,28 @@ describe('柔光日系氛围插画', () => {
     ['浅蓝水边', /pale-blue waterside/i],
     ['暖阳书房', /warm sunlit library/i],
     ['冷雨夜景', /blue-gray rainy veranda/i],
+    [
+      '奶油窗光服装分支',
+      /a fifth pairing uses ivory upholstery[\s\S]*rounded or Peter Pan collar[\s\S]*rib-knit cardigan[\s\S]*avoid turning all surfaces into lace, gauze/i,
+    ],
+    [
+      '暖灰窗光保留层次',
+      /fine warm-gray or muted peach-brown contours[\s\S]*curtain-filtered side\/back window light[\s\S]*preserve midtones/i,
+    ],
+    [
+      '沙发坐姿支撑透视',
+      /requested sofa portrait[\s\S]*pelvis supported by the cushion[\s\S]*hands with plausible contact[\s\S]*credible perspective[\s\S]*optionally forward leg/i,
+    ],
+    ['原四分支继续可用', /Keep the original four pairings available/i],
     ['夜景保留暗部', /retain dark environmental values/i],
     ['避免仙侠裙型覆盖', /Do not impose side slits, overlapping front panels or a long train/i],
     ['针织与花边', /knit cardigan/i],
     ['主体覆盖', /opaque body-covering layer/i],
     ['人物与服装解耦', /Do not turn a human into a cat-eared character/i],
+    [
+      '不硬套参考人物特征',
+      /white hosiery, white hair, red eyes, animal ears and a tail[\s\S]*not automatic additions/i,
+    ],
     ['儿童适龄', /age-appropriate, non-revealing and non-sexualized/i],
     ['默认成年', /default an unspecified age to adult/i],
     ['不同服装和性别', /Do not force dresses onto men or other subjects/i],
@@ -99,6 +145,7 @@ describe('柔光日系氛围插画', () => {
 
   it.each([
     '黑发成年人类女性，雨夜书店窗边',
+    '成年女性，奶油窗边客厅，沙发自然坐姿，浅桃收褶连衣裙，罗纹开衫',
     '成年银发猫耳女性，午后书房，奶油针织开衫',
     '成年男性，咖啡馆，深色风衣，横构图半身',
     '8岁孩子，公园，完整运动服，远景',
@@ -127,6 +174,15 @@ describe('柔光日系氛围插画', () => {
     expect(serialized).not.toContain('private-anime-');
     expect(serialized).toContain('[[SKILL_REF_1]]');
     expect(serialized).toContain('[[SKILL_REF_2]]');
+    const inputBlock = canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+    if (inputBlock.type !== 'text') throw new Error('优化必须是文字任务');
+    expect(JSON.parse(inputBlock.text.split('\n').at(-1)!)).toEqual({
+      prompt: '黑发成年人类女性，雨夜书店窗边；人物：[[SKILL_REF_1]]，场景：[[SKILL_REF_2]]',
+      references: [
+        { token: '[[SKILL_REF_1]]', label: '人物', mediaType: 'image' },
+        { token: '[[SKILL_REF_2]]', label: '场景', mediaType: 'image' },
+      ],
+    });
     const result = parsePromptOptimizationOutput(
       JSON.stringify({
         prompt:

@@ -582,90 +582,114 @@ for (const skill of [
   });
 }
 
+/** 分别覆盖显式深色横幅约束与新增奶油窗光分支；输出为合成文字，不代表模型扩写质量。 */
+const softAnimeSparseCases = [
+  {
+    name: '黑发人类雨夜横幅反向约束',
+    brief: '黑发成年人类女性，雨夜书店窗边，深色外套，横构图半身',
+    mockPrompt:
+      '黑发成年人类女性站在雨夜书店窗边，保留人类耳部，不添加兽耳或尾巴；身穿深色外套，横幅半身构图，脸部清晰且为视觉焦点。窗框与书架建立前中后景，窗外保持蓝灰雨夜、雨痕与湿地反光，店内局部暖灯只勾勒脸侧和黑发边缘，不把深色服装漂白，也不把夜景改成高曝光日景。细浅线稿、柔和分层上色与克制纸感，无文字或水印。',
+    screenshot: 'soft-anime-rainy-human-mock-desktop.png',
+  },
+  {
+    name: '奶油窗边客厅沙发坐姿',
+    brief: '成年女性，奶油窗边客厅，沙发自然坐姿，浅桃收褶连衣裙，罗纹开衫',
+    mockPrompt:
+      '成年女性自然坐在奶油色窗边客厅的象牙色沙发上，身穿浅桃色收褶连衣裙和象牙色罗纹开衫，领口、腰线、裙摆收褶与袖口织纹清晰。9:16 竖幅环境构图，脸部位于上三分之一并保持视觉焦点；骨盆由坐垫承托，双手自然接触裙摆，膝踝连接与前后透视可信。纱帘过滤的侧逆窗光形成柔和边缘光、暖灰接触阴影和保留中间调的奶油浅桃配色，不把人物与沙发并成泛白色块。细暖灰线条、柔和二维体积和克制纸感，无文字或水印。',
+    screenshot: 'soft-anime-cream-window-mock-desktop.png',
+  },
+] as const;
+
 /** 稀疏输入只验证本地 Mock 的提交、冻结与直写合同，不把预设扩写作为真实模型效果证据。 */
-test('柔光日系氛围插画稀疏输入保留原文和完整指令，仅显式优化文字任务（Mock）', async ({
-  page,
-}, testInfo) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  const fixture = await installFixture(page);
-  const skill = structuredClone(
-    fixture.skills().find((entry) => entry.id === 'soft-anime-atmosphere')!,
-  );
-  const brief = '黑发成年人类女性，雨夜书店窗边';
-  const source: PromptDocument = { version: 1, blocks: [{ type: 'text', text: brief }] };
-  fixture.canvas().nodes[0]!.data.promptDocument = source;
-  const mockPrompt =
-    '黑发成年人类女性站在雨夜书店窗边，身穿奶油白褶皱连衣裙与宽松针织开衫，领口少量蕾丝点缀。日系 2D 手绘插画，细浅线稿、柔和渐变与轻微纸纹；竖幅全身构图，人物略偏右，窗框与书架形成前中后景，手扶书页，发丝与裙摆轻微飘动。前景虚化书页，中景人物与窗沿清晰，远处雨滴与街灯柔焦。暖色阅读灯勾勒发丝和衣褶，窗外保留蓝灰雨夜及深色书架，不把夜景漂白成白昼，低饱和冷暖对比、安静生活氛围，无兽耳尾巴、文字或水印。';
-  const optimized: PromptDocument = { version: 1, blocks: [{ type: 'text', text: mockPrompt }] };
-  testInfo.annotations.push({
-    type: 'evidence',
-    description: '仅本地 Mock 合同与交互；扩写为预设文字，未调用真实模型或生图。',
-  });
-  await page.route('**/prompt-optimizations/optimization-1', (route) =>
-    json(route, {
-      optimization: {
-        runId: 'optimization-1',
-        nodeId: 'skill-node',
-        skillId: skill.id,
-        skillVersion: skill.version,
-        status: 'succeeded',
-        modelAlias: 'mock-text',
-        simulated: true,
-        promptDocument: optimized,
-      },
-    }),
-  );
-  await page.goto(`/projects/${project.id}`);
-  const panel = await editor(page);
-  const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
-  await expect(prompt).toContainText(brief);
-  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
-  const settings = page.getByRole('group', { name: 'Skill 配置', exact: true });
-  await settings.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
-  await page.getByRole('option', { name: skill.name, exact: true }).click();
-  await expect.poll(() => fixture.canvas().nodes[0]!.data.promptSkillId).toBe(skill.id);
-  expect(fixture.submissions).toEqual([]);
-  expect(fixture.optimizationRuns).toEqual([]);
-  expect(fixture.writes.filter((write) => write.method === 'POST')).toEqual([]);
-  await settings.getByRole('button', { name: '优化提示词', exact: true }).click();
-  await expect(prompt).toHaveText(mockPrompt);
-  await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
-  expect(fixture.submissions).toHaveLength(1);
-  expect(fixture.submissions[0]).toMatchObject({
-    nodeId: 'skill-node',
-    mediaType: 'image',
-    skillId: skill.id,
-    skillVersion: '1.0.0',
-    promptDocument: source,
-  });
-  expect(fixture.optimizationRuns).toHaveLength(1);
-  const run = fixture.optimizationRuns[0]!;
-  expect(run.skill).toEqual(skill);
-  expect(run.modelAlias).toBe('mock-text');
-  expect(run.canvas.nodes).toHaveLength(1);
-  expect(run.canvas.edges).toEqual([]);
-  expect(run.canvas.nodes[0]).toMatchObject({
-    id: PROMPT_OPTIMIZATION_NODE_ID,
-    type: 'text',
-    data: {
-      mediaType: 'text',
-      mode: 'generate',
-      promptDocument: {
+for (const example of softAnimeSparseCases) {
+  test(
+    '柔光日系氛围插画 ' + example.name + ' 保留原文，仅显式优化文字任务（Mock）',
+    async ({ page }, testInfo) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      const fixture = await installFixture(page);
+      const skill = structuredClone(
+        fixture.skills().find((entry) => entry.id === 'soft-anime-atmosphere')!,
+      );
+      expect(skill).toMatchObject({ version: '1.1.0', id: 'soft-anime-atmosphere' });
+      const brief = example.brief;
+      const source: PromptDocument = { version: 1, blocks: [{ type: 'text', text: brief }] };
+      fixture.canvas().nodes[0]!.data.promptDocument = source;
+      const mockPrompt = example.mockPrompt;
+      const optimized: PromptDocument = {
         version: 1,
-        blocks: [{ type: 'text', text: expect.stringContaining(skill.instruction) }],
-      },
+        blocks: [{ type: 'text', text: mockPrompt }],
+      };
+      testInfo.annotations.push({
+        type: 'evidence',
+        description: '仅本地 Mock 合同与交互；未调用真实模型或生图，不作为模型画风验证。',
+      });
+      await page.route('**/prompt-optimizations/optimization-1', (route) =>
+        json(route, {
+          optimization: {
+            runId: 'optimization-1',
+            nodeId: 'skill-node',
+            skillId: skill.id,
+            skillVersion: skill.version,
+            status: 'succeeded',
+            modelAlias: 'mock-text',
+            simulated: true,
+            promptDocument: optimized,
+          },
+        }),
+      );
+      await page.goto(`/projects/${project.id}`);
+      const panel = await editor(page);
+      const prompt = panel.getByRole('textbox', { name: '提示词', exact: true });
+      await expect(prompt).toContainText(brief);
+      await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+      const settings = page.getByRole('group', { name: 'Skill 配置', exact: true });
+      await settings.getByRole('combobox', { name: '提示词 Skill', exact: true }).click();
+      await page.getByRole('option', { name: skill.name, exact: true }).click();
+      await expect.poll(() => fixture.canvas().nodes[0]!.data.promptSkillId).toBe(skill.id);
+      expect(fixture.submissions).toEqual([]);
+      expect(fixture.optimizationRuns).toEqual([]);
+      expect(fixture.writes.filter((write) => write.method === 'POST')).toEqual([]);
+      await settings.getByRole('button', { name: '优化提示词', exact: true }).click();
+      await expect(prompt).toHaveText(mockPrompt);
+      await expect(page.getByRole('group', { name: '优化预览', exact: true })).toHaveCount(0);
+      expect(fixture.submissions).toHaveLength(1);
+      expect(fixture.submissions[0]).toMatchObject({
+        nodeId: 'skill-node',
+        mediaType: 'image',
+        skillId: skill.id,
+        skillVersion: '1.1.0',
+        promptDocument: source,
+      });
+      expect(fixture.optimizationRuns).toHaveLength(1);
+      const run = fixture.optimizationRuns[0]!;
+      expect(run.skill).toEqual(skill);
+      expect(run.modelAlias).toBe('mock-text');
+      expect(run.canvas.nodes).toHaveLength(1);
+      expect(run.canvas.edges).toEqual([]);
+      expect(run.canvas.nodes[0]).toMatchObject({
+        id: PROMPT_OPTIMIZATION_NODE_ID,
+        type: 'text',
+        data: {
+          mediaType: 'text',
+          mode: 'generate',
+          promptDocument: {
+            version: 1,
+            blocks: [{ type: 'text', text: expect.stringContaining(skill.instruction) }],
+          },
+        },
+      });
+      const input = run.canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+      if (input.type !== 'text') throw new Error('独立优化任务必须使用文字输入');
+      expect(JSON.parse(input.text.split('\n').at(-1)!)).toEqual({ prompt: brief, references: [] });
+      await expect.poll(() => fixture.canvas().nodes[0]!.data.promptDocument).toEqual(optimized);
+      await page.screenshot({ path: testInfo.outputPath(example.screenshot) });
+      expect(
+        fixture.writes.filter((write) => write.method === 'POST').map((write) => write.path),
+      ).toEqual([`/v1/projects/${project.id}/prompt-optimizations`]);
+      expect(fixture.errors).toEqual([]);
     },
-  });
-  const input = run.canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
-  if (input.type !== 'text') throw new Error('独立优化任务必须使用文字输入');
-  expect(JSON.parse(input.text.split('\n').at(-1)!)).toEqual({ prompt: brief, references: [] });
-  await expect.poll(() => fixture.canvas().nodes[0]!.data.promptDocument).toEqual(optimized);
-  await page.screenshot({ path: testInfo.outputPath('soft-anime-sparse-mock-desktop.png') });
-  expect(
-    fixture.writes.filter((write) => write.method === 'POST').map((write) => write.path),
-  ).toEqual([`/v1/projects/${project.id}/prompt-optimizations`]);
-  expect(fixture.errors).toEqual([]);
-});
+  );
+}
 
 test('工作台升级要求变化后旧预览不可覆盖，丢弃不改画布或指令', async ({ page }) => {
   const fixture = await installFixture(page);
@@ -1455,7 +1479,7 @@ test('应用内 Skill 目录保留三十三项及原有顺序并提供匹配版�
   expect(fixture.skills().at(-1)).toMatchObject({
     id: 'soft-anime-atmosphere',
     name: '柔光日系氛围插画',
-    version: '1.0.0',
+    version: '1.1.0',
     category: '人物与场景',
   });
   await page.goto('/projects/' + project.id);
@@ -1473,6 +1497,11 @@ test('应用内 Skill 目录保留三十三项及原有顺序并提供匹配版�
       await expect(chinese).toContainText('2D');
       await expect(chinese).toContainText('针织');
       await expect(chinese).toContainText('蕾丝');
+      await expect(chinese).toContainText('第五种奶油窗光客厅搭配');
+      await expect(chinese).toContainText('小圆领或娃娃领');
+      await expect(chinese).toContainText('纱帘过滤的侧逆窗光');
+      await expect(chinese).toContainText('骨盆由坐垫承托，双手接触自然');
+      await expect(chinese).toContainText('不自动添加');
       await expect(chinese).toContainText(/雨夜[^。]*不[^。]*(?:漂白|高曝光|日景)/);
     }
     await workbench.getByRole('button', { name: '执行原文', exact: true }).click();

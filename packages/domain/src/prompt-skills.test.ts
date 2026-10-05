@@ -230,8 +230,9 @@ describe('Skill 升级元技能', () => {
     for (const skill of PROMPT_SKILLS) {
       expect(getPromptSkill(skill.id)).toBe(skill);
       const changedBuiltin =
-        ids.indexOf(skill.id) < 18 &&
-        !['xianxia-dress-character', SKILL_AUTHORING_SKILL_ID].includes(skill.id);
+        skill.id === 'soft-anime-atmosphere' ||
+        (ids.indexOf(skill.id) < 18 &&
+          !['xianxia-dress-character', SKILL_AUTHORING_SKILL_ID].includes(skill.id));
       expect(skill.version).toBe(changedBuiltin ? '1.1.0' : '1.0.0');
     }
     expect(getPromptSkill(SKILL_AUTHORING_SKILL_ID)).toMatchObject({

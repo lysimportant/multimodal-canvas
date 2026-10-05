@@ -151,6 +151,11 @@ const instructionExpectations: Readonly<Record<string, readonly string[]>> = {
     '水边浅蓝雏菊粼光',
     '书房金色窗光、深木书架、书本与奶油针织',
     '雨夜蓝灰木廊、浅色裙装与软开衫、暖灯、潮湿反光及檐边水滴',
+    '第五种奶油窗光客厅搭配',
+    '小圆领或娃娃领、窄系带蝴蝶结',
+    '不把所有表面堆成蕾丝、薄纱或亮缎',
+    '白袜、白发、红眼、兽耳和尾巴只是参考图个体特征，不自动添加',
+    '保留原四种搭配',
     '可扩展例子，不是封闭菜单，不擅自替换用户场景',
     '日景柔明但不糊白',
     '书房与雨夜保留深色环境，雨夜不强制明亮',
@@ -159,19 +164,26 @@ const instructionExpectations: Readonly<Record<string, readonly string[]>> = {
     '局部暖色实用灯',
     '衣褶边缘与针织、蕾丝纹理',
     '微粒只在环境合适时出现',
+    '纱帘过滤的侧逆窗光',
+    '暖灰接触阴影',
+    '保留中间调、发束、领边与衣褶',
+    '不漂白黑发或深色衣服',
     '默认单人、竖幅清晰全身的环境构图，优先 9:16',
     '3:4 等用户指定画幅照办',
     '头脚留安全边距',
     '人物主导但保留地点',
     '前景框景、中景人物、后景建筑、植物或水面',
     '发丝与衣摆保持同一风向或运动方向',
+    '骨盆由坐垫承托，双手接触自然',
+    '可选轻微前伸腿增加纵深',
+    '不把同一坐姿、裁切、微笑、道具或窗户方向强加给每个输入',
     '用户明确的横幅、近景、机位、人数、无人场景和动作优先',
     '无人场景保留环境层次，不套人物构图模板',
     '不使用身体部位特写或偷窥机位',
     '一段连贯画面',
     '人物、服装、姿态、景别、场景、光色和画法都要有具体依据',
     '简单输入无需问卷',
-    '合理设计补全，不冒称参考事实，不锁定四图角色或服装',
+    '合理设计补全，不冒称参考事实，不锁定参考角色或服装',
     '优先保留用户明确要求的输出语言，未指定则沿用原输入语言',
     '英文或双语须明确请求',
     '只在现有 prompt 值内返回改进后的图像指令',
@@ -285,17 +297,17 @@ describe('Skill 指令中文说明', () => {
     );
   });
 
-  it('当前目录包含十六项 1.1.0 和十七项 1.0.0，新技能追加到末尾并保留既有版本', () => {
+  it('当前目录包含十七项 1.1.0 和十六项 1.0.0，新版本保留末尾 ID 与既有顺序', () => {
     expect(PROMPT_SKILLS).toHaveLength(33);
-    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.1.0')).toHaveLength(16);
-    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(17);
+    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.1.0')).toHaveLength(17);
+    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(16);
     for (const id of ['xianxia-dress-character', 'skill-authoring'])
       expect(PROMPT_SKILLS.find((skill) => skill.id === id)?.version).toBe('1.0.0');
     expect(PROMPT_SKILLS.at(-1)).toMatchObject({
       id: 'soft-anime-atmosphere',
       name: '柔光日系氛围插画',
       category: '人物与场景',
-      version: '1.0.0',
+      version: '1.1.0',
     });
   });
 
@@ -320,14 +332,17 @@ describe('Skill 指令中文说明', () => {
     },
   );
 
-  describe.each(['storyboard-15s', 'soft-anime-atmosphere'])('%s 新增内置技能', (id) => {
+  describe.each([
+    ['storyboard-15s', '1.0.0', '1.1.0'],
+    ['soft-anime-atmosphere', '1.1.0', '1.0.0'],
+  ] as const)('%s 新增内置技能', (id, version, mismatchedVersion) => {
     it.each([
       ['原文不符', { instruction: 'Imported {{asset}} with original wording.' }],
-      ['版本不符', { version: '1.1.0' }],
+      ['版本不符', { version: mismatchedVersion }],
       ['显式导入', { builtin: false }],
     ] as const)('%s时保持原文，不借用本地中文说明', async (_, override) => {
       const local = PROMPT_SKILLS.find((skill) => skill.id === id);
-      expect(local?.version).toBe('1.0.0');
+      expect(local?.version).toBe(version);
       const skill: PromptSkill = { ...local!, builtin: true, revision: 1, ...override };
       vi.mocked(fetchSkillLibrary).mockResolvedValue([skill]);
       setup();
