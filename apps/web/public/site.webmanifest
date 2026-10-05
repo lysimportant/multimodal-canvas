@@ -1,7 +1,7 @@
 {
   "name": "LoveTV",
   "short_name": "LoveTV",
-  "description": "连接 API 模型的 AI 图片、视频与多模态创作画布",
+  "description": "以大肥鱼（鲸鱼娘）为品牌形象，连接 API 模型的 AI 图片、视频与多模态创作画布",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",

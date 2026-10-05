@@ -4,13 +4,16 @@ export const SITE_ORIGIN = 'https://love.lolicon.beer';
 /** 网站公开品牌，与包名和历史浏览器存储键无关。 */
 export const SITE_NAME = 'LoveTV';
 
+/** 静态首响应与浏览器路由共用的品牌图片说明，保留用户使用的大肥鱼称呼。 */
+export const SITE_IMAGE_ALT = 'LoveTV 大肥鱼（鲸鱼娘）· AI 图片与视频创作画布';
+
 /** 首页搜索摘要，只描述已经存在的画布与模型连接能力。 */
 export const SITE_DESCRIPTION =
-  'LoveTV 是连接 API 模型的多模态创作画布，支持 AI 生成图片、AI 生成视频、文字与音频创作，提供参考资料、提示词 Skill、短视频复刻和素材版本管理。';
+  'LoveTV 是连接 API 模型的多模态创作画布，以大肥鱼（鲸鱼娘）为品牌形象，支持 AI 生成图片、AI 生成视频、文字与音频创作，提供参考资料、提示词 Skill、短视频复刻和素材版本管理。';
 
 /** 介绍与支持页摘要；不将模型接入描述成本站提供无限或免费 API。 */
 export const CONTACT_DESCRIPTION =
-  '了解 LoveTV 的 AI 图片生成、AI 视频生成和 API 模型接入工作流，以及参考资料、提示词优化、素材管理与使用支持。';
+  '了解 LoveTV 与品牌形象大肥鱼（鲸鱼娘），探索 AI 图片生成、AI 视频生成和 API 模型接入工作流，以及参考资料、提示词优化、素材管理与使用支持。';
 
 /** 同时提供给静态页面和浏览器路由的元数据，不包含用户资源字段。 */
 export type SitePageMetadata = {
@@ -70,6 +73,15 @@ export function sitePageMetadata(pathname: string): SitePageMetadata {
 export function siteStructuredData(pathname: string): Record<string, unknown>[] {
   const metadata = sitePageMetadata(pathname);
   if (!metadata.indexable) return [];
+  const brandIcon = {
+    '@type': 'ImageObject',
+    url: `${SITE_ORIGIN}/brand/lovetv-icon-512.png`,
+    contentUrl: `${SITE_ORIGIN}/brand/lovetv-icon-512.png`,
+    name: 'LoveTV 大肥鱼（鲸鱼娘）品牌图标',
+    caption: SITE_IMAGE_ALT,
+    width: 512,
+    height: 512,
+  };
   if (metadata.canonical === `${SITE_ORIGIN}/contact`)
     return [
       {
@@ -78,6 +90,7 @@ export function siteStructuredData(pathname: string): Record<string, unknown>[] 
         name: metadata.title,
         description: metadata.description,
         url: metadata.canonical,
+        image: brandIcon,
         isPartOf: { '@type': 'WebSite', name: SITE_NAME, url: `${SITE_ORIGIN}/` },
       },
     ];
@@ -89,7 +102,7 @@ export function siteStructuredData(pathname: string): Record<string, unknown>[] 
       url: `${SITE_ORIGIN}/`,
       inLanguage: 'zh-CN',
       description: SITE_DESCRIPTION,
-      image: `${SITE_ORIGIN}/brand/lovetv-social.jpg`,
+      image: brandIcon,
     },
     {
       '@context': 'https://schema.org',
@@ -98,7 +111,7 @@ export function siteStructuredData(pathname: string): Record<string, unknown>[] 
       applicationCategory: 'MultimediaApplication',
       operatingSystem: 'Web browser',
       url: `${SITE_ORIGIN}/`,
-      image: `${SITE_ORIGIN}/brand/lovetv-icon-512.png`,
+      image: brandIcon,
       description: SITE_DESCRIPTION,
       featureList: [
         'API 模型连接',

@@ -43,6 +43,7 @@ export function ContactPage({ onNavigate }: ContactPageProps) {
           <h1>联系我们</h1>
           <span>
             LoveTV 是连接 API 模型的 AI 图片、AI 视频多模态画布，面向需要组织创作流程的个人与团队。
+            大肥鱼（鲸鱼娘）是 LoveTV 的品牌形象，用于网站图标与分享图片。
           </span>
         </header>
 

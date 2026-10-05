@@ -2,6 +2,7 @@ import type { Plugin } from 'vite';
 import {
   SITE_ORIGIN,
   SITE_NAME,
+  SITE_IMAGE_ALT,
   sitePageMetadata,
   siteStructuredData,
 } from './src/seo/site-content';
@@ -40,12 +41,12 @@ export function renderSiteHead(pathname: string): string {
     meta('property', 'og:image', image),
     meta('property', 'og:image:width', '1200'),
     meta('property', 'og:image:height', '630'),
-    meta('property', 'og:image:alt', 'LoveTV 鲸鱼娘 · AI 图片与视频创作画布'),
+    meta('property', 'og:image:alt', SITE_IMAGE_ALT),
     meta('name', 'twitter:card', 'summary_large_image'),
     meta('name', 'twitter:title', metadata.title),
     meta('name', 'twitter:description', metadata.description),
     meta('name', 'twitter:image', image),
-    meta('name', 'twitter:image:alt', 'LoveTV 鲸鱼娘 · AI 图片与视频创作画布'),
+    meta('name', 'twitter:image:alt', SITE_IMAGE_ALT),
     ...(metadata.canonical
       ? [
           `<link rel="canonical" href="${metadata.canonical}" />`,
@@ -68,7 +69,7 @@ export function renderSiteHead(pathname: string): string {
 export function renderStaticIntroduction(pathname: string): string {
   const contact = pathname === '/contact';
   return `<section class="lovetv-static-intro" aria-label="${contact ? '关于 LoveTV' : 'LoveTV 产品介绍'}">
-    <img src="/brand/lovetv-icon-192.png" width="64" height="64" alt="LoveTV 鲸鱼娘品牌图标" />
+    <img src="/brand/lovetv-icon-192.png" width="64" height="64" alt="LoveTV 大肥鱼（鲸鱼娘）品牌图标" />
     <h1>${contact ? '关于 LoveTV：连接 API 的 AI 创作画布' : 'LoveTV：AI 生成图片与 AI 生成视频'}</h1>
     <p>${escapeHtml(sitePageMetadata(pathname).description)}</p>
     <p>在同一张画布上组织文字、图片、音频与视频节点，把参考资料、提示词和模型连接成可追踪的创作流程。保留每次生成的素材版本、参数与结果，支持整条短视频分析和人物资源替换。</p>
