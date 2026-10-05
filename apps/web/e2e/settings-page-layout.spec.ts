@@ -71,7 +71,11 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 /** 安装离线设置与项目合同；仅放行本站静态资源，记录浏览器错误及全部写请求。 */
-async function installSettingsFixture(page: Page, theme: string) {
+async function installSettingsFixture(
+  page: Page,
+  theme: string,
+  options: { account?: typeof fixtureAccount; syncAccount?: typeof fixtureAccount } = {},
+) {
   await page.addInitScript(
     ({ theme, user, projectId }) => {
       localStorage.setItem('multimodal-canvas:theme', theme);
@@ -120,7 +124,9 @@ async function installSettingsFixture(page: Page, theme: string) {
         (path === '/settings' || path === `/projects/${fixtureProject.id}`);
       const staticRequest =
         ['script', 'stylesheet', 'font', 'image', 'media'].includes(request.resourceType()) &&
-        /^\/(?:assets\/|src\/|node_modules\/|@vite\/|@id\/|@fs\/|@react-refresh$)/.test(path);
+        /^\/(?:assets\/|brand\/|src\/|node_modules\/|@vite\/|@id\/|@fs\/|@react-refresh$)/.test(
+          path,
+        );
       if (url.origin === webOrigin && method === 'GET') {
         if (documentRequest || staticRequest) {
           await route.continue();
@@ -173,11 +179,11 @@ async function installSettingsFixture(page: Page, theme: string) {
       return;
     }
     if (method === 'GET' && path === '/v1/account/newapi') {
-      await json(route, { account: fixtureAccount });
+      await json(route, { account: options.account ?? fixtureAccount });
       return;
     }
     if (method === 'POST' && path === '/v1/account/newapi/sync') {
-      await json(route, { account: fixtureAccount });
+      await json(route, { account: options.syncAccount ?? fixtureAccount });
       return;
     }
     if (method === 'GET' && path === '/v1/models') {
@@ -251,6 +257,67 @@ for (const viewport of [
     expect(fixture.unexpected).toEqual([]);
   });
 }
+
+test('PC 设置页同步后展示服务端自动修复的分组，不发送浏览器 repair 请求', async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const missingAccount = {
+    ...fixtureAccount,
+    groups: [
+      {
+        group: 'alpha',
+        credentialId: 'credential-alpha',
+        credentialVersion: 4,
+        repairable: false,
+        repairPending: false,
+        status: 'missing',
+        error: '分组 Key 正在自动恢复',
+        modelCount: 0,
+      },
+    ],
+  };
+  const repairedAccount = {
+    ...fixtureAccount,
+    groups: [
+      {
+        group: 'alpha',
+        credentialId: 'credential-alpha',
+        credentialVersion: 5,
+        repairable: false,
+        repairPending: false,
+        status: 'active',
+        modelCount: 2,
+      },
+    ],
+  };
+  const fixture = await installSettingsFixture(page, 'light', {
+    account: missingAccount,
+    syncAccount: repairedAccount,
+  });
+  await page.goto('/settings');
+
+  await expect(page.getByText('分组 Key 正在自动恢复')).toBeVisible();
+  await page.getByRole('button', { name: '同步分组与模型' }).click();
+  await expect(page.getByRole('cell', { name: 'active' })).toBeVisible();
+  await expect(page.getByText('分组 Key 正在自动恢复')).toHaveCount(0);
+  await page.screenshot({
+    path: info.outputPath('newapi-auto-repair-after-sync.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
+
+  expect(fixture.writes.filter((entry) => entry.path.includes('/groups/'))).toEqual([]);
+  expect(fixture.writes.filter((entry) => entry.path === '/v1/account/newapi/sync')).toHaveLength(
+    1,
+  );
+  expect(
+    fixture.consoleErrors.filter((error) => !error.includes('ERR_BLOCKED_BY_CLIENT.Inspector')),
+  ).toEqual([]);
+  expect(fixture.pageErrors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
 
 for (const theme of ['eye-care', 'light', 'dark', 'sepia', 'contrast']) {
   for (const presentation of ['page', 'dialog']) {

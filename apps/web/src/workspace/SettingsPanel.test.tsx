@@ -11,9 +11,12 @@ import {
 } from '../state/workspace-preferences';
 import { SettingsPanel } from './SettingsPanel';
 
+const authState = vi.hoisted(() => ({ generation: 1 }));
+const modelCatalogState = vi.hoisted(() => ({ refetch: vi.fn() }));
+
 vi.mock('../auth-client', () => ({
   apiFetch: vi.fn(),
-  getAuthSessionGeneration: () => 1,
+  getAuthSessionGeneration: () => authState.generation,
   startNewApiLogin: vi.fn(),
   readAuthSession: () => ({
     user: { id: 'synthetic-admin', role: 'admin', createdAt: '2026-09-26T00:00:00Z' },
@@ -39,21 +42,58 @@ vi.mock('../query/models', () => ({
       },
     ],
     isError: false,
-    refetch: vi.fn(),
+    refetch: modelCatalogState.refetch,
   }),
 }));
 
+type GroupFixture = {
+  group: string;
+  credentialId?: string;
+  credentialVersion?: number;
+  repairable?: boolean;
+  repairPending?: boolean;
+  status: string;
+  error?: string;
+  modelCount?: number;
+};
+
+type AccountFixture = {
+  issuer: string;
+  externalUserId: string;
+  status: string;
+  groups: GroupFixture[];
+  links: { models?: string; account?: string };
+};
+
+let accountFixture: AccountFixture;
+let syncFixture: AccountFixture | null;
+
 beforeEach(() => {
+  authState.generation = 1;
+  accountFixture = {
+    issuer: 'https://newapi.test',
+    externalUserId: 'user-1',
+    status: 'active',
+    groups: [],
+    links: {},
+  };
+  syncFixture = null;
+  modelCatalogState.refetch.mockReset().mockResolvedValue({ isError: false });
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
   vi.mocked(apiFetch).mockImplementation(async (url, init) => {
+    const target = String(url);
+    if (init?.method === 'POST' && target.endsWith('/v1/account/newapi/sync')) {
+      return new Response(JSON.stringify({ account: syncFixture ?? accountFixture }));
+    }
+    if (target.endsWith('/v1/account/newapi')) {
+      return new Response(JSON.stringify({ account: accountFixture }));
+    }
     if (String(url).endsWith('/v1/admin/generation-concurrency')) {
       const concurrency = init?.method === 'PATCH' ? JSON.parse(String(init.body)).concurrency : 20;
       return new Response(JSON.stringify({ settings: { concurrency, scope: 'queue' } }));
     }
     if (init?.method === 'PATCH')
       return new Response(JSON.stringify({ defaults: JSON.parse(String(init.body)) }));
-    if (String(url).endsWith('/v1/account/newapi'))
-      return new Response(JSON.stringify({ status: 'active', groups: [], links: {} }));
     if (String(url).endsWith('/v1/settings/ai'))
       return new Response(JSON.stringify({ settings: { defaultModels: {}, timeoutMs: 900000 } }));
     return new Response(
@@ -83,7 +123,7 @@ async function renderSettings(presentation: 'dialog' | 'page' = 'page') {
       />
     </ConfigProvider>,
   );
-  await screen.findByText('当前没有可用分组。');
+  await screen.findByRole('heading', { name: 'New API 账号' });
   return { onNotice };
 }
 
@@ -169,5 +209,77 @@ describe('SettingsPanel Ant Design 迁移', () => {
     await user.click(within(dialog).getByRole('combobox', { name: '主题' }));
     expect(within(dialog).getAllByRole('option')).toHaveLength(5);
     expect(screen.getByRole('listbox').closest('[role="dialog"]')).toBe(dialog);
+  });
+
+  it('手动同步直接接收服务端自动修复后的 active 分组，不发起浏览器 repair POST', async () => {
+    const user = userEvent.setup();
+    accountFixture.groups = [
+      {
+        group: '分组甲',
+        credentialId: 'credential-a',
+        credentialVersion: 3,
+        repairable: true,
+        repairPending: false,
+        status: 'missing',
+        error: '分组 Key 已删除',
+        modelCount: 0,
+      },
+    ];
+    syncFixture = {
+      ...accountFixture,
+      groups: [
+        {
+          group: '分组甲',
+          credentialId: 'credential-a',
+          credentialVersion: 4,
+          repairable: false,
+          repairPending: false,
+          status: 'active',
+          modelCount: 2,
+        },
+      ],
+    };
+    const { onNotice } = await renderSettings();
+    await user.click(screen.getByRole('button', { name: '同步分组与模型' }));
+    await waitFor(() => expect(screen.getByText('active')).toBeVisible());
+    expect(onNotice).toHaveBeenCalledWith({
+      kind: 'success',
+      message: 'New API 分组已自动恢复，模型已同步',
+    });
+    expect(
+      vi
+        .mocked(apiFetch)
+        .mock.calls.filter(
+          ([url, init]) => init?.method === 'POST' && String(url).includes('/groups/'),
+        ),
+    ).toHaveLength(0);
+  });
+
+  it('自动修复失败时仅展示同步错误，迟到旧认证响应不覆盖当前面板', async () => {
+    const user = userEvent.setup();
+    const initial = {
+      ...accountFixture,
+      groups: [
+        {
+          group: '分组甲',
+          status: 'missing',
+          error: '分组 Key 恢复失败，请稍后同步',
+          repairable: false,
+        },
+      ],
+    };
+    syncFixture = initial;
+    const pendingSync = new Promise<Response>(() => undefined);
+    const baseImplementation = vi.mocked(apiFetch).getMockImplementation();
+    vi.mocked(apiFetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/v1/account/newapi/sync')) return pendingSync;
+      return baseImplementation!(url, init);
+    });
+    const { onNotice } = await renderSettings();
+    await user.click(screen.getByRole('button', { name: '同步分组与模型' }));
+    authState.generation = 2;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onNotice).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }));
+    expect(screen.queryByText('分组 Key 恢复失败，请稍后同步')).not.toBeInTheDocument();
   });
 });

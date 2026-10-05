@@ -119,12 +119,14 @@ model NewApiGrantRevocation {
   @@map("newapi_grant_revocations")
 }
 
-/// 每个本人纳入组只有一个管理关系；撤销和改组保留墓碑，不隐式重建。
+/// 每个本人纳入组只有一个管理关系；同步自动恢复缺失或错组 Key，旧凭据版本另行归档。
 model NewApiGroupBinding {
   id                 String                     @id @default(uuid()) @db.Uuid
   identityId         String                     @db.Uuid
   group              String
   operationId        String                     @unique
+  /// 当前本地凭据对应的上游 grant，区分同账号切换实例与同授权迟到响应。
+  grantId            String?
   upstreamTokenId    String?
   credentialId       String?                    @unique @db.Uuid
   credentialRevision String?
@@ -132,6 +134,8 @@ model NewApiGroupBinding {
   autoGroups         String[]                   @default([])
   status             String                     @default("pending")
   error              String?
+  /// 首次取得 Key 前的恢复意图；只保存操作 ID、grant 和旧 Token 修订，不包含密钥。
+  repairState        Json?
   catalog            Json?
   syncedAt           DateTime?
   createdAt          DateTime                   @default(now())
@@ -144,7 +148,7 @@ model NewApiGroupBinding {
   @@map("newapi_group_bindings")
 }
 
-/// 受控轮换的持久意图及旧版本密文；同一凭据版本只轮换一次，失败沿原操作恢复。
+/// 受控轮换或删除后重建的持久意图及旧版本密文；同一版本只变更一次，失败沿原操作恢复。
 model NewApiCredentialRotation {
   id              String             @id @default(uuid()) @db.Uuid
   bindingId       String             @db.Uuid
@@ -152,6 +156,10 @@ model NewApiCredentialRotation {
   fromVersion     Int
   upstreamTokenId String
   fromRevision    String
+  /// rotate 主动轮换；repair 修复缺失/错组；synchronize 同步新版本；superseded 归档旧授权未完成恢复。
+  kind            String             @default("rotate")
+  /// 新操作固定原 grant；旧轮换记录为空，保持原恢复合同。
+  grantId         String?
   baseUrl         String
   encryptedApiKey String
   encryptionKeyId String?

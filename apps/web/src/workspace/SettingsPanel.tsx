@@ -32,6 +32,9 @@ type SettingsCategory = 'overview' | 'defaults' | 'generation' | 'appearance';
 type AccountGroup = {
   group: string;
   credentialId?: string;
+  credentialVersion?: number;
+  repairable?: boolean;
+  repairPending?: boolean;
   status: string;
   error?: string;
   modelCount?: number;
@@ -161,9 +164,11 @@ export function SettingsPanel({
     generation.current = requestGeneration;
     setLoading(true);
     setError(null);
-    const accountRequest = apiFetch(`${API_BASE_URL}/v1/account/newapi`, {
-      signal: controller.signal,
-    }).then(async (response) => {
+    const accountRequest = apiFetch(
+      `${API_BASE_URL}/v1/account/newapi`,
+      { signal: controller.signal },
+      { expectedAuthGeneration: requestGeneration },
+    ).then(async (response) => {
       const result = (await response.json().catch(() => ({}))) as
         NewApiAccount | { account?: NewApiAccount; error?: string };
       const value = 'account' in result ? result.account : result;
@@ -171,9 +176,11 @@ export function SettingsPanel({
         throw new Error('error' in result ? result.error : 'New API 账号状态加载失败');
       return value;
     });
-    const settingsRequest = apiFetch(`${API_BASE_URL}/v1/settings/ai`, {
-      signal: controller.signal,
-    }).then(async (response) => {
+    const settingsRequest = apiFetch(
+      `${API_BASE_URL}/v1/settings/ai`,
+      { signal: controller.signal },
+      { expectedAuthGeneration: requestGeneration },
+    ).then(async (response) => {
       const result = (await response.json().catch(() => ({}))) as {
         settings?: Partial<AiSettings>;
         error?: string;
@@ -182,9 +189,11 @@ export function SettingsPanel({
       return result.settings;
     });
     const projectRequest = projectId
-      ? apiFetch(`${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`, {
-          signal: controller.signal,
-        }).then(async (response) => {
+      ? apiFetch(
+          `${API_BASE_URL}/v1/projects/${encodeURIComponent(projectId)}/models/defaults`,
+          { signal: controller.signal },
+          { expectedAuthGeneration: requestGeneration },
+        ).then(async (response) => {
           const result = (await response.json().catch(() => ({}))) as {
             defaults?: ModelDefaults;
             error?: string;
@@ -237,10 +246,21 @@ export function SettingsPanel({
   const syncAccount = async () => {
     if (busy) return;
     const requestGeneration = getAuthSessionGeneration();
+    const hadAutomaticRecovery = Boolean(
+      account?.groups.some(
+        (group) =>
+          group.repairable === true || group.repairPending === true || group.status === 'missing',
+      ),
+    );
+    generation.current = requestGeneration;
     setBusy('sync');
     setError(null);
     try {
-      const response = await apiFetch(`${API_BASE_URL}/v1/account/newapi/sync`, { method: 'POST' });
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/account/newapi/sync`,
+        { method: 'POST' },
+        { expectedAuthGeneration: requestGeneration },
+      );
       const result = (await response.json().catch(() => ({}))) as
         NewApiAccount | { account?: NewApiAccount; error?: string };
       const value = 'account' in result ? result.account : result;
@@ -261,7 +281,12 @@ export function SettingsPanel({
         onNotice({ kind: 'error', message });
         return;
       }
-      onNotice({ kind: 'success', message: 'New API 分组与模型已同步' });
+      onNotice({
+        kind: 'success',
+        message: hadAutomaticRecovery
+          ? 'New API 分组已自动恢复，模型已同步'
+          : 'New API 分组与模型已同步',
+      });
     } catch (reason) {
       if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
       const message = reason instanceof Error ? reason.message : '分组同步失败';

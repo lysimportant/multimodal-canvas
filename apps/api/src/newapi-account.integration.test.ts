@@ -51,11 +51,23 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
   let changedGroup = false;
   let unavailable = false;
   let grantLifetimeMs = 3600000;
+  let instanceId = 'isolated';
+  let grantSuffix = '';
   let failGroup = '';
   let lostGroupResponse = '';
+  let missingGroup = '';
+  let bootstrapMissingGroup = '';
+  let otherConflictGroup = '';
+  let lostRepairResponse = '';
   let accountDenied = false;
   let profile: { display_name: string; email?: string } = { display_name: 'same-name' };
   const operations = new Map<string, { token: string; key: string }>();
+  const repairOperations = new Map<string, { token: string; key: string }>();
+  const managedGroups = new Map<string, { token: string; key: string }>();
+  const repairRequests: Array<{
+    operation_id: string;
+    repair: { token_id: number; credential_revision: number };
+  }> = [];
   const calls: string[] = [];
   let issuer: string;
   let service: NewApiAccountService;
@@ -82,11 +94,20 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     changedGroup = false;
     unavailable = false;
     grantLifetimeMs = 3600000;
+    instanceId = 'isolated';
+    grantSuffix = '';
     failGroup = '';
     lostGroupResponse = '';
+    missingGroup = '';
+    bootstrapMissingGroup = '';
+    otherConflictGroup = '';
+    lostRepairResponse = '';
     accountDenied = false;
     profile = { display_name: 'same-name' };
     operations.clear();
+    repairOperations.clear();
+    managedGroups.clear();
+    repairRequests.length = 0;
     calls.length = 0;
     issuer = `https://newapi-${crypto.randomUUID()}.example.test`;
     service = new NewApiAccountService({
@@ -97,7 +118,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       client: new NewApiAccountClient({
         issuer,
         clientId: 'canvas',
-        instanceId: 'isolated',
+        instanceId,
         redirectUri: 'http://localhost:3000/v1/auth/newapi/callback',
         fetchImpl: vi.fn(async (input, init) => {
           const url = new URL(String(input));
@@ -114,8 +135,8 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
               issuer,
               user,
               grant: {
-                id: `grant-${selectedUser}`,
-                token: `synthetic-grant-${selectedUser}`,
+                id: `grant-${selectedUser}${grantSuffix}`,
+                token: `synthetic-grant-${selectedUser}${grantSuffix}`,
                 expires_at: new Date(Date.now() + grantLifetimeMs).toISOString(),
                 scopes: ['identity:read', 'groups:read', 'tokens:manage'],
               },
@@ -125,21 +146,78 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
           if (url.pathname === '/api/canvas/account')
             return Response.json({
               user: { ...user, id: account },
-              grant_id: `grant-${account}`,
+              grant_id: `grant-${account}${grantSuffix}`,
               groups,
             });
           if (url.pathname.startsWith('/api/canvas/groups/')) {
-            const group = decodeURIComponent(url.pathname.split('/').at(-1)!);
+            const pathParts = url.pathname.split('/');
+            const operationKind = pathParts.at(-1);
+            const repairing = operationKind === 'repair';
+            const rotating = operationKind === 'rotate';
+            const group = decodeURIComponent(pathParts.at(repairing || rotating ? -2 : -1)!);
             if (group === failGroup) return new Response('{}', { status: 503 });
+            if (repairing) {
+              repairRequests.push(body);
+              const previous = managedGroups.get(`${account}:${group}`);
+              const operation = repairOperations.get(body.operation_id) ?? {
+                token:
+                  changedGroup && group === 'default'
+                    ? String(body.repair.token_id)
+                    : String(2000 + repairOperations.size + 1),
+                key:
+                  changedGroup && group === 'default'
+                    ? (previous?.key ??
+                      `synthetic-${account}-${Buffer.from(group).toString('hex')}`)
+                    : `synthetic-repaired-${account}-${Buffer.from(group).toString('hex')}`,
+              };
+              repairOperations.set(body.operation_id, operation);
+              if (group === lostRepairResponse) {
+                lostRepairResponse = '';
+                return new Response('{}', { status: 503 });
+              }
+              return Response.json({
+                token_id: operation.token,
+                key: operation.key,
+                group,
+                status: 'active',
+                credential_revision: String(Number(body.repair.credential_revision) + 1),
+                permission_revision: String(Number(body.repair.credential_revision) + 1),
+                auto_groups: group === 'auto' ? ['default'] : [],
+              });
+            }
             const operation = operations.get(body.operation_id) ?? {
-              token: crypto.randomUUID(),
+              token: String(1000 + operations.size + 1),
               key: `synthetic-${account}-${Buffer.from(group).toString('hex')}`,
             };
             operations.set(body.operation_id, operation);
+            managedGroups.set(`${account}:${group}`, operation);
             if (group === lostGroupResponse) {
               lostGroupResponse = '';
               return new Response('{}', { status: 503 });
             }
+            if (!repairing && (group === missingGroup || group === bootstrapMissingGroup))
+              return Response.json(
+                {
+                  success: false,
+                  code: 'canvas_managed_token_missing',
+                  data: { token_id: operation.token, credential_revision: '1' },
+                },
+                { status: 409 },
+              );
+            if (!repairing && group === otherConflictGroup)
+              return Response.json(
+                { success: false, code: 'canvas_managed_token_changed' },
+                { status: 409 },
+              );
+            if (!repairing && changedGroup && group === 'default')
+              return Response.json(
+                {
+                  success: false,
+                  code: 'canvas_managed_token_group_mismatch',
+                  data: { token_id: operation.token, credential_revision: '1' },
+                },
+                { status: 409 },
+              );
             return Response.json({
               token_id: operation.token,
               key: operation.key,
@@ -1004,7 +1082,26 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     expect(operations.size).toBe(3);
   });
 
-  it('轮换排空旧任务和 unknown，丢失回包后原操作恢复且冻结旧版本不可再受理', async () => {
+  it('首次本地没有凭据时，登录同步使用上游缺失元数据自动 repair 并创建首个版本', async () => {
+    bootstrapMissingGroup = 'default';
+    const result = await login();
+    const identity = await service.identity(result.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    expect(binding.credential).toMatchObject({ version: 1 });
+    expect(binding.status).toBe('active');
+    expect(binding.repairState).toBeNull();
+    expect(binding.credentialRevision).toBe('2');
+    expect(binding.upstreamTokenId).toBe('2001');
+    expect(repairRequests).toHaveLength(1);
+    expect(repairRequests[0]).toMatchObject({
+      repair: { token_id: 1001, credential_revision: 1 },
+    });
+  });
+
+  it('同步发现删除 Key 自动 repair，并保留凭据 ID 与旧版本密文', async () => {
     const account = await login();
     const identity = await service.identity(account.user.id);
     const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
@@ -1012,159 +1109,472 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       include: { credential: true },
     });
     const credential = binding.credential!;
-    const project = await new PrismaProjectStore(prisma).create(
-      { name: 'Controlled rotation' },
-      { ownerId: account.user.id },
-    );
-    const snapshot: RunSnapshot = {
-      projectId: project.id,
-      canvasRevision: 1,
-      targetNodeId: 'target',
-      modelAlias: 'exact-model',
-      parameters: {},
-      submittedAt: new Date().toISOString(),
-      inputs: [],
-      edges: [],
+    const oldKey = keyring.decrypt(credential.encryptedApiKey).plaintext;
+    const oldToken = binding.upstreamTokenId!;
+
+    missingGroup = 'default';
+    const synced = await service.synchronize(account.user.id);
+    const repairedStatus = synced.groups.find((entry) => entry.group === 'default');
+    expect(repairedStatus).toMatchObject({
       credentialId: credential.id,
-      credentialVersion: credential.version,
-      nodes: [
-        {
-          id: 'target',
-          type: 'text',
-          position: { x: 0, y: 0 },
-          data: {
-            label: 'Rotation',
-            mediaType: 'text',
-            mode: 'generate',
-            modelAlias: 'exact-model',
-          },
+      credentialVersion: 2,
+      status: 'active',
+      repairable: false,
+      repairPending: false,
+    });
+    expect(repairRequests).toHaveLength(1);
+    expect(repairRequests[0]).toMatchObject({
+      repair: { token_id: Number(oldToken), credential_revision: 1 },
+    });
+
+    const current = await prisma.aiCredential.findUniqueOrThrow({ where: { id: credential.id } });
+    const currentBinding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+    });
+    expect(current.version).toBe(2);
+    expect(keyring.decrypt(current.encryptedApiKey).plaintext).not.toBe(oldKey);
+    expect(keyring.decrypt(current.encryptedApiKey).plaintext).toContain('synthetic-repaired');
+    expect(currentBinding).toMatchObject({
+      credentialId: credential.id,
+      credentialRevision: '2',
+      status: 'active',
+    });
+    expect(currentBinding.upstreamTokenId).not.toBe(oldToken);
+    const rotation = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+      where: { credentialId_fromVersion: { credentialId: credential.id, fromVersion: 1 } },
+    });
+    expect(rotation).toMatchObject({
+      kind: 'repair',
+      fromVersion: 1,
+      completedAt: expect.any(Date),
+    });
+    expect(keyring.decrypt(rotation.encryptedApiKey).plaintext).toBe(oldKey);
+
+    selectedUser = 'account-b';
+    const other = await login();
+    await expect(service.repairGroup(other.user.id, credential.id, 1)).rejects.toMatchObject({
+      code: 'credential_not_found',
+    });
+  });
+
+  it('重新登录已有绑定时自动 repair 删除的 Key；其它 409 仍保持不可用且不 repair', async () => {
+    const first = await login();
+    const identity = await service.identity(first.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    const credentialId = binding.credentialId!;
+    const oldVersion = binding.credential!.version;
+    missingGroup = 'default';
+    const second = await login();
+    expect(second.user.id).toBe(first.user.id);
+    const repaired = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+      include: { credential: true },
+    });
+    expect(repaired).toMatchObject({
+      credentialId,
+      status: 'active',
+      credentialRevision: String(oldVersion + 1),
+    });
+    expect(repaired.credential!.version).toBe(oldVersion + 1);
+    expect(repairRequests.length).toBeGreaterThanOrEqual(1);
+
+    otherConflictGroup = 'default';
+    missingGroup = '';
+    const rejected = await service.synchronize(first.user.id);
+    expect(rejected.groups.find((entry) => entry.group === 'default')).toMatchObject({
+      status: 'unavailable',
+      repairPending: false,
+    });
+    expect(repairRequests).toHaveLength(1);
+  });
+
+  it.each(['/v1/auth/me', '/v1/auth/refresh'])('%s 登录检查自动恢复删除的 Key', async (path) => {
+    const account = await login();
+    missingGroup = 'default';
+    const app = buildApp({
+      logger: false,
+      newApiAccount: service,
+      authService: auth,
+      authStore: new PrismaAuthStore(prisma),
+      projectStore: new PrismaProjectStore(prisma),
+    });
+    try {
+      const response = await app.inject({
+        method: path.endsWith('/me') ? 'GET' : 'POST',
+        url: path,
+        headers: {
+          cookie: `canvas_session=${account.accessToken}`,
+          origin: 'http://localhost:5173',
         },
-      ],
-      executionBindings: {
-        target: {
-          credentialId: credential.id,
-          credentialVersion: 1,
-          modelAlias: 'exact-model',
-          mediaType: 'text',
-          contract: 'openai-chat-completions',
-          authority: authority(identity, binding),
-        },
-      },
-    };
-    const execution = new PrismaExecutionService(prisma);
-    const input = (runId: string, value = snapshot) => ({
-      runId,
-      userId: account.user.id,
-      snapshot: value,
-      queueName: 'rotation-test',
-      payload: {
-        runId,
-        userId: account.user.id,
-        snapshot: value,
-        attempt: 1,
-        provider: 'newapi' as const,
-        cancelRequested: false,
-      },
-    });
-    const submitted = await execution.createSubmission(input(`rotation-${randomUUID()}`));
-    const remote = vi.spyOn(service.options.client, 'rotateGroup');
-    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
-      code: 'rotation_busy',
-    });
-    expect(remote).not.toHaveBeenCalled();
-    await prisma.run.update({ where: { id: submitted.databaseRunId }, data: { status: 'FAILED' } });
-    await prisma.runSendIntent.create({
-      data: {
-        runId: submitted.runId,
-        nodeId: 'target',
-        attempt: 1,
-        requestIdentity: 'synthetic-request',
-        status: 'unknown',
-      },
-    });
-    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
-      code: 'rotation_busy',
-    });
-    await prisma.runSendIntent.update({
-      where: { runId_nodeId_attempt: { runId: submitted.runId, nodeId: 'target', attempt: 1 } },
-      data: { status: 'sent' },
-    });
-    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
-      code: 'rotation_busy',
-    });
-    await prisma.run.update({
-      where: { id: submitted.databaseRunId },
-      data: { status: 'SUCCEEDED' },
-    });
-    let remoteCalls = 0;
-    let operationId = '';
-    const rotatedKey = 'synthetic-controlled-rotation-key';
-    remote.mockImplementation(async (_grant, group, operation, previous) => {
-      if (!operationId) operationId = operation;
-      expect(operation).toBe(operationId);
-      expect(previous).toEqual({
-        tokenId: binding.upstreamTokenId,
-        revision: '1',
-        fingerprint: credential.keyFingerprint,
       });
-      if (++remoteCalls === 1) throw new Error('synthetic lost rotation response');
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ user: { id: account.user.id } });
+      expect(
+        (await service.status(account.user.id)).groups.find((group) => group.group === 'default'),
+      ).toMatchObject({ status: 'active', credentialVersion: 2 });
+      expect(repairRequests).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('未完成恢复后切换实例，采用当前 grant 的 Key 并保留旧密文', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    missingGroup = 'default';
+    lostRepairResponse = 'default';
+    await service.synchronize(account.user.id);
+    const pending = await prisma.newApiCredentialRotation.findFirstOrThrow({
+      where: { bindingId: binding.id, completedAt: null },
+    });
+    grantSuffix = '-local';
+    const localClient = new NewApiAccountClient({
+      ...service.options.client.options,
+      instanceId: 'canvas-local',
+    });
+    service = new NewApiAccountService({ ...service.options, client: localClient });
+    missingGroup = '';
+    const currentKey = 'synthetic-current-instance-key';
+    vi.spyOn(localClient, 'group').mockImplementation(async (_grant, group) => ({
+      token_id: '9001',
+      key: currentKey,
+      group,
+      status: 'active',
+      credential_revision: '1',
+      permission_revision: '1',
+      auto_groups: group === 'auto' ? ['default'] : [],
+    }));
+    const relogged = await login();
+    expect(relogged.user.id).toBe(account.user.id);
+    const current = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+      include: { credential: true },
+    });
+    expect(current).toMatchObject({
+      status: 'active',
+      grantId: 'grant-account-a-local',
+      upstreamTokenId: '9001',
+      credentialId: binding.credentialId,
+    });
+    expect(keyring.decrypt(current.credential!.encryptedApiKey).plaintext).toBe(currentKey);
+    const previous = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+      where: { id: pending.id },
+    });
+    expect(previous.completedAt).not.toBeNull();
+    expect(previous.encryptedApiKey).toBe(binding.credential!.encryptedApiKey);
+    expect(
+      (await service.status(account.user.id)).groups.find((group) => group.group === 'default')
+        ?.repairPending,
+    ).toBe(false);
+    expect(repairRequests).toHaveLength(1);
+  });
+
+  it('同一授权的迟到旧同步不能覆盖新凭据或成功状态', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    const originalGroup = service.options.client.group.bind(service.options.client);
+    let release!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const requested = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let first = true;
+    vi.spyOn(service.options.client, 'group').mockImplementation(async (...args) => {
+      if (args[1] !== 'default') return originalGroup(...args);
+      if (first) {
+        first = false;
+        started();
+        await blocked;
+        return {
+          token_id: binding.upstreamTokenId!,
+          key: keyring.decrypt(binding.credential!.encryptedApiKey).plaintext,
+          group: 'default',
+          status: 'active',
+          credential_revision: '1',
+          permission_revision: '1',
+          auto_groups: [],
+        };
+      }
       return {
-        token_id: binding.upstreamTokenId!,
-        key: rotatedKey,
-        group,
+        token_id: '9002',
+        key: 'synthetic-newer-revision',
+        group: 'default',
         status: 'active',
         credential_revision: '2',
         permission_revision: '2',
         auto_groups: [],
       };
     });
-    await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toThrow(
-      'synthetic lost',
-    );
-    await service.synchronize(account.user.id);
-    expect(
-      (await service.status(account.user.id)).groups.find((group) => group.group === 'default')
-        ?.status,
-    ).toBe('unavailable');
-    await expect(
-      execution.createSubmission(input(`rotation-stale-${randomUUID()}`)),
-    ).rejects.toMatchObject({ code: 'binding_changed' });
-    const recovered = new NewApiAccountService(service.options);
-    await expect(recovered.rotateGroup(account.user.id, credential.id, 1)).resolves.toEqual({
-      credentialId: credential.id,
-      version: 2,
-      completed: true,
+    const older = service.synchronize(account.user.id);
+    await requested;
+    try {
+      await service.synchronize(account.user.id);
+    } finally {
+      release();
+    }
+    await older;
+    const current = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+      include: { credential: true },
     });
-    await recovered.rotateGroup(account.user.id, credential.id, 1);
-    expect(remoteCalls).toBe(2);
-    const current = await prisma.aiCredential.findUniqueOrThrow({ where: { id: credential.id } });
-    expect(current.version).toBe(2);
-    expect(keyring.decrypt(current.encryptedApiKey).plaintext).toBe(rotatedKey);
-    const previous = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+    expect(current).toMatchObject({
+      status: 'active',
+      credentialRevision: '2',
+      upstreamTokenId: '9002',
+      error: null,
+    });
+    expect(keyring.decrypt(current.credential!.encryptedApiKey).plaintext).toBe(
+      'synthetic-newer-revision',
+    );
+  });
+
+  it('重建回包丢失后恢复同一 operation/version，不重复创建且等待中的重建可见', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    const credential = binding.credential!;
+    const oldToken = binding.upstreamTokenId!;
+    missingGroup = 'default';
+    lostRepairResponse = 'default';
+    await service.synchronize(account.user.id);
+    missingGroup = '';
+    const pending = await prisma.newApiCredentialRotation.findUniqueOrThrow({
       where: { credentialId_fromVersion: { credentialId: credential.id, fromVersion: 1 } },
     });
-    expect(previous.completedAt).not.toBeNull();
-    expect(keyring.decrypt(previous.encryptedApiKey).plaintext).toBe(
-      keyring.decrypt(credential.encryptedApiKey).plaintext,
+    expect(pending).toMatchObject({ kind: 'repair', fromVersion: 1, completedAt: null });
+    const pendingStatus = (await service.status(account.user.id)).groups.find(
+      (entry) => entry.group === 'default',
     );
-    expect((await execution.requireAuthorization(submitted.runId)).snapshot).toEqual(snapshot);
-    await expect(
-      execution.createSubmission(input(`rotation-late-${randomUUID()}`)),
-    ).rejects.toMatchObject({ code: 'binding_changed' });
-    const fresh = structuredClone(snapshot);
-    fresh.credentialVersion = 2;
-    fresh.executionBindings!.target!.credentialVersion = 2;
-    fresh.executionBindings!.target!.authority.credentialRevision = '2';
-    fresh.executionBindings!.target!.authority.permissionRevision = '2';
-    await expect(
-      execution.createSubmission(input(`rotation-fresh-${randomUUID()}`, fresh)),
-    ).resolves.toMatchObject({ status: 'active' });
-    selectedUser = 'account-b';
-    const b = await login();
-    await expect(service.rotateGroup(b.user.id, credential.id, 1)).rejects.toMatchObject({
-      code: 'credential_not_found',
+    expect(pendingStatus).toMatchObject({
+      repairable: true,
+      repairPending: true,
+      status: 'unavailable',
     });
+
+    await expect(service.synchronize(account.user.id)).resolves.toMatchObject({
+      groups: expect.arrayContaining([
+        expect.objectContaining({ group: 'default', status: 'active', credentialVersion: 2 }),
+      ]),
+    });
+    expect(repairRequests).toHaveLength(2);
+    expect(new Set(repairRequests.map((request) => request.operation_id))).toEqual(
+      new Set([pending.id]),
+    );
+    expect(repairRequests).toEqual([
+      {
+        operation_id: pending.id,
+        repair: { token_id: Number(oldToken), credential_revision: 1 },
+      },
+      {
+        operation_id: pending.id,
+        repair: { token_id: Number(oldToken), credential_revision: 1 },
+      },
+    ]);
   });
+
+  it.each(['rotate', 'repair'])(
+    '旧任务和 unknown 在 %s 中保留原授权，修复不等待排空',
+    async (mode) => {
+      const account = await login();
+      const identity = await service.identity(account.user.id);
+      const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+        where: { identityId_group: { identityId: identity.id, group: 'default' } },
+        include: { credential: true },
+      });
+      const credential = binding.credential!;
+      const project = await new PrismaProjectStore(prisma).create(
+        { name: 'Controlled rotation' },
+        { ownerId: account.user.id },
+      );
+      const snapshot: RunSnapshot = {
+        projectId: project.id,
+        canvasRevision: 1,
+        targetNodeId: 'target',
+        modelAlias: 'exact-model',
+        parameters: {},
+        submittedAt: new Date().toISOString(),
+        inputs: [],
+        edges: [],
+        credentialId: credential.id,
+        credentialVersion: credential.version,
+        nodes: [
+          {
+            id: 'target',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Rotation',
+              mediaType: 'text',
+              mode: 'generate',
+              modelAlias: 'exact-model',
+            },
+          },
+        ],
+        executionBindings: {
+          target: {
+            credentialId: credential.id,
+            credentialVersion: 1,
+            modelAlias: 'exact-model',
+            mediaType: 'text',
+            contract: 'openai-chat-completions',
+            authority: authority(identity, binding),
+          },
+        },
+      };
+      const execution = new PrismaExecutionService(prisma);
+      const input = (runId: string, value = snapshot) => ({
+        runId,
+        userId: account.user.id,
+        snapshot: value,
+        queueName: 'rotation-test',
+        payload: {
+          runId,
+          userId: account.user.id,
+          snapshot: value,
+          attempt: 1,
+          provider: 'newapi' as const,
+          cancelRequested: false,
+        },
+      });
+      const submitted = await execution.createSubmission(input(`rotation-${randomUUID()}`));
+      const remote = vi.spyOn(service.options.client, 'rotateGroup');
+      await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
+        code: 'rotation_busy',
+      });
+      expect(remote).not.toHaveBeenCalled();
+      await prisma.run.update({
+        where: { id: submitted.databaseRunId },
+        data: { status: 'FAILED' },
+      });
+      await prisma.runSendIntent.create({
+        data: {
+          runId: submitted.runId,
+          nodeId: 'target',
+          attempt: 1,
+          requestIdentity: 'synthetic-request',
+          status: 'unknown',
+        },
+      });
+      await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
+        code: 'rotation_busy',
+      });
+      if (mode === 'repair') {
+        missingGroup = 'default';
+        const status = await service.synchronize(account.user.id);
+        expect(status.groups.find((group) => group.group === 'default')).toMatchObject({
+          status: 'active',
+          credentialId: credential.id,
+          credentialVersion: 2,
+        });
+        expect((await execution.requireAuthorization(submitted.runId)).snapshot).toEqual(snapshot);
+        expect(
+          await prisma.runSendIntent.findUnique({
+            where: {
+              runId_nodeId_attempt: { runId: submitted.runId, nodeId: 'target', attempt: 1 },
+            },
+          }),
+        ).toMatchObject({ status: 'unknown', requestIdentity: 'synthetic-request' });
+        expect(remote).not.toHaveBeenCalled();
+        return;
+      }
+      await prisma.runSendIntent.update({
+        where: { runId_nodeId_attempt: { runId: submitted.runId, nodeId: 'target', attempt: 1 } },
+        data: { status: 'sent' },
+      });
+      await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toMatchObject({
+        code: 'rotation_busy',
+      });
+      await prisma.run.update({
+        where: { id: submitted.databaseRunId },
+        data: { status: 'SUCCEEDED' },
+      });
+      let remoteCalls = 0;
+      let operationId = '';
+      const rotatedKey = 'synthetic-controlled-rotation-key';
+      remote.mockImplementation(async (_grant, group, operation, previous) => {
+        if (!operationId) operationId = operation;
+        expect(operation).toBe(operationId);
+        expect(previous).toEqual({
+          tokenId: binding.upstreamTokenId,
+          revision: '1',
+          fingerprint: credential.keyFingerprint,
+        });
+        if (++remoteCalls === 1) throw new Error('synthetic lost rotation response');
+        return {
+          token_id: binding.upstreamTokenId!,
+          key: rotatedKey,
+          group,
+          status: 'active',
+          credential_revision: '2',
+          permission_revision: '2',
+          auto_groups: [],
+        };
+      });
+      await expect(service.rotateGroup(account.user.id, credential.id, 1)).rejects.toThrow(
+        'synthetic lost',
+      );
+      await service.synchronize(account.user.id);
+      expect(
+        (await service.status(account.user.id)).groups.find((group) => group.group === 'default')
+          ?.status,
+      ).toBe('unavailable');
+      await expect(
+        execution.createSubmission(input(`rotation-stale-${randomUUID()}`)),
+      ).rejects.toMatchObject({ code: 'binding_changed' });
+      const recovered = new NewApiAccountService(service.options);
+      await expect(recovered.rotateGroup(account.user.id, credential.id, 1)).resolves.toEqual({
+        credentialId: credential.id,
+        version: 2,
+        completed: true,
+      });
+      await recovered.rotateGroup(account.user.id, credential.id, 1);
+      expect(remoteCalls).toBe(2);
+      const current = await prisma.aiCredential.findUniqueOrThrow({ where: { id: credential.id } });
+      expect(current.version).toBe(2);
+      expect(keyring.decrypt(current.encryptedApiKey).plaintext).toBe(rotatedKey);
+      const previous = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+        where: { credentialId_fromVersion: { credentialId: credential.id, fromVersion: 1 } },
+      });
+      expect(previous.completedAt).not.toBeNull();
+      expect(keyring.decrypt(previous.encryptedApiKey).plaintext).toBe(
+        keyring.decrypt(credential.encryptedApiKey).plaintext,
+      );
+      expect((await execution.requireAuthorization(submitted.runId)).snapshot).toEqual(snapshot);
+      await expect(
+        execution.createSubmission(input(`rotation-late-${randomUUID()}`)),
+      ).rejects.toMatchObject({ code: 'binding_changed' });
+      const fresh = structuredClone(snapshot);
+      fresh.credentialVersion = 2;
+      fresh.executionBindings!.target!.credentialVersion = 2;
+      fresh.executionBindings!.target!.authority.credentialRevision = '2';
+      fresh.executionBindings!.target!.authority.permissionRevision = '2';
+      await expect(
+        execution.createSubmission(input(`rotation-fresh-${randomUUID()}`, fresh)),
+      ).resolves.toMatchObject({ status: 'active' });
+      selectedUser = 'account-b';
+      const b = await login();
+      await expect(service.rotateGroup(b.user.id, credential.id, 1)).rejects.toMatchObject({
+        code: 'credential_not_found',
+      });
+    },
+  );
 
   it('并发轮换与提交只能受理一方，维护入口拒绝非管理员和跨站请求', async () => {
     vi.stubEnv('API_JWT_SECRET', 'synthetic-account-jwt');
@@ -1321,7 +1731,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     });
   });
 
-  it('部分分组失败保留成功组，改组拒绝，恢复只使用原操作身份', async () => {
+  it('部分分组失败保留成功组，改组时同步自动恢复原组和原 Token', async () => {
     failGroup = 'auto';
     const result = await login();
     expect(
@@ -1330,11 +1740,31 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     failGroup = '';
     await service.synchronize(result.user.id);
     expect(operations.size).toBe(3);
-    const credentialId = (await service.models(result.user.id))[0]!.credentialId!;
-    changedGroup = true;
-    await expect(service.validateGroup(result.user.id, credentialId)).rejects.toMatchObject({
-      code: 'group_changed',
+    const identity = await service.identity(result.user.id);
+    const before = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
     });
+    const oldToken = before.upstreamTokenId;
+    const oldKey = keyring.decrypt(before.credential!.encryptedApiKey).plaintext;
+    changedGroup = true;
+    const synced = await service.synchronize(result.user.id);
+    expect(synced.groups.find((group) => group.group === 'default')).toMatchObject({
+      status: 'active',
+      credentialVersion: 2,
+      repairPending: false,
+    });
+    const after = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    expect(after.upstreamTokenId).toBe(oldToken);
+    expect(keyring.decrypt(after.credential!.encryptedApiKey).plaintext).toBe(oldKey);
+    expect(repairRequests).toHaveLength(1);
+    expect(repairRequests[0]).toMatchObject({
+      repair: { token_id: Number(oldToken), credential_revision: 1 },
+    });
+    expect(after.credentialId).toBe(before.credentialId);
   });
 
   it('Cookie 会话隔离项目、拒绝旧入口和跨站写入，退出后立即失效', async () => {

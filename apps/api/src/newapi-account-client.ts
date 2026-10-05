@@ -26,6 +26,7 @@ export class NewApiAccountError extends Error {
     public readonly code: string,
     message: string,
     public readonly status = 400,
+    public readonly recovery?: { tokenId: string; revision: string },
   ) {
     super(message);
     this.name = 'NewApiAccountError';
@@ -197,6 +198,36 @@ export class NewApiAccountClient {
     await this.request('/api/canvas/revoke', 'POST', token, {});
   }
 
+  /**
+   * 恢复已删除或错组的分组 Token；禁用或其它权限修改由上游拒绝。
+   * @param operationId 已持久化的操作 ID；结果未知时必须复用。
+   * @param expected 原 Token ID 和凭据修订，防止并发替换其它版本。
+   * @returns 已恢复的 Token 与 Key；删除时为新 Key，错组时保留原 Key，只在服务端加密保存。
+   */
+  async repairGroup(
+    token: string,
+    group: string,
+    operationId: string,
+    expected: { tokenId: string; revision: string },
+  ) {
+    const tokenId = Number(expected.tokenId);
+    const revision = Number(expected.revision);
+    if (
+      !Number.isSafeInteger(tokenId) ||
+      tokenId <= 0 ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1 ||
+      revision >= Number.MAX_SAFE_INTEGER
+    )
+      throw new NewApiAccountError('repair_invalid', '重建的上游版本无效', 409);
+    return newApiManagedGroupSchema.parse(
+      await this.request(`/api/canvas/groups/${encodeURIComponent(group)}/repair`, 'POST', token, {
+        operation_id: operationId,
+        repair: { token_id: tokenId, credential_revision: revision },
+      }),
+    );
+  }
+
   /** 有界 JSON 读取；拒绝跨站跳转及包含不可信上游原文的异常。 */
   private async request(
     path: string,
@@ -216,7 +247,56 @@ export class NewApiAccountClient {
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      if (!response.ok)
+      if (!response.body && response.ok) throw new Error('missing body');
+      const reader = response.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (reader) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > (response.ok ? 5 * 1024 * 1024 : 16 * 1024)) {
+            await reader.cancel();
+            if (response.ok) throw new Error('response too large');
+            chunks.length = 0;
+            break;
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader?.releaseLock();
+      }
+      let value;
+      try {
+        value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch (error) {
+        if (response.ok) throw error;
+      }
+      if (!response.ok) {
+        const recovery = z
+          .object({
+            token_id: z.coerce.string().regex(/^[1-9][0-9]*$/),
+            credential_revision: z.coerce.string().regex(/^[1-9][0-9]*$/),
+          })
+          .safeParse(value?.data);
+        const expected = recovery.success
+          ? { tokenId: recovery.data.token_id, revision: recovery.data.credential_revision }
+          : undefined;
+        if (response.status === 409 && value?.code === 'canvas_managed_token_missing')
+          throw new NewApiAccountError(
+            'group_token_missing',
+            'New API 分组 Key 已删除，正在恢复',
+            409,
+            expected,
+          );
+        if (response.status === 409 && value?.code === 'canvas_managed_token_group_mismatch')
+          throw new NewApiAccountError(
+            'group_token_mismatch',
+            'New API Key 分组已变化，正在恢复',
+            409,
+            expected,
+          );
         throw new NewApiAccountError(
           response.status === 401 || response.status === 403
             ? 'authorization_revoked'
@@ -234,25 +314,7 @@ export class NewApiAccountClient {
               ? 409
               : 503,
         );
-      if (!response.body) throw new Error('missing body');
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          size += value.byteLength;
-          if (size > 5 * 1024 * 1024) {
-            await reader.cancel();
-            throw new Error('response too large');
-          }
-          chunks.push(value);
-        }
-      } finally {
-        reader.releaseLock();
       }
-      const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (value?.success === false)
         throw new NewApiAccountError('upstream_rejected', 'New API 拒绝当前授权操作', 409);
       return value?.success === true && value.data !== undefined ? value.data : value;
