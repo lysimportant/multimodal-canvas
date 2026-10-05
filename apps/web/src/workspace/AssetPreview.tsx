@@ -30,6 +30,7 @@ import { API_BASE_URL } from './contracts';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { AssetShareButton } from './AssetShareButton';
 import { ImagePreviewStage } from './ImagePreviewStage';
+import { MediaPreviewPlayer } from './MediaPreviewPlayer';
 import { getImageThumbnailSource, resolveOriginalImageAsset } from './image-thumbnail-cache';
 import { useImageThumbnail } from './use-image-thumbnail';
 import './artifact-preview.css';
@@ -288,16 +289,21 @@ const VIEWER_VERTICAL_CHROME = 72;
  * 根据原始尺寸等比适配视口；小资源保持原尺寸，大资源缩小到可用区域。
  * @param naturalSize 已验证为有限正数的媒体原始尺寸。
  * @param viewport 当前视口的 CSS 像素尺寸。
+ * @param controlsHeight 媒体下方工具栏预留高度，单位为 CSS 像素；图片不额外预留。
  * @returns 留出对话框边距和标题栏后的媒体显示尺寸。
  */
-function fitMediaDimensions(naturalSize: MediaDimensions, viewport: MediaDimensions) {
+function fitMediaDimensions(
+  naturalSize: MediaDimensions,
+  viewport: MediaDimensions,
+  controlsHeight = 0,
+) {
   const availableWidth = Math.max(
     1,
     viewport.width - VIEWER_VIEWPORT_MARGIN - VIEWER_HORIZONTAL_CHROME,
   );
   const availableHeight = Math.max(
     1,
-    viewport.height - VIEWER_VIEWPORT_MARGIN - VIEWER_VERTICAL_CHROME,
+    viewport.height - VIEWER_VIEWPORT_MARGIN - VIEWER_VERTICAL_CHROME - controlsHeight,
   );
   const scale = Math.min(
     1,
@@ -364,37 +370,50 @@ function NaturalMediaViewer({
       />
     );
   }
-  const fittedSize = naturalSize ? fitMediaDimensions(naturalSize, viewport) : undefined;
+  const fittedSize = naturalSize
+    ? fitMediaDimensions(naturalSize, viewport, kind === 'video' ? 56 : 0)
+    : undefined;
+  if (kind === 'video') {
+    return (
+      <MediaPreviewPlayer
+        key={attempt}
+        kind="video"
+        src={src}
+        name={name}
+        autoPlay
+        className="artifact-preview-video-player"
+        onLoadedMetadata={(event) => {
+          const video = event.currentTarget as HTMLVideoElement;
+          acceptDimensions(video.videoWidth, video.videoHeight);
+        }}
+        renderMedia={(media) => (
+          <ZoomableMediaStage
+            resetKey={`${resetKey}:${attempt}:${viewport.width}:${viewport.height}`}
+            enablePanAtFit={false}
+            dimensions={fittedSize}
+          >
+            {media}
+          </ZoomableMediaStage>
+        )}
+      />
+    );
+  }
   return (
     <ZoomableMediaStage
       resetKey={`${resetKey}:${attempt}:${viewport.width}:${viewport.height}`}
       enablePanAtFit={kind === 'image'}
       dimensions={fittedSize}
     >
-      {kind === 'image' ? (
-        <img
-          key={attempt}
-          src={src}
-          alt={name}
-          draggable={false}
-          onLoad={(event) =>
-            acceptDimensions(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)
-          }
-          onError={() => setError('图片加载失败，请重新加载预览')}
-        />
-      ) : (
-        <video
-          key={attempt}
-          src={src}
-          controls
-          autoPlay
-          playsInline
-          onLoadedMetadata={(event) =>
-            acceptDimensions(event.currentTarget.videoWidth, event.currentTarget.videoHeight)
-          }
-          onError={() => setError('视频加载失败，请重新加载预览')}
-        />
-      )}
+      <img
+        key={attempt}
+        src={src}
+        alt={name}
+        draggable={false}
+        onLoad={(event) =>
+          acceptDimensions(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)
+        }
+        onError={() => setError('图片加载失败，请重新加载预览')}
+      />
     </ZoomableMediaStage>
   );
 }
@@ -526,6 +545,7 @@ function ZoomableMediaStage({
         style={dimensions}
         onPointerDown={(event) => {
           if (event.button !== 0 || !canPan) return;
+          if ((event.target as HTMLElement).closest('button, select, input, label')) return;
           if (
             transformRef.current.scale === 1 &&
             (event.target as HTMLElement).closest('video, audio')
@@ -772,7 +792,13 @@ export function AssetViewerDialog({
             />
           ) : kind === 'audio' ? (
             <div className="artifact-preview-viewer-audio">
-              <audio src={resolvedSrc} controls autoPlay />
+              <MediaPreviewPlayer
+                key={resetKey}
+                kind="audio"
+                src={resolvedSrc}
+                name={asset.name}
+                autoPlay
+              />
             </div>
           ) : kind === 'text' ? (
             <TextResultContent url={resolvedSrc} className="artifact-preview-viewer-text" />

@@ -1,0 +1,94 @@
+.media-preview-player {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+.media-preview-player-stage {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+  position: relative;
+  width: 100%;
+}
+.media-preview-player-stage.is-video {
+  background: #0f1720;
+  height: 100%;
+}
+.media-preview-player-stage video {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+.media-preview-player-stage.is-audio {
+  gap: 16px;
+  padding: 20px 12px;
+}
+.media-preview-player-audio-icon {
+  color: var(--mc-accent, #18794e);
+}
+.media-preview-player-overlay {
+  align-items: center;
+  background: rgb(15 23 32 / 80%);
+  border: 1px solid rgb(255 255 255 / 65%);
+  border-radius: 50%;
+  color: #fff;
+  display: flex;
+  height: 60px;
+  justify-content: center;
+  left: 50%;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 60px;
+}
+.media-preview-player-tools {
+  align-items: center;
+  background: var(--mc-surface, #fff);
+  color: var(--mc-text, #18212f);
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+}
+.media-preview-player-tools > button,
+.media-preview-player-tools select {
+  align-items: center;
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 4px;
+  color: inherit;
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+}
+.media-preview-player-tools > button[aria-pressed='true'] {
+  background: var(--mc-accent-soft, #edf7f2);
+  border-color: var(--mc-accent, #18794e);
+}
+.media-preview-player-tools > label,
+.media-preview-player-tools > span {
+  align-items: center;
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+}
+.media-preview-player-tools > .media-preview-player-error {
+  color: var(--mc-danger, #c43838);
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.media-preview-player button:focus-visible,
+.media-preview-player select:focus-visible {
+  outline: 2px solid var(--mc-accent, #18794e);
+  outline-offset: 2px;
+}

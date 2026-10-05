@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Download, LoaderCircle, RefreshCw, Share2 } from 'lucide-react';
+import { Download, LoaderCircle, RefreshCw } from 'lucide-react';
 import { z } from 'zod';
 
 import { Button } from '@multimodal-canvas/ui';
 import { API_BASE_URL, mediaLabels } from '../workspace/contracts';
+import { ImagePreviewStage } from '../workspace/ImagePreviewStage';
+import { MediaPreviewPlayer } from '../workspace/MediaPreviewPlayer';
+import '../workspace/artifact-preview.css';
 import './public-asset-share.css';
 
 /** 公开分享只接收展示所需字段，绝不依赖私有资源或账号会话。 */
@@ -39,6 +42,16 @@ export function PublicAssetSharePage({ token }: { token: string }) {
   const [share, setShare] = useState<PublicShare>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
+  const [imageExpanded, setImageExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!imageExpanded) return;
+    const exitExpanded = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setImageExpanded(false);
+    };
+    window.addEventListener('keydown', exitExpanded);
+    return () => window.removeEventListener('keydown', exitExpanded);
+  }, [imageExpanded]);
 
   useEffect(() => {
     const previousReferrer = document.querySelector<HTMLMetaElement>('meta[name=referrer]');
@@ -62,6 +75,7 @@ export function PublicAssetSharePage({ token }: { token: string }) {
   useEffect(() => {
     setShare(undefined);
     setError(undefined);
+    setImageExpanded(false);
     if (!/^[A-Za-z0-9_.-]{20,4096}$/.test(token)) {
       setError('分享链接不完整，请联系分享者重新复制链接。');
       return;
@@ -122,11 +136,20 @@ export function PublicAssetSharePage({ token }: { token: string }) {
   const mediaFailed = () => setError('资源内容加载失败或链接已失效，请重新加载。');
 
   return (
-    <main className="public-asset-share">
+    <main
+      className={`public-asset-share${imageExpanded && share && !error ? ' is-image-expanded' : ''}`}
+    >
       <header className="public-asset-share-topbar">
         <span className="public-asset-share-brand">
-          <Share2 size={18} aria-hidden="true" />
-          LoveTV · 共享资源
+          <img
+            src="/brand/lovetv-mascot.webp"
+            alt="LoveTV 大肥鱼（鲸鱼娘）"
+            width={48}
+            height={48}
+          />
+          <span>
+            LoveTV · <span>共享资源</span>
+          </span>
         </span>
         <span className="public-asset-share-readonly">只读预览</span>
       </header>
@@ -172,30 +195,23 @@ export function PublicAssetSharePage({ token }: { token: string }) {
             aria-label="分享资源内容"
           >
             {share.asset.mediaType === 'image' ? (
-              <img
+              <ImagePreviewStage
+                key={share.contentUrl}
                 src={share.contentUrl}
-                alt={share.asset.name}
+                name={share.asset.name}
+                expanded={imageExpanded}
+                onExpandedChange={setImageExpanded}
                 crossOrigin="anonymous"
                 referrerPolicy="no-referrer"
                 onError={mediaFailed}
               />
-            ) : share.asset.mediaType === 'video' ? (
-              <video
+            ) : share.asset.mediaType === 'video' || share.asset.mediaType === 'audio' ? (
+              <MediaPreviewPlayer
+                key={share.contentUrl}
+                kind={share.asset.mediaType}
                 src={share.contentUrl}
-                controls
-                playsInline
-                preload="metadata"
+                name={share.asset.name}
                 crossOrigin="anonymous"
-                aria-label={share.asset.name}
-                onError={mediaFailed}
-              />
-            ) : share.asset.mediaType === 'audio' ? (
-              <audio
-                src={share.contentUrl}
-                controls
-                preload="metadata"
-                crossOrigin="anonymous"
-                aria-label={share.asset.name}
                 onError={mediaFailed}
               />
             ) : (

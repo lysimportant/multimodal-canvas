@@ -1,11 +1,29 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PublicAssetSharePage } from './PublicAssetSharePage';
 
 /** 公开接口测试只使用合成分享身份，绝不读取真实账户。 */
 const token = 'synthetic-share-token.signature';
+/** jsdom 不解码图像；仅补齐舞台尺寸，缩放行为由真实查看器计算。 */
+beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+});
+
+/** 显式提供浏览器解码后的原图尺寸，避免把加载前的隐藏图片误当成可用预览。 */
+function decodeImage(name = '分享的作品') {
+  const image = screen.getByAltText(name);
+  Object.defineProperties(image, {
+    naturalWidth: { value: 1600, configurable: true },
+    naturalHeight: { value: 1200, configurable: true },
+  });
+  fireEvent.load(image);
+  return image;
+}
 /** 生成与匿名接口相同的最小白名单响应。 */
 function makeShare(mediaType: 'image' | 'text' | 'video' | 'audio' = 'image') {
   return {
@@ -23,6 +41,7 @@ function makeShare(mediaType: 'image' | 'text' | 'video' | 'audio' = 'image') {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -34,11 +53,20 @@ describe('公开资源分享预览', () => {
     render(<PublicAssetSharePage token={token} />);
     expect(await screen.findByRole('heading', { name: '分享的作品' })).toBeVisible();
     expect(screen.getByText(/版本 2/)).toBeVisible();
-    expect(screen.getByRole('img')).toHaveAttribute(
+    const image = decodeImage();
+    expect(image).toHaveAttribute(
       'src',
       `http://localhost:3000/v1/asset-shares/content?token=${token}`,
     );
-    expect(screen.getByText('LoveTV · 共享资源')).toBeVisible();
+    expect(screen.getByText('共享资源', { exact: true }).parentElement).toHaveTextContent(
+      'LoveTV · 共享资源',
+    );
+    expect(screen.getByRole('img', { name: 'LoveTV 大肥鱼（鲸鱼娘）' })).toHaveAttribute(
+      'src',
+      '/brand/lovetv-mascot.webp',
+    );
+    expect(image).toHaveAttribute('crossorigin', 'anonymous');
+    expect(image).toHaveAttribute('referrerpolicy', 'no-referrer');
     expect(document.title).toBe('分享的作品 · LoveTV 共享资源');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
@@ -149,11 +177,15 @@ describe('公开资源分享预览', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByRole('img')).toBeVisible();
+    decodeImage();
+    fireEvent.click(screen.getByRole('button', { name: '铺满窗口' }));
+    expect(screen.getByRole('main')).toHaveClass('is-image-expanded');
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_001);
     });
-    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.queryByAltText('分享的作品')).not.toBeInTheDocument();
+    expect(screen.getByRole('main')).not.toHaveClass('is-image-expanded');
+    expect(screen.getByAltText('LoveTV 大肥鱼（鲸鱼娘）')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent('分享链接已失效');
   });
 
@@ -164,7 +196,7 @@ describe('公开资源分享预览', () => {
     meta.content = 'same-origin';
     document.head.append(meta);
     const view = render(<PublicAssetSharePage token={token} />);
-    await waitFor(() => expect(screen.getByRole('img')).toBeVisible());
+    await screen.findByRole('heading', { name: '分享的作品' });
     view.unmount();
     expect(meta.content).toBe('same-origin');
     meta.remove();
@@ -174,11 +206,67 @@ describe('公开资源分享预览', () => {
     document.title = '进入分享页前的标题';
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(makeShare())));
     const view = render(<PublicAssetSharePage token={token} />);
-    await waitFor(() => expect(screen.getByRole('img')).toBeVisible());
+    await screen.findByRole('heading', { name: '分享的作品' });
 
     document.title = 'LoveTV · 首页';
     view.unmount();
 
     expect(document.title).toBe('LoveTV · 首页');
+  });
+
+  it('分享图片可放大、旋转、恢复原图并铺满，Esc 从工具栏退出铺满', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(makeShare())));
+    render(<PublicAssetSharePage token={token} />);
+    await screen.findByRole('heading', { name: '分享的作品' });
+    const image = decodeImage();
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent('50%');
+    fireEvent.click(screen.getByRole('button', { name: '放大预览' }));
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent('62.5%');
+    fireEvent.click(screen.getByRole('button', { name: '向右旋转90度' }));
+    expect(image.style.transform).toContain('rotate(90deg)');
+    fireEvent.click(screen.getByRole('button', { name: '原图 1:1' }));
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent('100%');
+    fireEvent.click(screen.getByRole('button', { name: '铺满窗口' }));
+    expect(screen.getByRole('main')).toHaveClass('is-image-expanded');
+    fireEvent.keyDown(screen.getByRole('button', { name: '退出铺满窗口' }), { key: 'Escape' });
+    expect(screen.getByRole('main')).not.toHaveClass('is-image-expanded');
+    fireEvent.click(screen.getByRole('button', { name: '重置图片视图' }));
+    expect(image.style.transform).toBe('rotate(0deg)');
+    expect(screen.getByLabelText('图片缩放比例')).toHaveTextContent('50%');
+  });
+
+  it('图片加载失败退出铺满，重新加载会重新验证分享而不直接重试私有内容', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json(makeShare()));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<PublicAssetSharePage token={token} />);
+    await screen.findByRole('heading', { name: '分享的作品' });
+    const image = decodeImage();
+    fireEvent.click(screen.getByRole('button', { name: '铺满窗口' }));
+    fireEvent.error(image);
+    expect(screen.getByRole('alert')).toHaveTextContent('资源内容加载失败');
+    expect(screen.getByRole('main')).not.toHaveClass('is-image-expanded');
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
+    await screen.findByRole('heading', { name: '分享的作品' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('main')).not.toHaveClass('is-image-expanded');
+  });
+
+  it.each(['video', 'audio'] as const)('%s 分享到期时卸载并停止播放器', async (kind) => {
+    vi.useFakeTimers();
+    const response = makeShare(kind);
+    response.expiresAt = new Date(Date.now() + 1_000).toISOString();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(response)));
+    render(<PublicAssetSharePage token={token} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByLabelText('分享的作品').tagName.toLowerCase()).toBe(kind);
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_001);
+    });
+    expect(screen.queryByLabelText('分享的作品')).not.toBeInTheDocument();
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('分享链接已失效');
   });
 });

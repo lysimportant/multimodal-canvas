@@ -8,7 +8,15 @@ import {
   RotateCcw,
   RotateCw,
 } from 'lucide-react';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ImgHTMLAttributes,
+} from 'react';
 
 import { Button } from '@multimodal-canvas/ui';
 
@@ -18,6 +26,12 @@ export type ImagePreviewStageProps = {
   src: string;
   /** 图片可访问名称，不包含鉴权或签名参数。 */
   name: string;
+  /** 公开分享传 anonymous，保持媒体的跨域匿名读取；私有预览沿用原加载方式。 */
+  crossOrigin?: ImgHTMLAttributes<HTMLImageElement>['crossOrigin'];
+  /** 公开分享禁止向媒体地址发送页面来源。 */
+  referrerPolicy?: ImgHTMLAttributes<HTMLImageElement>['referrerPolicy'];
+  /** 父页面可在媒体失效后重新验证分享权限；不传时使用查看器内重试。 */
+  onError?: () => void;
   /** 原文件成功解码后的真实像素，供节点信息显示；不改变节点尺寸。 */
   onNaturalSize?: (width: number, height: number) => void;
   /** 是否由父对话框铺满当前窗口，不修改浏览器或系统设置。 */
@@ -97,6 +111,9 @@ function centeredView(
 export function ImagePreviewStage({
   src,
   name,
+  crossOrigin,
+  referrerPolicy,
+  onError,
   onNaturalSize,
   expanded,
   onExpandedChange,
@@ -460,6 +477,8 @@ export function ImagePreviewStage({
             key={`${src}:${attempt}`}
             src={src}
             alt={name}
+            crossOrigin={crossOrigin}
+            referrerPolicy={referrerPolicy}
             draggable={false}
             style={{
               width: drawnWidth,
@@ -478,12 +497,16 @@ export function ImagePreviewStage({
                 height <= 0
               ) {
                 setError('无法读取图片尺寸，请重新加载');
+                onError?.();
                 return;
               }
               setNatural({ width, height });
               setError(undefined);
             }}
-            onError={() => setError('图片加载失败，请重新加载预览')}
+            onError={() => {
+              setError('图片加载失败，请重新加载预览');
+              onError?.();
+            }}
           />
         </div>
         {error ? (

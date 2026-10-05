@@ -278,6 +278,18 @@
 .artifact-preview-viewer-stage:not(.is-zoomed) .artifact-preview-viewer-transform video {
   pointer-events: auto;
 }
+.artifact-preview-video-player {
+  display: contents;
+}
+.artifact-preview-video-player .media-preview-player-tools {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  max-height: 100px;
+  overflow: auto;
+}
+.artifact-preview-video-player .media-preview-player-stage > video {
+  height: 100%;
+}
 .artifact-preview-viewer-audio,
 .artifact-preview-viewer-text,
 .artifact-preview-viewer-file,

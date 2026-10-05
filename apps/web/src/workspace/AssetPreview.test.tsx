@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset } from '@multimodal-canvas/domain';
 import { AssetPreview, AssetViewerDialog, type AssetPreviewLoadState } from './AssetPreview';
@@ -93,6 +93,10 @@ function mockImageStageSize(width = 800, height = 600) {
     });
   };
 }
+
+beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+});
 
 afterEach(() => {
   cleanup();

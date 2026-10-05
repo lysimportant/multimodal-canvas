@@ -29,7 +29,7 @@ const video = readFileSync(new URL('../public/demo/field-study.mp4', import.meta
 
 /** 生成可由 Chromium 读取元数据的短静音 WAV。 */
 function createSilentWav() {
-  const sampleCount = 800;
+  const sampleCount = 80_000;
   const buffer = Buffer.alloc(44 + sampleCount * 2);
   buffer.write('RIFF', 0, 'ascii');
   buffer.writeUInt32LE(buffer.length - 8, 4);
@@ -114,7 +114,25 @@ function captureErrors(page: Page) {
 }
 
 /** 安装私有画布最小夹具；除固定分享外不允许生成、上传或真实数据请求。 */
-async function installPrivateFixture(page: Page, requests: RequestRecord[]) {
+async function installPrivateFixture(
+  page: Page,
+  requests: RequestRecord[],
+  mediaType: 'image' | 'video' = 'image',
+) {
+  const asset = {
+    ...privateAsset,
+    mediaType,
+    mimeType: mediaType === 'video' ? 'video/mp4' : privateAsset.mimeType,
+  };
+  const content = mediaType === 'video' ? video : poster;
+  const document: CanvasDocument = {
+    ...canvas,
+    nodes: canvas.nodes.map((node) => ({
+      ...node,
+      type: mediaType,
+      data: { ...node.data, mediaType, mimeType: asset.mimeType },
+    })),
+  };
   await page.addInitScript(() => {
     localStorage.setItem(
       'multimodal-canvas:auth-session',
@@ -184,7 +202,7 @@ async function installPrivateFixture(page: Page, requests: RequestRecord[]) {
     }
     if (path === '/v1/projects') return privateJson({ projects: [project] });
     if (path === '/v1/projects/' + project.id) return privateJson({ project });
-    if (path === '/v1/projects/' + project.id + '/canvas') return privateJson({ canvas });
+    if (path === '/v1/projects/' + project.id + '/canvas') return privateJson({ canvas: document });
     if (path === '/v1/projects/' + project.id + '/models/defaults')
       return privateJson({ defaults: {} });
     if (path === '/v1/projects/' + project.id + '/runs') return privateJson({ runs: [] });
@@ -194,7 +212,7 @@ async function installPrivateFixture(page: Page, requests: RequestRecord[]) {
         headers: corsHeaders,
         body: ': ready\n\n',
       });
-    if (path === '/v1/assets') return privateJson({ assets: [privateAsset] });
+    if (path === '/v1/assets') return privateJson({ assets: [asset] });
     if (path === '/v1/prompt-skills') return privateJson({ skills: [] });
     if (path === '/v1/settings/ai')
       return privateJson({ settings: { defaultModels: {}, timeoutMs: 900_000 } });
@@ -232,9 +250,9 @@ async function installPrivateFixture(page: Page, requests: RequestRecord[]) {
     if (path === privateAsset.contentUrl && ['GET', 'HEAD'].includes(method))
       return route.fulfill({
         status: 200,
-        contentType: privateAsset.mimeType,
+        contentType: asset.mimeType,
         headers: corsHeaders,
-        body: method === 'HEAD' ? undefined : poster,
+        body: method === 'HEAD' ? undefined : content,
       });
     if (path === '/v1/assets/' + privateAsset.id + '/share' && method === 'POST') {
       expect(record.body).toEqual({ version: 1 });
@@ -448,13 +466,94 @@ test('1440x900 从私有预览创建并复制固定版本，匿名上下文打�
     .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
     .toBeGreaterThan(0);
   await expect(image).toHaveAttribute('src', /\/v1\/asset-shares\/content\?token=/);
+  const mascot = anonymous.getByRole('img', { name: 'LoveTV 大肥鱼（鲸鱼娘）' });
+  await expect(mascot).toBeVisible();
+  await expect
+    .poll(() => mascot.evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBeGreaterThan(0);
+  const ratio = anonymous.getByLabel('图片缩放比例');
+  const initialRatio = await ratio.textContent();
+  await anonymous.getByRole('button', { name: '放大预览', exact: true }).click();
+  await expect(ratio).not.toHaveText(initialRatio!);
+  await anonymous.getByRole('button', { name: '原图 1:1', exact: true }).click();
+  await expect(ratio).toHaveText('100%');
+  await anonymous.getByRole('button', { name: '向右旋转90度' }).click();
+  await expect(image).toHaveCSS('transform', 'matrix(0, 1, -1, 0, 0, 0)');
+  await anonymous.getByRole('button', { name: '水平翻转', exact: true }).click();
+  await expect(anonymous.getByRole('button', { name: '水平翻转', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await anonymous.getByRole('button', { name: '重置图片视图' }).click();
+  await expect(ratio).toHaveText(initialRatio!);
   await anonymous.screenshot({
     path: testInfo.outputPath('1440x900-public-image-share.png'),
     animations: 'disabled',
   });
+  await anonymous.setViewportSize({ width: 1280, height: 480 });
+  await anonymous.getByRole('button', { name: '铺满窗口', exact: true }).click();
+  const stage = anonymous.getByRole('region', { name: '图片预览画布' });
+  await expect(stage).toBeVisible();
+  const expandedBox = await anonymous.getByRole('region', { name: '分享资源内容' }).boundingBox();
+  expect(expandedBox).toMatchObject({ x: 0, y: 0, width: 1280, height: 480 });
+  await anonymous.screenshot({
+    path: testInfo.outputPath('1280x480-expanded-image.png'),
+    animations: 'disabled',
+  });
+  await anonymous.keyboard.press('Escape');
+  await expect(mascot).toBeVisible();
+  await expect(anonymous.getByRole('button', { name: '铺满窗口', exact: true })).toBeInViewport();
   expectPublicOnly(publicRequests, unexpected);
   expect(publicErrors).toEqual([]);
   await context.close();
+});
+
+test('1280x480 视频 Dialog 播放操作完整且关闭后停止，不撑大节点', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 480 });
+  const errors = captureErrors(page);
+  await installPrivateFixture(page, [], 'video');
+  await page.goto('/projects/' + project.id);
+  const node = page.locator('.react-flow__node[data-id="share-image-node"]');
+  await expect(node).toBeVisible({ timeout: 15_000 });
+  const before = await node.boundingBox();
+  await node.hover();
+  await node.getByRole('button', { name: /^预览视频：/ }).click();
+  const viewer = page
+    .getByRole('dialog')
+    .filter({ has: page.getByRole('button', { name: '分享当前版本', exact: true }) });
+  await expect(viewer).toBeVisible();
+  const media = viewer.locator('video');
+  await expect
+    .poll(() => media.evaluate((element: HTMLVideoElement) => element.readyState))
+    .toBeGreaterThan(0);
+  const pause = viewer.getByRole('button', { name: '暂停视频', exact: true });
+  // Dialog 可在显式打开后自动播放；被浏览器阻止时仍可手动播放。
+  if (!(await pause.isVisible()))
+    await viewer.getByRole('button', { name: '播放视频', exact: true }).first().click();
+  await expect
+    .poll(() => media.evaluate((element: HTMLVideoElement) => element.currentTime))
+    .toBeGreaterThan(0);
+  await pause.click();
+  await expect.poll(() => media.evaluate((element: HTMLVideoElement) => element.paused)).toBe(true);
+  await viewer.getByLabel('播放速度', { exact: true }).selectOption('1.5');
+  expect(await media.evaluate((element: HTMLVideoElement) => element.playbackRate)).toBe(1.5);
+  await expect(viewer.getByLabel('播放速度', { exact: true })).toBeInViewport();
+  const box = await viewer.boundingBox();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(480);
+  await page.screenshot({
+    path: testInfo.outputPath('1280x480-video-dialog.png'),
+    animations: 'disabled',
+  });
+  const mediaHandle = await media.elementHandle();
+  await viewer.getByRole('button', { name: '播放视频', exact: true }).first().click();
+  await viewer.getByRole('button', { name: '关闭预览', exact: true }).click();
+  await expect(viewer).toBeHidden();
+  expect(await mediaHandle!.evaluate((element: HTMLVideoElement) => element.paused)).toBe(true);
+  const after = await node.boundingBox();
+  expect(after!.width).toBe(before!.width);
+  expect(after!.height).toBe(before!.height);
+  expect(errors).toEqual([]);
 });
 
 test('1366x768 匿名页展示视频、音频、文字并明确显示失效链接', async ({ browser }, testInfo) => {
@@ -510,18 +609,38 @@ test('1366x768 匿名页展示视频、音频、文字并明确显示失效链�
     ).toBeVisible();
     await expect(page.getByText(new RegExp('版本 ' + fixture.asset.version))).toBeVisible();
     await expect(page).toHaveTitle(new RegExp(fixture.asset.name));
-    if (fixture.asset.mediaType === 'video') {
+    if (fixture.asset.mediaType === 'video' || fixture.asset.mediaType === 'audio') {
       const media = page.getByLabel(fixture.asset.name, { exact: true });
       await expect(media).toBeVisible();
       await expect
         .poll(() => media.evaluate((element: HTMLVideoElement) => element.readyState))
         .toBeGreaterThan(0);
-    } else if (fixture.asset.mediaType === 'audio') {
-      const media = page.getByLabel(fixture.asset.name, { exact: true });
-      await expect(media).toBeVisible();
+      expect(await media.evaluate((element: HTMLMediaElement) => element.paused)).toBe(true);
+      // 使用真实媒体解码和用户点击，确保按钮确实驱动播放而非仅切换图标。
+      const kindLabel = fixture.asset.mediaType === 'video' ? '视频' : '音频';
+      await page
+        .getByRole('button', { name: '播放' + kindLabel, exact: true })
+        .first()
+        .click();
       await expect
-        .poll(() => media.evaluate((element: HTMLAudioElement) => element.readyState))
+        .poll(() => media.evaluate((element: HTMLMediaElement) => element.currentTime))
         .toBeGreaterThan(0);
+      await page.getByRole('button', { name: '暂停' + kindLabel, exact: true }).click();
+      await expect
+        .poll(() => media.evaluate((element: HTMLMediaElement) => element.paused))
+        .toBe(true);
+      await page.getByLabel('播放速度', { exact: true }).selectOption('1.5');
+      expect(await media.evaluate((element: HTMLMediaElement) => element.playbackRate)).toBe(1.5);
+      await page.getByRole('button', { name: '循环播放', exact: true }).click();
+      expect(await media.evaluate((element: HTMLMediaElement) => element.loop)).toBe(true);
+      await expect(media).toHaveAttribute('controls', '');
+      await page.setViewportSize({ width: 1280, height: 480 });
+      await expect(page.getByLabel('播放速度', { exact: true })).toBeInViewport();
+      await page.screenshot({
+        path: testInfo.outputPath('1280x480-public-' + fixture.asset.mediaType + '.png'),
+        animations: 'disabled',
+      });
+      await page.setViewportSize({ width: 1366, height: 768 });
     } else {
       await expect(page.locator('pre')).toHaveText(textBody);
     }
