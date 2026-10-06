@@ -44,4 +44,12 @@
 - 更新前后仍为 137 条 Run（98 成功、39 失败）、1 项目、1 自定义 Skill；队列 active/waiting/delayed 均为 0。本地登录页正常加载，浏览器无错误；用户项目内的真实付费生成未再次执行。
 - 旧应用镜像保留为 `multimodal-canvas-{api,worker,web}:before-skill-output-20261006`。需要回退时将对应备份镜像重新标记为 `:local`，再以相同无依赖启动命令替换应用容器；不回退或覆盖数据库。
 
+## 汇报核对（2026-10-06 20:30–20:45，只读）
+
+- 工作区干净，`main` 与 `origin/main` 同步，HEAD `1dff458` 已推送；无未提交改动。
+- 运行中的 API/Worker 镜像构建于修复前（Worker bundle 时间 11:42 UTC），但未包含旧行为：两包 bundle 都含 `PromptOptimizationOutputError`（Worker 9 处），API bundle 含 `retireRemovedGroups` / `claimSynchronization` 各 2 处。11:42 UTC 构建的镜像装的是当前源码，说明此前“确认未部署”的结论已过时。
+- Web 容器（12:03 UTC，与 `multimodal-canvas-web:local` 一致）经 Caddy 提供 `index-hcV44bMM.js` → `main-B3eNQpU3.js` + `main-CbSxjc59.css`；三者含新输出合同文案（`Do not return bare text`）、`12000` 上限和 `overflow-wrap:anywhere` 错误换行样式，`/` 与 `/health` 均返回 200。
+- 库内记录与 Redis 队列一致：`runs` 98 SUCCEEDED / 39 FAILED，queue wait/active/delayed 为 0，failed 39、completed 98。最新失败任务 `3cfa5b53` 的 `error.message` 已是修复后分类文案“生成已完成，归档失败：Skill 返回格式无效：需要包含 prompt 的 JSON 对象。仅重试归档，不会重新生成”。该行与 `apps/worker/src/index.ts` 中 `rawError instanceof PromptOptimizationOutputError` 的终止分支并存，且本次未重跑该任务，故它是修复前写入的**历史**记录，不能当作回归证据。
+- 结论：代码、本地镜像与本地服务三者一致，无待办改动；真实供应商中断原因、正式环境部署与同环境验收仍属未完成项，本次只读核对未产生新的付费请求或业务写入。
+
 本地代码、回归验证与应用更新已完成。历史失败任务保持原状态；上游输出为何中断仍需供应商响应或日志证据。正式环境尚未部署、未完成同环境验收。
