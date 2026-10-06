@@ -36,7 +36,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   type ReactNode,
-  type WheelEvent as ReactWheelEvent,
 } from 'react';
 
 import type {
@@ -71,6 +70,7 @@ import {
 } from './node-run-control';
 import type { ClearActionCounts } from './ClearCanvasMenu';
 import { CanvasGroupLayer } from './CanvasGroupLayer';
+import { useCanvasPageZoomLock } from './use-canvas-page-zoom-lock';
 import {
   NodeResizeContext,
   NodeDeleteContext,
@@ -443,6 +443,7 @@ export function WorkflowCanvas({
   canRedo,
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
+  useCanvasPageZoomLock();
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const flowStore = useStoreApi();
   const [recreationLauncherOpen, setRecreationLauncherOpen] = useState(false);
@@ -886,11 +887,6 @@ export function WorkflowCanvas({
     [onCanvasDrop, screenToFlowPosition],
   );
 
-  /** 阻止浏览器将画布上的 Ctrl+滚轮解释为页面缩放，让 React Flow 接管缩放。 */
-  const handleCanvasWheelCapture = useCallback((event: ReactWheelEvent<HTMLElement>) => {
-    if (event.ctrlKey) event.preventDefault();
-  }, []);
-
   const getReturnFocusTarget = useCallback((event: CanvasContextMouseEvent) => {
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && activeElement !== document.body) {
@@ -1255,9 +1251,6 @@ export function WorkflowCanvas({
       data-edge-effect={edgeEffect}
       aria-label="工作流画布"
       tabIndex={-1}
-      // 在捕获阶段拦截 Ctrl+滚轮，避免事件先冒泡到页面触发浏览器缩放；
-      // 不阻止继续传播，React Flow 仍可在其内部处理画布缩放。
-      onWheelCapture={handleCanvasWheelCapture}
       onPointerEnter={() => {
         pointerInsideCanvas.current = true;
       }}
@@ -1418,6 +1411,7 @@ export function WorkflowCanvas({
                                             multiSelectionKeyCode={FLOW_MULTI_SELECTION_KEYS}
                                             onPaneClick={handlePaneClick}
                                             fitView
+                                            zoomOnPinch
                                             minZoom={FIT_VIEW_MIN_ZOOM}
                                             fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
                                             connectionLineStyle={FLOW_CONNECTION_LINE_STYLE}

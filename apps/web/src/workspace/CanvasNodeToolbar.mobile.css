@@ -1,13 +1,14 @@
 /* 手机只保留四个媒体入口和展开箭头，不再依赖横向滚动寻找动作。 */
 .canvas-node-tools.is-mobile {
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   gap: 6px;
-  left: 12px;
+  left: 50%;
   max-width: calc(100% - 68px);
   overflow: visible;
   padding: 8px;
   right: auto;
   touch-action: auto;
-  transform: none;
+  transform: translateX(-50%);
   width: max-content;
 }
 
@@ -15,6 +16,15 @@
   flex: 0 0 40px;
   height: 40px;
   width: 40px;
+}
+
+/* 320px 宽度需给右下角缩放控件留出空隙，五个动作仍完整保留。 */
+@media (max-width: 340px) {
+  .canvas-node-tools.is-mobile .canvas-node-tool {
+    flex-basis: 38px;
+    height: 38px;
+    width: 38px;
+  }
 }
 
 .mobile-canvas-tools-trigger[aria-expanded='true'] > svg {

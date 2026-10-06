@@ -1,0 +1,41 @@
+/* 禁止浏览器接管双指/双击缩放；React Flow 的 touch-action:none 和自有缩放照常工作。 */
+html.is-canvas-page {
+  touch-action: pan-x pan-y;
+}
+
+/* 手机顶部工具栏占用正常文档流，画布填满剩余动态视口，不再受旧 560/700px 最小高度撑开。 */
+@media (max-width: 600px) {
+  html.is-canvas-page body {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  html.is-canvas-page .app-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  html.is-canvas-page .app-shell > .topbar {
+    flex: 0 0 auto;
+  }
+
+  html.is-canvas-page .app-shell > .workspace {
+    flex: 1 1 0;
+    height: auto;
+    min-height: 0;
+  }
+
+  html.is-canvas-page .workspace > .canvas-area {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+}
+
+/* iOS 聚焦小字号表单时会放大页面；只调整触屏画布内的输入，不改变节点外框。 */
+@media (hover: none) and (pointer: coarse) {
+  html.is-canvas-page :is(input, textarea, select, [contenteditable='true']) {
+    font-size: max(16px, 1em);
+  }
+}

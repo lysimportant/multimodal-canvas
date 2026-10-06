@@ -1580,10 +1580,14 @@ describe('WorkflowCanvas context menu', () => {
     const child = document.createElement('div');
     child.addEventListener('wheel', (event) => event.stopPropagation());
     canvas.append(child);
-    const preventDefault = vi.spyOn(Event.prototype, 'preventDefault');
-    fireEvent.wheel(child, { ctrlKey: true, deltaY: -120 });
-    expect(preventDefault).toHaveBeenCalled();
-    preventDefault.mockRestore();
+    const event = new WheelEvent('wheel', {
+      ctrlKey: true,
+      deltaY: -120,
+      bubbles: true,
+      cancelable: true,
+    });
+    child.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('allows Fit View to zoom out far enough for large persisted canvases', () => {
