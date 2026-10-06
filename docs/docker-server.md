@@ -68,6 +68,8 @@ docker compose --env-file .env.compose -f compose.yaml --profile server up -d --
 
 或者设置 `MC_DOMAIN` 后运行 `bash scripts/docker.sh server`，脚本会按域名设置 HTTPS CORS 来源。Caddy 的证书和状态保存到专用卷中；更换机器时保留这些卷，避免不必要的重复签发。
 
+视频模型的参考素材会自动使用这个网站域名：Worker 从已有 `CANVAS_WEB_URL` 生成 `/v1/provider-assets/:assetId/versions/:version/content?access_token=…`，API 校验签名后读取内网 MinIO 的指定版本。无需购买 OSS、公开存储桶或填写 `MC_S3_PROVIDER_ENDPOINT`；素材链接最长有效 1 小时，账号停用、素材归档或归属变化后拒绝读取。API 与 Worker 复用已有稳定签名密钥，Docker 会自动提供。网站域名必须能被供应商访问，反向代理应允许该路由的 GET/HEAD/Range 请求；外部代理日志也应隐藏 `access_token`。已有公网 S3 入口的部署可继续用 `MC_S3_PROVIDER_ENDPOINT` 覆盖默认方式。本机 localhost 或内网地址无法供远端模型读取。
+
 可将 `.env.compose.example` 复制为被 Git 忽略的 `.env.compose`，填写非敏感选项，再始终指定：
 
 ```bash

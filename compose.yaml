@@ -20,7 +20,7 @@ x-runtime-environment: &runtime-environment
   WORKER_PROVIDER: newapi
   WORKER_CONCURRENCY: ${MC_WORKER_CONCURRENCY-20}
   S3_ENDPOINT: https://minio:9000
-  # 仅为 URL-only Provider 参考素材签名；必须公开 HTTPS 访问同一 bucket/key。
+  # 默认走 CANVAS_WEB_URL 的本站签名素材接口；仅已有公网 S3 的部署需要此覆盖项。
   S3_PROVIDER_ENDPOINT: ${MC_S3_PROVIDER_ENDPOINT:-}
   S3_BUCKET: canvas
   S3_REGION: us-east-1

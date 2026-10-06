@@ -2733,6 +2733,7 @@ function safeArchiveError(error: unknown): string {
     .slice(0, 500);
 }
 
+/** 上游回显临时素材时，在写入任务错误或重新抛出前隐藏内联字节与签名地址。 */
 function redactTransientAssetData(error: unknown): unknown {
   const redact = (value: string) =>
     value
@@ -2741,7 +2742,7 @@ function redactTransientAssetData(error: unknown): unknown {
         '[REDACTED_ASSET_DATA]',
       )
       .replace(
-        /https:\/\/[^\s"'<>]*[?&]X-Amz-Signature=[^&\s"'<>]+[^\s"'<>]*/gi,
+        /https:\/\/[^\s"'<>]*[?&](?:X-Amz-Signature|access_token)=[^&\s"'<>]+[^\s"'<>]*/gi,
         '[REDACTED_ASSET_URL]',
       );
   if (error instanceof Error) {

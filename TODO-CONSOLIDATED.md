@@ -26,8 +26,8 @@
 
 - 按 Provider、模型、合同整理 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图与其它扩展输入的字段、适用范围和样例响应。
 - MiniMax-H3、Wan3.0 与 Seedance 2.0/2.5 的官方首尾帧及多媒体参考已完成插件字段映射；Moon Wan3、当前 Seedance 三模型与精确小写 `minimax-h3` 的配套修复见 `next.md` 第 16 节。Wan3/Seedance 编辑、延长按已确认版本开放。仍需补齐其它拟接入模型的正式字段取证，以及各模型真实上游验收，不能把本地映射测试视为供应商验收。
-- Moon 新 `sd2*`、PT、`seedance-2-5-official`、ArtsDance 与 `grok-v1.5-video` 的 Canvas 配套状态见[型号映射检查点](docs/moon-video-models-checkpoint.md)。新系列参考输入仍需配置供应商可访问的素材地址，并核对目标 New API 的实际 Moon 插件版本；自建 MinIO 或带短期签名的后端素材代理均可，不要求第三方 OSS。离线插件校验不替代公网读取或真实生成验收。
-- 为需要 URL 的视频参考配置可外部访问同一冻结对象的 `MC_S3_PROVIDER_ENDPOINT`，验收短期签名 URL 的外部 GET；Moon 所有参考素材均要求可访问 URL，Wan 视频还要求冻结版本时长。线上网关需更新 Moon 1.1.0 及支持 H3 精确大小写共存的宿主；官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
+- Moon 新 `sd2*`、PT、`seedance-2-5-official`、ArtsDance 与 `grok-v1.5-video` 的 Canvas 配套状态见[型号映射检查点](docs/moon-video-models-checkpoint.md)。新系列参考输入仍需验证部署网站的素材地址可被供应商读取，并核对目标 New API 的实际 Moon 插件版本；不要求第三方 OSS。离线插件校验不替代公网读取或真实生成验收。
+- 视频参考默认通过网站域名提供短期签名素材接口，无需单独配置 `MC_S3_PROVIDER_ENDPOINT`，见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。仍需验收目标部署的外部 GET/HEAD/Range；Moon 所有参考素材均要求可访问 URL，Wan 视频还要求冻结版本时长。线上网关需更新对应 Moon 插件及支持 H3 精确大小写共存的宿主；官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
 - 共享 Wan 模型 ID 尚不能在 Canvas 区分百炼与 Moon 的全部参数差异；Moon 的总引用数量、参考视频合计时长及不支持负向提示/自动时长等限制由网关插件在预扣与供应商 POST 前明确拒绝。后续按渠道身份细分预检，不以 Moon 限制收窄百炼合同。
 - 对已确认字段补齐序列化、响应解析、数量/组合边界和未知字段拒绝测试。现有 Grok 1.5 尾帧与参考图映射不重复列为待实现项。
 - 将视频参数的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；目前已有 Web 提示和 Provider 创建 POST 前拦截，不等同于所有入口都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。

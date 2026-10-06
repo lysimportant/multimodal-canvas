@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaType, RunSnapshot } from '@multimodal-canvas/domain';
 import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
+import { verifyProviderAssetAccessToken } from '@multimodal-canvas/credential-crypto';
+import { createProviderAssetUrlSignerFromEnvironment } from './provider-asset-url';
 import type {
   AssetReferenceBlobStore,
   AssetReferenceRepository,
@@ -73,6 +75,114 @@ function createRunWorker(options: Parameters<typeof createAuthorizedTestRunWorke
 }
 
 describe('StoredAssetReferenceResolver', () => {
+  it.each(['image', 'video', 'audio'] as const)(
+    '自动用本站 HTTPS 提供冻结的 %s 版本且不持久化签名',
+    async (mediaType) => {
+      const content = Buffer.from('frozen media version two');
+      const mimeType = mediaType === 'image' ? 'image/png' : `${mediaType}/mp4`;
+      const snapshot = referenceSnapshot({
+        sourceMediaType: mediaType,
+        targetMediaType: 'video',
+        role:
+          mediaType === 'image'
+            ? 'referenceImage'
+            : mediaType === 'video'
+              ? 'content'
+              : 'audioTrack',
+        assetId: imageAssetId,
+        contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+        mimeType,
+        modelAlias: 'sd2-930-fast',
+      });
+      const original = structuredClone(snapshot);
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId, userId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.length),
+            contentKey: 'objects/frozen-v2',
+          },
+        ],
+        blobs: { 'objects/frozen-v2': content },
+      });
+      const resolver = new StoredAssetReferenceResolver(repository, blobStore, {
+        providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment({
+          CANVAS_WEB_URL: 'https://canvas.example.com',
+          API_JWT_SECRET: 'synthetic-site-secret',
+        }),
+      });
+      const hydrated = await resolver.resolve(snapshot, { userId });
+      const url = new URL(hydrated.inputs[0]!.snapshot.data.contentUrl!);
+      expect(url.origin).toBe('https://canvas.example.com');
+      expect(url.pathname).toBe(`/v1/provider-assets/${imageAssetId}/versions/2/content`);
+      expect(
+        verifyProviderAssetAccessToken(
+          url.searchParams.get('access_token')!,
+          'synthetic-site-secret',
+        ),
+      ).toMatchObject({
+        assetId: imageAssetId,
+        version: 2,
+        projectId,
+        ownerId: userId,
+      });
+      expect(url.toString()).not.toContain('objects/frozen-v2');
+      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+      expect(snapshot).toEqual(original);
+      await expect(resolver.resolve(snapshot)).rejects.toThrow('运行账号');
+
+      const explicitUrl = 'https://objects.example.com/frozen-object';
+      blobStore.createProviderGetUrl = vi.fn(async () => explicitUrl);
+      const explicit = await resolver.resolve(snapshot, { userId });
+      expect(explicit.inputs[0]?.snapshot.data.contentUrl).toBe(explicitUrl);
+    },
+  );
+
+  it('个人素材提及的本站链接绑定个人归属，不能借用另一账号签发', async () => {
+    const content = Buffer.from('personal image');
+    const snapshot = promptMentionSnapshot({
+      assetId: imageAssetId,
+      assetVersion: 2,
+      label: 'image',
+      mediaType: 'image',
+      modelAlias: 'sd2-930-fast',
+      targetMediaType: 'video',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, null, userId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(content.length),
+          contentKey: 'objects/personal-v2',
+        },
+      ],
+      blobs: { 'objects/personal-v2': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore, {
+      providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment({
+        CANVAS_WEB_URL: 'https://canvas.example.com',
+        API_JWT_SECRET: 'synthetic-site-secret',
+      }),
+    });
+    const hydrated = await resolver.resolve(snapshot, { userId });
+    const block = hydrated.nodes[0]!.data.promptDocument!.blocks.find(
+      (part) => part.type === 'mention',
+    ) as unknown as { contentUrl: string };
+    const token = new URL(block.contentUrl).searchParams.get('access_token')!;
+    expect(verifyProviderAssetAccessToken(token, 'synthetic-site-secret')).toMatchObject({
+      projectId: null,
+      ownerId: userId,
+      version: 2,
+    });
+    await expect(resolver.resolve(snapshot, { userId: otherUserId })).rejects.toThrow(
+      'does not belong',
+    );
+  });
+
   it('signs the frozen object key against the explicit public provider endpoint', async () => {
     const blobStore = new S3AssetReferenceBlobStore('canvas', {
       endpoint: 'https://minio:9000',
@@ -149,7 +259,7 @@ describe('StoredAssetReferenceResolver', () => {
       });
       await expect(
         new StoredAssetReferenceResolver(repository, blobStore).resolve(required),
-      ).rejects.toThrow('configure S3_PROVIDER_ENDPOINT');
+      ).rejects.toThrow('参考素材需要公网 HTTPS 访问');
     } finally {
       await blobStore.close();
     }
@@ -474,7 +584,7 @@ describe('StoredAssetReferenceResolver', () => {
 
       await expect(
         new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
-      ).rejects.toThrow('configure S3_PROVIDER_ENDPOINT');
+      ).rejects.toThrow('参考素材需要公网 HTTPS 访问');
       expect(blobStore.get).toHaveBeenCalledOnce();
     },
   );
@@ -2024,83 +2134,87 @@ describe('createRunWorker asset hydration boundary', () => {
     expect(JSON.stringify(persistedRuns)).toContain('[REDACTED_ASSET_DATA]');
   });
 
-  it('redacts a transient signed asset URL from job state, logs and persisted errors', async () => {
-    const content = Buffer.from('provider-readable frozen video');
-    const durableSnapshot = referenceSnapshot({
-      sourceMediaType: 'video',
-      targetMediaType: 'video',
-      role: 'content',
-      assetId: imageAssetId,
-      mimeType: 'video/mp4',
-      modelAlias: 'wan3.0-video',
-    });
-    const { repository, blobStore } = fixtures({
-      assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
-      blobs: { 'objects/video-current': content },
-    });
-    const signedUrl =
-      'https://objects.example.com/canvas/objects/video-current?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=never-persist-this-signature';
-    blobStore.createProviderGetUrl = vi.fn(async () => signedUrl);
-    const loggedErrors: unknown[] = [];
-    const persistedRuns: unknown[] = [];
-    const logger = {
-      child() {
-        return this;
-      },
-      debug() {},
-      info() {},
-      warn() {},
-      error(bindings: unknown) {
-        loggedErrors.push(bindings);
-      },
-    };
-    const job: StubJob = {
-      id: projectId,
-      data: {
-        runId: projectId,
-        snapshot: durableSnapshot,
-        attempt: 1,
-        provider: 'mock',
-        cancelRequested: false,
-      },
-      async updateData(data) {
-        this.data = data;
-      },
-      async updateProgress() {},
-    };
-    bullmqState.job = job;
-
-    createRunWorker({
-      connection: { host: '127.0.0.1', port: 6379 },
-      stepDelayMs: 0,
-      logger,
-      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
-      persistence: {
-        async upsertProviderJob() {},
-        async recordUsage() {},
-        async updateRun(input) {
-          persistedRuns.push(input);
+  it.each([
+    'https://objects.example.com/canvas/objects/video-current?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=never-persist-this-signature',
+    'https://canvas.example.com/v1/provider-assets/asset/versions/1/content?access_token=never-persist-this-signature',
+  ])(
+    'redacts a transient signed asset URL from job state, logs and persisted errors: %s',
+    async (signedUrl) => {
+      const content = Buffer.from('provider-readable frozen video');
+      const durableSnapshot = referenceSnapshot({
+        sourceMediaType: 'video',
+        targetMediaType: 'video',
+        role: 'content',
+        assetId: imageAssetId,
+        mimeType: 'video/mp4',
+        modelAlias: 'wan3.0-video',
+      });
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, 'video', 'video/mp4', content, projectId)],
+        blobs: { 'objects/video-current': content },
+      });
+      blobStore.createProviderGetUrl = vi.fn(async () => signedUrl);
+      const loggedErrors: unknown[] = [];
+      const persistedRuns: unknown[] = [];
+      const logger = {
+        child() {
+          return this;
         },
-      },
-      provider: {
-        async execute(request) {
-          throw new Error(
-            `provider echoed ${request.snapshot.inputs[0]?.snapshot.data.contentUrl}`,
-          );
+        debug() {},
+        info() {},
+        warn() {},
+        error(bindings: unknown) {
+          loggedErrors.push(bindings);
         },
-      },
-    });
+      };
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          snapshot: durableSnapshot,
+          attempt: 1,
+          provider: 'mock',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
 
-    await expect(bullmqState.processor?.(job)).rejects.toThrow('[REDACTED_ASSET_URL]');
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        logger,
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+        persistence: {
+          async upsertProviderJob() {},
+          async recordUsage() {},
+          async updateRun(input) {
+            persistedRuns.push(input);
+          },
+        },
+        provider: {
+          async execute(request) {
+            throw new Error(
+              `provider echoed ${request.snapshot.inputs[0]?.snapshot.data.contentUrl}`,
+            );
+          },
+        },
+      });
 
-    for (const value of [job.data, loggedErrors, persistedRuns]) {
-      const serialized = JSON.stringify(value);
-      expect(serialized).not.toContain('never-persist-this-signature');
-      expect(serialized).not.toContain('X-Amz-Signature');
-    }
-    expect(JSON.stringify(loggedErrors)).toContain('[REDACTED_ASSET_URL]');
-    expect(JSON.stringify(persistedRuns)).toContain('[REDACTED_ASSET_URL]');
-  });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('[REDACTED_ASSET_URL]');
+
+      for (const value of [job.data, loggedErrors, persistedRuns]) {
+        const serialized = JSON.stringify(value);
+        expect(serialized).not.toContain('never-persist-this-signature');
+        expect(serialized).not.toContain('X-Amz-Signature');
+      }
+      expect(JSON.stringify(loggedErrors)).toContain('[REDACTED_ASSET_URL]');
+      expect(JSON.stringify(persistedRuns)).toContain('[REDACTED_ASSET_URL]');
+    },
+  );
 });
 
 function referenceSnapshot(options: {

@@ -170,6 +170,11 @@ import {
   NEWAPI_SESSION_COOKIE,
   isRetiredNewApiRoute,
 } from './newapi-account-routes';
+import {
+  isProviderAssetAccessRequest,
+  PROVIDER_ASSET_READ_RATE_LIMIT,
+  registerProviderAssetRoutes,
+} from './provider-asset-routes';
 
 type AppLoggerOptions = {
   level?: string;
@@ -1472,6 +1477,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // credentials; the final fallback is process-local and non-persistent.
   const assetAccessSecret =
     process.env.ASSET_ACCESS_URL_SECRET?.trim() || jwtSecret || authToken || randomUUID();
+  /** Provider 素材令牌仅使用稳定部署密钥；不接受服务令牌或进程内随机回退。 */
+  const providerAssetAccessSecret = process.env.ASSET_ACCESS_URL_SECRET?.trim() || jwtSecret;
   /** 分享令牌复用已有稳定服务端密钥，但通过派生用途与短期访问令牌隔离。 */
   const assetShareSecret = process.env.ASSET_ACCESS_URL_SECRET?.trim() || jwtSecret || authToken;
   const authStore = options.authStore ?? new MemoryAuthStore();
@@ -1600,6 +1607,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             retryAfterSeconds: decision.retryAfterSeconds,
             requestId: request.id,
           });
+      }
+      return;
+    }
+    if (isProviderAssetAccessRequest(request.method, pathname)) {
+      reply.header('cache-control', 'no-store');
+      const decision = await rateLimiter.consume(`provider-asset:${request.ip ?? 'unknown'}`, {
+        limit: PROVIDER_ASSET_READ_RATE_LIMIT,
+        windowMs: rateLimitWindowMs,
+      });
+      setRateLimitHeaders(reply, decision);
+      if (!decision.allowed) {
+        return reply.header('retry-after', String(decision.retryAfterSeconds)).code(429).send({
+          error: 'rate limit exceeded',
+          code: 'provider_asset_rate_limit_exceeded',
+          retryAfterSeconds: decision.retryAfterSeconds,
+          requestId: request.id,
+        });
       }
       return;
     }
@@ -1826,6 +1850,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerGenerationConcurrencyRoutes(app, {
     sessions: requestSessions,
     store: options.generationConcurrencyStore,
+  });
+  registerProviderAssetRoutes(app, {
+    assetStore,
+    projectStore,
+    ...(options.authStore ? { authStore: options.authStore } : {}),
+    secret: providerAssetAccessSecret,
   });
 
   if (options.newApiAccount) {

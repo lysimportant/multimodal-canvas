@@ -55,3 +55,5 @@
 回滚入口：将 `multimodal-canvas-api/worker/web:before-moon-models-20261007` 分别重新标记为对应服务的 `:local`，保持现有配置后用 `docker compose up -d --no-deps --no-build --pull never api worker web` 重建三个应用容器。须先核对活动 Run；不删除数据卷、不运行迁移。
 
 外部待验事项仍为：供应商可访问的素材 HTTPS 入口、目标 New API 的 Moon 插件版本、获得付费范围授权后的真实生成及归档。自建存储/代理可满足素材要求，不需要购买第三方 OSS。
+
+后续：本站域名下的签名素材接口已纳入独立实现，沿用部署网站域名和现有密钥，不再要求单独配置 `MC_S3_PROVIDER_ENDPOINT`；当前验证及部署边界见[本站素材检查点](provider-asset-https-checkpoint.md)。以上记录保留本次型号映射交付时的状态。

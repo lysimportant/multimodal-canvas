@@ -14,6 +14,10 @@ import {
   type RunSnapshot,
 } from '@multimodal-canvas/domain';
 import { normalizeProviderAssetEndpoint } from './startup-config.js';
+import {
+  createProviderAssetUrlSignerFromEnvironment,
+  type ProviderAssetUrlSigner,
+} from './provider-asset-url.js';
 
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 const PROVIDER_ASSET_URL_EXPIRES_SECONDS = 60 * 60;
@@ -70,13 +74,15 @@ type ParsedAssetUrl = { assetId: string; version?: number };
  */
 export class StoredAssetReferenceResolver implements AssetReferenceResolver {
   private readonly maxBytes: number;
+  private readonly providerAssetUrlSigner?: ProviderAssetUrlSigner;
 
   constructor(
     private readonly repository: AssetReferenceRepository,
     private readonly blobStore: AssetReferenceBlobStore,
-    options: { maxBytes?: number } = {},
+    options: { maxBytes?: number; providerAssetUrlSigner?: ProviderAssetUrlSigner } = {},
   ) {
     this.maxBytes = positiveByteLimit(options.maxBytes ?? DEFAULT_MAX_BYTES);
+    this.providerAssetUrlSigner = options.providerAssetUrlSigner;
   }
 
   async resolve(snapshot: RunSnapshot, context: { userId?: string } = {}): Promise<RunSnapshot> {
@@ -393,10 +399,23 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     const policy = providerAssetUrlPolicy(snapshot, consumerNodeId, resolved.mediaType);
     if (policy === 'data') return resolved.dataUrl;
     const signer = this.blobStore.createProviderGetUrl;
+    // 已有显式 S3 公网配置保持兼容；默认使用本站接口，不公开存储桶或对象 key。
+    if (!signer && this.providerAssetUrlSigner) {
+      const ownerId = resolved.ownerId;
+      if (!ownerId) throw new Error('生成素材访问链接需要已确认的运行账号');
+      return cached(cache, `${resolved.assetId}:${resolved.version}`, async () =>
+        this.providerAssetUrlSigner!({
+          assetId: resolved.assetId,
+          version: resolved.version,
+          projectId: resolved.projectId,
+          ownerId,
+        }),
+      );
+    }
     if (!signer) {
       if (policy === 'preferred') return resolved.dataUrl;
       throw new Error(
-        `asset reference ${resolved.assetId} requires a public signed URL; configure S3_PROVIDER_ENDPOINT for this video model`,
+        '参考素材需要公网 HTTPS 访问：部署后会自动使用网站域名；当前网站地址或签名密钥不可用。本机 localhost 无法被远端模型读取。',
       );
     }
     return cached(cache, resolved.contentKey, () =>
@@ -444,6 +463,8 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     return {
       assetId,
       version,
+      projectId: asset.projectId,
+      ownerId: userId,
       mediaType: asset.mediaType,
       mimeType,
       contentKey: selected.contentKey,
@@ -479,6 +500,8 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
 type ResolvedAsset = {
   assetId: string;
   version: number;
+  projectId: string | null;
+  ownerId?: string;
   mediaType: MediaType;
   mimeType: string;
   contentKey: string;
@@ -681,7 +704,7 @@ export function createAssetReferenceResolverFromEnvironment(): {
   const resolver = new StoredAssetReferenceResolver(
     new PrismaAssetReferenceRepository(prisma),
     blobStore,
-    { maxBytes },
+    { maxBytes, providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment() },
   );
 
   return {
