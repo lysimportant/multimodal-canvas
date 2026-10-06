@@ -6050,6 +6050,267 @@ describe('NewApiVideoProvider', () => {
     return { body: JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)), execution };
   }
 
+  function moonVideoSnapshot(
+    modelAlias: string,
+    videoMode:
+      | 'text_to_video'
+      | 'first_frame'
+      | 'first_last_frame'
+      | 'omni_reference'
+      | 'video_edit'
+      | 'video_extend',
+    roles: Array<{ role: PortRole; mediaType: 'image' | 'video' | 'audio' }> = [],
+  ): RunSnapshot {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = modelAlias;
+    snapshot.parameters = { duration: 9, resolution: '720p', aspectRatio: '16:9' };
+    snapshot.nodes = snapshot.nodes.map((node) =>
+      node.id === snapshot.targetNodeId ? { ...node, data: { ...node.data, videoMode } } : node,
+    );
+    snapshot.inputs = roles.map(({ role, mediaType }, index) =>
+      providerInputWithMediaType(`moon-${role}-${index}`, role, index, mediaType),
+    );
+    return snapshot;
+  }
+
+  it('uses selected-version mention duration and clears stale frozen duration when hydration has none', () => {
+    const cases = [
+      { hydrated: 7.5, expected: 7.5 },
+      { hydrated: undefined, expected: undefined },
+    ] as const;
+    for (const { hydrated, expected } of cases) {
+      const snapshot = moonVideoSnapshot('seedance2.0-9-3-3-PT', 'omni_reference');
+      const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)!;
+      target.data.promptDocument = {
+        version: 1,
+        blocks: [
+          {
+            type: 'mention',
+            mentionId: 'video-mention',
+            assetId: 'asset-video',
+            assetVersion: 2,
+            label: 'Reference video',
+            mediaType: 'video',
+            mimeType: 'video/mp4',
+            contentUrl: 'https://assets.example/reference.mp4',
+            sourceDurationSeconds: hydrated,
+          },
+        ],
+      } as unknown as NonNullable<typeof target.data.promptDocument>;
+      snapshot.promptMentions = [
+        {
+          nodeId: target.id,
+          mentionId: 'video-mention',
+          assetId: 'asset-video',
+          assetVersion: 2,
+          mediaType: 'video',
+          durationSeconds: 19,
+          label: 'Reference video',
+          blockOrder: 0,
+        },
+      ];
+
+      expect(resolveProviderMentions(snapshot)[0]?.durationSeconds).toBe(expected);
+    }
+  });
+
+  it('maps sd2-930-fast omni image references through the Moon metadata bridge', async () => {
+    const snapshot = moonVideoSnapshot('sd2-930-fast', 'omni_reference', [
+      { role: 'referenceImage', mediaType: 'image' },
+    ]);
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body).toMatchObject({
+      model: 'sd2-930-fast',
+      prompt: 'Animate the scene',
+      seconds: '9',
+      duration: 9,
+      metadata: {
+        resolution: '720p',
+        ratio: '16:9',
+        content: [
+          { type: 'text', text: 'Animate the scene' },
+          {
+            type: 'image_url',
+            role: 'reference_image',
+            image_url: { url: 'https://assets.example/moon-referenceImage-0.image' },
+          },
+        ],
+      },
+    });
+  });
+
+  it('rejects Moon budget @imageN references before POST', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = moonVideoSnapshot('sd2-930-fast', 'text_to_video');
+    const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)!;
+    target.data.prompt = 'Animate @image1 and @IMAGE2';
+
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      }).execute({ snapshot, onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_PROVIDER_PARAMETER',
+      message: expect.stringContaining('图片引用请使用 @图片N'),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('preserves valid Moon budget @图片N text and reference order', async () => {
+    const snapshot = moonVideoSnapshot('sd2-930-fast', 'omni_reference', [
+      { role: 'referenceImage', mediaType: 'image' },
+      { role: 'referenceImage', mediaType: 'image' },
+    ]);
+    const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)!;
+    target.data.prompt = '让 @图片2 追随 @图片1';
+
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body.prompt).toBe('让 @图片2 追随 @图片1');
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: '让 @图片2 追随 @图片1' },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.example/moon-referenceImage-0.image' },
+      },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.example/moon-referenceImage-1.image' },
+      },
+    ]);
+  });
+
+  it('maps budget first and last frames without changing their roles', async () => {
+    const snapshot = moonVideoSnapshot('sd2-930-fast', 'first_last_frame', [
+      { role: 'firstFrame', mediaType: 'image' },
+      { role: 'lastFrame', mediaType: 'image' },
+    ]);
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: 'Animate the scene' },
+      {
+        type: 'image_url',
+        role: 'first_frame',
+        image_url: { url: 'https://assets.example/moon-firstFrame-0.image' },
+      },
+      {
+        type: 'image_url',
+        role: 'last_frame',
+        image_url: { url: 'https://assets.example/moon-lastFrame-1.image' },
+      },
+    ]);
+  });
+
+  it.each([
+    { parameters: { duration: 4, resolution: '720p', aspectRatio: '16:9' }, field: 'duration' },
+    { parameters: { duration: 9, resolution: '1080p', aspectRatio: '16:9' }, field: 'resolution' },
+    { parameters: { duration: 9, resolution: '720p', aspectRatio: '21:9' }, field: 'aspectRatio' },
+  ])('rejects invalid sd2-930-fast $field before POST', async ({ parameters, field }) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = moonVideoSnapshot('sd2-930-fast', 'text_to_video');
+    snapshot.parameters = parameters;
+
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      }).execute({ snapshot, onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_PROVIDER_PARAMETER',
+      message: expect.stringContaining(field),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects Moon URL-only image references when Worker supplies a data URL', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const snapshot = moonVideoSnapshot('sd2-930-fast', 'first_frame', [
+      { role: 'firstFrame', mediaType: 'image' },
+    ]);
+    snapshot.inputs[0]!.snapshot.data.contentUrl = 'data:image/png;base64,aW1hZ2U=';
+
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      }).execute({ snapshot, onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('maps PT reference video duration from the hydrated selected asset version', async () => {
+    const snapshot = moonVideoSnapshot('seedance2.0-9-3-3-PT', 'omni_reference', [
+      { role: 'content', mediaType: 'video' },
+    ]);
+    snapshot.inputs[0]!.sourceDurationSeconds = 7.5;
+    const { body } = await submitOfficialVideo(snapshot);
+
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: 'Animate the scene' },
+      {
+        type: 'video_url',
+        role: 'reference_video',
+        video_url: { url: 'https://assets.example/moon-content-0.video' },
+        durationSeconds: 7.5,
+      },
+    ]);
+  });
+
+  it('maps Moon Grok reference images and first frame through the content bridge', async () => {
+    const reference = moonVideoSnapshot('grok-v1.5-video', 'omni_reference', [
+      { role: 'referenceImage', mediaType: 'image' },
+    ]);
+    const referenceBody = (await submitOfficialVideo(reference)).body;
+    expect(referenceBody.metadata.content[1]).toMatchObject({
+      type: 'image_url',
+      role: 'reference_image',
+    });
+
+    const firstFrame = moonVideoSnapshot('grok-v1.5-video', 'first_frame', [
+      { role: 'firstFrame', mediaType: 'image' },
+    ]);
+    const firstFrameBody = (await submitOfficialVideo(firstFrame)).body;
+    expect(firstFrameBody.metadata.content[1]).toMatchObject({
+      type: 'image_url',
+      role: 'first_frame',
+    });
+  });
+
+  it.each([
+    { role: 'lastFrame', mediaType: 'image' },
+    { role: 'content', mediaType: 'video' },
+    { role: 'audioTrack', mediaType: 'audio' },
+  ] as const)(
+    'rejects Moon Grok unsupported $role inputs before POST',
+    async ({ role, mediaType }) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const snapshot = moonVideoSnapshot('grok-v1.5-video', 'omni_reference', [
+        { role, mediaType },
+      ]);
+
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example.com/v1',
+          apiKey: 'server-secret',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({ retryable: false });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(
     [
       'minimax-h3',

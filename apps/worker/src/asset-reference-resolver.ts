@@ -5,6 +5,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaClient } from '@prisma/client';
 import {
   imageEditSourceSchema,
+  moonVideoContractForModel,
   runSnapshotSchema,
   videoFamilyForModel,
   type FrozenPromptMention,
@@ -232,14 +233,13 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
         const mention = mentions.get(block.mentionId);
         const resolved = hydrated.get(`${nodeId}\0${block.mentionId}`);
         if (!mention || !resolved) return block;
-        // These fields are intentionally transient passthrough fields. They
-        // are consumed by a Provider adapter and never copied to the durable
-        // frozen mention list or a run result.
+        // 这些水合字段仅传给 Provider，URL 与版本时长不写回持久化提及或运行结果。
         return {
           ...block,
           assetVersion: mention.assetVersion,
           contentUrl: resolved.providerContentUrl ?? resolved.dataUrl,
           mimeType: resolved.mimeType,
+          sourceDurationSeconds: resolved.durationSeconds,
         };
       });
       result.set(nodeId, {
@@ -448,7 +448,8 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       mimeType,
       contentKey: selected.contentKey,
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
-      ...(asset.mediaType === 'video' && selected.durationSeconds !== undefined
+      ...((asset.mediaType === 'video' || asset.mediaType === 'audio') &&
+      selected.durationSeconds !== undefined
         ? { durationSeconds: selected.durationSeconds }
         : {}),
     };
@@ -737,6 +738,7 @@ function providerAssetUrlPolicy(
       ? snapshot.modelAlias
       : consumer.data.modelAlias?.trim();
   if (!modelAlias) return 'data';
+  if (moonVideoContractForModel(modelAlias)) return 'required';
   if (
     modelAlias === 'seedance-2-0-official' ||
     modelAlias === 'seedance-2-0-fast-official' ||

@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { PROMPT_SKILLS, type PromptDocument } from '@multimodal-canvas/domain';
+import { PROMPT_SKILLS, videoModeLabels, type PromptDocument } from '@multimodal-canvas/domain';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
 import {
   useWorkspacePreferences,
@@ -3238,6 +3238,198 @@ describe('NodeQuickEditor', () => {
     await user.click(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ }));
     expect(onVideoModeChange).toHaveBeenCalledWith('omni_reference');
   });
+
+  it('sd2-930-fast 只开放 720p，且按该清晰度限制时长', async () => {
+    const node = {
+      ...videoNode,
+      data: {
+        ...videoNode.data,
+        modelAlias: 'sd2-930-fast',
+        videoMode: 'omni_reference' as const,
+        parameters: { duration: 15, resolution: '720p', aspectRatio: '16:9' },
+      },
+    } as AssetFlowNode;
+    const props = makeProps({ node, onParametersChange: vi.fn() });
+    const { rerender } = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+
+    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
+    await userEvent.setup().click(within(resolutionGroup).getByRole('combobox'));
+    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(1);
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '720P' })).toBeInTheDocument();
+
+    rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...node,
+          data: { ...node.data, parameters: { ...node.data.parameters, duration: 16 } },
+        }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '视频时长必须为 5 至 15 秒',
+    );
+  });
+
+  it('grok-v1.5-video 支持 1080p 全能参考并禁用未映射模式', async () => {
+    const user = userEvent.setup();
+    const node = {
+      ...videoNode,
+      data: {
+        ...videoNode.data,
+        modelAlias: 'grok-v1.5-video',
+        videoMode: 'omni_reference' as const,
+        parameters: { duration: 15, resolution: '1080p', aspectRatio: '16:9' },
+      },
+    } as AssetFlowNode;
+    render(<NodeQuickEditor {...makeProps({ node })} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+
+    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+    await user.click(within(modeGroup).getByRole('combobox'));
+    for (const label of ['首尾帧', '视频编辑', '视频延长']) {
+      expect(
+        selectPopup(modeGroup).getByRole('option', { name: new RegExp(`^${label} `) }),
+      ).toHaveAttribute('aria-disabled', 'true');
+    }
+  });
+
+  it('显式未知视频模型禁用未映射模式并阻止生成', async () => {
+    const user = userEvent.setup();
+    const node = {
+      ...videoNode,
+      data: {
+        ...videoNode.data,
+        modelAlias: 'unverified-video-model',
+        videoMode: 'omni_reference' as const,
+      },
+    } as AssetFlowNode;
+    render(<NodeQuickEditor {...makeProps({ node })} />);
+    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+    await user.click(within(modeGroup).getByRole('combobox'));
+    expect(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
+    );
+  });
+
+  it.each(['first_frame', 'first_last_frame', 'video_edit', 'video_extend'] as const)(
+    '官方 Seedance 2.5 切换到 %s 时沿用输入素材比例',
+    async (mode) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      const node = {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'seedance-2-5-official',
+          videoMode: 'text_to_video' as const,
+          parameters: { duration: 10, resolution: '720p', aspectRatio: '16:9' },
+        },
+      } as AssetFlowNode;
+      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
+      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+      await user.click(within(modeGroup).getByRole('combobox'));
+      await user.click(
+        selectPopup(modeGroup).getByRole('option', {
+          name: new RegExp(`^${videoModeLabels[mode]} `),
+        }),
+      );
+      expect(onParametersChange).toHaveBeenCalledWith(
+        expect.objectContaining({ aspectRatio: 'adaptive' }),
+      );
+    },
+  );
+
+  it.each(['video_edit', 'video_extend'] as const)(
+    'ArtsDance 切换到 %s 时保存自动时长和原视频比例',
+    async (mode) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      const node = {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'artsdance-2-0-pro-260801',
+          videoMode: 'text_to_video' as const,
+          parameters: { duration: 8, resolution: '720p', aspectRatio: '16:9' },
+        },
+      } as AssetFlowNode;
+      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
+      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+      await user.click(within(modeGroup).getByRole('combobox'));
+      await user.click(
+        selectPopup(modeGroup).getByRole('option', {
+          name: new RegExp(`^${videoModeLabels[mode]} `),
+        }),
+      );
+      expect(onParametersChange).toHaveBeenCalledWith({
+        duration: mode === 'video_edit' ? -1 : 8,
+        resolution: '720p',
+        aspectRatio: 'adaptive',
+      });
+    },
+  );
+
+  it.each(['first_frame', 'first_last_frame'] as const)(
+    'ArtsDance 切换到 %s 时保留手动视频比例',
+    async (mode) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      const node = {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'artsdance-2-0-pro-260801',
+          videoMode: 'text_to_video' as const,
+          parameters: { duration: 8, resolution: '720p', aspectRatio: '16:9' },
+        },
+      } as AssetFlowNode;
+      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
+      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+      await user.click(within(modeGroup).getByRole('combobox'));
+      await user.click(
+        selectPopup(modeGroup).getByRole('option', {
+          name: new RegExp(`^${videoModeLabels[mode]} `),
+        }),
+      );
+      expect(onParametersChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['first_frame', 'omni_reference'] as const)(
+    'PT 模型切换到 %s 时保留用户选择的视频比例',
+    async (mode) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      const node = {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'seedance2.0-9-3-3-PT',
+          videoMode: 'text_to_video' as const,
+          parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+        },
+      } as AssetFlowNode;
+      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
+      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+      await user.click(within(modeGroup).getByRole('combobox'));
+      await user.click(
+        selectPopup(modeGroup).getByRole('option', {
+          name: new RegExp(`^${videoModeLabels[mode]} `),
+        }),
+      );
+      expect(onParametersChange).not.toHaveBeenCalled();
+    },
+  );
 
   it('切换 Seedance 2.5 视频编辑时显式保存自动时长和原视频比例', async () => {
     const user = userEvent.setup();

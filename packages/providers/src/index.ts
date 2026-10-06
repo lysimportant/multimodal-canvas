@@ -25,6 +25,8 @@ import {
   videoInputRoleForPromptMention,
   videoFamilyForModel,
   videoModeForPromptMentions,
+  moonVideoContractForModel,
+  type MoonVideoModelContract,
 } from '@multimodal-canvas/domain';
 
 export type ProviderName = 'mock' | 'newapi';
@@ -1060,7 +1062,8 @@ export class NewApiVideoProvider {
         'seedance-2',
         'seedance-2.5',
       ].includes(family);
-      if (official && !openaiVideo) {
+      const moonContract = moonVideoContractForModel(snapshot.modelAlias);
+      if ((official || moonContract) && !openaiVideo) {
         throw new NewApiProviderError(
           '该视频模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
           { code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false },
@@ -1071,7 +1074,8 @@ export class NewApiVideoProvider {
         validateMediaParameters(
           snapshot.parameters,
           'video',
-          official && family !== 'minimax-h3' && family !== 'moon-minimax-h3',
+          (official && family !== 'minimax-h3' && family !== 'moon-minimax-h3') ||
+            Boolean(moonContract?.supportsAutomaticDuration),
         );
       const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
       const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
@@ -2115,6 +2119,10 @@ function openaiVideoPayload(
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
+  const moonContract = moonVideoContractForModel(snapshot.modelAlias);
+  if (moonContract) {
+    return moonVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument, moonContract);
+  }
   if (
     ['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(
       videoFamilyForModel(snapshot.modelAlias),
@@ -2130,6 +2138,171 @@ function openaiVideoPayload(
   }
   if (isRecord(payload.last_frame) && nonEmptyString(payload.last_frame.url)) {
     payload.last_frame = payload.last_frame.url.trim();
+  }
+  return payload;
+}
+
+/** 将新增 Moon 型号桥接成插件 decodeRequest 能消费的 metadata.content。 */
+function moonVideoPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  inputs: VideoInputMapping,
+  nodePromptDocument: PromptDocument | undefined,
+  contract: MoonVideoModelContract,
+): Record<string, unknown> {
+  for (const key of [
+    'size',
+    'video_size',
+    'videoSize',
+    'quality',
+    'video_quality',
+    'videoQuality',
+  ]) {
+    if (snapshot.parameters[key] !== undefined) throw unsupportedProviderParameter('video', key);
+  }
+  const resolvedPrompt = resolveRequiredVideoPrompt(
+    snapshot,
+    label,
+    nodePrompt,
+    inputs.prompt,
+    nodePromptDocument,
+  );
+  if (contract.family === 'moon-budget' && /@image\d+/i.test(resolvedPrompt)) {
+    throw invalidProviderParameter('video', 'prompt', '图片引用请使用 @图片N');
+  }
+  if (resolvedPrompt.length > contract.maxPromptLength) {
+    throw invalidProviderParameter(
+      'video',
+      'prompt',
+      `长度不能超过 ${contract.maxPromptLength} 个字符`,
+    );
+  }
+
+  const parameters = snapshot.parameters;
+  const rawDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
+  const duration = rawDuration === undefined ? contract.duration.default : Number(rawDuration);
+  if (
+    !Number.isSafeInteger(duration) ||
+    (duration !== -1 && (duration < contract.duration.min || duration > contract.duration.max)) ||
+    (duration === -1 && !contract.supportsAutomaticDuration)
+  ) {
+    const automatic = contract.supportsAutomaticDuration ? '，或 -1（自动）' : '';
+    throw invalidProviderParameter(
+      'video',
+      'duration',
+      `必须为 ${contract.duration.min} 到 ${contract.duration.max} 的整数秒数${automatic}`,
+    );
+  }
+
+  const rawResolution = normalizeErrorField(
+    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+  );
+  const resolution = (rawResolution ?? contract.defaultResolution).toLowerCase();
+  const hasResolution = Object.prototype.hasOwnProperty.call(contract.resolutions, resolution);
+  const resolutionRange = hasResolution ? contract.resolutions[resolution] : undefined;
+  if (!resolutionRange) {
+    throw invalidProviderParameter(
+      'video',
+      'resolution',
+      `必须为 ${Object.keys(contract.resolutions).join('、')}`,
+    );
+  }
+  if (duration !== -1 && (duration < resolutionRange.min || duration > resolutionRange.max)) {
+    throw invalidProviderParameter(
+      'video',
+      'duration',
+      `在 ${resolution} 下必须为 ${resolutionRange.min} 到 ${resolutionRange.max} 的整数秒数`,
+    );
+  }
+
+  const rawRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
+  const ratio = rawRatio ?? '16:9';
+  if (!contract.aspectRatios.includes(ratio)) {
+    throw invalidProviderParameter(
+      'video',
+      'aspectRatio',
+      `必须为 ${contract.aspectRatios.join('、')}`,
+    );
+  }
+
+  const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
+  if (mode === 'video_edit' && !contract.supportsVideoEdit) {
+    throw invalidProviderParameter('video', 'mode', '该模型不支持视频编辑');
+  }
+  if (mode === 'video_extend' && !contract.supportsVideoExtend) {
+    throw invalidProviderParameter('video', 'mode', '该模型不支持视频延长');
+  }
+  if (mode === 'video_edit' || mode === 'video_extend') {
+    if (inputs.referenceVideos.length === 0) {
+      throw invalidProviderParameter('video', 'mode', '该模式需要参考视频');
+    }
+    if (ratio !== 'adaptive') {
+      throw invalidProviderParameter('video', 'aspectRatio', '该模式必须使用 adaptive');
+    }
+    if (mode === 'video_edit' && duration !== -1) {
+      throw invalidProviderParameter('video', 'duration', '视频编辑必须使用 -1（自动时长）');
+    }
+  }
+  if (
+    contract.family === 'moon-seedance-2.5-official' &&
+    (inputs.firstFrame || inputs.lastFrame) &&
+    ratio !== 'adaptive'
+  ) {
+    throw invalidProviderParameter('video', 'aspectRatio', '首尾帧模式必须使用 adaptive');
+  }
+  if (
+    contract.frameReferencesExclusive &&
+    (inputs.firstFrame || inputs.lastFrame) &&
+    (inputs.referenceImages.length > 0 ||
+      inputs.referenceVideos.length > 0 ||
+      inputs.referenceAudios.length > 0)
+  ) {
+    throw invalidProviderParameter('video', 'references', '首尾帧不能与其它参考素材混用');
+  }
+  const orderedMedia = orderedVideoMedia(snapshot, inputs);
+  const media = orderedMedia.map((input) => {
+    const mediaType = input.snapshot.data.mediaType;
+    const role =
+      input.role === 'firstFrame'
+        ? 'first_frame'
+        : input.role === 'lastFrame'
+          ? 'last_frame'
+          : `reference_${mediaType}`;
+    const url = officialVideoReferenceUrl(input, contract.family, snapshot.modelAlias);
+    const contentType = `${mediaType}_url`;
+    const item: Record<string, unknown> = {
+      type: contentType,
+      role,
+      [contentType]: { url },
+    };
+    if (
+      contract.family === 'moon-pt' &&
+      mediaType !== 'image' &&
+      typeof input.sourceDurationSeconds === 'number'
+    ) {
+      item.durationSeconds = input.sourceDurationSeconds;
+    }
+    return item;
+  });
+
+  const payload: Record<string, unknown> = {
+    model: snapshot.modelAlias,
+    prompt: resolvedPrompt,
+    seconds: String(duration),
+    duration,
+    metadata: {
+      content: [{ type: 'text', text: resolvedPrompt }, ...media],
+      resolution,
+      ratio,
+    },
+  };
+  if (
+    (contract.family === 'moon-seedance-2' || contract.family === 'moon-seedance-2.5-official') &&
+    ['omni_reference', 'video_edit', 'video_extend'].includes(mode ?? '')
+  ) {
+    (payload.metadata as Record<string, unknown>).omni_reference_task_type =
+      mode === 'video_edit' ? 'edit' : mode === 'video_extend' ? 'extend' : 'reference';
   }
   return payload;
 }
@@ -2372,7 +2545,12 @@ function officialVideoReferenceUrl(
       family === 'moon-minimax-h3' ||
       modelAlias === 'seedance-2-0-official' ||
       modelAlias === 'seedance-2-0-fast-official' ||
-      modelAlias === 'seedance-2-0-mini-official';
+      modelAlias === 'seedance-2-0-mini-official' ||
+      family === 'moon-budget' ||
+      family === 'moon-pt' ||
+      family === 'moon-seedance-2.5-official' ||
+      family === 'moon-grok-v1.5-video' ||
+      (family === 'moon-seedance-2' && modelAlias === 'artsdance-2-0-pro-260801');
     if (
       moonUrlOnly ||
       (family === 'wan3' && data.mediaType !== 'image') ||
@@ -4274,7 +4452,7 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
         `resolved prompt mention ${frozen.mentionId} does not match its frozen identity`,
       );
     }
-    // Worker 只在 Provider 进程内把这两个字段临时注入；它们不属于
+    // Worker 只在 Provider 进程内注入素材地址、类型和版本时长；它们不属于
     // PromptMention 持久化协议，因此通过受控记录读取而不扩展领域类型。
     const hydratedBlock = block as unknown as Record<string, unknown>;
     const mimeType = nonEmptyString(hydratedBlock.mimeType)
@@ -4284,6 +4462,21 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
       ? hydratedBlock.contentUrl.trim()
       : undefined;
     const remoteUrl = dataUrl ? providerRemoteUrl(dataUrl) : undefined;
+    const hasHydratedDuration =
+      Object.prototype.hasOwnProperty.call(hydratedBlock, 'sourceDurationSeconds') ||
+      Object.prototype.hasOwnProperty.call(hydratedBlock, 'durationSeconds');
+    const rawHydratedDuration = Object.prototype.hasOwnProperty.call(
+      hydratedBlock,
+      'sourceDurationSeconds',
+    )
+      ? hydratedBlock.sourceDurationSeconds
+      : hydratedBlock.durationSeconds;
+    const hydratedDuration =
+      typeof rawHydratedDuration === 'number' &&
+      Number.isFinite(rawHydratedDuration) &&
+      rawHydratedDuration > 0
+        ? rawHydratedDuration
+        : undefined;
     const videoMediaReference = node.data.mediaType === 'video' && frozen.mediaType !== 'text';
     if (!mimeType || (!dataUrl?.startsWith('data:') && !(videoMediaReference && remoteUrl))) {
       throw new Error(
@@ -4293,6 +4486,11 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
     return {
       ...frozen,
       nodeId,
+      ...(hasHydratedDuration
+        ? { durationSeconds: hydratedDuration }
+        : frozen.durationSeconds !== undefined
+          ? { durationSeconds: frozen.durationSeconds }
+          : {}),
       source: remoteUrl
         ? { kind: 'remote-url' as const, mimeType, url: remoteUrl }
         : { kind: 'data-url' as const, mimeType, dataUrl: dataUrl! },

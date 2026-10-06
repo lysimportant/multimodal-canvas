@@ -949,7 +949,7 @@ async function resolveRunAssetRefs(input: {
           assetId,
           version: selected.version,
           contentUrl: `/v1/assets/${encodeURIComponent(assetId)}/versions/${selected.version}/content`,
-          ...(asset.mediaType === 'video' &&
+          ...((asset.mediaType === 'video' || asset.mediaType === 'audio') &&
           typeof durationSeconds === 'number' &&
           Number.isFinite(durationSeconds) &&
           durationSeconds > 0
@@ -1168,7 +1168,7 @@ async function resolvePromptMentionRefs(
         assetId: block.assetId,
         assetVersion: selectedVersion.version,
         mediaType: block.mediaType,
-        ...(block.mediaType === 'video' &&
+        ...((block.mediaType === 'video' || block.mediaType === 'audio') &&
         typeof selectedVersion.metadata?.durationSeconds === 'number' &&
         Number.isFinite(selectedVersion.metadata.durationSeconds) &&
         selectedVersion.metadata.durationSeconds > 0

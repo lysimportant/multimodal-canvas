@@ -156,6 +156,19 @@ describe('StoredAssetReferenceResolver', () => {
   });
 
   it.each([
+    { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
+    { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
+    {
+      modelAlias: 'seedance2.0-9-3-3-PT',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
+    {
+      modelAlias: 'seedance-2-5-official',
+      mediaType: 'image' as const,
+      role: 'firstFrame' as const,
+    },
+    { modelAlias: 'grok-v1.5-video', mediaType: 'image' as const, role: 'referenceImage' as const },
     { modelAlias: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
     { modelAlias: 'wan3.0-video-prime', mediaType: 'audio' as const, role: 'audioTrack' as const },
     { modelAlias: 'wan3.0-video', mediaType: 'image' as const, role: 'referenceImage' as const },
@@ -416,6 +429,19 @@ describe('StoredAssetReferenceResolver', () => {
   });
 
   it.each([
+    { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
+    { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
+    {
+      modelAlias: 'seedance2.0-9-3-3-PT',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
+    {
+      modelAlias: 'seedance-2-5-official',
+      mediaType: 'image' as const,
+      role: 'firstFrame' as const,
+    },
+    { modelAlias: 'grok-v1.5-video', mediaType: 'image' as const, role: 'referenceImage' as const },
     { modelAlias: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
     {
       modelAlias: 'minimax-h3',
@@ -818,6 +844,87 @@ describe('StoredAssetReferenceResolver', () => {
 
       expect(hydrated.inputs[0]?.sourceAssetVersion).toBe(2);
       expect(hydrated.inputs[0]?.sourceDurationSeconds).toBe(expectedDurationSeconds);
+    },
+  );
+
+  it.each([6.25, undefined])(
+    '只把冻结音频版本的时长 %s 交给 PT，不沿用未绑定的旧时长',
+    async (durationSeconds) => {
+      const content = Buffer.from('frozen audio version two');
+      const snapshot = referenceSnapshot({
+        sourceMediaType: 'audio',
+        targetMediaType: 'video',
+        role: 'audioTrack',
+        assetId: imageAssetId,
+        mimeType: 'audio/wav',
+        contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+        modelAlias: 'seedance2.0-9-3-3-PT',
+      });
+      snapshot.inputs[0]!.sourceDurationSeconds = 99;
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, 'audio', 'audio/wav', content, projectId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: 'objects/audio-v2',
+            ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+          },
+        ],
+        blobs: { 'objects/audio-v2': content },
+      });
+      blobStore.createProviderGetUrl = vi.fn(async () => 'https://objects.example.com/audio-v2');
+      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+        snapshot,
+      );
+      expect(hydrated.inputs[0]?.sourceDurationSeconds).toBe(durationSeconds);
+      expect(hydrated.inputs[0]?.sourceAssetVersion).toBe(2);
+      expect(snapshot.inputs[0]?.sourceDurationSeconds).toBe(99);
+    },
+  );
+
+  it.each(['video', 'audio'] as const)(
+    'PT %s 提及时长来自选定版本且仅留在临时文档',
+    async (mediaType) => {
+      const content = Buffer.from('frozen mentioned media');
+      const mimeType = mediaType === 'video' ? 'video/mp4' : 'audio/wav';
+      const snapshot = promptMentionSnapshot({
+        assetId: imageAssetId,
+        assetVersion: 2,
+        label: '参考素材',
+        mediaType,
+        modelAlias: 'seedance2.0-9-3-3-PT',
+        targetMediaType: 'video',
+      });
+      const original = structuredClone(snapshot);
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: 'objects/mentioned-v2',
+            durationSeconds: 7.5,
+          },
+        ],
+        blobs: { 'objects/mentioned-v2': content },
+      });
+      blobStore.createProviderGetUrl = vi.fn(
+        async () => 'https://objects.example.com/mentioned-v2',
+      );
+      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+        snapshot,
+      );
+      const mention = hydrated.nodes[0]?.data.promptDocument?.blocks.find(
+        (block) => block.type === 'mention',
+      );
+      expect(mention).toMatchObject({
+        sourceDurationSeconds: 7.5,
+        contentUrl: 'https://objects.example.com/mentioned-v2',
+      });
+      expect(snapshot).toEqual(original);
     },
   );
 

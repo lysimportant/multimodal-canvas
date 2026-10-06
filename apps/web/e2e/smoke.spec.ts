@@ -3061,6 +3061,90 @@ for (const model of [
   });
 }
 
+test('Moon 视频合同只允许已映射模式提交 Mock 生成', async ({ page }) => {
+  const errors: string[] = [];
+  const runRequests: Record<string, unknown>[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('request', (request) => {
+    if (
+      request.method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(request.url()).pathname)
+    ) {
+      runRequests.push(request.postDataJSON() as Record<string, unknown>);
+    }
+  });
+  await page.route('**/v1/models*', (route) =>
+    json(route, {
+      models: ['sd2-930-fast', 'grok-v1.5-video', 'unverified-video-model'].map((id) => ({
+        id,
+        name: id,
+        credentialId: fixtureCredentialId,
+        mediaTypes: ['video'],
+      })),
+    }),
+  );
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+
+  const createVideoNode = async (modelAlias: string) => {
+    await page.getByRole('button', { name: '新建视频生成节点' }).click();
+    const editor = page.locator('.node-quick-editor');
+    await editor.getByRole('combobox', { name: /^模型：/ }).click();
+    await page.getByRole('option', { name: modelAlias, exact: true }).click();
+    await editor.getByRole('textbox', { name: '提示词' }).fill(`Mock preview for ${modelAlias}`);
+    const mode = editor.getByRole('combobox', { name: /^生成模式：/ });
+    await mode.click();
+    await page.getByRole('option', { name: /^全能参考 / }).click();
+    return editor;
+  };
+
+  const budgetEditor = await createVideoNode('sd2-930-fast');
+  const budgetRun = budgetEditor.getByRole('button', { name: '生成', exact: true });
+  await expect(budgetRun).toBeEnabled();
+  const budgetResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname),
+  );
+  await budgetRun.click();
+  const budgetRequest = (await budgetResponse).request().postDataJSON() as Record<string, unknown>;
+  expect(budgetRequest.modelAlias).toBe('sd2-930-fast');
+  expect(runRequests).toHaveLength(1);
+  await expect(page.getByRole('status').filter({ hasText: '视频生成节点 已完成' })).toBeVisible();
+  await focusCanvas(page);
+
+  const grokEditor = await createVideoNode('grok-v1.5-video');
+  await grokEditor.getByRole('button', { name: '媒体参数', exact: true }).click();
+  const settings = page.getByRole('region', { name: '生成参数', exact: true });
+  await settings.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+  await page.getByRole('option', { name: '1080P', exact: true }).click();
+  const grokRun = grokEditor.getByRole('button', { name: '生成', exact: true });
+  await expect(grokRun).toBeEnabled();
+  const grokResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      /^\/v1\/nodes\/[^/]+\/runs$/.test(new URL(response.url()).pathname),
+  );
+  await grokRun.click();
+  const grokRequest = (await grokResponse).request().postDataJSON() as Record<string, unknown>;
+  expect(grokRequest.modelAlias).toBe('grok-v1.5-video');
+  expect(runRequests).toHaveLength(2);
+
+  const model = grokEditor.getByRole('combobox', { name: /^模型：/ });
+  await model.click();
+  await page.getByRole('option', { name: 'unverified-video-model', exact: true }).click();
+  await expect(grokEditor.getByRole('combobox', { name: '生成模式：全能参考' })).toBeVisible();
+  await expect(grokEditor.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+  await grokEditor.getByRole('combobox', { name: /^生成模式：/ }).click();
+  await expect(page.getByRole('option', { name: /^全能参考 / })).toBeDisabled();
+  expect(runRequests).toHaveLength(2);
+  expect(errors).toEqual([]);
+});
+
 test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不填像素尺寸', async ({ page }, testInfo) => {
   /** 仅使用 beforeEach 的本地 Mock API，保存与运行请求不访问真实 Provider。 */
   const errors: string[] = [];

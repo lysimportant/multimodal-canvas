@@ -34,6 +34,7 @@ import {
   resolveImageOutputParameters,
   implementedVideoModes,
   isValidGenerationCount,
+  moonVideoContractForModel,
   resolveVideoCompletionAction,
   videoFamilyForModel,
   videoModeCapability,
@@ -255,13 +256,21 @@ const adaptiveVideoAspectRatioOption: MediaOption = {
 };
 
 /** 判断模型家族是否接受 -1 自动时长。 */
-function supportsAutomaticVideoDuration(family: VideoModelFamily): boolean {
-  return family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5';
+function supportsAutomaticVideoDuration(family: VideoModelFamily, modelAlias?: string): boolean {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  return (
+    moonContract?.supportsAutomaticDuration ??
+    (family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5')
+  );
 }
 
 /** Wan3 与 Seedance 2.x 可显式选择 adaptive 比例。 */
-function supportsAdaptiveVideoAspectRatio(family: VideoModelFamily): boolean {
-  return family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5';
+function supportsAdaptiveVideoAspectRatio(family: VideoModelFamily, modelAlias?: string): boolean {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  return (
+    moonContract?.aspectRatios.includes('adaptive') ??
+    (family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5')
+  );
 }
 
 /** 只有这些不与 Doubao 共用的精确 ID 使用 Moon Seedance 编辑合同。 */
@@ -282,6 +291,13 @@ function requiresAdaptiveVideoAspectRatio(
   mode?: VideoMode,
   modelAlias?: string,
 ): boolean {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  if (moonContract?.family === 'moon-seedance-2.5-official') {
+    return ['first_frame', 'first_last_frame', 'video_edit', 'video_extend'].includes(mode ?? '');
+  }
+  if (moonContract?.family === 'moon-seedance-2') {
+    return mode === 'video_edit' || mode === 'video_extend';
+  }
   return (
     (family === 'wan3' && mode === 'video_extend') ||
     (isMoonSeedanceModel(modelAlias) && (mode === 'video_edit' || mode === 'video_extend')) ||
@@ -292,7 +308,10 @@ function requiresAdaptiveVideoAspectRatio(
 
 /** 已确认的视频时长边界；控制提交校验，不能由滑块范围或默认值扩大。 */
 const videoDurationContracts: Partial<
-  Record<VideoModelFamily, { min: number; max: number; presets: readonly number[] }>
+  Record<
+    VideoModelFamily,
+    { min: number; max: number; presets: readonly number[]; default?: number }
+  >
 > = {
   'moon-minimax-h3': { min: 4, max: 15, presets: [4, 8, 12, 15] },
   'minimax-h3': { min: 4, max: 15, presets: [4, 8, 12, 15] },
@@ -300,6 +319,31 @@ const videoDurationContracts: Partial<
   'seedance-2': { min: 4, max: 15, presets: [4, 8, 12, 15] },
   'seedance-2.5': { min: 4, max: 30, presets: [4, 8, 12, 15, 20, 30] },
 };
+
+/** 按新 Moon 合同及当前输出分辨率解析时长范围；其它模型沿用既有家族合同。 */
+function videoDurationContractForModel(
+  modelAlias: string | undefined,
+  family: VideoModelFamily,
+  resolution?: unknown,
+) {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  if (moonContract) {
+    const resolutionKey = normalizeCurrentOptionValue(resolution).toLowerCase();
+    const resolutionRange =
+      moonContract.resolutions[resolutionKey] ??
+      moonContract.resolutions[moonContract.defaultResolution];
+    if (!resolutionRange) return undefined;
+    const min = Math.max(moonContract.duration.min, resolutionRange.min);
+    const max = Math.min(moonContract.duration.max, resolutionRange.max);
+    return {
+      min,
+      max,
+      default: moonContract.duration.default,
+      presets: Array.from({ length: Math.max(0, max - min + 1) }, (_, index) => min + index),
+    };
+  }
+  return videoDurationContracts[family];
+}
 
 /** 已确认的官方分辨率白名单；目录缺失或含旧值时仍以 Provider 合同为准。 */
 const videoResolutionContracts: Partial<Record<VideoModelFamily, readonly string[]>> = {
@@ -330,6 +374,8 @@ function videoResolutionContractForModel(
   modelAlias?: string,
   allowMoonH3SuperResolution = false,
 ): readonly string[] | undefined {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  if (moonContract) return Object.keys(moonContract.resolutions);
   const family = videoFamilyForModel(modelAlias);
   if (family === 'moon-minimax-h3') {
     return allowMoonH3SuperResolution ? moonH3SuperResolutions : moonH3StandardResolutions;
@@ -480,14 +526,15 @@ export function NodeQuickEditor({
     }
   }
   const videoFamily = videoFamilyForModel(currentModel);
+  const moonVideoContract = moonVideoContractForModel(currentModel);
   const currentVideoMode =
     node.data.mediaType === 'video' ? displayVideoMode(node.data, connectedInputRoles) : undefined;
   const allowMoonH3SuperResolution = Boolean(
     currentVideoMode &&
     ['first_frame', 'first_last_frame', 'omni_reference'].includes(currentVideoMode),
   );
-  const supportsAutomaticDuration = supportsAutomaticVideoDuration(videoFamily);
-  const supportsAdaptiveAspectRatio = supportsAdaptiveVideoAspectRatio(videoFamily);
+  const supportsAutomaticDuration = supportsAutomaticVideoDuration(videoFamily, currentModel);
+  const supportsAdaptiveAspectRatio = supportsAdaptiveVideoAspectRatio(videoFamily, currentModel);
   /** 数量选择即时显示；切换节点同步已存值，非法历史值仍阻止运行。 */
   const [generationCountDraft, setGenerationCountDraft] = useState(
     String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT),
@@ -505,7 +552,11 @@ export function NodeQuickEditor({
   const generationCountIssue = isValidGenerationCount(Number(generationCountDraft))
     ? undefined
     : `生成数量必须为 1 至 ${GENERATION_COUNT_MAX} 的整数`;
-  const durationContract = videoDurationContracts[videoFamily];
+  const durationContract = videoDurationContractForModel(
+    currentModel,
+    videoFamily,
+    parameters.resolution,
+  );
   /** 已确认的范围合同优先；其它模型的目录枚举不能被快捷值或自定义输入扩大。 */
   const declaredDurations = durationContract
     ? undefined
@@ -583,6 +634,13 @@ export function NodeQuickEditor({
           )
         ? `当前模型不支持视频比例 ${parameters.aspectRatio}`
         : undefined;
+  const videoModeIssue =
+    node.data.mediaType === 'video' && currentVideoMode && currentModel
+      ? videoModeCapability(currentVideoMode, currentModel).livePost
+        ? undefined
+        : (videoModeCapability(currentVideoMode, currentModel).reason ??
+          `当前模型不能按「${videoModeLabels[currentVideoMode]}」模式发起真实请求`)
+      : undefined;
   const mediaOptions = {
     ...catalogMediaOptions,
     duration: supportsAutomaticDuration
@@ -607,8 +665,12 @@ export function NodeQuickEditor({
   };
   const videoContractParameterIssue =
     node.data.mediaType === 'video' &&
-    currentVideoMode === 'video_edit' &&
-    (videoFamily === 'seedance-2.5' || isMoonSeedanceModel(currentModel)) &&
+    ((currentVideoMode === 'video_edit' &&
+      (videoFamily === 'seedance-2.5' || isMoonSeedanceModel(currentModel))) ||
+      (moonVideoContract &&
+        currentVideoMode === 'video_edit' &&
+        moonVideoContract.supportsVideoEdit &&
+        moonVideoContract.supportsAutomaticDuration)) &&
     (parameters.duration !== -1 || parameters.aspectRatio !== 'adaptive')
       ? 'Seedance 视频编辑需要自动时长和原视频比例'
       : node.data.mediaType === 'video' &&
@@ -662,6 +724,7 @@ export function NodeQuickEditor({
     durationIssue ??
     resolutionIssue ??
     aspectRatioIssue ??
+    videoModeIssue ??
     videoContractParameterIssue ??
     (node.data.mediaType === 'audio'
       ? getAudioParameterIssue(parameters, selectedModel)
@@ -841,9 +904,15 @@ export function NodeQuickEditor({
   const changeVideoMode = (nextMode: VideoMode) => {
     const nextParameters = { ...parameters };
     let parametersChanged = false;
-    if (
+    const moonAutomaticDurationMode =
+      moonVideoContract?.supportsAutomaticDuration &&
       nextMode === 'video_edit' &&
-      (videoFamily === 'seedance-2.5' || isMoonSeedanceModel(currentModel))
+      moonVideoContract.supportsVideoEdit;
+    if (
+      moonAutomaticDurationMode ||
+      (!moonVideoContract &&
+        nextMode === 'video_edit' &&
+        (videoFamily === 'seedance-2.5' || isMoonSeedanceModel(currentModel)))
     ) {
       if (nextParameters.duration !== -1) {
         nextParameters.duration = -1;
@@ -854,8 +923,12 @@ export function NodeQuickEditor({
         parametersChanged = true;
       }
     } else {
-      if (currentVideoMode === 'video_edit' && nextParameters.duration === -1) {
-        nextParameters.duration = VIDEO_DURATION_RANGE.default;
+      if (
+        (currentVideoMode === 'video_edit' ||
+          (moonVideoContract && currentVideoMode === 'video_extend')) &&
+        nextParameters.duration === -1
+      ) {
+        nextParameters.duration = durationContract?.default ?? VIDEO_DURATION_RANGE.default;
         parametersChanged = true;
       }
       if (requiresAdaptiveVideoAspectRatio(videoFamily, nextMode, currentModel)) {
@@ -894,7 +967,10 @@ export function NodeQuickEditor({
             value: mode,
             label: videoModeLabels[mode],
             description: capability.reason ?? videoModeDescriptions[mode],
-            disabled: !implemented || !capability.selectable,
+            disabled:
+              !implemented ||
+              !capability.selectable ||
+              (Boolean(currentModel) && !capability.livePost),
           };
         })}
         onChange={(value) => changeVideoMode(value as VideoMode)}
@@ -995,6 +1071,7 @@ export function NodeQuickEditor({
               value={durationDraft}
               issue={durationIssue}
               contract={durationContract}
+              sliderContract={moonVideoContract ? durationContract : undefined}
               declaredDurations={declaredDurations}
               supportsAutomaticDuration={supportsAutomaticDuration}
               inputDisabled={!onParametersChange}
@@ -1639,6 +1716,7 @@ function VideoDurationControl({
   value,
   issue,
   contract,
+  sliderContract,
   declaredDurations,
   supportsAutomaticDuration,
   inputDisabled,
@@ -1646,7 +1724,8 @@ function VideoDurationControl({
 }: {
   value: string;
   issue?: string;
-  contract?: { min: number; max: number };
+  contract?: { min: number; max: number; default?: number };
+  sliderContract?: { min: number; max: number; default?: number };
   declaredDurations?: readonly MediaOption[];
   supportsAutomaticDuration: boolean;
   inputDisabled: boolean;
@@ -1661,17 +1740,19 @@ function VideoDurationControl({
   const contentRef = useRef<HTMLDivElement>(null);
   const focusOnOpenRef = useRef(false);
   const automatic = supportsAutomaticDuration && value === '-1';
+  const sliderMin = sliderContract?.min ?? VIDEO_DURATION_RANGE.min;
+  const sliderMax = sliderContract?.max ?? VIDEO_DURATION_RANGE.max;
+  const sliderDefault = sliderContract?.default ?? VIDEO_DURATION_RANGE.default;
   const selectionLabel = value === '' ? '未设置' : automatic ? '自动' : value + ' 秒';
   const seconds = Number(value);
   const fixedDuration = value !== '' && Number.isSafeInteger(seconds) && seconds > 0;
-  const outsideSlider =
-    fixedDuration && (seconds < VIDEO_DURATION_RANGE.min || seconds > VIDEO_DURATION_RANGE.max);
+  const outsideSlider = fixedDuration && (seconds < sliderMin || seconds > sliderMax);
   const sliderValue = fixedDuration
-    ? Math.min(VIDEO_DURATION_RANGE.max, Math.max(VIDEO_DURATION_RANGE.min, seconds))
-    : VIDEO_DURATION_RANGE.default;
+    ? Math.min(sliderMax, Math.max(sliderMin, seconds))
+    : sliderDefault;
   const hint =
     value === ''
-      ? '未设置；滑块从 10 秒起，拖动后才保存。'
+      ? `未设置；滑块从 ${sliderDefault} 秒起，拖动后才保存。`
       : automatic
         ? '当前为自动时长；拖动后改用固定秒数。'
         : outsideSlider
@@ -1768,17 +1849,14 @@ function VideoDurationControl({
                 id={inputId}
                 className="node-quick-editor-duration-slider"
                 type="range"
-                min={VIDEO_DURATION_RANGE.min}
-                max={VIDEO_DURATION_RANGE.max}
+                min={sliderMin}
+                max={sliderMax}
                 step={1}
                 value={sliderValue}
                 style={
                   {
                     '--duration-progress':
-                      ((sliderValue - VIDEO_DURATION_RANGE.min) /
-                        (VIDEO_DURATION_RANGE.max - VIDEO_DURATION_RANGE.min)) *
-                        100 +
-                      '%',
+                      ((sliderValue - sliderMin) / (sliderMax - sliderMin)) * 100 + '%',
                   } as CSSProperties
                 }
                 aria-label="视频时长（秒）"
@@ -1813,22 +1891,22 @@ function VideoDurationControl({
                   // 原生 Home/End 停在参考端点时不触发 change，仍须保存用户的选择。
                   if (event.key === 'Home' || event.key === 'End') {
                     event.preventDefault();
-                    onChange(
-                      String(
-                        event.key === 'Home' ? VIDEO_DURATION_RANGE.min : VIDEO_DURATION_RANGE.max,
-                      ),
-                    );
+                    onChange(String(event.key === 'Home' ? sliderMin : sliderMax));
                   }
                 }}
               />
               <div className="node-quick-editor-duration-scale" aria-hidden="true">
-                {[5, 10, 15, 20, 25, 30].map((seconds) => (
-                  <span key={seconds}>{seconds}</span>
-                ))}
+                {(sliderContract ? [sliderMin, sliderDefault, sliderMax] : [5, 10, 15, 20, 25, 30])
+                  .filter((seconds, index, values) => values.indexOf(seconds) === index)
+                  .map((seconds) => (
+                    <span key={seconds}>{seconds}</span>
+                  ))}
               </div>
             </div>
             <div className="node-quick-editor-duration-hints">
-              <span>5–30 秒 · 新建默认 10 秒</span>
+              <span>
+                {sliderMin}–{sliderMax} 秒 · 新建默认 {sliderDefault} 秒
+              </span>
               <small id={inputId + '-hint'}>{hint}</small>
               {capabilityHint && <small id={inputId + '-capability'}>{capabilityHint}</small>}
               {issue && (
@@ -2061,19 +2139,31 @@ export function applyNodeGenerationDefaults(
   const mediaType = data.mediaType;
   const parameters = readNodeMediaParameters(data);
   if (mediaType === 'video') {
-    const family = videoFamilyForModel(model?.id ?? data.modelAlias);
-    if (!supportsAutomaticVideoDuration(family) && parameters.duration === -1) {
+    const modelAlias = model?.id ?? data.modelAlias;
+    const family = videoFamilyForModel(modelAlias);
+    const moonContract = moonVideoContractForModel(modelAlias);
+    if (!supportsAutomaticVideoDuration(family, modelAlias) && parameters.duration === -1) {
       delete parameters.duration;
     }
-    if (!supportsAdaptiveVideoAspectRatio(family) && parameters.aspectRatio === 'adaptive') {
+    if (
+      !supportsAdaptiveVideoAspectRatio(family, modelAlias) &&
+      parameters.aspectRatio === 'adaptive'
+    ) {
       delete parameters.aspectRatio;
     }
     if (parameters.duration === undefined) {
-      parameters.duration =
-        data.videoMode === 'video_edit' &&
-        (family === 'seedance-2.5' || isMoonSeedanceModel(model?.id ?? data.modelAlias))
-          ? -1
-          : VIDEO_DURATION_RANGE.default;
+      const automaticCompletionDuration = moonContract
+        ? data.videoMode === 'video_edit'
+          ? moonContract.supportsVideoEdit && moonContract.supportsAutomaticDuration
+          : data.videoMode === 'video_extend'
+            ? moonContract.supportsVideoExtend && moonContract.supportsAutomaticDuration
+            : false
+        : data.videoMode === 'video_edit' &&
+          supportsAutomaticVideoDuration(family, modelAlias) &&
+          (family === 'seedance-2.5' || isMoonSeedanceModel(modelAlias));
+      parameters.duration = automaticCompletionDuration
+        ? -1
+        : (moonContract?.duration.default ?? VIDEO_DURATION_RANGE.default);
     }
   }
   if (!model?.mediaTypes.includes(mediaType)) return { ...data, parameters };
@@ -2176,12 +2266,17 @@ function getMediaOptions(
   allowMoonH3SuperResolution = false,
 ) {
   const roots = getCapabilityRoots(model, mediaType);
-  const family = videoFamilyForModel(modelAlias ?? model?.id);
+  const resolvedModelAlias = modelAlias ?? model?.id;
+  const family = videoFamilyForModel(resolvedModelAlias);
+  const moonContract = moonVideoContractForModel(resolvedModelAlias);
   const resolutionContract =
     mediaType === 'video'
       ? videoResolutionContractForModel(modelAlias ?? model?.id, allowMoonH3SuperResolution)
       : undefined;
-  const durationContract = mediaType === 'video' ? videoDurationContracts[family] : undefined;
+  const durationContract =
+    mediaType === 'video'
+      ? videoDurationContractForModel(resolvedModelAlias, family, parameters.resolution)
+      : undefined;
   const declaredQuality = readCapabilityOptions(
     roots,
     ['quality', 'qualities', 'imageQuality', 'image_quality'],
@@ -2247,27 +2342,34 @@ function getMediaOptions(
   const ratioContract: readonly string[] | undefined =
     mediaType !== 'video'
       ? undefined
-      : family === 'moon-minimax-h3'
-        ? moonH3FixedAspectRatios
-        : family === 'minimax-h3' || supportsAdaptiveVideoAspectRatio(family)
-          ? [
-              'adaptive',
-              '1:1',
-              '16:9',
-              '9:16',
-              '4:3',
-              '3:4',
-              ...(family === 'wan3' ? [] : ['21:9']),
-            ]
-          : undefined;
+      : moonContract
+        ? moonContract.aspectRatios
+        : family === 'moon-minimax-h3'
+          ? moonH3FixedAspectRatios
+          : family === 'minimax-h3' || supportsAdaptiveVideoAspectRatio(family, resolvedModelAlias)
+            ? [
+                'adaptive',
+                '1:1',
+                '16:9',
+                '9:16',
+                '4:3',
+                '3:4',
+                ...(family === 'wan3' ? [] : ['21:9']),
+              ]
+            : undefined;
   const declaredAspectRatios =
     readCapabilityOptions(
       roots,
       ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
       'aspectRatio',
     ) ?? (allowLegacyFallback ? aspectRatioOptions : []);
-  const supportedAspectRatios =
-    family === 'moon-minimax-h3'
+  const supportedAspectRatios = moonContract
+    ? moonContract.aspectRatios.map(
+        (value) =>
+          declaredAspectRatios.find((option) => option.value === value) ??
+          aspectRatioOptions.find((option) => option.value === value) ?? { value, label: value },
+      )
+    : family === 'moon-minimax-h3'
       ? moonH3FixedAspectRatios.map(
           (value) =>
             declaredAspectRatios.find((option) => option.value === value) ??
@@ -2295,7 +2397,7 @@ function getMediaOptions(
         const seconds = Number(option.value);
         return (
           Number.isSafeInteger(seconds) &&
-          ((supportsAutomaticVideoDuration(family) && seconds === -1) ||
+          ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
             (seconds >= durationContract.min && seconds <= durationContract.max))
         );
       })
@@ -2327,7 +2429,7 @@ function getMediaOptions(
       const seconds = Number(option.value);
       const supported =
         Number.isSafeInteger(seconds) &&
-        ((supportsAutomaticVideoDuration(family) && seconds === -1) ||
+        ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
           (seconds >= durationContract.min && seconds <= durationContract.max));
       return supported
         ? option

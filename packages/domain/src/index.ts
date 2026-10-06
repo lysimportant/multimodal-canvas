@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { videoRecreationConfigSchema, parseVideoRecreationTemplate } from './video-recreation.js';
+import { moonVideoContractForModel } from './moon-video-contract.js';
 export * from './video-recreation.js';
+export * from './moon-video-contract.js';
 
 export * from './prompt-skills.js';
 export * from './newapi-contracts.js';
@@ -409,7 +411,7 @@ export const frozenPromptMentionSchema = z
     assetId: z.string().trim().min(1).max(512),
     assetVersion: z.number().int().positive(),
     mediaType: mediaTypeSchema,
-    /** 视频资产选中版本的探测时长；缺省表示该版本没有可信时长。 */
+    /** 视频或音频资产选中版本的探测时长；缺省表示该版本没有可信时长。 */
     durationSeconds: z.number().finite().positive().optional(),
     label: z.string().trim().min(1).max(512),
     blockOrder: z.number().int().nonnegative(),
@@ -1128,7 +1130,7 @@ export const runInputSnapshotSchema = z.object({
   sourceAssetId: z.string().min(1).optional(),
   /** 已冻结的资产版本，必须与来源资产 URL 对应；缺省不表示使用最新版。 */
   sourceAssetVersion: z.number().int().positive().optional(),
-  /** 已冻结视频版本的探测时长；不得从当前资产元数据回填。 */
+  /** 已冻结视频或音频版本的探测时长；不得从当前资产元数据回填。 */
   sourceDurationSeconds: z.number().finite().positive().optional(),
   snapshot: canvasNodeSchema,
 });
@@ -1681,6 +1683,11 @@ export type VideoModelFamily =
   | 'grok-imagine-video-1.5'
   | 'grok-imagine-video'
   | 'moon-minimax-h3'
+  | 'moon-budget'
+  | 'moon-pt'
+  | 'moon-seedance-2'
+  | 'moon-seedance-2.5-official'
+  | 'moon-grok-v1.5-video'
   | 'minimax-h3'
   | 'wan3'
   | 'seedance-2'
@@ -1713,6 +1720,8 @@ export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
     return 'seedance-2';
   }
   if (id.includes('wan')) return 'wan';
+  const moonContract = moonVideoContractForModel(exactId);
+  if (moonContract) return moonContract.family;
   return 'unknown';
 }
 
@@ -1811,6 +1820,48 @@ function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  if (moonContract) {
+    if (!moonContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
+    if (mode === 'text_to_video') {
+      return { selectable: true, livePost: true, roles: textToVideoRoles };
+    }
+    if (mode === 'first_frame') {
+      return {
+        selectable: true,
+        livePost: true,
+        roles: firstFrameRoles,
+        requiredRoles: ['firstFrame'],
+      };
+    }
+    if (mode === 'first_last_frame') {
+      return {
+        selectable: true,
+        livePost: true,
+        roles: firstLastFrameRoles,
+        requiredRoles: ['firstFrame', 'lastFrame'],
+      };
+    }
+    if (mode === 'video_edit' || mode === 'video_extend') {
+      const requiredRoles: PortRole[] = ['content'];
+      return {
+        selectable: true,
+        livePost: true,
+        roles: omniReferenceRoles,
+        requiredRoles,
+        repeatableRoles: referenceRepeatableRoles,
+        roleMediaTypes: referenceRoleMediaTypes,
+      };
+    }
+    const roles = new Set(moonContract.confirmedInputRoles);
+    return {
+      selectable: true,
+      livePost: true,
+      roles: omniReferenceRoles.filter((role) => roles.has(role)),
+      repeatableRoles: referenceRepeatableRoles.filter((role) => roles.has(role)),
+      roleMediaTypes: referenceRoleMediaTypes,
+    };
+  }
   const family = videoFamilyForModel(modelAlias);
   const grok15 = family === 'grok-imagine-video-1.5';
   const wan3 = family === 'wan3';
@@ -2184,6 +2235,8 @@ export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
  * @param modelAlias 运行快照中的模型 ID。
  */
 export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly PortRole[] {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  if (moonContract) return moonContract.confirmedInputRoles;
   const family = videoFamilyForModel(modelAlias);
   if (family === 'grok-imagine-video-1.5') return grokImagineVideo15InputRoles;
   if (family === 'wan3') return wan3VideoInputRoles;
@@ -2487,10 +2540,85 @@ function applyGrokImagineVideo15Limits(
 /** 按已确认的官方模型限制检查参考数量和纯音频组合，向预检结果追加错误。 */
 function applyReferenceFamilyLimits(
   family: VideoModelFamily,
+  modelAlias: string | undefined,
   inputSet: VideoInputSet,
   mode: VideoMode | undefined,
   issues: VideoGenerationIssue[],
 ) {
+  const moonContract = moonVideoContractForModel(modelAlias);
+  if (moonContract) {
+    const referenceImageCount =
+      inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
+    const imageCount =
+      referenceImageCount + (inputSet.firstFrame ? 1 : 0) + (inputSet.lastFrame ? 1 : 0);
+    const counts = [
+      ['referenceImage', imageCount, moonContract.referenceLimits.images, '参考图'],
+      ['content', inputSet.content.length, moonContract.referenceLimits.videos, '参考视频'],
+      ['audioTrack', inputSet.audioTrack.length, moonContract.referenceLimits.audios, '参考音频'],
+    ] as const;
+    for (const [role, count, limit, label] of counts) {
+      if (count > limit) {
+        issues.push({
+          code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+          role,
+          message: `New API video ${label}数量超过模型上限 ${limit}`,
+        });
+      }
+    }
+    const totalCount = imageCount + inputSet.content.length + inputSet.audioTrack.length;
+    if (totalCount > moonContract.referenceLimits.total) {
+      issues.push({
+        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+        message: `New API video 参考素材总数超过模型上限 ${moonContract.referenceLimits.total}`,
+      });
+    }
+    const referenceMode =
+      !mode || mode === 'omni_reference' || mode === 'video_edit' || mode === 'video_extend';
+    if (
+      referenceMode &&
+      inputSet.audioTrack.length > 0 &&
+      imageCount === 0 &&
+      inputSet.content.length === 0 &&
+      !moonContract.supportsAudioOnlyReferences
+    ) {
+      issues.push(videoCombinationIssue(`${moonContract.modelAlias} 不支持只用参考音频生成视频`));
+    }
+    if (
+      moonContract.frameReferencesExclusive &&
+      (inputSet.firstFrame || inputSet.lastFrame) &&
+      (referenceImageCount > 0 || inputSet.content.length > 0 || inputSet.audioTrack.length > 0)
+    ) {
+      issues.push(videoCombinationIssue('首帧或尾帧不能与其它参考素材混用'));
+    }
+    for (const [role, inputs] of [
+      ['content', inputSet.content],
+      ['audioTrack', inputSet.audioTrack],
+    ] as const) {
+      if (inputs.length === 0) continue;
+      for (const input of inputs) {
+        const duration = input.sourceDurationSeconds;
+        const limits =
+          role === 'content'
+            ? moonContract.referenceVideoDurationSeconds
+            : moonContract.referenceAudioDurationSeconds;
+        if (!limits) continue;
+        if (
+          duration === undefined ||
+          !Number.isFinite(duration) ||
+          duration < limits.min ||
+          duration > limits.max
+        ) {
+          issues.push(
+            videoCombinationIssue(
+              `${moonContract.modelAlias} 的参考${role === 'content' ? '视频' : '音频'}需要冻结 ${limits.min} 到 ${limits.max} 秒时长`,
+              role,
+            ),
+          );
+        }
+      }
+    }
+    return;
+  }
   const limits =
     family === 'moon-minimax-h3' || family === 'minimax-h3' || family === 'seedance-2'
       ? { images: 9, videos: 3, audios: 3 }
@@ -2629,7 +2757,7 @@ export function precheckVideoGenerationInputs(
   if (family === 'grok-imagine-video-1.5') {
     applyGrokImagineVideo15Limits(inputSet, options.parameters, issues);
   }
-  applyReferenceFamilyLimits(family, inputSet, mode, issues);
+  applyReferenceFamilyLimits(family, options.modelAlias, inputSet, mode, issues);
 
   return {
     operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),
