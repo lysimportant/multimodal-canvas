@@ -58,6 +58,28 @@ describe('MemoryRateLimiter', () => {
     await limiter.consume('d', { limit: 1, windowMs: 100 });
     expect(limiter.size).toBe(1);
   });
+
+  it('按每个桶自己的窗口清理，不让短窗口请求提前重置长窗口额度', async () => {
+    let now = 0;
+    const limiter = new MemoryRateLimiter({ now: () => now });
+
+    await expect(
+      limiter.consume('asset-share-unlock:127.0.0.1', { limit: 1, windowMs: 15 * 60_000 }),
+    ).resolves.toMatchObject({ allowed: true, remaining: 0, resetAt: 15 * 60_000 });
+    await limiter.consume('asset-share:127.0.0.1', { limit: 1, windowMs: 60_000 });
+
+    now = 60_000;
+    await limiter.consume('asset-share:127.0.0.1', { limit: 1, windowMs: 60_000 });
+
+    await expect(
+      limiter.consume('asset-share-unlock:127.0.0.1', { limit: 1, windowMs: 15 * 60_000 }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      remaining: 0,
+      resetAt: 15 * 60_000,
+      retryAfterSeconds: 14 * 60,
+    });
+  });
 });
 
 describe('RedisRateLimiter', () => {

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Download, LoaderCircle, RefreshCw } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Download, LoaderCircle, LockKeyhole, RefreshCw } from 'lucide-react';
 import { z } from 'zod';
 
-import { Button } from '@multimodal-canvas/ui';
+import { Button, Input } from '@multimodal-canvas/ui';
 import { API_BASE_URL, mediaLabels } from '../workspace/contracts';
 import { ImagePreviewStage } from '../workspace/ImagePreviewStage';
 import { MediaPreviewPlayer } from '../workspace/MediaPreviewPlayer';
@@ -25,6 +25,12 @@ const publicShareSchema = z.object({
 /** 当前链接的已验证展示内容；文字由公开内容接口单独读取。 */
 type PublicShare = z.infer<typeof publicShareSchema> & { contentUrl: string; text?: string };
 
+/** 解锁凭据仅保留在当前页面内存中，不写入页面地址、Cookie 或浏览器存储。 */
+const unlockSchema = z.object({
+  accessToken: z.string().regex(/^[A-Za-z0-9_.-]{20,4096}$/),
+  expiresAt: z.string().datetime(),
+});
+
 /** 将服务端分享错误转成访客可理解的提示，不显示内部请求或令牌。 */
 function shareFailure(status: number): string {
   if (status === 404 || status === 403 || status === 401 || status === 410)
@@ -39,10 +45,23 @@ function shareFailure(status: number): string {
  * @returns 资源预览、到期说明或可恢复的读取错误。
  */
 export function PublicAssetSharePage({ token }: { token: string }) {
+  return <PublicAssetShareContent key={token} token={token} />;
+}
+
+/** 以链接为生命周期边界，切换链接时同步销毁密码、凭据和旧媒体。 */
+function PublicAssetShareContent({ token }: { token: string }) {
   const [share, setShare] = useState<PublicShare>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const [imageExpanded, setImageExpanded] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [password, setPassword] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockError, setUnlockError] = useState<string>();
+  const [grant, setGrant] = useState<z.infer<typeof unlockSchema>>();
+  const unlockRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => () => unlockRequest.current?.abort(), []);
 
   useEffect(() => {
     if (!imageExpanded) return;
@@ -76,6 +95,7 @@ export function PublicAssetSharePage({ token }: { token: string }) {
     setShare(undefined);
     setError(undefined);
     setImageExpanded(false);
+    setLocked(false);
     if (!/^[A-Za-z0-9_.-]{20,4096}$/.test(token)) {
       setError('分享链接不完整，请联系分享者重新复制链接。');
       return;
@@ -83,6 +103,7 @@ export function PublicAssetSharePage({ token }: { token: string }) {
     const abort = new AbortController();
     let expirationTimer: ReturnType<typeof setTimeout> | undefined;
     const query = new URLSearchParams({ token });
+    if (grant) query.set('access_token', grant.accessToken);
     const apiOrigin = new URL(API_BASE_URL || '/', window.location.origin).origin;
     /** 分享请求不复用 apiFetch，避免附带当前浏览器的登录身份或触发续期。 */
     const request = (url: string) =>
@@ -94,6 +115,16 @@ export function PublicAssetSharePage({ token }: { token: string }) {
       });
     void (async () => {
       const response = await request(`${API_BASE_URL}/v1/asset-shares?${query}`);
+      if (response.status === 401) {
+        const failure = await response.json();
+        if (failure.code === 'SHARE_PASSWORD_REQUIRED') {
+          if (!abort.signal.aborted) {
+            setLocked(true);
+            setGrant(undefined);
+          }
+          return;
+        }
+      }
       if (!response.ok) throw new Error(shareFailure(response.status));
       const parsed = publicShareSchema.safeParse(await response.json());
       if (!parsed.success) throw new Error('分享资源信息不完整，请稍后重试。');
@@ -102,7 +133,8 @@ export function PublicAssetSharePage({ token }: { token: string }) {
       if (
         contentUrl.origin !== apiOrigin ||
         contentUrl.pathname !== '/v1/asset-shares/content' ||
-        contentUrl.searchParams.get('token') !== token
+        contentUrl.searchParams.get('token') !== token ||
+        contentUrl.searchParams.get('access_token') !== (grant?.accessToken ?? null)
       )
         throw new Error('分享资源地址无效，请联系分享者重新创建链接。');
       let text: string | undefined;
@@ -112,13 +144,26 @@ export function PublicAssetSharePage({ token }: { token: string }) {
         text = await content.text();
       }
       if (abort.signal.aborted) return;
-      const remaining = Date.parse(result.expiresAt) - Date.now();
-      if (remaining <= 0) throw new Error(shareFailure(410));
+      const remaining =
+        Math.min(Date.parse(result.expiresAt), grant ? Date.parse(grant.expiresAt) : Infinity) -
+        Date.now();
+      if (remaining <= 0) {
+        if (grant) {
+          setGrant(undefined);
+          setUnlockError('本次查看已到期，请重新输入密码解锁。');
+          return;
+        }
+        throw new Error(shareFailure(410));
+      }
       setShare({ ...result, contentUrl: contentUrl.href, text });
       expirationTimer = setTimeout(
         () => {
           setShare(undefined);
-          setError(shareFailure(410));
+          setImageExpanded(false);
+          if (grant) {
+            setGrant(undefined);
+            setUnlockError('本次查看已到期，请重新输入密码解锁。');
+          } else setError(shareFailure(410));
         },
         Math.min(remaining, 2_147_483_647),
       );
@@ -130,7 +175,49 @@ export function PublicAssetSharePage({ token }: { token: string }) {
       abort.abort();
       clearTimeout(expirationTimer);
     };
-  }, [token, attempt]);
+  }, [token, attempt, grant]);
+
+  /** 显式提交密码换取短期读取凭据；重复点击和切换链接不产生额外解锁。 */
+  const unlock = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!password || unlockRequest.current) return;
+    const abort = new AbortController();
+    unlockRequest.current = abort;
+    setUnlocking(true);
+    setUnlockError(undefined);
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/asset-shares/unlock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, password }),
+        signal: abort.signal,
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        if (response.status === 401) {
+          const failure = await response.json();
+          if (failure.code === 'SHARE_PASSWORD_INVALID')
+            throw new Error('查看密码不正确，请重新输入。');
+        }
+        throw new Error(shareFailure(response.status));
+      }
+      const parsed = unlockSchema.safeParse(await response.json());
+      if (!parsed.success || Date.parse(parsed.data.expiresAt) <= Date.now())
+        throw new Error('解锁凭据无效或已到期，请重试。');
+      if (!abort.signal.aborted) {
+        setPassword('');
+        setGrant(parsed.data);
+      }
+    } catch (reason) {
+      if (!abort.signal.aborted)
+        setUnlockError(reason instanceof Error ? reason.message : '暂时无法解锁，请稍后重试。');
+    } finally {
+      if (unlockRequest.current === abort) unlockRequest.current = null;
+      if (!abort.signal.aborted) setUnlocking(false);
+    }
+  };
 
   /** 媒体在元信息加载后也可能失效；隐藏预览并提供重新验证入口。 */
   const mediaFailed = () => setError('资源内容加载失败或链接已失效，请重新加载。');
@@ -142,7 +229,7 @@ export function PublicAssetSharePage({ token }: { token: string }) {
       <header className="public-asset-share-topbar">
         <span className="public-asset-share-brand">
           <img
-            src="/brand/lovetv-mascot.webp"
+            src="/brand/lovetv-icon-192.png"
             alt="LoveTV 大肥鱼（鲸鱼娘）"
             width={48}
             height={48}
@@ -162,6 +249,43 @@ export function PublicAssetSharePage({ token }: { token: string }) {
             重新加载
           </Button>
         </section>
+      ) : locked ? (
+        <section
+          className="public-asset-share-state public-asset-share-locked"
+          aria-label="分享解锁"
+        >
+          <LockKeyhole size={28} aria-hidden="true" />
+          <h1>此分享已设置查看密码</h1>
+          <p id="share-password-hint">输入分享者提供的密码，即可查看资源。</p>
+          <form onSubmit={unlock} className="public-asset-share-unlock">
+            <label htmlFor="share-view-password">查看密码</label>
+            <Input
+              id="share-view-password"
+              type="password"
+              autoComplete="off"
+              maxLength={128}
+              required
+              value={password}
+              disabled={unlocking}
+              aria-describedby={unlockError ? 'share-unlock-error' : 'share-password-hint'}
+              aria-invalid={Boolean(unlockError)}
+              placeholder="请输入查看密码"
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setUnlockError(undefined);
+              }}
+            />
+            {unlockError && (
+              <p id="share-unlock-error" role="alert">
+                {unlockError}
+              </p>
+            )}
+            <Button type="submit" disabled={unlocking || !password}>
+              {unlocking && <LoaderCircle className="spin" size={16} aria-hidden="true" />}
+              {unlocking ? '正在解锁…' : '解锁查看'}
+            </Button>
+          </form>
+        </section>
       ) : !share ? (
         <section className="public-asset-share-state" role="status">
           <LoaderCircle className="spin" aria-hidden="true" />
@@ -173,7 +297,8 @@ export function PublicAssetSharePage({ token }: { token: string }) {
             <div>
               <h1>{share.asset.name}</h1>
               <p>
-                {mediaLabels[share.asset.mediaType]} · 版本 {share.asset.version} · 有效至{' '}
+                {mediaLabels[share.asset.mediaType]} · 版本 {share.asset.version} ·{' '}
+                {grant ? '本次查看有效至' : '有效至'}{' '}
                 <time dateTime={share.expiresAt}>
                   {new Date(share.expiresAt).toLocaleString('zh-CN', { hour12: false })}
                 </time>

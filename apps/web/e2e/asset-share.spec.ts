@@ -23,6 +23,7 @@ const privateAsset = {
   tags: [],
 };
 const shareToken = 'synthetic-share-token.signature';
+const protectedShareToken = 'v2.synthetic-protected-share.signature';
 const expiresAt = '2030-10-12T08:00:00.000Z';
 const poster = readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url));
 const video = readFileSync(new URL('../public/demo/field-study.mp4', import.meta.url));
@@ -118,6 +119,7 @@ async function installPrivateFixture(
   page: Page,
   requests: RequestRecord[],
   mediaType: 'image' | 'video' = 'image',
+  password?: string,
 ) {
   const asset = {
     ...privateAsset,
@@ -255,8 +257,12 @@ async function installPrivateFixture(
         body: method === 'HEAD' ? undefined : content,
       });
     if (path === '/v1/assets/' + privateAsset.id + '/share' && method === 'POST') {
-      expect(record.body).toEqual({ version: 1 });
-      return privateJson({ token: shareToken, expiresAt, version: 1 });
+      expect(record.body).toEqual({ version: 1, ...(password ? { password } : {}) });
+      return privateJson({
+        token: password ? protectedShareToken : shareToken,
+        expiresAt,
+        version: 1,
+      });
     }
     return route.fulfill({ status: 418, body: '未声明的私有接口：' + method + ' ' + path });
   });
@@ -351,6 +357,163 @@ function expectPublicOnly(
 function appUrl(path: string) {
   return new URL(path, test.info().project.use.baseURL!).toString();
 }
+
+test('Dialog 自定义分享密码，匿名解锁后查看图片，刷新重新锁定', async ({
+  browser,
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const privateErrors = captureErrors(page);
+  const privateRequests: RequestRecord[] = [];
+  const password = 'synthetic-share-password';
+  await installPrivateFixture(page, privateRequests, 'image', password);
+  await page.goto('/projects/' + project.id);
+  const node = page.locator('.react-flow__node[data-id="share-image-node"]');
+  await expect(node).toBeVisible({ timeout: 15_000 });
+  await node.hover();
+  await node.getByRole('button', { name: /^预览图片：/ }).click();
+  const viewer = page.getByRole('dialog').filter({
+    has: page.getByRole('button', { name: '分享当前版本', exact: true }),
+  });
+  const passwordInput = viewer.getByLabel('分享查看密码', { exact: true });
+  await expect(passwordInput).toHaveValue('');
+  await expect(passwordInput).toHaveAttribute('type', 'password');
+  await passwordInput.fill(password);
+  expect(privateRequests.filter(({ path }) => path.endsWith('/share'))).toHaveLength(0);
+  await viewer.getByRole('button', { name: '分享当前版本', exact: true }).click();
+  const expectedUrl = appUrl('/share#token=' + protectedShareToken);
+  await expect(page.getByRole('textbox', { name: '分享链接', exact: true })).toHaveValue(
+    expectedUrl,
+  );
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedUrl);
+  expect(expectedUrl).not.toContain(password);
+  await page.screenshot({
+    path: testInfo.outputPath('1440x900-password-share-dialog.png'),
+    animations: 'disabled',
+  });
+  await passwordInput.fill('synthetic-next-password');
+  await expect(page.getByRole('group', { name: '资源分享链接', exact: true })).toBeHidden();
+  await expect(passwordInput).toBeFocused();
+  expect(
+    privateRequests.filter(({ method, path }) => method === 'POST' && path.endsWith('/share')),
+  ).toHaveLength(1);
+  expect(privateErrors).toEqual([]);
+
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const anonymous = await context.newPage();
+  const errors = captureErrors(anonymous);
+  const requests: RequestRecord[] = [];
+  const accessToken = 'synthetic-browser-unlock.signature';
+  let unlockCount = 0;
+  let contentCount = 0;
+  await anonymous.route('**/v1/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    expect(url.href).not.toContain(password);
+    if (request.method() === 'OPTIONS')
+      return route.fulfill({
+        status: 204,
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, OPTIONS',
+          'access-control-allow-headers': 'content-type',
+        },
+      });
+    requests.push({
+      method: request.method(),
+      path: url.pathname,
+      headers: await request.allHeaders(),
+    });
+    if (url.pathname === '/v1/asset-shares/unlock' && request.method() === 'POST') {
+      unlockCount++;
+      const body = request.postDataJSON();
+      expect(body.token).toBe(protectedShareToken);
+      if (body.password !== password) return json(route, { code: 'SHARE_PASSWORD_INVALID' }, 401);
+      return json(route, { accessToken, expiresAt });
+    }
+    expect(request.method()).toBe('GET');
+    expect(url.searchParams.get('token')).toBe(protectedShareToken);
+    if (url.searchParams.get('access_token') !== accessToken)
+      return json(route, { code: 'SHARE_PASSWORD_REQUIRED' }, 401);
+    if (url.pathname === '/v1/asset-shares')
+      return json(route, {
+        asset: {
+          name: privateAsset.name,
+          mediaType: 'image',
+          mimeType: 'image/jpeg',
+          sizeBytes: poster.byteLength,
+          version: 1,
+          contentUrl: `/v1/asset-shares/content?token=${protectedShareToken}&access_token=${accessToken}`,
+        },
+        expiresAt,
+      });
+    expect(url.pathname).toBe('/v1/asset-shares/content');
+    contentCount++;
+    return route.fulfill({
+      status: 200,
+      contentType: 'image/jpeg',
+      headers: { 'access-control-allow-origin': '*' },
+      body: poster,
+    });
+  });
+  await anonymous.goto(expectedUrl);
+  await expect(anonymous.getByRole('heading', { name: '此分享已设置查看密码' })).toBeVisible();
+  const mascot = anonymous.getByRole('img', { name: 'LoveTV 大肥鱼（鲸鱼娘）' });
+  await expect(mascot).toHaveAttribute('src', '/brand/lovetv-icon-192.png');
+  await expect.poll(() => mascot.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(192);
+  expect(contentCount).toBe(0);
+  await expect(anonymous.getByRole('link', { name: '打开原文件' })).toHaveCount(0);
+  await expect(anonymous).toHaveTitle('共享资源 · LoveTV');
+  await anonymous.screenshot({
+    path: testInfo.outputPath('1440x900-share-unlock.png'),
+    animations: 'disabled',
+  });
+  await anonymous.getByLabel('查看密码', { exact: true }).fill('synthetic-wrong');
+  await anonymous.getByRole('button', { name: '解锁查看' }).click();
+  await expect(anonymous.getByRole('alert')).toHaveText('查看密码不正确，请重新输入。');
+  expect(contentCount).toBe(0);
+  await anonymous.getByLabel('查看密码', { exact: true }).fill(password);
+  await anonymous.getByRole('button', { name: '解锁查看' }).click();
+  const image = anonymous.getByRole('img', { name: privateAsset.name, exact: true });
+  await expect(image).toBeVisible();
+  await expect
+    .poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBeGreaterThan(0);
+  await expect(anonymous.getByRole('link', { name: '打开原文件' })).toHaveAttribute(
+    'href',
+    new RegExp('access_token=' + accessToken),
+  );
+  await anonymous.getByRole('button', { name: '放大预览', exact: true }).click();
+  expect(unlockCount).toBe(2);
+  const contentBeforeReload = contentCount;
+  expect(
+    await anonymous.evaluate(() => ({
+      local: { ...localStorage },
+      session: { ...sessionStorage },
+    })),
+  ).toEqual({ local: {}, session: {} });
+  expect(new URL(anonymous.url()).hash).toBe('#token=' + protectedShareToken);
+  await anonymous.reload();
+  await expect(anonymous.getByRole('heading', { name: '此分享已设置查看密码' })).toBeVisible();
+  await expect(anonymous.getByLabel('查看密码', { exact: true })).toHaveValue('');
+  expect(contentCount).toBe(contentBeforeReload);
+  expect(unlockCount).toBe(2);
+  expect(
+    requests.every(
+      ({ headers, path }) =>
+        !headers.cookie &&
+        !headers.authorization &&
+        ['/v1/asset-shares', '/v1/asset-shares/unlock', '/v1/asset-shares/content'].includes(path),
+    ),
+  ).toBe(true);
+  expect(errors).toEqual(
+    Array(3).fill(
+      'console: Failed to load resource: the server responded with a status of 401 (Unauthorized)',
+    ),
+  );
+  await context.close();
+});
 
 test('1440x900 从私有预览创建并复制固定版本，匿名上下文打开图片分享', async ({
   browser,

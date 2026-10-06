@@ -27,6 +27,7 @@ export type MemoryRateLimiterOptions = {
 type MemoryBucket = {
   startedAt: number;
   count: number;
+  windowMs: number;
 };
 
 /**
@@ -49,10 +50,15 @@ export class MemoryRateLimiter implements RateLimiter {
     const now = this.now();
     let bucket = this.buckets.get(normalizedKey);
 
-    if (!bucket || now - bucket.startedAt >= windowMs || now < bucket.startedAt) {
-      this.prune(now, windowMs);
+    if (
+      !bucket ||
+      bucket.windowMs !== windowMs ||
+      now - bucket.startedAt >= bucket.windowMs ||
+      now < bucket.startedAt
+    ) {
+      this.prune(now);
       if (!bucket && this.buckets.size >= this.maxEntries) this.evictOldest();
-      bucket = { startedAt: now, count: 0 };
+      bucket = { startedAt: now, count: 0, windowMs };
       this.buckets.set(normalizedKey, bucket);
     }
 
@@ -74,9 +80,9 @@ export class MemoryRateLimiter implements RateLimiter {
     return this.buckets.size;
   }
 
-  private prune(now: number, windowMs: number): void {
+  private prune(now: number): void {
     for (const [key, bucket] of this.buckets) {
-      if (now - bucket.startedAt >= windowMs || now < bucket.startedAt) {
+      if (now - bucket.startedAt >= bucket.windowMs || now < bucket.startedAt) {
         this.buckets.delete(key);
       }
     }

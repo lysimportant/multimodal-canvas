@@ -125,10 +125,15 @@ import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
 import { resolveApiProxyTrust } from './proxy-trust';
 import {
+  createAssetShareAccessToken,
   ASSET_SHARE_TTL_MS,
   createAssetShareToken,
+  createPasswordProtectedAssetShareToken,
+  isPasswordProtectedAssetShare,
   parseAssetByteRange,
   publicAssetContentType,
+  verifyAssetShareAccessToken,
+  verifyAssetSharePassword,
   verifyAssetShareToken,
 } from './asset-shares';
 import { registerAccountRoutes } from './account-routes';
@@ -218,6 +223,12 @@ const DEFAULT_SSE_MAX_EVENT_BYTES = 256 * 1024;
 const DEFAULT_ASSET_LIST_PAGE = 1;
 const DEFAULT_ASSET_LIST_PAGE_SIZE = 50;
 const MAX_ASSET_LIST_PAGE_SIZE = 200;
+/** 同一来源每分钟可读取公开分享的次数。 */
+const ASSET_SHARE_READ_RATE_LIMIT = 120;
+/** 同一来源在独立窗口内可尝试解锁密码分享的次数。 */
+const ASSET_SHARE_UNLOCK_RATE_LIMIT = 10;
+/** 密码分享解锁限流窗口，单位为毫秒。 */
+const ASSET_SHARE_UNLOCK_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1_000;
 
 type AssetListQuery = {
   /** 资源所属项目；提供后只返回该项目资源和当前用户的个人资源。 */
@@ -312,17 +323,21 @@ function isLocalAssetAccessRequest(method: string, path: string): boolean {
 }
 
 /**
- * 判断请求是否命中无需登录的资源分享只读端点。
+ * 判断请求是否命中无需登录的资源分享端点。
  *
  * @param method - HTTP 方法。
  * @param path - 不含查询参数的请求路径。
- * @returns 仅 GET/HEAD 的两个精确分享路径返回 true。
+ * @returns 精确匹配只读或解锁端点时返回类别，否则返回 undefined。
  */
-function isPublicAssetShareRequest(method: string, path: string): boolean {
-  return (
+function publicAssetShareRequestKind(method: string, path: string): 'read' | 'unlock' | undefined {
+  if (
     (method === 'GET' || method === 'HEAD') &&
     (path === '/v1/asset-shares' || path === '/v1/asset-shares/content')
-  );
+  ) {
+    return 'read';
+  }
+  if (method === 'POST' && path === '/v1/asset-shares/unlock') return 'unlock';
+  return undefined;
 }
 
 function serializeRequestForLog(request: FastifyRequest): Record<string, unknown> {
@@ -1278,8 +1293,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         'headers.authorization',
         'apiKey',
         'api_key',
+        'password',
+        'token',
         'body.apiKey',
         'body.api_key',
+        'body.password',
+        'body.token',
+        'req.body.password',
+        'req.body.token',
         'accessToken',
         'body.accessToken',
       ],
@@ -1555,19 +1576,30 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         error: '此入口已退出，请刷新并使用 New API 登录',
       });
     if (pathname === '/health' || pathname === '/v1/webhooks/newapi') return;
-    if (isPublicAssetShareRequest(request.method, pathname)) {
-      const decision = await rateLimiter.consume(`asset-share:${request.ip ?? 'unknown'}`, {
-        limit: 120,
-        windowMs: rateLimitWindowMs,
-      });
+    const publicAssetShareKind = publicAssetShareRequestKind(request.method, pathname);
+    if (publicAssetShareKind) {
+      reply.header('cache-control', 'no-store');
+      const isUnlock = publicAssetShareKind === 'unlock';
+      const decision = await rateLimiter.consume(
+        `${isUnlock ? 'asset-share-unlock' : 'asset-share'}:${request.ip ?? 'unknown'}`,
+        {
+          limit: isUnlock ? ASSET_SHARE_UNLOCK_RATE_LIMIT : ASSET_SHARE_READ_RATE_LIMIT,
+          windowMs: isUnlock ? ASSET_SHARE_UNLOCK_RATE_LIMIT_WINDOW_MS : rateLimitWindowMs,
+        },
+      );
       setRateLimitHeaders(reply, decision);
       if (!decision.allowed) {
-        return reply.header('retry-after', String(decision.retryAfterSeconds)).code(429).send({
-          error: 'rate limit exceeded',
-          code: 'asset_share_rate_limit_exceeded',
-          retryAfterSeconds: decision.retryAfterSeconds,
-          requestId: request.id,
-        });
+        return reply
+          .header('retry-after', String(decision.retryAfterSeconds))
+          .code(429)
+          .send({
+            error: 'rate limit exceeded',
+            code: isUnlock
+              ? 'asset_share_unlock_rate_limit_exceeded'
+              : 'asset_share_rate_limit_exceeded',
+            retryAfterSeconds: decision.retryAfterSeconds,
+            requestId: request.id,
+          });
       }
       return;
     }
@@ -3962,6 +3994,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.post<{ Params: { assetId: string } }>('/v1/assets/:assetId/share', async (request, reply) => {
+    reply.header('cache-control', 'no-store');
     const principal = requestPrincipals.get(request);
     if (principal?.method !== 'jwt' || !principal.userId) {
       return reply.code(403).send({ error: 'user authentication required' });
@@ -3970,7 +4003,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return reply.code(503).send({ error: 'asset sharing is not configured' });
     }
     const body = z
-      .object({ version: z.number().int().positive().safe().optional() })
+      .object({
+        version: z.number().int().positive().safe().optional(),
+        password: z.string().max(128).optional(),
+      })
       .strict()
       .safeParse(request.body ?? {});
     if (!body.success) return reply.code(400).send({ error: 'invalid asset share request' });
@@ -3991,18 +4027,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
 
     const expiresAt = Date.now() + ASSET_SHARE_TTL_MS;
-    const token = createAssetShareToken(
-      {
-        assetId: asset.id,
-        ownerId: principal.userId,
-        version: selected.version,
-        expiresAt,
-      },
-      assetShareSecret,
-    );
-    return reply
-      .header('cache-control', 'no-store')
-      .send({ token, expiresAt: new Date(expiresAt).toISOString(), version: selected.version });
+    const tokenInput = {
+      assetId: asset.id,
+      ownerId: principal.userId,
+      version: selected.version,
+      expiresAt,
+    };
+    const token = body.data.password
+      ? await createPasswordProtectedAssetShareToken(
+          tokenInput,
+          assetShareSecret,
+          body.data.password,
+        )
+      : createAssetShareToken(tokenInput, assetShareSecret);
+    return reply.send({
+      token,
+      expiresAt: new Date(expiresAt).toISOString(),
+      version: selected.version,
+    });
   });
 
   /**
@@ -4031,7 +4073,70 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { token, payload, asset, version, scope };
   };
 
-  app.route<{ Querystring: { token?: unknown } }>({
+  type ResolvedPublicAssetShare = NonNullable<Awaited<ReturnType<typeof resolvePublicAssetShare>>>;
+
+  /**
+   * 校验密码分享的短期授权；无密码 v1 分享保持原有公开读取行为。
+   *
+   * @param share - 已确认所有者、资源和冻结版本仍有效的分享。
+   * @param accessToken - 查询参数中的未信任授权值。
+   * @returns v1 的分享到期时间或 v2 的授权到期时间；未解锁时返回 undefined。
+   */
+  const authorizePublicAssetShare = (
+    share: ResolvedPublicAssetShare,
+    accessToken: unknown,
+  ): { expiresAt: number; accessToken?: string } | undefined => {
+    if (!isPasswordProtectedAssetShare(share.payload)) {
+      return { expiresAt: share.payload.expiresAt };
+    }
+    const grant = verifyAssetShareAccessToken(
+      accessToken,
+      share.token,
+      share.payload.expiresAt,
+      assetShareSecret,
+    );
+    return grant && typeof accessToken === 'string'
+      ? { expiresAt: grant.expiresAt, accessToken }
+      : undefined;
+  };
+
+  app.post<{ Body: unknown }>('/v1/asset-shares/unlock', async (request, reply) => {
+    reply.header('cache-control', 'no-store');
+    const body = z
+      .object({
+        token: z.string(),
+        password: z.string().max(128),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: 'invalid asset share unlock request' });
+    }
+    const share = await resolvePublicAssetShare(body.data.token);
+    if (!share || !isPasswordProtectedAssetShare(share.payload)) {
+      return reply.code(404).send({ error: 'asset share not found or expired' });
+    }
+    if (!(await verifyAssetSharePassword(share.payload, body.data.password))) {
+      return reply.code(401).send({
+        code: 'SHARE_PASSWORD_INVALID',
+        error: 'asset share password is invalid',
+      });
+    }
+    if (share.payload.expiresAt <= Date.now()) {
+      return reply.code(404).send({ error: 'asset share not found or expired' });
+    }
+    const grant = createAssetShareAccessToken(
+      share.token,
+      share.payload.expiresAt,
+      assetShareSecret!,
+    );
+    return reply.send({
+      accessToken: grant.accessToken,
+      expiresAt: new Date(grant.expiresAt).toISOString(),
+    });
+  });
+
+  app.route<{ Querystring: { token?: unknown; access_token?: unknown } }>({
     method: ['GET', 'HEAD'],
     url: '/v1/asset-shares',
     handler: async (request, reply) => {
@@ -4042,6 +4147,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           .code(404)
           .send({ error: 'asset share not found or expired' });
       }
+      const grant = authorizePublicAssetShare(share, request.query.access_token);
+      if (!grant) {
+        return reply.header('cache-control', 'no-store').code(401).send({
+          code: 'SHARE_PASSWORD_REQUIRED',
+          error: 'asset share password is required',
+        });
+      }
+      const contentUrl = `/v1/asset-shares/content?token=${encodeURIComponent(share.token)}`;
       const response = {
         asset: {
           name: share.asset.name,
@@ -4049,9 +4162,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           mimeType: share.asset.mimeType,
           sizeBytes: share.version.sizeBytes,
           version: share.version.version,
-          contentUrl: `/v1/asset-shares/content?token=${encodeURIComponent(share.token)}`,
+          contentUrl: grant.accessToken
+            ? `${contentUrl}&access_token=${encodeURIComponent(grant.accessToken)}`
+            : contentUrl,
         },
-        expiresAt: new Date(share.payload.expiresAt).toISOString(),
+        expiresAt: new Date(grant.expiresAt).toISOString(),
       };
       reply
         .header('cache-control', 'no-store')
@@ -4061,7 +4176,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   });
 
-  app.route<{ Querystring: { token?: unknown } }>({
+  app.route<{ Querystring: { token?: unknown; access_token?: unknown } }>({
     method: ['GET', 'HEAD'],
     url: '/v1/asset-shares/content',
     handler: async (request, reply) => {
@@ -4071,6 +4186,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           .header('cache-control', 'no-store')
           .code(404)
           .send({ error: 'asset share not found or expired' });
+      }
+      if (!authorizePublicAssetShare(share, request.query.access_token)) {
+        return reply.header('cache-control', 'no-store').code(401).send({
+          code: 'SHARE_PASSWORD_REQUIRED',
+          error: 'asset share password is required',
+        });
       }
       const content = await assetStore.getVersionContent(
         share.asset.id,

@@ -1,9 +1,9 @@
 import { Check, Copy, LoaderCircle, Share2, X } from 'lucide-react';
 import { Popover } from 'antd';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { Asset } from '@multimodal-canvas/domain';
-import { Button } from '@multimodal-canvas/ui';
+import { Button, Input } from '@multimodal-canvas/ui';
 import {
   apiFetch,
   AuthSessionChangedError,
@@ -23,6 +23,8 @@ type ShareResponse = {
 /** 当前预览资源已创建的只读链接及其冻结版本、过期时间。 */
 type ShareRecord = {
   identity: string;
+  passwordProtected: boolean;
+  passwordRevision: number;
   url: string;
   expiresAt: string;
   version: number;
@@ -67,19 +69,24 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
       ? '资源内容不存在，无法分享'
       : undefined;
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const mountedRef = useRef(false);
   const panelOpenRef = useRef(false);
   const identityRef = useRef(identity);
   const authGenerationRef = useRef(getAuthSessionGeneration());
   const lifecycleRef = useRef(0);
+  const passwordRef = useRef('');
+  const passwordRevisionRef = useRef(0);
   const copyAttemptRef = useRef(0);
   const requestRef = useRef<{
     identity: string;
     authGeneration: number;
     lifecycle: number;
+    passwordRevision: number;
     abort: AbortController;
   } | null>(null);
+  const [password, setPassword] = useState('');
   const [panelOpen, setPanelOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [share, setShare] = useState<ShareRecord>();
@@ -88,7 +95,10 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
   const [, setExpiryRevision] = useState(0);
 
   identityRef.current = identity;
-  const shareForIdentity = share?.identity === identity ? share : undefined;
+  const shareForIdentity =
+    share?.identity === identity && share.passwordRevision === passwordRevisionRef.current
+      ? share
+      : undefined;
   const shareExpired = Boolean(shareForIdentity && isShareExpired(shareForIdentity));
   const currentShare = shareExpired ? undefined : shareForIdentity;
   const expiresLabel = useMemo(() => {
@@ -102,13 +112,22 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
   /** 浮层关闭后将键盘焦点归还标题栏触发按钮。 */
   const restoreTriggerFocus = useCallback(() => {
     window.setTimeout(() => {
-      if (mountedRef.current) triggerRef.current?.focus({ preventScroll: true });
+      if (mountedRef.current && document.activeElement !== passwordInputRef.current)
+        triggerRef.current?.focus({ preventScroll: true });
     }, 0);
   }, []);
 
-  /** 使当前请求和复制尝试失效；账户或资源变化时同时清除已创建链接。 */
+  /** 使当前请求和复制尝试失效；账户或资源变化时同时清除链接和未持久化密码。 */
   const resetShareState = useCallback(
-    ({ clearShare, restoreFocus }: { clearShare: boolean; restoreFocus: boolean }) => {
+    ({
+      clearShare,
+      clearPassword,
+      restoreFocus,
+    }: {
+      clearShare: boolean;
+      clearPassword: boolean;
+      restoreFocus: boolean;
+    }) => {
       const wasOpen = panelOpenRef.current;
       lifecycleRef.current += 1;
       copyAttemptRef.current += 1;
@@ -120,6 +139,11 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
       setCopyState('idle');
       setError(undefined);
       if (clearShare) setShare(undefined);
+      if (clearPassword) {
+        passwordRef.current = '';
+        passwordRevisionRef.current += 1;
+        setPassword('');
+      }
       if (restoreFocus && wasOpen) restoreTriggerFocus();
     },
     [restoreTriggerFocus],
@@ -127,8 +151,21 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
 
   /** 用户关闭只隐藏浮层并保留仍有效的本次分享链接。 */
   const closePanel = useCallback(() => {
-    resetShareState({ clearShare: false, restoreFocus: true });
+    resetShareState({ clearShare: false, clearPassword: false, restoreFocus: true });
   }, [resetShareState]);
+
+  /** 密码变化立即废弃当前链接和创建请求，后续只能由新的分享点击重新创建。 */
+  const handlePasswordChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const nextPassword = event.currentTarget.value;
+      if (nextPassword === passwordRef.current) return;
+      passwordRef.current = nextPassword;
+      passwordRevisionRef.current += 1;
+      setPassword(nextPassword);
+      resetShareState({ clearShare: true, clearPassword: false, restoreFocus: false });
+    },
+    [resetShareState],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -142,7 +179,7 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
   }, []);
 
   useEffect(() => {
-    resetShareState({ clearShare: true, restoreFocus: true });
+    resetShareState({ clearShare: true, clearPassword: true, restoreFocus: true });
   }, [identity, resetShareState]);
 
   useEffect(
@@ -151,7 +188,7 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
         const nextGeneration = getAuthSessionGeneration();
         if (nextGeneration === authGenerationRef.current) return;
         authGenerationRef.current = nextGeneration;
-        resetShareState({ clearShare: true, restoreFocus: true });
+        resetShareState({ clearShare: true, clearPassword: true, restoreFocus: true });
       }),
     [resetShareState],
   );
@@ -244,11 +281,14 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
     const expectedAuthGeneration = getAuthSessionGeneration();
     authGenerationRef.current = expectedAuthGeneration;
     const expectedLifecycle = lifecycleRef.current;
+    const requestedPassword = passwordRef.current;
+    const expectedPasswordRevision = passwordRevisionRef.current;
     const abort = new AbortController();
     requestRef.current = {
       identity,
       authGeneration: expectedAuthGeneration,
       lifecycle: expectedLifecycle,
+      passwordRevision: expectedPasswordRevision,
       abort,
     };
     setShare(undefined);
@@ -256,12 +296,15 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
     setCopyState('idle');
     setError(undefined);
     try {
+      const requestBody: { version?: number; password?: string } = {};
+      if (version !== undefined) requestBody.version = version;
+      if (requestedPassword !== '') requestBody.password = requestedPassword;
       const response = await apiFetch(
         API_BASE_URL + '/v1/assets/' + encodeURIComponent(asset.id) + '/share',
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(version === undefined ? {} : { version }),
+          body: JSON.stringify(requestBody),
           signal: abort.signal,
         },
         { expectedAuthGeneration },
@@ -289,14 +332,18 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
         Number(result.version) <= 0
       )
         throw new Error('分享服务返回了无效或已过期的结果，请重试');
+      if (requestedPassword !== '' && !result.token.startsWith('v2.'))
+        throw new Error('分享服务尚不支持密码保护，请更新服务后重试');
       if (
         abort.signal.aborted ||
         requestRef.current?.abort !== abort ||
         requestRef.current.identity !== identity ||
         requestRef.current.authGeneration !== expectedAuthGeneration ||
         requestRef.current.lifecycle !== expectedLifecycle ||
+        requestRef.current.passwordRevision !== expectedPasswordRevision ||
         identityRef.current !== identity ||
         lifecycleRef.current !== expectedLifecycle ||
+        passwordRevisionRef.current !== expectedPasswordRevision ||
         !panelOpenRef.current ||
         getAuthSessionGeneration() !== expectedAuthGeneration
       )
@@ -306,6 +353,8 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
       shareUrl.hash = 'token=' + encodeURIComponent(result.token);
       const record: ShareRecord = {
         identity,
+        passwordProtected: requestedPassword !== '',
+        passwordRevision: expectedPasswordRevision,
         url: shareUrl.toString(),
         expiresAt: result.expiresAt,
         version: Number(result.version),
@@ -321,6 +370,7 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
         requestRef.current?.abort !== abort ||
         identityRef.current !== identity ||
         lifecycleRef.current !== expectedLifecycle ||
+        passwordRevisionRef.current !== expectedPasswordRevision ||
         !panelOpenRef.current ||
         getAuthSessionGeneration() !== expectedAuthGeneration
       )
@@ -366,6 +416,10 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
           <X size={15} aria-hidden="true" />
         </Button>
       </div>
+      <p className="asset-share-protection-state">
+        查看保护：
+        {(shareForIdentity?.passwordProtected ?? password !== '') ? '已设置密码' : '未设置密码'}
+      </p>
       {creating ? (
         <p className="asset-share-status" role="status">
           正在创建只读分享链接…
@@ -416,7 +470,12 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
           <p className="asset-share-note">
             当前第 {currentShare.version} 版，默认 7 天有效，将于 {expiresLabel} 到期。
           </p>
-          <p className="asset-share-note">持有链接的人无需登录即可只读查看此资源。</p>
+          <p className="asset-share-note">
+            {currentShare.passwordProtected
+              ? '链接不包含查看密码，请将密码单独告知接收者。'
+              : '未设置查看密码，持有链接的人无需登录即可只读查看此资源。'}
+          </p>
+          <p className="asset-share-note">重新生成分享链接不会撤销此前已创建的链接。</p>
         </>
       ) : null}
     </div>
@@ -424,12 +483,27 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
 
   return (
     <div className="asset-share" onPointerDown={(event) => event.stopPropagation()}>
+      <Input
+        ref={passwordInputRef}
+        className="asset-share-password"
+        type="password"
+        aria-label="分享查看密码"
+        placeholder="查看密码（选填）"
+        title="留空则无需密码"
+        maxLength={128}
+        autoComplete="new-password"
+        value={password}
+        disabled={Boolean(disabledReason)}
+        onChange={handlePasswordChange}
+      />
       <Popover
         trigger="click"
         open={panelOpen}
         onOpenChange={handlePanelOpenChange}
         afterOpenChange={(open) => {
-          if (open) closeButtonRef.current?.focus({ preventScroll: true });
+          // 展开动画结束时，用户可能已经点入密码框，不能重新抢走输入焦点。
+          if (open && document.activeElement !== passwordInputRef.current)
+            closeButtonRef.current?.focus({ preventScroll: true });
         }}
         placement="bottomRight"
         destroyOnHidden

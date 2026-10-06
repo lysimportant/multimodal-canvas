@@ -155,3 +155,25 @@
   color: var(--mc-text-muted, #687386);
   margin: 0;
 }
+.public-asset-share-locked {
+  background: var(--mc-surface, #fff);
+  border: 1px solid var(--mc-border, #e2e7eb);
+  border-radius: 12px;
+  max-width: 440px;
+  padding: 32px;
+}
+.public-asset-share-unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+  width: 100%;
+}
+.public-asset-share-unlock label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.public-asset-share-unlock [role='alert'] {
+  color: var(--mc-danger, #bd3030);
+  font-size: 13px;
+}

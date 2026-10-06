@@ -1,9 +1,28 @@
 .asset-share {
+  align-items: center;
+  display: inline-flex;
   flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.asset-share-password.ant-input {
+  border-color: var(--mc-border, #e2e7eb);
+  border-radius: 4px;
+  flex: 0 0 148px;
+  font-size: 12px;
+  height: 32px;
+  padding: 0 8px;
+  width: 148px;
+}
+
+.asset-share-password.ant-input::placeholder {
+  color: var(--mc-text-muted, #7a8494);
 }
 
 .asset-share-trigger {
   cursor: pointer;
+  flex: 0 0 auto;
 }
 
 .asset-share-popover {
@@ -100,6 +119,7 @@
 }
 
 .asset-share-status,
+.asset-share-protection-state,
 .asset-share-copy-state,
 .asset-share-note,
 .asset-share-expired {
@@ -111,6 +131,11 @@
 .asset-share-status,
 .asset-share-note {
   color: var(--mc-text-muted, #687386);
+}
+
+.asset-share-protection-state {
+  color: var(--mc-text, #18212f);
+  font-weight: 600;
 }
 
 .asset-share-copy-state.is-copied {

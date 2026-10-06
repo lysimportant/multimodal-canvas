@@ -15,6 +15,28 @@ const errorSchema = {
   additionalProperties: true,
 } as const;
 
+/** 密码分享读取未携带有效短期授权时的固定响应。 */
+const sharePasswordRequiredErrorSchema = {
+  type: 'object',
+  required: ['code', 'error'],
+  properties: {
+    code: { type: 'string', enum: ['SHARE_PASSWORD_REQUIRED'] },
+    error: { type: 'string' },
+  },
+  additionalProperties: false,
+} as const;
+
+/** 密码解锁凭据不匹配时的固定响应。 */
+const sharePasswordInvalidErrorSchema = {
+  type: 'object',
+  required: ['code', 'error'],
+  properties: {
+    code: { type: 'string', enum: ['SHARE_PASSWORD_INVALID'] },
+    error: { type: 'string' },
+  },
+  additionalProperties: false,
+} as const;
+
 /** 全局生成并发与运行时合同一致；只允许管理员设置正安全整数。 */
 const generationConcurrencySchema = {
   type: 'integer',
@@ -1425,6 +1447,12 @@ export const openApiDocument = {
                 type: 'object',
                 properties: {
                   version: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+                  password: {
+                    type: 'string',
+                    maxLength: 128,
+                    description:
+                      '可选分享密码；空字符串与缺省均签发兼容 v1 无密码分享，非空值按 UTF-16 code unit 限制为 128 且不做 trim。',
+                  },
                 },
                 additionalProperties: false,
               },
@@ -1470,6 +1498,13 @@ export const openApiDocument = {
               pattern: '^[A-Za-z0-9_.-]+$',
             },
           },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: '密码分享解锁后返回的短期授权；与原 token 精确绑定。',
+            schema: { type: 'string' },
+          },
         ],
         responses: {
           '200': response('公开分享的资源元数据', {
@@ -1493,6 +1528,7 @@ export const openApiDocument = {
             },
             additionalProperties: false,
           }),
+          '401': response('密码分享尚未解锁', sharePasswordRequiredErrorSchema),
           '404': response('分享不存在或已失效', errorSchema),
           '429': response('分享访问频率超限', errorSchema),
           '503': { $ref: '#/components/responses/RateLimitUnavailable' },
@@ -1513,11 +1549,64 @@ export const openApiDocument = {
               pattern: '^[A-Za-z0-9_.-]+$',
             },
           },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: '密码分享解锁后返回的短期授权；与原 token 精确绑定。',
+            schema: { type: 'string' },
+          },
         ],
         responses: {
           '200': response('公开分享的资源元数据响应头'),
+          '401': response('密码分享尚未解锁', sharePasswordRequiredErrorSchema),
           '404': response('分享不存在或已失效', errorSchema),
           '429': response('分享访问频率超限', errorSchema),
+          '503': { $ref: '#/components/responses/RateLimitUnavailable' },
+        },
+      },
+    },
+    '/v1/asset-shares/unlock': {
+      post: {
+        tags: ['asset-shares'],
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['token', 'password'],
+                properties: {
+                  token: {
+                    type: 'string',
+                    description: '需要解锁的原始 v2 分享令牌。',
+                  },
+                  password: {
+                    type: 'string',
+                    maxLength: 128,
+                    description: '原始分享密码，不做 trim 或 Unicode 归一化。',
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('一小时内且不超过原分享到期时间的短期授权', {
+            type: 'object',
+            required: ['accessToken', 'expiresAt'],
+            properties: {
+              accessToken: { type: 'string' },
+              expiresAt: { type: 'string', format: 'date-time' },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('解锁请求字段无效', errorSchema),
+          '401': response('分享密码错误', sharePasswordInvalidErrorSchema),
+          '404': response('分享不存在、已过期或资源已归档', errorSchema),
+          '429': response('解锁尝试频率超限', errorSchema),
           '503': { $ref: '#/components/responses/RateLimitUnavailable' },
         },
       },
@@ -1538,6 +1627,13 @@ export const openApiDocument = {
               pattern: '^[A-Za-z0-9_.-]+$',
             },
           },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: '密码分享解锁后返回且绑定当前 token 的短期授权。',
+            schema: { type: 'string' },
+          },
           { name: 'Range', in: 'header', required: false, schema: { type: 'string' } },
         ],
         responses: {
@@ -1549,6 +1645,7 @@ export const openApiDocument = {
             description: '分享资源的单段字节范围',
             content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
           },
+          '401': response('密码分享尚未解锁', sharePasswordRequiredErrorSchema),
           '404': response('分享不存在或已失效', errorSchema),
           '416': { description: '请求的字节范围无效' },
           '429': response('分享访问频率超限', errorSchema),
@@ -1570,11 +1667,19 @@ export const openApiDocument = {
               pattern: '^[A-Za-z0-9_.-]+$',
             },
           },
+          {
+            name: 'access_token',
+            in: 'query',
+            required: false,
+            description: '密码分享解锁后返回且绑定当前 token 的短期授权。',
+            schema: { type: 'string' },
+          },
           { name: 'Range', in: 'header', required: false, schema: { type: 'string' } },
         ],
         responses: {
           '200': response('分享资源内容响应头'),
           '206': response('分享资源字节范围响应头'),
+          '401': response('密码分享尚未解锁', sharePasswordRequiredErrorSchema),
           '404': response('分享不存在或已失效', errorSchema),
           '416': { description: '请求的字节范围无效' },
           '429': response('分享访问频率超限', errorSchema),

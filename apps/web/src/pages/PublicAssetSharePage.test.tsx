@@ -47,6 +47,177 @@ afterEach(() => {
 });
 
 describe('公开资源分享预览', () => {
+  it('受保护分享在解锁前不显示名称、媒体或下载，不自动尝试密码', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<PublicAssetSharePage token={token} />);
+    expect(await screen.findByRole('heading', { name: '此分享已设置查看密码' })).toBeVisible();
+    const input = screen.getByLabelText('查看密码');
+    expect(input).toHaveValue('');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(screen.getByRole('button', { name: '解锁查看' })).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'synthetic-password' } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('region', { name: '分享资源内容' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '打开原文件' })).not.toBeInTheDocument();
+    expect(document.title).toBe('共享资源 · LoveTV');
+  });
+
+  it('错误密码可重试，正确密码仅通过匿名 POST 发送，内容绑定解锁凭据', async () => {
+    const accessToken = 'synthetic-unlock-grant.signature';
+    const response = makeShare('text');
+    response.asset.contentUrl += '&access_token=' + accessToken;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_INVALID' }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ accessToken, expiresAt: response.expiresAt }))
+      .mockResolvedValueOnce(Response.json(response))
+      .mockResolvedValueOnce(new Response('解锁后的正文'));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<PublicAssetSharePage token={token} />);
+    const input = await screen.findByLabelText('查看密码');
+    fireEvent.change(input, { target: { value: 'synthetic-wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: '解锁查看' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('查看密码不正确');
+    expect(screen.queryByText('解锁后的正文')).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: ' synthetic-right ' } });
+    fireEvent.click(screen.getByRole('button', { name: '解锁查看' }));
+    expect(await screen.findByText('解锁后的正文')).toBeVisible();
+    expect(fetchMock.mock.calls[2]).toEqual([
+      'http://localhost:3000/v1/asset-shares/unlock',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ token, password: ' synthetic-right ' }),
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      }),
+    ]);
+    expect(fetchMock.mock.calls[3]?.[0]).toBe(
+      `http://localhost:3000/v1/asset-shares?token=${token}&access_token=${accessToken}`,
+    );
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('http://localhost:3000' + response.asset.contentUrl);
+    expect(screen.getByRole('link', { name: '打开原文件' })).toHaveAttribute(
+      'href',
+      'http://localhost:3000' + response.asset.contentUrl,
+    );
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('synthetic-right'))).toBe(
+      true,
+    );
+  });
+
+  it('重复提交只解锁一次，切换链接中止解锁并忽略迟到凭据', async () => {
+    let resolveUnlock!: (response: Response) => void;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveUnlock = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const view = render(<PublicAssetSharePage token={token} />);
+    const input = await screen.findByLabelText('查看密码');
+    fireEvent.change(input, { target: { value: 'synthetic-password' } });
+    const form = input.closest('form')!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const signal = fetchMock.mock.calls[1]![1].signal as AbortSignal;
+    view.rerender(<PublicAssetSharePage token="different-synthetic-share.signature" />);
+    expect(signal.aborted).toBe(true);
+    expect(await screen.findByLabelText('查看密码')).toHaveValue('');
+    await act(async () =>
+      resolveUnlock(
+        Response.json({
+          accessToken: 'synthetic-old-grant.signature',
+          expiresAt: makeShare().expiresAt,
+        }),
+      ),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole('region', { name: '分享资源内容' })).not.toBeInTheDocument();
+  });
+
+  it('解锁凭据到期停止视频、清除内容并重新要求密码', async () => {
+    vi.useFakeTimers();
+    const accessToken = 'synthetic-short-grant.signature';
+    const response = makeShare('video');
+    response.asset.contentUrl += '&access_token=' + accessToken;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }))
+      .mockResolvedValueOnce(
+        Response.json({ accessToken, expiresAt: new Date(Date.now() + 1000).toISOString() }),
+      )
+      .mockResolvedValueOnce(Response.json(response))
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<PublicAssetSharePage token={token} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.change(screen.getByLabelText('查看密码'), {
+      target: { value: 'synthetic-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '解锁查看' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByLabelText('分享的作品')).toBeInTheDocument();
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1001);
+    });
+    expect(screen.queryByLabelText('分享的作品')).not.toBeInTheDocument();
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled();
+    expect(screen.getByLabelText('查看密码')).toHaveValue('');
+    expect(screen.getByRole('alert')).toHaveTextContent('本次查看已到期');
+    expect(document.title).toBe('共享资源 · LoveTV');
+  });
+
+  it('拒绝已解锁元信息中缺失或错误的内容凭据', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }))
+      .mockResolvedValueOnce(
+        Response.json({
+          accessToken: 'synthetic-grant.signature',
+          expiresAt: makeShare().expiresAt,
+        }),
+      )
+      .mockResolvedValueOnce(Response.json(makeShare('text')));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<PublicAssetSharePage token={token} />);
+    fireEvent.change(await screen.findByLabelText('查看密码'), {
+      target: { value: 'synthetic-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '解锁查看' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('分享资源地址无效');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('解锁限速明确提示，重试前不自动提交', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ code: 'SHARE_PASSWORD_REQUIRED' }, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({}, { status: 429 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<PublicAssetSharePage token={token} />);
+    fireEvent.change(await screen.findByLabelText('查看密码'), {
+      target: { value: 'synthetic-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '解锁查看' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('访问过于频繁');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('无需登录展示固定版本，只请求公开接口且不附带会话', async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json(makeShare()));
     vi.stubGlobal('fetch', fetchMock);
@@ -63,7 +234,7 @@ describe('公开资源分享预览', () => {
     );
     expect(screen.getByRole('img', { name: 'LoveTV 大肥鱼（鲸鱼娘）' })).toHaveAttribute(
       'src',
-      '/brand/lovetv-mascot.webp',
+      '/brand/lovetv-icon-192.png',
     );
     expect(image).toHaveAttribute('crossorigin', 'anonymous');
     expect(image).toHaveAttribute('referrerpolicy', 'no-referrer');

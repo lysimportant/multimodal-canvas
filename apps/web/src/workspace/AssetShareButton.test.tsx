@@ -89,6 +89,13 @@ describe('AssetShareButton', () => {
       </div>,
     );
 
+    const passwordInput = screen.getByLabelText('分享查看密码');
+    expect(passwordInput).toHaveAttribute('type', 'password');
+    expect(passwordInput).toHaveAttribute('placeholder', '查看密码（选填）');
+    expect(passwordInput).toHaveAttribute('title', '留空则无需密码');
+    expect(passwordInput).toHaveAttribute('maxlength', '128');
+    expect(passwordInput).toHaveAttribute('autocomplete', 'new-password');
+    expect(passwordInput).toHaveValue('');
     expect(auth.apiFetch).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: '分享当前版本' }));
 
@@ -113,6 +120,123 @@ describe('AssetShareButton', () => {
     expect(publicUrl).not.toContain('accessToken');
     expect(screen.getByRole('textbox', { name: '分享链接' })).toHaveValue(publicUrl);
     expect(screen.getByText('分享链接已复制')).toBeInTheDocument();
+    expect(screen.getByText('查看保护：未设置密码')).toBeInTheDocument();
+    expect(screen.getByText(/重新生成分享链接不会撤销此前已创建的链接/)).toBeInTheDocument();
+  });
+
+  it('按原值提交非空查看密码，链接不携带密码并提示单独告知', async () => {
+    const writeText = mockClipboard();
+    auth.apiFetch.mockResolvedValue(shareResponse('v2.protected-token'));
+    render(<AssetShareButton asset={makeAsset()} />);
+    const passwordInput = screen.getByLabelText('分享查看密码');
+    const password = '  p a s s  ';
+
+    await userEvent.type(passwordInput, password);
+    expect(auth.apiFetch).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '分享当前版本' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(auth.apiFetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ version: 4, password }));
+    const publicUrl = String(writeText.mock.calls[0]?.[0]);
+    expect(publicUrl).toContain('/share#token=v2.protected-token');
+    expect(publicUrl).not.toContain(password);
+    expect(publicUrl).not.toContain('password');
+    expect(screen.getByText('查看保护：已设置密码')).toBeInTheDocument();
+    expect(screen.getByText(/链接不包含查看密码，请将密码单独告知接收者/)).toBeInTheDocument();
+  });
+
+  it('带密码创建收到旧版 token 时失败关闭，不复制或标记成功', async () => {
+    const writeText = mockClipboard();
+    auth.apiFetch.mockResolvedValue(shareResponse('v1.legacy-token'));
+    render(<AssetShareButton asset={makeAsset()} />);
+
+    await userEvent.type(screen.getByLabelText('分享查看密码'), 'protected-password');
+    await userEvent.click(screen.getByRole('button', { name: '分享当前版本' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '分享服务尚不支持密码保护，请更新服务后重试',
+    );
+    expect(auth.apiFetch.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ version: 4, password: 'protected-password' }),
+    );
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.queryByRole('textbox', { name: '分享链接' })).toBeNull();
+    expect(screen.queryByText('分享链接已复制')).toBeNull();
+  });
+
+  it('修改密码后不复用旧链接，改回空值也必须再次点击创建', async () => {
+    const writeText = mockClipboard();
+    auth.apiFetch
+      .mockResolvedValueOnce(shareResponse('v2.first-protected-token'))
+      .mockResolvedValueOnce(shareResponse('v2.second-protected-token'))
+      .mockResolvedValueOnce(shareResponse('unprotected-token'));
+    render(<AssetShareButton asset={makeAsset()} />);
+    const passwordInput = screen.getByLabelText('分享查看密码');
+    const trigger = screen.getByRole('button', { name: '分享当前版本' });
+
+    await userEvent.type(passwordInput, 'first-password');
+    await userEvent.click(trigger);
+    const firstLink = await screen.findByRole('textbox', { name: '分享链接' });
+    const firstUrl = firstLink.getAttribute('value');
+
+    await userEvent.clear(passwordInput);
+    await userEvent.type(passwordInput, 'second-password');
+    expect(screen.queryByRole('group', { name: '资源分享链接' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '分享链接' })).toBeNull();
+    expect(auth.apiFetch).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(trigger);
+    const secondLink = await screen.findByRole('textbox', { name: '分享链接' });
+    expect(secondLink).not.toHaveValue(firstUrl);
+    expect(auth.apiFetch).toHaveBeenCalledTimes(2);
+    expect(auth.apiFetch.mock.calls[1]?.[1]?.body).toBe(
+      JSON.stringify({ version: 4, password: 'second-password' }),
+    );
+
+    await userEvent.clear(passwordInput);
+    expect(screen.queryByRole('group', { name: '资源分享链接' })).toBeNull();
+    expect(auth.apiFetch).toHaveBeenCalledTimes(2);
+    await userEvent.click(trigger);
+    await waitFor(() => expect(auth.apiFetch).toHaveBeenCalledTimes(3));
+    expect(auth.apiFetch.mock.calls[2]?.[1]?.body).toBe(JSON.stringify({ version: 4 }));
+    expect(await screen.findByText('查看保护：未设置密码')).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledTimes(3);
+  });
+
+  it('输入变化立即中止旧创建并丢弃迟到结果，重新点击才按新密码创建', async () => {
+    const writeText = mockClipboard();
+    let resolveFirst!: (response: Response) => void;
+    auth.apiFetch
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(shareResponse('v2.current-password-token'));
+    render(<AssetShareButton asset={makeAsset()} />);
+    const passwordInput = screen.getByLabelText('分享查看密码');
+    const trigger = screen.getByRole('button', { name: '分享当前版本' });
+
+    await userEvent.type(passwordInput, 'old-password');
+    await userEvent.click(trigger);
+    const firstSignal = auth.apiFetch.mock.calls[0]?.[1]?.signal as AbortSignal;
+    await userEvent.clear(passwordInput);
+    await userEvent.type(passwordInput, 'new-password');
+
+    expect(firstSignal.aborted).toBe(true);
+    expect(screen.queryByRole('group', { name: '资源分享链接' })).toBeNull();
+    expect(auth.apiFetch).toHaveBeenCalledTimes(1);
+    await act(async () => resolveFirst(shareResponse('v2.late-password-token')));
+    expect(screen.queryByRole('textbox', { name: '分享链接' })).toBeNull();
+    expect(writeText).not.toHaveBeenCalled();
+
+    await userEvent.click(trigger);
+    await screen.findByRole('textbox', { name: '分享链接' });
+    expect(auth.apiFetch).toHaveBeenCalledTimes(2);
+    expect(auth.apiFetch.mock.calls[1]?.[1]?.body).toBe(
+      JSON.stringify({ version: 4, password: 'new-password' }),
+    );
   });
 
   it('Escape 先关闭分享浮层、保留外层预览，并把焦点归还触发按钮', async () => {
@@ -214,11 +338,13 @@ describe('AssetShareButton', () => {
         .mockResolvedValue(undefined),
     );
     auth.apiFetch
-      .mockResolvedValueOnce(shareResponse('account-one'))
+      .mockResolvedValueOnce(shareResponse('v2.account-one'))
       .mockResolvedValueOnce(shareResponse('account-two'));
     render(<AssetShareButton asset={makeAsset()} />);
+    const passwordInput = screen.getByLabelText('分享查看密码');
     const trigger = screen.getByRole('button', { name: '分享当前版本' });
 
+    await userEvent.type(passwordInput, 'account-password');
     await userEvent.click(trigger);
     await screen.findByRole('textbox', { name: '分享链接' });
     await userEvent.click(screen.getByRole('button', { name: '关闭分享面板' }));
@@ -231,10 +357,12 @@ describe('AssetShareButton', () => {
     act(() => auth.emitAuthSessionChange());
     await act(async () => rejectSecond(new DOMException('late failure', 'NotAllowedError')));
 
+    expect(passwordInput).toHaveValue('');
     expect(screen.queryByRole('group', { name: '资源分享链接' })).toBeNull();
     expect(screen.queryByText(/自动复制失败/)).toBeNull();
     await userEvent.click(trigger);
     await waitFor(() => expect(auth.apiFetch).toHaveBeenCalledTimes(2));
+    expect(auth.apiFetch.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ version: 4 }));
     expect(writeText).toHaveBeenCalledTimes(3);
   });
 
@@ -256,15 +384,17 @@ describe('AssetShareButton', () => {
           }),
       );
     const view = render(<AssetShareButton asset={makeAsset()} />);
+    const passwordInput = screen.getByLabelText('分享查看密码');
     const trigger = screen.getByRole('button', { name: '分享当前版本' });
 
+    await userEvent.type(passwordInput, 'resource-password');
     await userEvent.click(trigger);
     expect(trigger).toBeDisabled();
     expect(auth.apiFetch).toHaveBeenCalledTimes(1);
     const firstSignal = auth.apiFetch.mock.calls[0]?.[1]?.signal as AbortSignal;
     await userEvent.click(screen.getByRole('button', { name: '关闭分享面板' }));
     expect(firstSignal.aborted).toBe(true);
-    await act(async () => resolveFirst(shareResponse('late-first')));
+    await act(async () => resolveFirst(shareResponse('v2.late-first')));
     expect(screen.queryByRole('textbox', { name: '分享链接' })).toBeNull();
 
     await userEvent.click(trigger);
@@ -278,7 +408,8 @@ describe('AssetShareButton', () => {
       />,
     );
     expect(secondSignal.aborted).toBe(true);
-    await act(async () => resolveSecond(shareResponse('late-second', 2)));
+    await waitFor(() => expect(passwordInput).toHaveValue(''));
+    await act(async () => resolveSecond(shareResponse('v2.late-second', 2)));
     expect(screen.queryByRole('textbox', { name: '分享链接' })).toBeNull();
   });
 
@@ -298,6 +429,7 @@ describe('AssetShareButton', () => {
 
     view.rerender(<AssetShareButton asset={makeAsset({ id: ' ', contentUrl: undefined })} />);
     expect(screen.getByRole('button', { name: '分享当前版本' })).toBeDisabled();
+    expect(screen.getByLabelText('分享查看密码')).toBeDisabled();
   });
 
   it('没有明确版本时交给后端确认当前版本', async () => {
