@@ -24,7 +24,7 @@ function setMeta(attribute: 'name' | 'property', key: string, value?: string): v
 }
 
 /**
- * 同步站内路由的搜索与分享元数据。公开页才保留 canonical/JSON-LD；不读取账户或资产。
+ * 同步搜索与分享元数据。公开页保留 canonical/JSON-LD，分享页仅保留通用 OG 地址；不读取账户或资产。
  * @returns 无可见 UI；标题和 head 元数据随路由更新，不产生业务请求。
  */
 export function SiteMetadata() {
@@ -49,7 +49,7 @@ export function SiteMetadata() {
     setMeta('property', 'og:image:width', '1200');
     setMeta('property', 'og:image:height', '630');
     setMeta('property', 'og:image:alt', SITE_IMAGE_ALT);
-    setMeta('property', 'og:url', metadata.canonical);
+    setMeta('property', 'og:url', metadata.openGraphUrl ?? metadata.canonical);
     setMeta('name', 'twitter:card', 'summary_large_image');
     setMeta('name', 'twitter:title', metadata.title);
     setMeta('name', 'twitter:description', metadata.description);

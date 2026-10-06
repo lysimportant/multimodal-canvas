@@ -37,8 +37,19 @@ test('分享入口首响应提供通用卡片且明确禁止收录', async ({ re
   expect(html).toContain('content="noindex, nofollow"');
   expect(html).toContain('property="og:image:type" content="image/jpeg"');
   expect(html).not.toMatch(/<link\s+rel="canonical"/);
-  expect(html).not.toMatch(/<meta\s+property="og:url"/);
+  expect(html).toContain('property="og:url" content="https://love.lolicon.beer/share"');
   expect(html).not.toContain('id="lovetv-structured-data"');
+});
+
+test('通用卡片的品牌 JPEG 无需登录即可解码且尺寸匹配声明', async ({ page }) => {
+  const response = await page.goto('/brand/lovetv-social.jpg');
+  expect(response?.status()).toBe(200);
+  expect(response?.headers()['content-type']).toContain('image/jpeg');
+  const image = page.locator('img');
+  await expect
+    .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBe(1200);
+  expect(await image.evaluate((element: HTMLImageElement) => element.naturalHeight)).toBe(630);
 });
 
 test('站内跳转同步标题及 canonical，工作台不收录', async ({ page }, info) => {
@@ -89,6 +100,10 @@ test('离开分享页不会恢复旧标题或将令牌写入搜索标签', async
   await page.goto('/share#invalid-private-token');
   await expect(page).toHaveTitle('共享资源 · LoveTV');
   await expect(page.locator('meta[name=robots]')).toHaveAttribute('content', 'noindex, nofollow');
+  await expect(page.locator('meta[property="og:url"]')).toHaveAttribute(
+    'content',
+    'https://love.lolicon.beer/share',
+  );
   expect(await page.locator('head').innerHTML()).not.toContain('invalid-private-token');
   await page.evaluate(() => {
     history.pushState(null, '', '/contact');

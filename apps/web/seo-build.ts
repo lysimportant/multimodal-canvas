@@ -25,6 +25,7 @@ export function renderSiteHead(pathname: string): string {
   const meta = (attribute: 'name' | 'property', key: string, content: string) =>
     `<meta ${attribute}="${key}" content="${escapeHtml(content)}" />`;
   const image = `${SITE_ORIGIN}/brand/lovetv-social.jpg`;
+  const openGraphUrl = metadata.openGraphUrl ?? metadata.canonical;
   return [
     `<title>${escapeHtml(metadata.title)}</title>`,
     meta('name', 'description', metadata.description),
@@ -49,12 +50,8 @@ export function renderSiteHead(pathname: string): string {
     meta('name', 'twitter:description', metadata.description),
     meta('name', 'twitter:image', image),
     meta('name', 'twitter:image:alt', SITE_IMAGE_ALT),
-    ...(metadata.canonical
-      ? [
-          `<link rel="canonical" href="${metadata.canonical}" />`,
-          meta('property', 'og:url', metadata.canonical),
-        ]
-      : []),
+    ...(metadata.canonical ? [`<link rel="canonical" href="${metadata.canonical}" />`] : []),
+    ...(openGraphUrl ? [meta('property', 'og:url', openGraphUrl)] : []),
     ...(metadata.indexable
       ? [
           `<script id="lovetv-structured-data" type="application/ld+json">${JSON.stringify(siteStructuredData(pathname)).replace(/</g, '\\u003c')}</script>`,

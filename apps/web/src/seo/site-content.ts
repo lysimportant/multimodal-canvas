@@ -25,12 +25,14 @@ export type SitePageMetadata = {
   description: string;
   indexable: boolean;
   canonical?: string;
+  /** 通用卡片的固定地址；与收录 canonical 分离，不含查询串、令牌或资源标识。 */
+  openGraphUrl?: string;
 };
 
 /**
  * 按公开路径选择标题与收录策略；其余路径一律禁止收录，不携带查询串或分享令牌。
  * @param pathname 路由路径，可包含末尾斜杠，调用方无需提供登录信息。
- * @returns 固定的品牌文案与公开 canonical；私有和未知路径没有 canonical。
+ * @returns 固定品牌文案与公开 canonical；分享页只提供通用 OG 地址，其余私有路径不提供地址。
  */
 export function sitePageMetadata(pathname: string): SitePageMetadata {
   const path = pathname.replace(/\/+$/, '') || '/';
@@ -66,6 +68,7 @@ export function sitePageMetadata(pathname: string): SitePageMetadata {
     title: `${title} · ${SITE_NAME}`,
     description: path === '/share' ? SHARE_DESCRIPTION : SITE_DESCRIPTION,
     indexable: false,
+    openGraphUrl: path === '/share' ? `${SITE_ORIGIN}/share` : undefined,
   };
 }
 

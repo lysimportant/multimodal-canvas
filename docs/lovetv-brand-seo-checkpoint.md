@@ -54,6 +54,28 @@
 - 两站补齐分享图的 `secure_url`、类型和尺寸元数据；New API 仅对规范的大肥鱼 PNG 输出已核实的 `image/png`、`1200×630`，自定义图片不猜测尺寸。
 - 定向检查：画布 SEO 单测 20/20、生产静态 Caddy 浏览器回归 4/4、New API router SEO 测试通过、New API 前端 SEO 单测 15/15。画布全仓测试在默认临时目录遇 Windows `EPERM`，切换到 `.local-tests/seo-qq-20261006/temp` 后继续；既有重型 Web 用例仍有超时，未将其归因于本次 SEO 改动。
 
+## 2026-10-06 通用分享卡兼容修复
+
+- 任务级别 P1；起点为干净的 `main @ 5dce5cf`，上游 `origin/main`，Node `v24.12.0`、pnpm `11.19.0`，本地依赖齐全。
+- 本轮复查线上首页、`/share`、`/share/`、`/share/index.html` 和品牌 JPEG 均返回 200；分享页首响应已有标题、摘要、图片，但缺少 `og:url`。不能据此断言这就是 QQ 不出卡的唯一原因。
+- 目标是让通用分享卡在构建首响应、内联启动脚本和 React 路由三个阶段保持一致。`og:url` 固定为公开品牌入口 `https://love.lolicon.beer/share`，与搜索 canonical 分离；不使用当前 URL、查询串、hash、资源名称或访问密码。
+- 分享页继续 `noindex, nofollow`，不添加 canonical、JSON-LD 或 sitemap 条目；私有页面仍移除 OG 地址。保留 `/share#token=...`、原有分享授权和密码解锁，不做具体素材卡片、QQ SDK、依赖升级、数据库迁移或生产部署。
+- 兼容与回滚：仅修改 Web 静态元数据及启动清理逻辑，不改变 API、分享令牌或资源数据格式；回滚 Web 构建即可，无数据回滚或备份迁移需求。
+- 修改前 SEO 定向测试 20/20 通过；新增固定分享地址、启动脚本和令牌隔离断言后 6 项按预期失败；修复后 25/25 通过。
+- 全仓 `pnpm exec turbo run lint typecheck build --force --concurrency=1 --env-mode=loose`：27/27 任务通过、无缓存，保留既有 Vite 大 chunk 告警；`pnpm test:runtime`：8/8 通过。
+- 新产物挂载到独立 Caddy 容器、端口 8086 后，分享与 SEO 浏览器回归 8/8 通过；补充图片实际解码检查后 SEO 再验 5/5 通过。解锁、复制原 hash 链接、图片缩放和音视频控件均使用本地夹具，不访问真实账号或资源；已查看 PC 解锁页截图。
+- `/share`、`/share/`、`/share/index.html` 三个首响应均为 200，包含固定分享地址，返回 `X-Robots-Tag: noindex, nofollow` 与 `Cache-Control: no-cache`，不含 canonical 或 JSON-LD；品牌 JPEG 返回 200，浏览器实际解码为 1200×630。
+- 非 Web 全包无缓存测试：13/13 任务通过；API 1196 项通过、101 项因外部设施等条件跳过，Worker 784 项通过、28 项跳过。跳过项不算集成验收。测试透传参数首次被 pnpm/Turbo 拒绝，未执行测试；改为非 Web 全包命令与 Web 单独限制 worker 的命令继续，不改变依赖或测试阈值。
+- Web 全量 `pnpm --filter @multimodal-canvas/web exec vitest run --maxWorkers=1 --minWorkers=1`：131/131 文件、2423/2423 用例通过（838.81 秒），包含本轮 SEO 和既有画布、分享、密码回归；未放宽测试阈值。
+- 当前恢复点：本地实现与验证完成，完整差异、格式、`git diff --check` 和新增行常见凭据/调试/冲突标记扫描通过。验证容器 `lovetv-card-check-20261006` 已停止并移除；现有 8080 应用栈未更新，不能用其旧镜像代替本轮隔离验收。日志与截图位于忽略目录 `.local-tests/seo-card-20261006`。
+- 交付到 `origin/main`，附注 Tag `v2026.10.06-share-card`；最终提交和远程引用以 Git 及交付回复为准。本轮仅涉及 Web SEO 与测试、检查点，没有生产部署。
+
+### 发布后仍需验收
+
+- 发布完整 Web 构建（含 `share/index.html` 和 `brand` 文件），确认外层代理没有把分享入口重写为首页，复核上述三个路径的首次 HTML 响应。此次未操作生产部署或日志配置。
+- 真实 QQ 消息需验证卡片展示及点击后保留原 `#token=...` 链接；尚未确认 QQ 是否会使用固定 `og:url` 作为点击目标。不能以模拟 User-Agent、本地测试或标准字段齐全保证出卡。
+- 若仍无卡片，以实际发送时间对照最外层代理的抓取记录，区分未抓取、HTML/图片抓取失败和抓取后未展示。诊断记录仅保留时间、路径、状态、User-Agent 等必要信息，不记录查询串、Cookie、密码或访问令牌；没有抓取日志时仍不能判断 QQ 侧原因。
+
 ## 复现命令与边界
 
 ```powershell

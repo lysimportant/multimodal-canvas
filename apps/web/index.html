@@ -19,10 +19,13 @@
     <!--lovetv-meta:end-->
     <script>
       /** 私有与未知入口在主模块加载前禁止收录，不将查询参数或令牌写入元数据。 */
-      if (!['/', '/contact'].includes(location.pathname.replace(/\/+$/, '') || '/')) {
+      const seoPath = location.pathname.replace(/\/+$/, '') || '/';
+      if (!['/', '/contact'].includes(seoPath)) {
         document.querySelector('meta[name="robots"]').content = 'noindex, nofollow';
         document.querySelector('link[rel="canonical"]')?.remove();
-        document.querySelector('meta[property="og:url"]')?.remove();
+        if (!['/share', '/share/index.html'].includes(seoPath)) {
+          document.querySelector('meta[property="og:url"]')?.remove();
+        }
         document.getElementById('lovetv-structured-data')?.remove();
       }
     </script>

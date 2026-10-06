@@ -58,7 +58,9 @@ describe('LoveTV 公开静态 SEO', () => {
       'noindex, nofollow',
     );
     expect(document.querySelector('link[rel="canonical"]')).toBeNull();
-    expect(document.querySelector('meta[property="og:url"]')).toBeNull();
+    expect(document.querySelector('meta[property="og:url"]')?.getAttribute('content')).toBe(
+      'https://love.lolicon.beer/share',
+    );
     expect(document.querySelector('script[type="application/ld+json"]')).toBeNull();
     expect(document.querySelector('meta[property="og:title"]')?.getAttribute('content')).toBe(
       '共享资源 · LoveTV',
@@ -68,6 +70,42 @@ describe('LoveTV 公开静态 SEO', () => {
     ).toContain('共享的创作资源');
     expect(document.querySelector('.lovetv-static-intro')?.textContent).toContain('链接预览');
     expect(document.documentElement.outerHTML).not.toMatch(/token=|private-project/);
+  });
+
+  it.each(['/share', '/share/', '/share/index.html'])(
+    '%s 的启动脚本保留通用分享地址，不恢复 canonical 或读取令牌',
+    (pathname) => {
+      const document = new DOMParser().parseFromString(
+        renderSiteDocument(source, '/share'),
+        'text/html',
+      );
+      const guard = document.querySelector('script:not([type]):not([src])');
+      expect(guard).not.toBeNull();
+      new Function('document', 'location', guard!.textContent!)(document, {
+        pathname,
+        search: '?password=private-password',
+        hash: '#token=private-token',
+      });
+      expect(document.querySelector('meta[property="og:url"]')?.getAttribute('content')).toBe(
+        'https://love.lolicon.beer/share',
+      );
+      expect(document.querySelector('link[rel="canonical"]')).toBeNull();
+      expect(document.head.innerHTML).not.toMatch(/private-token|private-password/);
+    },
+  );
+
+  it('私有入口的启动脚本仍移除首页 OG 地址和结构化数据', () => {
+    const document = new DOMParser().parseFromString(renderSiteDocument(source, '/'), 'text/html');
+    const guard = document.querySelector('script:not([type]):not([src])');
+    new Function('document', 'location', guard!.textContent!)(document, {
+      pathname: '/projects/private-project',
+    });
+    expect(document.querySelector('meta[property="og:url"]')).toBeNull();
+    expect(document.querySelector('link[rel="canonical"]')).toBeNull();
+    expect(document.querySelector('#lovetv-structured-data')).toBeNull();
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toBe(
+      'noindex, nofollow',
+    );
   });
 
   it('生成介绍页、sitemap 和 robots，但不列入工作台、账号或项目', () => {

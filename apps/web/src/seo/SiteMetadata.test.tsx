@@ -71,7 +71,6 @@ describe('LoveTV 搜索元数据', () => {
     '/resources',
     '/runs',
     '/auth/login',
-    '/share#private-token',
     '/missing',
   ])('%s 不收录且无私有 canonical 或结构化数据', async (path) => {
     render(<SiteMetadata />);
@@ -87,6 +86,27 @@ describe('LoveTV 搜索元数据', () => {
     expect(document.title).toContain('LoveTV');
     expect(document.head.innerHTML).not.toMatch(/private-project|private-token/);
   });
+
+  it.each(['/share#token=private-token', '/share/?token=private-token#password=private-password'])(
+    '%s 只使用固定分享地址，不公开令牌、密码或资源信息',
+    async (path) => {
+      render(<SiteMetadata />);
+      navigateApp(path);
+      await waitFor(() => expect(document.title).toBe('共享资源 · LoveTV'));
+      expect(document.querySelector('meta[property="og:url"]')?.getAttribute('content')).toBe(
+        `${SITE_ORIGIN}/share`,
+      );
+      expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toBe(
+        'noindex, nofollow',
+      );
+      expect(document.querySelector('link[rel="canonical"]')).toBeNull();
+      expect(document.getElementById('lovetv-structured-data')).toBeNull();
+      expect(document.head.innerHTML).not.toMatch(/private-token|private-password|token=/);
+      navigateApp('/workspace');
+      await waitFor(() => expect(document.title).toBe('工作台 · LoveTV'));
+      expect(document.querySelector('meta[property="og:url"]')).toBeNull();
+    },
+  );
 
   it('已有重复标签会合并，返回公开页恢复索引策略', async () => {
     document.head.insertAdjacentHTML(
