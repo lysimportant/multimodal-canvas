@@ -24,6 +24,12 @@ describe('LoveTV 公开静态 SEO', () => {
       expect(
         document.querySelector<HTMLMetaElement>('meta[property="og:image"]')?.content,
       ).toContain('/brand/lovetv-social.jpg');
+      expect(
+        document.querySelector<HTMLMetaElement>('meta[property="og:image:type"]')?.content,
+      ).toBe('image/jpeg');
+      expect(
+        document.querySelector<HTMLMetaElement>('meta[property="og:image:secure_url"]')?.content,
+      ).toBe('https://love.lolicon.beer/brand/lovetv-social.jpg');
       expect(document.querySelectorAll('h1')).toHaveLength(1);
       expect(document.querySelector('h1')?.textContent).toContain('LoveTV');
       expect(document.querySelector('.lovetv-static-intro')?.textContent).toContain('AI');
@@ -42,6 +48,28 @@ describe('LoveTV 公开静态 SEO', () => {
     expect(head).not.toMatch(/canonical|application\/ld\+json|private/);
   });
 
+  it('分享入口首响应只给通用卡片，不借用首页 canonical 或泄露资源', () => {
+    const document = new DOMParser().parseFromString(
+      renderSiteDocument(source, '/share'),
+      'text/html',
+    );
+    expect(document.title).toBe('共享资源 · LoveTV');
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toBe(
+      'noindex, nofollow',
+    );
+    expect(document.querySelector('link[rel="canonical"]')).toBeNull();
+    expect(document.querySelector('meta[property="og:url"]')).toBeNull();
+    expect(document.querySelector('script[type="application/ld+json"]')).toBeNull();
+    expect(document.querySelector('meta[property="og:title"]')?.getAttribute('content')).toBe(
+      '共享资源 · LoveTV',
+    );
+    expect(
+      document.querySelector('meta[property="og:description"]')?.getAttribute('content'),
+    ).toContain('共享的创作资源');
+    expect(document.querySelector('.lovetv-static-intro')?.textContent).toContain('链接预览');
+    expect(document.documentElement.outerHTML).not.toMatch(/token=|private-project/);
+  });
+
   it('生成介绍页、sitemap 和 robots，但不列入工作台、账号或项目', () => {
     const plugin = loveTvSeo();
     const emitted: Array<{ fileName: string; source: string }> = [];
@@ -55,9 +83,13 @@ describe('LoveTV 公开静态 SEO', () => {
     );
     expect(emitted.map((asset) => asset.fileName)).toEqual([
       'contact/index.html',
+      'share/index.html',
       'sitemap.xml',
       'robots.txt',
     ]);
+    const share = emitted.find((asset) => asset.fileName === 'share/index.html')!.source;
+    expect(share).toContain('<title>共享资源 · LoveTV</title>');
+    expect(share).not.toContain('href="https://love.lolicon.beer/"');
     const sitemap = emitted.find((asset) => asset.fileName === 'sitemap.xml')!.source;
     const xml = new DOMParser().parseFromString(sitemap, 'application/xml');
     expect([...xml.querySelectorAll('loc')].map((element) => element.textContent)).toEqual([
@@ -94,5 +126,6 @@ describe('LoveTV 公开静态 SEO', () => {
     const caddy = readFileSync(resolve(process.cwd(), '../../docker/Web.Caddyfile'), 'utf8');
     expect(caddy).toContain('header @private X-Robots-Tag "noindex, nofollow"');
     expect(caddy).toContain('{path}/index.html');
+    expect(caddy).toContain('@share path /share /share/ /share/index.html');
   });
 });

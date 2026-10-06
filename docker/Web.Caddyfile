@@ -27,6 +27,8 @@
 		try_files {path} {path}/index.html /index.html
 		@index path / /index.html /contact /contact/ /contact/index.html
 		header @index Cache-Control no-cache
+		@share path /share /share/ /share/index.html
+		header @share Cache-Control no-cache
 		file_server
 	}
 }

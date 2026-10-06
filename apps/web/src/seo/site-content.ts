@@ -15,6 +15,10 @@ export const SITE_DESCRIPTION =
 export const CONTACT_DESCRIPTION =
   '了解 LoveTV 与品牌形象大肥鱼（鲸鱼娘），探索 AI 图片生成、AI 视频生成和 API 模型接入工作流，以及参考资料、提示词优化、素材管理与使用支持。';
 
+/** 分享入口仅提供通用说明；资源内容必须通过页面打开后按分享授权获取。 */
+export const SHARE_DESCRIPTION =
+  '通过 LoveTV 查看共享的创作资源。大肥鱼（鲸鱼娘）陪你探索 AI 图片与视频；具体内容仅在打开分享页后按访问权限加载。';
+
 /** 同时提供给静态页面和浏览器路由的元数据，不包含用户资源字段。 */
 export type SitePageMetadata = {
   title: string;
@@ -60,7 +64,7 @@ export function sitePageMetadata(pathname: string): SitePageMetadata {
                 : '页面未找到';
   return {
     title: `${title} · ${SITE_NAME}`,
-    description: SITE_DESCRIPTION,
+    description: path === '/share' ? SHARE_DESCRIPTION : SITE_DESCRIPTION,
     indexable: false,
   };
 }

@@ -29,6 +29,18 @@ test('公开入口首响应包含 LoveTV、正式域名与鲸鱼娘图标', asyn
   expect((await icon.body()).byteLength).toBeGreaterThan(100);
 });
 
+test('分享入口首响应提供通用卡片且明确禁止收录', async ({ request }) => {
+  const response = await request.get('/share');
+  expect(response.ok()).toBe(true);
+  const html = await response.text();
+  expect(html).toContain('<title>共享资源 · LoveTV</title>');
+  expect(html).toContain('content="noindex, nofollow"');
+  expect(html).toContain('property="og:image:type" content="image/jpeg"');
+  expect(html).not.toMatch(/<link\s+rel="canonical"/);
+  expect(html).not.toMatch(/<meta\s+property="og:url"/);
+  expect(html).not.toContain('id="lovetv-structured-data"');
+});
+
 test('站内跳转同步标题及 canonical，工作台不收录', async ({ page }, info) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));

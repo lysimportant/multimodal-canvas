@@ -39,6 +39,8 @@ export function renderSiteHead(pathname: string): string {
     meta('property', 'og:type', 'website'),
     meta('property', 'og:locale', 'zh_CN'),
     meta('property', 'og:image', image),
+    meta('property', 'og:image:secure_url', image),
+    meta('property', 'og:image:type', 'image/jpeg'),
     meta('property', 'og:image:width', '1200'),
     meta('property', 'og:image:height', '630'),
     meta('property', 'og:image:alt', SITE_IMAGE_ALT),
@@ -63,10 +65,18 @@ export function renderSiteHead(pathname: string): string {
 
 /**
  * 在应用加载前或禁用脚本时提供真实产品说明；React 接管 root 后替换为交互页面，不隐藏 SEO 文本。
- * @param pathname 仅支持已声明的公开路径，禁止引用用户内容。
+ * @param pathname 仅支持已声明的公开路径或通用分享入口，禁止引用用户内容。
  * @returns 正常可见的语义化简介和站内入口。
  */
 export function renderStaticIntroduction(pathname: string): string {
+  if (pathname === '/share')
+    return `<section class="lovetv-static-intro" aria-label="LoveTV 共享资源">
+    <img src="/brand/lovetv-icon-192.png" width="64" height="64" alt="LoveTV 大肥鱼（鲸鱼娘）品牌图标" />
+    <h1>共享资源 · LoveTV</h1>
+    <p>${escapeHtml(sitePageMetadata(pathname).description)}</p>
+    <p>打开后可查看链接对应的共享内容；链接预览不会公开具体资源。</p>
+    <a href="/">了解 LoveTV</a>
+  </section>`;
   const contact = pathname === '/contact';
   return `<section class="lovetv-static-intro" aria-label="${contact ? '关于 LoveTV' : 'LoveTV 产品介绍'}">
     <img src="/brand/lovetv-icon-192.png" width="64" height="64" alt="LoveTV 大肥鱼（鲸鱼娘）品牌图标" />
@@ -89,7 +99,7 @@ function replaceSlot(html: string, name: string, content: string): string {
   );
 }
 
-/** 将同一应用外壳转换成公开路径的可索引 HTML，不创建第二套页面路由。 */
+/** 将同一应用外壳转换成各入口的静态 HTML，不创建第二套页面路由。 */
 export function renderSiteDocument(html: string, pathname: string): string {
   return replaceSlot(
     replaceSlot(html, 'meta', renderSiteHead(pathname)),
@@ -99,7 +109,7 @@ export function renderSiteDocument(html: string, pathname: string): string {
 }
 
 /**
- * 生成首页/介绍页的首响应元数据、sitemap 与 robots；私有页的 noindex 另由 Caddy 响应头和浏览器路由维护。
+ * 生成公开页及通用分享页的首响应元数据、sitemap 与 robots；分享页另由 Caddy 响应头禁止收录。
  * @returns Vite 插件，无网络请求、账号读取或数据迁移；缺少 HTML 入口时明确构建失败。
  */
 export function loveTvSeo(): Plugin {
@@ -108,11 +118,13 @@ export function loveTvSeo(): Plugin {
     enforce: 'post',
     transformIndexHtml: {
       order: 'post',
-      handler: (html, context) =>
-        renderSiteDocument(
+      handler: (html, context) => {
+        const pathname = context.originalUrl?.split('?')[0].replace(/\/+$/, '') || '/';
+        return renderSiteDocument(
           html,
-          context.originalUrl?.split('?')[0].replace(/\/+$/, '') === '/contact' ? '/contact' : '/',
-        ),
+          pathname === '/contact' || pathname === '/share' ? pathname : '/',
+        );
+      },
     },
     generateBundle(_, bundle) {
       const index = bundle['index.html'];
@@ -121,6 +133,11 @@ export function loveTvSeo(): Plugin {
         type: 'asset',
         fileName: 'contact/index.html',
         source: renderSiteDocument(String(index.source), '/contact'),
+      });
+      this.emitFile({
+        type: 'asset',
+        fileName: 'share/index.html',
+        source: renderSiteDocument(String(index.source), '/share'),
       });
       this.emitFile({
         type: 'asset',

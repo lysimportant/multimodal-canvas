@@ -44,6 +44,10 @@ export function SiteMetadata() {
     setMeta('property', 'og:type', 'website');
     setMeta('property', 'og:locale', 'zh_CN');
     setMeta('property', 'og:image', `${SITE_ORIGIN}/brand/lovetv-social.jpg`);
+    setMeta('property', 'og:image:secure_url', `${SITE_ORIGIN}/brand/lovetv-social.jpg`);
+    setMeta('property', 'og:image:type', 'image/jpeg');
+    setMeta('property', 'og:image:width', '1200');
+    setMeta('property', 'og:image:height', '630');
     setMeta('property', 'og:image:alt', SITE_IMAGE_ALT);
     setMeta('property', 'og:url', metadata.canonical);
     setMeta('name', 'twitter:card', 'summary_large_image');

@@ -30,6 +30,15 @@ describe('LoveTV 搜索元数据', () => {
     expect(document.querySelector<HTMLMetaElement>('meta[property="og:image"]')?.content).toBe(
       `${SITE_ORIGIN}/brand/lovetv-social.jpg`,
     );
+    expect(
+      document.querySelector<HTMLMetaElement>('meta[property="og:image:secure_url"]')?.content,
+    ).toBe(`${SITE_ORIGIN}/brand/lovetv-social.jpg`);
+    expect(document.querySelector<HTMLMetaElement>('meta[property="og:image:type"]')?.content).toBe(
+      'image/jpeg',
+    );
+    expect(
+      document.querySelector<HTMLMetaElement>('meta[property="og:image:width"]')?.content,
+    ).toBe('1200');
     expect(document.querySelector<HTMLMetaElement>('meta[name="robots"]')?.content).toContain(
       'index, follow',
     );

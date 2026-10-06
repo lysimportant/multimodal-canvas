@@ -47,6 +47,13 @@
 - 最终构建在独立 8086 静态服务上复验：公开页面缓存与元数据、私有页 noindex、sitemap、robots、图标及 manifest 均通过；生产构建浏览器回归 8/8 通过，含 SEO 跳转、菜单/登录导航、创建项目及创建中停止、再次生成。业务 API 全为本地夹具，无真实生成、账号或项目写入。菜单 E2E 等待抽屉焦点就绪，并将存量设置标题断言同步为现有 New API 文案，没有修改导航行为。
 - 当前恢复点：功能与本地验证完成，差异检查及常见密钥格式扫描无命中；本轮仅纳入品牌、SEO、首页和停止相关文件。独立静态验证容器已停止并移除；开发预览仍在 `http://127.0.0.1:5185`。现有 8080 应用栈及正式网站尚未发布本轮改动。
 
+## 2026-10-06 QQ 分享卡续验
+
+- 线上首响应已确认：首页、`/pricing` 均有 `title`、description、canonical、OG/Twitter 标记及可访问的 1200×630 分享图；QQ 不出卡不能单独归因于缺 SEO，仍可能受 QQ 抓取策略与缓存影响。
+- 画布已为 `/share` 生成独立静态入口：首响应使用“共享资源 · LoveTV”通用标题和摘要，明确 `noindex, nofollow`，不带首页 canonical、`og:url`、JSON-LD，也不把 hash token 或资源详情写入元数据；Caddy 对 `/share` 设置独立 no-cache 规则。
+- 两站补齐分享图的 `secure_url`、类型和尺寸元数据；New API 仅对规范的大肥鱼 PNG 输出已核实的 `image/png`、`1200×630`，自定义图片不猜测尺寸。
+- 定向检查：画布 SEO 单测 20/20、生产静态 Caddy 浏览器回归 4/4、New API router SEO 测试通过、New API 前端 SEO 单测 15/15。画布全仓测试在默认临时目录遇 Windows `EPERM`，切换到 `.local-tests/seo-qq-20261006/temp` 后继续；既有重型 Web 用例仍有超时，未将其归因于本次 SEO 改动。
+
 ## 复现命令与边界
 
 ```powershell
