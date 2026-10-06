@@ -9,7 +9,7 @@ import { precheckVideoGenerationInputs, type RunSnapshot } from '@multimodal-can
 import { PrismaExecutionService } from '@multimodal-canvas/execution';
 import { AuthService } from './auth-service';
 import { PrismaAuthStore } from './auth-store';
-import { NewApiAccountClient } from './newapi-account-client';
+import { NewApiAccountClient, NewApiAccountError } from './newapi-account-client';
 import { NewApiAccountService, authority } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 import { buildApp } from './fixtures/test-app';
@@ -60,6 +60,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
   let otherConflictGroup = '';
   let lostRepairResponse = '';
   let accountDenied = false;
+  let groupKeySuffix = '';
   let profile: { display_name: string; email?: string } = { display_name: 'same-name' };
   const operations = new Map<string, { token: string; key: string }>();
   const repairOperations = new Map<string, { token: string; key: string }>();
@@ -103,6 +104,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
     otherConflictGroup = '';
     lostRepairResponse = '';
     accountDenied = false;
+    groupKeySuffix = '';
     profile = { display_name: 'same-name' };
     operations.clear();
     repairOperations.clear();
@@ -187,7 +189,7 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
             }
             const operation = operations.get(body.operation_id) ?? {
               token: String(1000 + operations.size + 1),
-              key: `synthetic-${account}-${Buffer.from(group).toString('hex')}`,
+              key: `synthetic-${account}-${Buffer.from(group).toString('hex')}${groupKeySuffix}`,
             };
             operations.set(body.operation_id, operation);
             managedGroups.set(`${account}:${group}`, operation);
@@ -484,6 +486,354 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       WHERE table_schema = current_schema() AND table_name IN ('wallets', 'wallet_entries')
     `;
     expect(Number(walletTables[0]?.count)).toBe(0);
+  });
+
+  it('权威目录删除分组后清除当前入口并保留历史凭据，同名重建不恢复旧快照', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    const credential = binding.credential!;
+    const project = await new PrismaProjectStore(prisma).create(
+      { name: 'Removed group authorization' },
+      { ownerId: account.user.id },
+    );
+    const snapshot: RunSnapshot = {
+      projectId: project.id,
+      canvasRevision: 1,
+      targetNodeId: 'target',
+      modelAlias: 'exact-model',
+      parameters: {},
+      submittedAt: new Date().toISOString(),
+      inputs: [],
+      edges: [],
+      credentialId: credential.id,
+      credentialVersion: credential.version,
+      nodes: [
+        {
+          id: 'target',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Removed group',
+            mediaType: 'text',
+            mode: 'generate',
+            modelAlias: 'exact-model',
+          },
+        },
+      ],
+      executionBindings: {
+        target: {
+          credentialId: credential.id,
+          credentialVersion: credential.version,
+          modelAlias: 'exact-model',
+          mediaType: 'text',
+          contract: 'openai-chat-completions',
+          authority: authority(identity, binding),
+        },
+      },
+    };
+
+    unavailable = true;
+    await expect(service.synchronize(account.user.id)).rejects.toMatchObject({ status: 503 });
+    unavailable = false;
+    expect(
+      await prisma.newApiGroupBinding.findUniqueOrThrow({ where: { id: binding.id } }),
+    ).toMatchObject({ status: 'active', credentialId: credential.id });
+    await service.synchronize(account.user.id);
+
+    await prisma.newApiGroupBinding.update({
+      where: { id: binding.id },
+      data: {
+        catalog: {
+          models: [
+            {
+              id: 'stale-model',
+              media_type: 'text',
+              contract: 'openai-chat-completions',
+              available: true,
+            },
+          ],
+        },
+      },
+    });
+    groups = groups.filter((group) => group !== 'default');
+    await service.synchronize(account.user.id);
+
+    const removed = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+      include: { credential: true },
+    });
+    expect(removed).toMatchObject({
+      status: 'removed',
+      credentialId: credential.id,
+      autoGroups: [],
+      catalog: null,
+      repairState: null,
+    });
+    expect(removed.credential!.version).toBeGreaterThan(credential.version);
+    expect((await service.status(account.user.id)).groups).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ group: 'default' })]),
+    );
+    await expect(service.models(account.user.id, undefined, credential.id)).rejects.toMatchObject({
+      code: 'credential_not_found',
+    });
+    await expect(service.validateGroup(account.user.id, credential.id)).rejects.toMatchObject({
+      code: 'credential_not_found',
+    });
+    const settings = new NewApiAccountSettings(service);
+    await newApiRequestUser.run(account.user.id, async () => {
+      expect(await settings.hasCredential(credential.id)).toBe(false);
+      expect(await settings.listCredentials()).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: credential.id })]),
+      );
+    });
+    const execution = new PrismaExecutionService(prisma);
+    const removedRunId = `removed-${randomUUID()}`;
+    await expect(
+      execution.createSubmission({
+        runId: removedRunId,
+        userId: account.user.id,
+        snapshot,
+        queueName: 'removed-group-test',
+        payload: {
+          runId: removedRunId,
+          userId: account.user.id,
+          snapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'binding_changed' });
+
+    groupKeySuffix = '-restored';
+    groups.push('default');
+    failGroup = 'default';
+    expect(
+      (await service.synchronize(account.user.id)).groups.find(
+        (group) => group.group === 'default',
+      ),
+    ).toMatchObject({ status: 'unavailable' });
+    failGroup = '';
+    await service.synchronize(account.user.id);
+    const restored = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: binding.id },
+      include: { credential: true },
+    });
+    expect(restored).toMatchObject({
+      status: 'active',
+      credentialId: credential.id,
+      catalog: { models: [expect.objectContaining({ id: 'exact-model' })] },
+    });
+    expect(restored.credential!.version).toBeGreaterThan(credential.version);
+    expect(keyring.decrypt(restored.credential!.encryptedApiKey).plaintext).toContain('-restored');
+    expect(JSON.stringify(restored.catalog)).not.toContain('stale-model');
+    const archived = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+      where: {
+        credentialId_fromVersion: { credentialId: credential.id, fromVersion: credential.version },
+      },
+    });
+    expect(archived.encryptedApiKey).toBe(credential.encryptedApiKey);
+    expect(archived.kind).toBe('superseded');
+    const restoredHistory = await prisma.newApiCredentialRotation.findUniqueOrThrow({
+      where: {
+        credentialId_fromVersion: {
+          credentialId: credential.id,
+          fromVersion: removed.credential!.version,
+        },
+      },
+    });
+    expect(restoredHistory).toMatchObject({
+      kind: 'synchronize',
+      encryptedApiKey: credential.encryptedApiKey,
+    });
+    await newApiRequestUser.run(account.user.id, async () => {
+      await expect(
+        settings.getProviderCredentials({
+          credentialId: credential.id,
+          credentialVersion: restored.credential!.version,
+        }),
+      ).resolves.toMatchObject({ apiKey: expect.stringContaining('-restored') });
+    });
+    const restoredRunId = `restored-old-${randomUUID()}`;
+    await expect(
+      execution.createSubmission({
+        runId: restoredRunId,
+        userId: account.user.id,
+        snapshot,
+        queueName: 'removed-group-test',
+        payload: {
+          runId: restoredRunId,
+          userId: account.user.id,
+          snapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'binding_changed' });
+  });
+
+  it('较早账号目录迟到时不能创建较新目录已排除的分组', async () => {
+    const account = await login();
+    const originalAccount = service.options.client.account.bind(service.options.client);
+    let release!: () => void;
+    let requested!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    let first = true;
+    vi.spyOn(service.options.client, 'account').mockImplementation(async (token) => {
+      const state = await originalAccount(token);
+      if (first) {
+        first = false;
+        requested();
+        await blocked;
+      }
+      return state;
+    });
+
+    groups.push('late-only');
+    const older = service.synchronize(account.user.id);
+    await started;
+    groups = groups.filter((group) => group !== 'late-only');
+    await service.synchronize(account.user.id);
+    release();
+    await older;
+
+    const identity = await service.identity(account.user.id);
+    expect(
+      await prisma.newApiGroupBinding.findUnique({
+        where: { identityId_group: { identityId: identity.id, group: 'late-only' } },
+      }),
+    ).toBeNull();
+    expect((await service.status(account.user.id)).groups).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ group: 'late-only' })]),
+    );
+  });
+
+  it('删除全部分组后返回空目录，改名的新分组可独立纳入', async () => {
+    const account = await login();
+    groups = [];
+    expect((await service.synchronize(account.user.id)).groups).toEqual([]);
+    expect(await service.models(account.user.id)).toEqual([]);
+    await newApiRequestUser.run(account.user.id, async () => {
+      expect(await new NewApiAccountSettings(service).listCredentials()).toEqual([]);
+    });
+    groups = ['renamed-group'];
+    const updated = await service.synchronize(account.user.id);
+    expect(updated.groups).toEqual([
+      expect.objectContaining({ group: 'renamed-group', status: 'active' }),
+    ]);
+  });
+
+  it('同名分组重新纳入但 Key 缺失时仍恢复新 Key，旧版本保持归档', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const original = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+      include: { credential: true },
+    });
+    groups = groups.filter((group) => group !== 'default');
+    await service.synchronize(account.user.id);
+    groups.push('default');
+    missingGroup = 'default';
+    const status = await service.synchronize(account.user.id);
+    expect(status.groups.find((entry) => entry.group === 'default')).toMatchObject({
+      status: 'active',
+      repairPending: false,
+    });
+    expect(repairRequests).toHaveLength(1);
+    const restored = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { id: original.id },
+      include: { credential: true },
+    });
+    expect(restored.credential!.version).toBeGreaterThan(original.credential!.version);
+    expect(restored.upstreamTokenId).not.toBe(original.upstreamTokenId);
+  });
+
+  it('删除分组时归档正在恢复的操作，迟到回包不能重建目录', async () => {
+    const account = await login();
+    const identity = await service.identity(account.user.id);
+    const binding = await prisma.newApiGroupBinding.findUniqueOrThrow({
+      where: { identityId_group: { identityId: identity.id, group: 'default' } },
+    });
+    const originalRepair = service.options.client.repairGroup.bind(service.options.client);
+    let release!: () => void;
+    let requested!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    vi.spyOn(service.options.client, 'repairGroup').mockImplementation(async (...args) => {
+      const remote = await originalRepair(...args);
+      requested();
+      await blocked;
+      return remote;
+    });
+    missingGroup = 'default';
+    const older = service.synchronize(account.user.id);
+    await started;
+    try {
+      groups = [];
+      await service.synchronize(account.user.id);
+    } finally {
+      release();
+    }
+    await older;
+    expect((await service.status(account.user.id)).groups).toEqual([]);
+    expect(await service.models(account.user.id)).toEqual([]);
+    expect(
+      await prisma.newApiGroupBinding.findUniqueOrThrow({ where: { id: binding.id } }),
+    ).toMatchObject({ status: 'removed', catalog: null, repairState: null });
+    const archived = await prisma.newApiCredentialRotation.findFirstOrThrow({
+      where: { bindingId: binding.id },
+    });
+    expect(archived.kind).toBe('superseded');
+    expect(archived.completedAt).not.toBeNull();
+  });
+
+  it.each([401, 503])('迟到的分组验证 %s 不覆盖新同步或撤销当前会话', async (status) => {
+    const account = await login();
+    const credentialId = (await service.status(account.user.id)).groups[0]!.credentialId!;
+    const originalAccount = service.options.client.account.bind(service.options.client);
+    let release!: () => void;
+    let requested!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    let first = true;
+    vi.spyOn(service.options.client, 'account').mockImplementation(async (...args) => {
+      if (!first) return originalAccount(...args);
+      first = false;
+      requested();
+      await blocked;
+      throw new NewApiAccountError('delayed_failure', '合成迟到错误', status);
+    });
+    const older = service.validateGroup(account.user.id, credentialId).catch((error) => error);
+    await started;
+    try {
+      await service.synchronize(account.user.id);
+    } finally {
+      release();
+    }
+    expect(await older).toMatchObject({ status });
+    expect(await service.identity(account.user.id)).toMatchObject({
+      status: 'active',
+      syncError: null,
+    });
+    expect((await auth.verifyAccessToken(account.accessToken)).user.id).toBe(account.user.id);
   });
 
   it('两个同名账号不会合并；目录与设置不允许跨用户引用', async () => {

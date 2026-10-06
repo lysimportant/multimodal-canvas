@@ -74,7 +74,12 @@ async function json(route: Route, body: unknown, status = 200) {
 async function installSettingsFixture(
   page: Page,
   theme: string,
-  options: { account?: typeof fixtureAccount; syncAccount?: typeof fixtureAccount } = {},
+  options: {
+    account?: typeof fixtureAccount;
+    syncAccount?: typeof fixtureAccount;
+    models?: typeof fixtureModels;
+    syncModels?: typeof fixtureModels;
+  } = {},
 ) {
   await page.addInitScript(
     ({ theme, user, projectId }) => {
@@ -90,6 +95,8 @@ async function installSettingsFixture(
     },
     timeoutMs: 900_000,
   };
+  let models = options.models ?? fixtureModels;
+  let modelReadCount = 0;
   const writes: Array<{ method: string; path: string; body: unknown }> = [];
   const unexpected: string[] = [];
   const consoleErrors: string[] = [];
@@ -183,11 +190,13 @@ async function installSettingsFixture(
       return;
     }
     if (method === 'POST' && path === '/v1/account/newapi/sync') {
+      models = options.syncModels ?? models;
       await json(route, { account: options.syncAccount ?? fixtureAccount });
       return;
     }
     if (method === 'GET' && path === '/v1/models') {
-      await json(route, { models: fixtureModels });
+      modelReadCount += 1;
+      await json(route, { models });
       return;
     }
     if (path === '/v1/settings/ai' && method === 'GET') {
@@ -203,7 +212,7 @@ async function installSettingsFixture(
     unexpected.push(`${method} ${path}`);
     await json(route, { error: `Unexpected fixture request: ${method} ${path}` }, 501);
   });
-  return { unexpected, writes, consoleErrors, pageErrors };
+  return { unexpected, writes, consoleErrors, pageErrors, modelReadCount: () => modelReadCount };
 }
 
 for (const viewport of [
@@ -315,6 +324,121 @@ test('PC 设置页同步后展示服务端自动修复的分组，不发送浏�
   expect(
     fixture.consoleErrors.filter((error) => !error.includes('ERR_BLOCKED_BY_CLIENT.Inspector')),
   ).toEqual([]);
+  expect(fixture.pageErrors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('PC 设置页同步后清除无效分组并刷新目录，旧默认保持失效', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const accountBeforeSync = {
+    ...fixtureAccount,
+    groups: [
+      {
+        group: 'alpha',
+        credentialId: 'credential-alpha',
+        credentialVersion: 2,
+        status: 'active',
+        modelCount: 2,
+      },
+      {
+        group: 'beta',
+        credentialId: 'credential-beta',
+        credentialVersion: 3,
+        status: 'active',
+        modelCount: 1,
+      },
+    ],
+  };
+  const accountAfterSync = {
+    ...fixtureAccount,
+    groups: [
+      {
+        group: 'beta',
+        credentialId: 'credential-beta',
+        credentialVersion: 4,
+        status: 'active',
+        modelCount: 1,
+      },
+      {
+        group: 'gamma',
+        credentialId: 'credential-gamma',
+        credentialVersion: 1,
+        status: 'active',
+        modelCount: 1,
+      },
+    ],
+  };
+  const modelsAfterSync = [
+    {
+      id: 'shared-text-model',
+      name: '同名文字模型',
+      group: 'beta',
+      credentialId: 'credential-beta',
+      mediaTypes: ['text'],
+      available: true,
+    },
+    {
+      id: 'shared-text-model',
+      name: '同名文字模型',
+      group: 'gamma',
+      credentialId: 'credential-gamma',
+      mediaTypes: ['text'],
+      available: true,
+    },
+  ];
+  const fixture = await installSettingsFixture(page, 'light', {
+    account: accountBeforeSync,
+    syncAccount: accountAfterSync,
+    syncModels: modelsAfterSync,
+  });
+  await page.goto('/settings');
+
+  await expect(page.getByRole('heading', { name: 'New API 与模型设置' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole('cell', { name: 'alpha', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'beta', exact: true })).toBeVisible();
+  await expect.poll(fixture.modelReadCount).toBeGreaterThan(0);
+  const modelReadsBeforeSync = fixture.modelReadCount();
+
+  await page.getByRole('button', { name: '同步分组与模型' }).click();
+  await expect(page.getByRole('cell', { name: 'alpha', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('cell', { name: 'beta', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'gamma', exact: true })).toBeVisible();
+  await expect.poll(fixture.modelReadCount).toBeGreaterThan(modelReadsBeforeSync);
+  await page.screenshot({
+    path: info.outputPath('newapi-removed-group-after-sync.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
+
+  await page.getByRole('tab', { name: '节点默认' }).click();
+  await expect(
+    page.getByText('原选择 shared-text-model 已失效，请明确选择新的分组模型。'),
+  ).toBeVisible();
+  const textModel = page.getByRole('combobox', { name: '文字' });
+  await expect(textModel.locator('xpath=..')).toContainText('未选择');
+  await textModel.click();
+  await expect(page.getByRole('option', { name: '同名文字模型 · alpha' })).toHaveCount(0);
+  await expect(page.getByRole('option', { name: '同名文字模型 · beta' })).toHaveAttribute(
+    'aria-selected',
+    'false',
+  );
+  await expect(page.getByRole('option', { name: '同名文字模型 · gamma' })).toHaveAttribute(
+    'aria-selected',
+    'false',
+  );
+  await page.screenshot({
+    path: info.outputPath('newapi-removed-default-stays-invalid.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
+
+  expect(fixture.writes.filter((entry) => entry.path === '/v1/account/newapi/sync')).toHaveLength(
+    1,
+  );
+  expect(fixture.consoleErrors).toEqual([]);
   expect(fixture.pageErrors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

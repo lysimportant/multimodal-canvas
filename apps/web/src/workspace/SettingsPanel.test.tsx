@@ -12,7 +12,23 @@ import {
 import { SettingsPanel } from './SettingsPanel';
 
 const authState = vi.hoisted(() => ({ generation: 1 }));
-const modelCatalogState = vi.hoisted(() => ({ refetch: vi.fn() }));
+const modelCatalogState = vi.hoisted(() => ({
+  models: [] as Array<{
+    id: string;
+    name: string;
+    mediaTypes: string[];
+    credentialId: string;
+    group: string;
+  }>,
+  nextModels: null as null | Array<{
+    id: string;
+    name: string;
+    mediaTypes: string[];
+    credentialId: string;
+    group: string;
+  }>,
+  refetch: vi.fn(),
+}));
 
 vi.mock('../auth-client', () => ({
   apiFetch: vi.fn(),
@@ -23,28 +39,43 @@ vi.mock('../auth-client', () => ({
   }),
   subscribeAuthSession: () => () => {},
 }));
-vi.mock('../query/models', () => ({
-  useModelCatalogQuery: () => ({
-    data: [
-      {
-        id: 'same-image',
-        name: '同名图片模型',
-        mediaTypes: ['image'],
-        credentialId: 'group-a',
-        group: '分组甲',
-      },
-      {
-        id: 'same-image',
-        name: '同名图片模型',
-        mediaTypes: ['image'],
-        credentialId: 'group-b',
-        group: '分组乙',
-      },
-    ],
-    isError: false,
-    refetch: modelCatalogState.refetch,
-  }),
-}));
+vi.mock('../query/models', async () => {
+  const { useState } = await vi.importActual<typeof import('react')>('react');
+  return {
+    useModelCatalogQuery: () => {
+      const [data, setData] = useState(modelCatalogState.models);
+      return {
+        data,
+        isError: false,
+        refetch: async () => {
+          const result = await modelCatalogState.refetch();
+          if (!result?.isError && modelCatalogState.nextModels) {
+            modelCatalogState.models = modelCatalogState.nextModels;
+            setData(modelCatalogState.nextModels);
+          }
+          return result;
+        },
+      };
+    },
+  };
+});
+
+const defaultModelCatalog = [
+  {
+    id: 'same-image',
+    name: '同名图片模型',
+    mediaTypes: ['image'],
+    credentialId: 'group-a',
+    group: '分组甲',
+  },
+  {
+    id: 'same-image',
+    name: '同名图片模型',
+    mediaTypes: ['image'],
+    credentialId: 'group-b',
+    group: '分组乙',
+  },
+];
 
 type GroupFixture = {
   group: string;
@@ -61,12 +92,14 @@ type AccountFixture = {
   issuer: string;
   externalUserId: string;
   status: string;
+  error?: string;
   groups: GroupFixture[];
   links: { models?: string; account?: string };
 };
 
 let accountFixture: AccountFixture;
 let syncFixture: AccountFixture | null;
+let projectDefaultsFixture: Record<string, unknown>;
 
 beforeEach(() => {
   authState.generation = 1;
@@ -78,6 +111,11 @@ beforeEach(() => {
     links: {},
   };
   syncFixture = null;
+  projectDefaultsFixture = {
+    image: { modelAlias: 'same-image', credentialId: 'missing-group' },
+  };
+  modelCatalogState.models = structuredClone(defaultModelCatalog);
+  modelCatalogState.nextModels = null;
   modelCatalogState.refetch.mockReset().mockResolvedValue({ isError: false });
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
   vi.mocked(apiFetch).mockImplementation(async (url, init) => {
@@ -98,7 +136,7 @@ beforeEach(() => {
       return new Response(JSON.stringify({ settings: { defaultModels: {}, timeoutMs: 900000 } }));
     return new Response(
       JSON.stringify({
-        defaults: { image: { modelAlias: 'same-image', credentialId: 'missing-group' } },
+        defaults: projectDefaultsFixture,
       }),
     );
   });
@@ -253,6 +291,163 @@ describe('SettingsPanel Ant Design 迁移', () => {
           ([url, init]) => init?.method === 'POST' && String(url).includes('/groups/'),
         ),
     ).toHaveLength(0);
+  });
+
+  it('同步后清除已撤销分组并刷新模型目录，旧默认不会切换到其它付费分组', async () => {
+    const user = userEvent.setup();
+    accountFixture.groups = [
+      {
+        group: '已撤销组',
+        credentialId: 'group-a',
+        credentialVersion: 1,
+        status: 'active',
+        modelCount: 1,
+      },
+      {
+        group: '保留组',
+        credentialId: 'group-b',
+        credentialVersion: 2,
+        status: 'active',
+        modelCount: 1,
+      },
+    ];
+    projectDefaultsFixture = {
+      image: { modelAlias: 'same-image', credentialId: 'group-a' },
+    };
+    syncFixture = {
+      ...accountFixture,
+      groups: [
+        {
+          group: '保留组',
+          credentialId: 'group-b',
+          credentialVersion: 3,
+          status: 'active',
+          modelCount: 1,
+        },
+        {
+          group: '更新组',
+          credentialId: 'group-c',
+          credentialVersion: 1,
+          status: 'active',
+          modelCount: 1,
+        },
+      ],
+    };
+    modelCatalogState.models = [
+      {
+        id: 'same-image',
+        name: '同名图片模型',
+        mediaTypes: ['image'],
+        credentialId: 'group-a',
+        group: '已撤销组',
+      },
+      {
+        id: 'same-image',
+        name: '同名图片模型',
+        mediaTypes: ['image'],
+        credentialId: 'group-b',
+        group: '保留组',
+      },
+    ];
+    modelCatalogState.nextModels = [
+      {
+        id: 'same-image',
+        name: '同名图片模型',
+        mediaTypes: ['image'],
+        credentialId: 'group-b',
+        group: '保留组',
+      },
+      {
+        id: 'updated-image',
+        name: '更新图片模型',
+        mediaTypes: ['image'],
+        credentialId: 'group-c',
+        group: '更新组',
+      },
+    ];
+
+    await renderSettings();
+    expect(screen.getByRole('cell', { name: '已撤销组' })).toBeVisible();
+    expect(screen.getByRole('cell', { name: '保留组' })).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '同步分组与模型' }));
+    await waitFor(() => expect(screen.queryByRole('cell', { name: '已撤销组' })).toBeNull());
+    expect(screen.getByRole('cell', { name: '保留组' })).toBeVisible();
+    expect(screen.getByRole('cell', { name: '更新组' })).toBeVisible();
+    expect(modelCatalogState.refetch).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('tab', { name: '节点默认' }));
+    expect(screen.getByText(/原选择 same-image 已失效/)).toBeVisible();
+    const input = screen.getByRole('combobox', { name: '图片' });
+    expect(input.closest('.ant-select')).toHaveTextContent('未选择');
+    await user.click(input);
+    expect(screen.queryByRole('option', { name: '同名图片模型 · 已撤销组' })).toBeNull();
+    expect(screen.getByRole('option', { name: '同名图片模型 · 保留组' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    expect(screen.getByRole('option', { name: '更新图片模型 · 更新组' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+  });
+
+  it('同步后全部分组被清除时展示空态并清空模型目录', async () => {
+    const user = userEvent.setup();
+    accountFixture.groups = [
+      {
+        group: '最后一个旧组',
+        credentialId: 'group-a',
+        status: 'active',
+        modelCount: 1,
+      },
+    ];
+    projectDefaultsFixture = {
+      image: { modelAlias: 'same-image', credentialId: 'group-a' },
+    };
+    syncFixture = { ...accountFixture, groups: [] };
+    modelCatalogState.models = [structuredClone(defaultModelCatalog[0]!)];
+    modelCatalogState.nextModels = [];
+
+    await renderSettings();
+    expect(screen.getByRole('cell', { name: '最后一个旧组' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '同步分组与模型' }));
+
+    expect(await screen.findByText('当前没有可用分组。')).toBeVisible();
+    expect(screen.queryByRole('cell', { name: '最后一个旧组' })).toBeNull();
+    expect(modelCatalogState.refetch).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('tab', { name: '节点默认' }));
+    expect(screen.getByText(/原选择 same-image 已失效/)).toBeVisible();
+    await user.click(screen.getByRole('combobox', { name: '图片' }));
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: '未选择' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('同步请求失败时保留同步前分组和模型目录', async () => {
+    const user = userEvent.setup();
+    accountFixture.groups = [
+      {
+        group: '暂时保留组',
+        credentialId: 'group-a',
+        status: 'active',
+        modelCount: 1,
+      },
+    ];
+    const baseImplementation = vi.mocked(apiFetch).getMockImplementation();
+    vi.mocked(apiFetch).mockImplementation(async (url, init) => {
+      if (init?.method === 'POST' && String(url).endsWith('/v1/account/newapi/sync')) {
+        return new Response(JSON.stringify({ error: 'New API 暂时不可用' }), { status: 503 });
+      }
+      return baseImplementation!(url, init);
+    });
+
+    const { onNotice } = await renderSettings();
+    await user.click(screen.getByRole('button', { name: '同步分组与模型' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('New API 暂时不可用');
+    expect(screen.getByRole('cell', { name: '暂时保留组' })).toBeVisible();
+    expect(modelCatalogState.refetch).not.toHaveBeenCalled();
+    expect(onNotice).toHaveBeenCalledWith({ kind: 'error', message: 'New API 暂时不可用' });
   });
 
   it('自动修复失败时仅展示同步错误，迟到旧认证响应不覆盖当前面板', async () => {

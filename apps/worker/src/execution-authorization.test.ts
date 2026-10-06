@@ -155,6 +155,23 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     expect(verifyUpstream).not.toHaveBeenCalled();
   });
 
+  it('上游分组已移除时拒绝旧队列任务，不再调用上游授权', async () => {
+    const { frozen, execution, prisma } = fixture();
+    const group = await prisma.newApiGroupBinding.findFirst();
+    prisma.newApiGroupBinding.findFirst.mockResolvedValue({ ...group, status: 'removed' });
+    const verifyUpstream = vi.fn(async () => undefined);
+    const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
+      prisma as never,
+      verifyUpstream,
+    );
+
+    await expect(authorization.authorizeNode('run-1', 'target', frozen)).rejects.toMatchObject({
+      code: 'authorization_revoked',
+    });
+    expect(verifyUpstream).not.toHaveBeenCalled();
+  });
+
   it('凭据修订变化时零次调用上游 Provider', async () => {
     const { frozen, execution, prisma } = fixture('revision-1', 'credential-2');
     const verifyUpstream = vi.fn(async () => undefined);

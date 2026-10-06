@@ -76,7 +76,12 @@ export class NewApiAccountSettings implements AiSettingsStoreLike {
   async listCredentials() {
     const identity = await this.service.identity(this.userId());
     const rows = await this.service.options.prisma.newApiGroupBinding.findMany({
-      where: { identityId: identity.id, group: { not: '神秘分组' }, credentialId: { not: null } },
+      where: {
+        identityId: identity.id,
+        group: { not: '神秘分组' },
+        credentialId: { not: null },
+        status: { not: 'removed' },
+      },
       include: { credential: true },
     });
     return rows.map((row) => ({

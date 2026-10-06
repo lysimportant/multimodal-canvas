@@ -201,47 +201,59 @@ export class NewApiAccountService {
 
   /** 登录和手动同步共用恢复流程：补建缺失 Key、纠正错组；不接管同名前缀令牌。 */
   async synchronize(userId: string) {
-    const identity = await this.identity(userId);
+    const { identity, synchronizedAt } = await this.claimSynchronization(userId);
     const token = this.options.keyring.decrypt(identity.encryptedGrant).plaintext;
     let state;
     try {
       state = await this.options.client.account(token);
     } catch (error) {
-      await this.recordIdentityFailure(identity, error);
+      await this.recordIdentityFailure(identity, error, synchronizedAt);
       throw error;
     }
     if (state.user.id !== identity.externalUserId || state.grant_id !== identity.grantId)
       throw new NewApiAccountError('identity_changed', 'New API 账号已变化，请重新登录', 401);
-    await this.retireObsoleteRepairs(identity);
+    if (!(await this.isSynchronizationCurrent(identity, synchronizedAt)))
+      return this.status(userId);
+    await this.retireObsoleteRepairs(identity, synchronizedAt);
+    if (!(await this.isSynchronizationCurrent(identity, synchronizedAt)))
+      return this.status(userId);
     const groups = [...new Set(state.groups)].filter((group) => group !== '神秘分组');
-    await this.options.prisma.newApiGroupBinding.updateMany({
-      where: {
-        identityId: identity.id,
-        group: { notIn: groups },
-        identity: { encryptedGrant: identity.encryptedGrant, status: { not: 'revoked' } },
-      },
-      data: { status: 'unavailable', error: '分组已撤销或不参与画布接入' },
-    });
+    await this.retireRemovedGroups(identity, groups, synchronizedAt);
+    if (!(await this.isSynchronizationCurrent(identity, synchronizedAt)))
+      return this.status(userId);
     for (const group of groups) {
-      const binding = await this.options.prisma.newApiGroupBinding.upsert({
-        where: { identityId_group: { identityId: identity.id, group } },
-        create: { identityId: identity.id, group, operationId: randomUUID() },
-        update: {},
-      });
+      if (!(await this.isSynchronizationCurrent(identity, synchronizedAt)))
+        return this.status(userId);
+      let binding: NewApiGroupBinding;
       try {
+        binding = await this.upsertSynchronizedGroup(identity, group, synchronizedAt);
+      } catch (error) {
+        if (error instanceof NewApiAccountError && error.code === 'synchronization_superseded')
+          return this.status(userId);
+        throw error;
+      }
+      try {
+        if (binding.status === 'removed')
+          binding = await this.reactivateRemovedGroup(identity, binding, synchronizedAt);
         if (binding.repairState) {
-          await this.resumeBootstrapRepair(identity, binding, token);
+          await this.resumeBootstrapRepair(identity, binding, token, synchronizedAt);
           continue;
         }
         const pendingRepair = await this.options.prisma.newApiCredentialRotation.findFirst({
           where: { bindingId: binding.id, kind: 'repair', completedAt: null },
         });
         if (pendingRepair) {
-          await this.repairGroup(userId, pendingRepair.credentialId, pendingRepair.fromVersion);
+          await this.changeGroupCredential(
+            userId,
+            pendingRepair.credentialId,
+            pendingRepair.fromVersion,
+            'repair',
+            synchronizedAt,
+          );
           continue;
         }
         try {
-          await this.refreshGroup(identity, binding, token, true);
+          await this.refreshGroup(identity, binding, token, true, synchronizedAt);
         } catch (error) {
           if (
             !(error instanceof NewApiAccountError) ||
@@ -251,8 +263,14 @@ export class NewApiAccountService {
           const changed = await this.options.prisma.newApiGroupBinding.updateMany({
             where: {
               id: binding.id,
+              operationId: binding.operationId,
               updatedAt: binding.updatedAt,
-              identity: { encryptedGrant: identity.encryptedGrant, status: { not: 'revoked' } },
+              status: { not: 'removed' },
+              identity: {
+                encryptedGrant: identity.encryptedGrant,
+                status: { not: 'revoked' },
+                syncedAt: synchronizedAt,
+              },
             },
             data: {
               status: 'missing',
@@ -280,19 +298,31 @@ export class NewApiAccountService {
               where: { id: binding.id },
             });
             if (!current.repairState) throw error;
-            await this.resumeBootstrapRepair(identity, current, token);
+            await this.resumeBootstrapRepair(identity, current, token, synchronizedAt);
             continue;
           }
           const credential = await this.options.prisma.aiCredential.findUniqueOrThrow({
             where: { id: binding.credentialId },
           });
-          await this.repairGroup(userId, binding.credentialId, credential.version);
+          await this.changeGroupCredential(
+            userId,
+            binding.credentialId,
+            credential.version,
+            'repair',
+            synchronizedAt,
+          );
         }
       } catch (error) {
         await this.options.prisma.newApiGroupBinding.updateMany({
           where: {
             id: binding.id,
-            identity: { encryptedGrant: identity.encryptedGrant, status: { not: 'revoked' } },
+            operationId: binding.operationId,
+            status: { not: 'removed' },
+            identity: {
+              encryptedGrant: identity.encryptedGrant,
+              status: { not: 'revoked' },
+              syncedAt: synchronizedAt,
+            },
             OR: [{ updatedAt: binding.updatedAt }, { status: { not: 'active' } }],
           },
           data: {
@@ -313,14 +343,207 @@ export class NewApiAccountService {
         id: identity.id,
         encryptedGrant: identity.encryptedGrant,
         status: { not: 'revoked' },
+        syncedAt: synchronizedAt,
       },
-      data: { status: 'active', syncedAt: new Date(), syncError: null },
+      data: { status: 'active', syncError: null },
     });
     return this.status(userId);
   }
 
+  /** 同步尝试先领取单调轮次；较新的请求使迟到账号或分组回包失去写权限。 */
+  private async claimSynchronization(userId: string) {
+    for (;;) {
+      const identity = await this.identity(userId);
+      const synchronizedAt = new Date(
+        Math.max(Date.now(), (identity.syncedAt?.getTime() ?? 0) + 1),
+      );
+      const claimed = await this.options.prisma.newApiIdentity.updateMany({
+        where: {
+          id: identity.id,
+          encryptedGrant: identity.encryptedGrant,
+          status: { not: 'revoked' },
+          syncedAt: identity.syncedAt,
+        },
+        data: { syncedAt: synchronizedAt },
+      });
+      if (claimed.count) return { identity, synchronizedAt };
+    }
+  }
+
+  /** 检查调用方仍持有当前同步轮次；只比较非敏感身份与 CAS 时间。 */
+  private async isSynchronizationCurrent(identity: NewApiIdentity, synchronizedAt: Date) {
+    return Boolean(
+      await this.options.prisma.newApiIdentity.count({
+        where: {
+          id: identity.id,
+          encryptedGrant: identity.encryptedGrant,
+          status: { not: 'revoked' },
+          syncedAt: synchronizedAt,
+        },
+      }),
+    );
+  }
+
+  /** 在组关系事务内锁定当前身份轮次，防止检查后被更新同步越过。 */
+  private async holdIdentity(
+    tx: Prisma.TransactionClient,
+    identity: NewApiIdentity,
+    synchronizedAt = identity.syncedAt,
+  ) {
+    const held = await tx.newApiIdentity.updateMany({
+      where: {
+        id: identity.id,
+        encryptedGrant: identity.encryptedGrant,
+        status: { not: 'revoked' },
+        syncedAt: synchronizedAt,
+      },
+      data: { syncedAt: synchronizedAt },
+    });
+    if (!held.count)
+      throw new NewApiAccountError('synchronization_superseded', '账号同步已由更新操作接管', 409);
+  }
+
+  /** 仅在持有当前身份轮次时创建或读取分组，旧账号列表不能留下新关系。 */
+  private async upsertSynchronizedGroup(
+    identity: NewApiIdentity,
+    group: string,
+    synchronizedAt: Date,
+  ) {
+    return this.options.prisma.$transaction(async (tx) => {
+      await this.holdIdentity(tx, identity, synchronizedAt);
+      return tx.newApiGroupBinding.upsert({
+        where: { identityId_group: { identityId: identity.id, group } },
+        create: { identityId: identity.id, group, operationId: randomUUID() },
+        update: {},
+      });
+    });
+  }
+
+  /** 同名分组重新纳入时先建立全新操作边界，旧目录和迟到回包不能直接复活。 */
+  private async reactivateRemovedGroup(
+    identity: NewApiIdentity,
+    binding: NewApiGroupBinding,
+    synchronizedAt: Date,
+  ) {
+    return this.options.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.id}, 0))`;
+      if (binding.credentialId)
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.credentialId}, 0))`;
+      await this.holdIdentity(tx, identity, synchronizedAt);
+      const current = await tx.newApiGroupBinding.findUniqueOrThrow({ where: { id: binding.id } });
+      if (current.status !== 'removed') return current;
+      return tx.newApiGroupBinding.update({
+        where: { id: current.id },
+        data: {
+          operationId: randomUUID(),
+          // 新授权尚未完成目录验证，临时失败后仍允许接纳重新创建的令牌修订。
+          grantId: null,
+          autoGroups: [],
+          status: 'pending',
+          error: null,
+          repairState: Prisma.DbNull,
+          catalog: Prisma.DbNull,
+          syncedAt: synchronizedAt,
+        },
+      });
+    });
+  }
+
+  /** 权威账号目录已移除的分组只退出当前目录；凭据和轮换记录继续供历史任务审计。 */
+  private async retireRemovedGroups(
+    identity: NewApiIdentity,
+    groups: readonly string[],
+    synchronizedAt: Date,
+  ) {
+    const bindings = await this.options.prisma.newApiGroupBinding.findMany({
+      where: {
+        identityId: identity.id,
+        status: { not: 'removed' },
+        ...(groups.length ? { group: { notIn: [...groups] } } : {}),
+      },
+    });
+    for (const binding of bindings) {
+      await this.options.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.id}, 0))`;
+        if (binding.credentialId)
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.credentialId}, 0))`;
+        try {
+          await this.holdIdentity(tx, identity, synchronizedAt);
+        } catch (error) {
+          if (error instanceof NewApiAccountError && error.code === 'synchronization_superseded')
+            return;
+          throw error;
+        }
+        const current = await tx.newApiGroupBinding.findUniqueOrThrow({
+          where: { id: binding.id },
+          include: { credential: true },
+        });
+        if (current.status === 'removed') return;
+        if (current.credentialId !== binding.credentialId)
+          throw new NewApiAccountError('credential_changed', '分组凭据已变化，请重新同步', 409);
+        const pending = await tx.newApiCredentialRotation.findMany({
+          where: { bindingId: current.id, completedAt: null },
+        });
+        for (const operation of pending) {
+          await tx.aiCredential.updateMany({
+            where: {
+              id: operation.credentialId,
+              ownerId: identity.userId,
+              version: operation.fromVersion,
+              keyFingerprint: operation.keyFingerprint,
+            },
+            data: { version: { increment: 1 } },
+          });
+          await tx.newApiCredentialRotation.update({
+            where: { id: operation.id },
+            data: { kind: 'superseded', completedAt: new Date() },
+          });
+        }
+        if (
+          !pending.length &&
+          current.credential &&
+          current.upstreamTokenId &&
+          current.credentialRevision
+        ) {
+          await tx.newApiCredentialRotation.create({
+            data: {
+              bindingId: current.id,
+              credentialId: current.credential.id,
+              fromVersion: current.credential.version,
+              upstreamTokenId: current.upstreamTokenId,
+              fromRevision: current.credentialRevision,
+              kind: 'superseded',
+              grantId: identity.grantId,
+              baseUrl: current.credential.baseUrl,
+              encryptedApiKey: current.credential.encryptedApiKey,
+              encryptionKeyId: current.credential.encryptionKeyId,
+              keyFingerprint: current.credential.keyFingerprint,
+              completedAt: new Date(),
+            },
+          });
+          await tx.aiCredential.update({
+            where: { id: current.credential.id },
+            data: { version: { increment: 1 } },
+          });
+        }
+        await tx.newApiGroupBinding.update({
+          where: { id: current.id },
+          data: {
+            operationId: randomUUID(),
+            autoGroups: [],
+            status: 'removed',
+            error: null,
+            repairState: Prisma.DbNull,
+            catalog: Prisma.DbNull,
+            syncedAt: synchronizedAt,
+          },
+        });
+      });
+    }
+  }
+
   /** 切换实例后归档原授权未完成的恢复；保留旧密文，不再向旧 grant 发送请求。 */
-  private async retireObsoleteRepairs(identity: NewApiIdentity) {
+  private async retireObsoleteRepairs(identity: NewApiIdentity, synchronizedAt: Date) {
     const bindings = await this.options.prisma.newApiGroupBinding.findMany({
       where: {
         identityId: identity.id,
@@ -339,9 +562,13 @@ export class NewApiAccountService {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.id}, 0))`;
         if (binding.credentialId)
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.credentialId}, 0))`;
-        const latest = await tx.newApiIdentity.findUniqueOrThrow({ where: { id: identity.id } });
-        if (latest.encryptedGrant !== identity.encryptedGrant || latest.status === 'revoked')
-          throw new NewApiAccountError('authorization_changed', '登录授权已变化，请重新同步', 409);
+        try {
+          await this.holdIdentity(tx, identity, synchronizedAt);
+        } catch (error) {
+          if (error instanceof NewApiAccountError && error.code === 'synchronization_superseded')
+            return;
+          throw error;
+        }
         const current = await tx.newApiGroupBinding.findUniqueOrThrow({
           where: { id: binding.id },
         });
@@ -376,7 +603,7 @@ export class NewApiAccountService {
           data: {
             repairState: Prisma.DbNull,
             operationId: randomUUID(),
-            status: 'pending',
+            status: current.status === 'removed' ? 'removed' : 'pending',
             error: null,
           },
         });
@@ -389,6 +616,7 @@ export class NewApiAccountService {
     identity: NewApiIdentity,
     binding: NewApiGroupBinding,
     grant: string,
+    synchronizedAt: Date,
   ) {
     const pending = bootstrapRepairSchema.parse(binding.repairState);
     if (pending.grantId !== identity.grantId || binding.credentialId)
@@ -409,14 +637,12 @@ export class NewApiAccountService {
     const catalog = await this.options.client.catalog(remote.key);
     await this.options.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${binding.id}, 0))`;
+      await this.holdIdentity(tx, identity, synchronizedAt);
       const current = await tx.newApiGroupBinding.findUniqueOrThrow({ where: { id: binding.id } });
       if (!current.repairState && current.credentialId) return;
-      const latest = await tx.newApiIdentity.findUniqueOrThrow({ where: { id: identity.id } });
-      if (
-        latest.encryptedGrant !== identity.encryptedGrant ||
-        latest.status === 'revoked' ||
-        bootstrapRepairSchema.parse(current.repairState).operationId !== pending.operationId
-      )
+      if (current.status === 'removed' || !current.repairState)
+        throw new NewApiAccountError('group_changed', '分组已从当前账号移除，请重新同步', 409);
+      if (bootstrapRepairSchema.parse(current.repairState).operationId !== pending.operationId)
         throw new NewApiAccountError('authorization_changed', '登录状态已变化，请重新同步', 409);
       const credential = await tx.aiCredential.create({
         data: {
@@ -452,7 +678,11 @@ export class NewApiAccountService {
   async status(userId: string) {
     const identity = await this.identity(userId);
     const groups = await this.options.prisma.newApiGroupBinding.findMany({
-      where: { identityId: identity.id, group: { not: '神秘分组' } },
+      where: {
+        identityId: identity.id,
+        group: { not: '神秘分组' },
+        status: { not: 'removed' },
+      },
       include: { credential: true, rotations: { where: { completedAt: null } } },
       orderBy: { group: 'asc' },
     });
@@ -495,6 +725,7 @@ export class NewApiAccountService {
       where: {
         identityId: identity.id,
         group: { not: '神秘分组' },
+        status: { not: 'removed' },
         ...(credentialId ? { credentialId } : {}),
       },
     });
@@ -534,7 +765,12 @@ export class NewApiAccountService {
   async validateGroup(userId: string, credentialId: string) {
     const identity = await this.identity(userId);
     const binding = await this.options.prisma.newApiGroupBinding.findFirst({
-      where: { identityId: identity.id, credentialId, group: { not: '神秘分组' } },
+      where: {
+        identityId: identity.id,
+        credentialId,
+        group: { not: '神秘分组' },
+        status: { not: 'removed' },
+      },
     });
     if (!binding) throw new NewApiAccountError('credential_not_found', '模型不属于当前账号', 404);
     const grant = this.options.keyring.decrypt(identity.encryptedGrant).plaintext;
@@ -542,7 +778,7 @@ export class NewApiAccountService {
     try {
       account = await this.options.client.account(grant);
     } catch (error) {
-      await this.recordIdentityFailure(identity, error);
+      await this.recordIdentityFailure(identity, error, identity.syncedAt);
       throw error;
     }
     if (
@@ -557,7 +793,9 @@ export class NewApiAccountService {
       await this.options.prisma.newApiGroupBinding.updateMany({
         where: {
           id: binding.id,
+          operationId: binding.operationId,
           updatedAt: binding.updatedAt,
+          status: { not: 'removed' },
           identity: { encryptedGrant: identity.encryptedGrant, status: { not: 'revoked' } },
         },
         data: {
@@ -643,16 +881,20 @@ export class NewApiAccountService {
     credentialId: string,
     expectedVersion: number,
     kind: 'rotate' | 'repair',
+    synchronizedAt?: Date,
   ) {
     const identity = await this.identity(userId);
     const pending = await this.options.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${credentialId}, 0))`;
+      await this.holdIdentity(tx, identity, synchronizedAt);
       const binding = await tx.newApiGroupBinding.findFirst({
         where: { identityId: identity.id, credentialId, group: { not: '神秘分组' } },
         include: { credential: true },
       });
       if (!binding?.credential || binding.credential.ownerId !== userId)
         throw new NewApiAccountError('credential_not_found', '分组不存在或不属于当前账号', 404);
+      if (binding.status === 'removed')
+        throw new NewApiAccountError('credential_not_found', '分组已从当前账号移除', 404);
       const previous = await tx.newApiCredentialRotation.findUnique({
         where: { credentialId_fromVersion: { credentialId, fromVersion: expectedVersion } },
       });
@@ -775,6 +1017,12 @@ export class NewApiAccountService {
         where: { id: rotation.id },
       });
       if (current.completedAt) return;
+      await this.holdIdentity(tx, identity, synchronizedAt);
+      const currentBinding = await tx.newApiGroupBinding.findUniqueOrThrow({
+        where: { id: binding.id },
+      });
+      if (currentBinding.status === 'removed')
+        throw new NewApiAccountError('group_changed', '分组已从当前账号移除，请重新同步', 409);
       const latestIdentity = await tx.newApiIdentity.findUniqueOrThrow({
         where: { id: identity.id },
       });
@@ -906,6 +1154,7 @@ export class NewApiAccountService {
     binding: NewApiGroupBinding,
     grant: string,
     synchronize = false,
+    synchronizedAt?: Date,
   ) {
     if (binding.group === '神秘分组')
       throw new NewApiAccountError('excluded_group', '该分组不参与画布接入');
@@ -941,18 +1190,13 @@ export class NewApiAccountService {
         })
       )
         throw new NewApiAccountError('rotation_pending', '分组凭据变更尚未完成，请恢复原操作', 409);
-      const latestIdentity = await tx.newApiIdentity.findUniqueOrThrow({
-        where: { id: identity.id },
-      });
-      if (
-        latestIdentity.encryptedGrant !== identity.encryptedGrant ||
-        latestIdentity.status === 'revoked'
-      )
-        throw new NewApiAccountError('authorization_changed', '登录授权已变化，请刷新后重试', 409);
+      await this.holdIdentity(tx, identity, synchronizedAt);
       const current = await tx.newApiGroupBinding.findUniqueOrThrow({
         where: { id: binding.id },
         include: { credential: true },
       });
+      if (current.operationId !== binding.operationId || current.status === 'removed')
+        throw new NewApiAccountError('group_changed', '分组已从当前账号移除，请重新同步', 409);
       if (
         current.grantId === identity.grantId &&
         current.credentialRevision &&
@@ -1026,7 +1270,7 @@ export class NewApiAccountService {
           catalog: catalog as Prisma.InputJsonValue,
           status: 'active',
           error: null,
-          syncedAt: new Date(),
+          syncedAt: synchronizedAt ?? new Date(),
         },
         include: { credential: true, identity: true },
       });
@@ -1034,7 +1278,11 @@ export class NewApiAccountService {
   }
 
   /** 上游明确撤销时同时撤销本地会话；网络故障只进入只读模式。 */
-  private async recordIdentityFailure(identity: NewApiIdentity, error: unknown): Promise<void> {
+  private async recordIdentityFailure(
+    identity: NewApiIdentity,
+    error: unknown,
+    synchronizedAt: Date | null,
+  ): Promise<void> {
     const revoked = error instanceof NewApiAccountError && error.status === 401;
     await this.options.prisma.$transaction(async (tx) => {
       const changed = await tx.newApiIdentity.updateMany({
@@ -1042,6 +1290,7 @@ export class NewApiAccountService {
           id: identity.id,
           encryptedGrant: identity.encryptedGrant,
           status: { not: 'revoked' },
+          syncedAt: synchronizedAt,
         },
         data: {
           status: revoked ? 'revoked' : 'unavailable',
