@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Asset, PromptDocument } from '@multimodal-canvas/domain';
 
 import { TextPromptEditor } from './TextPromptEditor';
+import { INLINE_REFERENCE, readInlinePrompt } from './InlinePromptInput';
 import { NodeQuickEditor, type NodeQuickEditorProps } from './workspace/NodeQuickEditor';
 
 describe('TextPromptEditor', () => {
@@ -180,7 +181,12 @@ describe('TextPromptEditor', () => {
       if (mode === '完整') {
         await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
       }
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(originalText);
+      expect(
+        readInlinePrompt(screen.getByRole('textbox', { name: '提示词' })).replaceAll(
+          INLINE_REFERENCE,
+          '',
+        ),
+      ).toBe(originalText);
 
       await user.click(screen.getByRole('button', { name: '删除 主角' }));
 
@@ -188,7 +194,12 @@ describe('TextPromptEditor', () => {
         version: 1,
         blocks: [{ type: 'text', text: originalText }],
       };
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(originalText);
+      expect(
+        readInlinePrompt(screen.getByRole('textbox', { name: '提示词' })).replaceAll(
+          INLINE_REFERENCE,
+          '',
+        ),
+      ).toBe(originalText);
       expect(onDocumentChange).toHaveBeenCalledExactlyOnceWith(unlinkedDocument);
       expect(onPromptChange).not.toHaveBeenCalled();
       view.rerender(
@@ -203,7 +214,12 @@ describe('TextPromptEditor', () => {
         }),
       );
 
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(originalText);
+      expect(
+        readInlinePrompt(screen.getByRole('textbox', { name: '提示词' })).replaceAll(
+          INLINE_REFERENCE,
+          '',
+        ),
+      ).toBe(originalText);
       expect(screen.queryByRole('button', { name: '删除 主角' })).not.toBeInTheDocument();
       expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
       expect(onDocumentChange).toHaveBeenCalledTimes(1);

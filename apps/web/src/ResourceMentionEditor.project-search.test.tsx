@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Asset } from '@multimodal-canvas/domain';
 import { ResourceMentionEditor } from './ResourceMentionEditor';
+import { INLINE_REFERENCE, readInlinePrompt, selectInlinePrompt } from './InlinePromptInput';
 import type { ProjectResourceSearch, ProjectResourceSearchPage } from './project-resource-search';
 
 /** 不使用真实素材或接口，版本用于核验跨页搜索后的结构化引用。 */
@@ -61,7 +62,10 @@ describe('资源引用的完整项目检索', () => {
         onDocumentChange={onDocumentChange}
       />,
     );
-    await user.type(screen.getByRole('textbox'), ' @');
+    const editor = screen.getByRole('textbox');
+    editor.focus();
+    selectInlinePrompt(editor, readInlinePrompt(editor).length);
+    await user.keyboard(' @');
     expect(screen.getByRole('option', { name: /旧版主角.*v4/ })).toBeEnabled();
     expect(screen.getByRole('option', { name: /受限素材.*无权访问/ })).toBeDisabled();
     await user.click(screen.getByRole('option', { name: /旧版主角.*v4/ }));
@@ -95,10 +99,8 @@ describe('资源引用的完整项目检索', () => {
         }}
       />,
     );
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
-    input.focus();
-    input.setSelectionRange(1, 1);
-    fireEvent.select(input);
+    const input = screen.getByRole('textbox');
+    fireEvent.mouseMove(input.querySelector('[data-inline-reference]')!);
     const hover = await screen.findByRole('region', { name: '预览 旧版主角' });
     expect(hover.querySelector('.resource-mention-media-icon')).toBeInTheDocument();
     expect(within(hover).queryByRole('img')).not.toBeInTheDocument();
@@ -106,7 +108,7 @@ describe('资源引用的完整项目检索', () => {
     const dialog = await screen.findByRole('dialog', { name: '资源预览' });
     expect(dialog.querySelector('.resource-mention-media-icon')).toBeInTheDocument();
     expect(within(dialog).getByRole('textbox', { name: '资源名称' })).toHaveValue('旧版主角');
-    expect(input).toHaveValue('旧版主角');
+    expect(readInlinePrompt(input).replaceAll(INLINE_REFERENCE, '')).toBe('旧版主角');
     expect(onDocumentChange).not.toHaveBeenCalled();
   });
 

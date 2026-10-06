@@ -1,10 +1,12 @@
 import '@testing-library/jest-dom/vitest';
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PromptDocument } from '@multimodal-canvas/domain';
 
 import { TextPromptEditor } from './TextPromptEditor';
+import { INLINE_REFERENCE, readInlinePrompt, selectInlinePrompt } from './InlinePromptInput';
 import type { AssetFlowNode, FlowEdge } from './canvas-utils';
 import { collectConnectedPromptAssets } from './workspace/connected-prompt-assets';
 
@@ -59,8 +61,9 @@ afterEach(() => {
   expect(requests).toEqual([]);
 });
 
-describe('TextPromptEditor 连线别名自动提及', () => {
-  it('首个提及是近景良时，卡片仍显示权威旧名良；新输入良也使用同一冻结身份', () => {
+describe('TextPromptEditor 连线别名与独立引用', () => {
+  it('首个提及是近景良时卡片仍显示权威旧名良，新输入良保留普通文字和既有冻结身份', async () => {
+    const user = userEvent.setup();
     const custom = {
       type: 'mention' as const,
       mentionId: 'custom-closeup',
@@ -91,19 +94,19 @@ describe('TextPromptEditor 连线别名自动提及', () => {
       target: { value: '主角' },
     });
     fireEvent.click(within(dialog).getByRole('button', { name: '保存名称' }));
-    expect(onConnectedResourceRename).toHaveBeenCalledExactlyOnceWith('asset-six', '主角');
+    expect(onConnectedResourceRename).toHaveBeenCalledExactlyOnceWith('asset-six', '主角', 2);
     expect(onDocumentChange).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByRole('textbox', { name: '提示词' }), {
-      target: { value: '近景良看向良' },
-    });
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    editor.focus();
+    selectInlinePrompt(editor, readInlinePrompt(editor).length);
+    await user.keyboard('良');
     const saved = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
-    expect(saved.blocks[0]).toEqual(custom);
-    expect(saved.blocks.at(-1)).toMatchObject({
-      type: 'mention',
-      entityName: '良',
-      assetId: 'asset-six',
-      assetVersion: 2,
-    });
+    expect(saved.blocks).toEqual([
+      { type: 'text', text: '近景良' },
+      { ...custom, inline: true },
+      { type: 'text', text: '看向良' },
+    ]);
+    expect(readInlinePrompt(editor)).toBe(`近景良${INLINE_REFERENCE}看向良`);
   });
 
   it('旧别名缺少来源版本时提示原因，打开或编辑都不擅自创建未冻结引用', () => {
@@ -132,7 +135,8 @@ describe('TextPromptEditor 连线别名自动提及', () => {
     ]);
   });
 
-  it('旧别名缺少版本时只投影已有文字，重渲染不写文档，明确编辑后才提交冻结引用', () => {
+  it('未冻结的旧连线只读投影已有文字，重渲染不写文档，编辑后保留投影身份并提交已知版本', async () => {
+    const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const input = {
       version: 1 as const,
@@ -147,30 +151,46 @@ describe('TextPromptEditor 连线别名自动提及', () => {
       ariaLabel: '提示词',
     };
     const view = render(<TextPromptEditor {...props} />);
-    const tokens = [...document.querySelectorAll('.resource-mention-token')];
-    expect(tokens.map((token) => token.textContent)).toEqual(['良', '良']);
+    const tokens = [...document.querySelectorAll('[data-inline-reference]')];
+    expect(tokens).toHaveLength(2);
+    expect(tokens.map((token) => token.getAttribute('aria-label'))).toEqual(['引用 良', '引用 良']);
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    expect(readInlinePrompt(editor).replaceAll(INLINE_REFERENCE, '')).toBe('良站在窗前，良转身');
     const ids = tokens.map((token) => token.getAttribute('data-mention-id'));
     expect(onDocumentChange).not.toHaveBeenCalled();
     view.rerender(<TextPromptEditor {...props} connectedAssets={connectedImages()} />);
     expect(
-      [...document.querySelectorAll('.resource-mention-token')].map((token) =>
+      [...document.querySelectorAll('[data-inline-reference]')].map((token) =>
         token.getAttribute('data-mention-id'),
       ),
     ).toEqual(ids);
     expect(onDocumentChange).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByRole('textbox', { name: '提示词' }), {
-      target: { value: '良站在窗前，良转身。' },
-    });
+    editor.focus();
+    selectInlinePrompt(editor, readInlinePrompt(editor).length);
+    await user.keyboard('。');
     expect(onDocumentChange).toHaveBeenCalledTimes(1);
     const saved = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     expect(saved.blocks.filter((block) => block.type === 'mention')).toEqual([
-      expect.objectContaining({ assetId: 'asset-six', assetVersion: 2, entityName: '良' }),
-      expect.objectContaining({ assetId: 'asset-six', assetVersion: 2, entityName: '良' }),
+      expect.objectContaining({
+        mentionId: ids[0],
+        assetId: 'asset-six',
+        assetVersion: 2,
+        entityName: '良',
+        inline: true,
+      }),
+      expect.objectContaining({
+        mentionId: ids[1],
+        assetId: 'asset-six',
+        assetVersion: 2,
+        entityName: '良',
+        inline: true,
+      }),
     ]);
+    expect(saved.blocks.at(-1)).toEqual({ type: 'text', text: '转身。' });
     expect(input.blocks).toEqual([{ type: 'text', text: '良站在窗前，良转身' }]);
   });
 
-  it('历史版本卡片改名不误改当前连线或同资产的自定义别名', () => {
+  it('历史版本卡片改名向父层传递确切版本，不本地改写当前连线或正文中的自定义名字', () => {
     const onConnectedResourceRename = vi.fn();
     const onDocumentChange = vi.fn();
     const historical = {
@@ -218,18 +238,22 @@ describe('TextPromptEditor 连线别名自动提及', () => {
       target: { value: '良' },
     });
     fireEvent.click(within(dialog).getByRole('button', { name: '保存名称' }));
-    expect(onConnectedResourceRename).not.toHaveBeenCalled();
-    expect(onDocumentChange).toHaveBeenCalledTimes(1);
-    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
-      { ...historical, entityName: '良' },
-      { type: 'text', text: '与' },
-      current,
-      { type: 'text', text: '和' },
-      custom,
-    ]);
+    expect(onConnectedResourceRename).toHaveBeenCalledExactlyOnceWith('asset-six', '良', 1);
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(
+      readInlinePrompt(screen.getByRole('textbox', { name: '提示词' })).replaceAll(
+        INLINE_REFERENCE,
+        '',
+      ),
+    ).toBe('历史角色与当前角色和侧影');
+    expect(document.querySelectorAll('[data-inline-reference]')).toHaveLength(3);
+    expect(historical).toMatchObject({ assetVersion: 1, entityName: '历史角色' });
+    expect(current).toMatchObject({ assetVersion: 2, entityName: '当前角色' });
+    expect(custom).toMatchObject({ assetVersion: 1, entityName: '侧影' });
   });
 
-  it('输入单字别名时按连线资产身份绑定，并带上来源冻结版本', () => {
+  it('中文输入单字别名保持普通文字，显式选字引用才插入来源冻结版本的原子', async () => {
+    const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const connectedAssets = connectedImages();
     render(
@@ -248,20 +272,31 @@ describe('TextPromptEditor 连线别名自动提及', () => {
     fireEvent.compositionEnd(editor, { target: { value: '让良' } });
     fireEvent.change(editor, { target: { value: '让良' } });
     expect(onDocumentChange).toHaveBeenCalledTimes(1);
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: '让良' }]);
+    expect(document.querySelectorAll('[data-inline-reference]')).toHaveLength(0);
+    editor.focus();
+    selectInlinePrompt(editor, 1, 2);
+    fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('option', { name: /良.*v2/ }));
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
-      { type: 'text', text: '让' },
+      { type: 'text', text: '让良' },
       expect.objectContaining({
         type: 'mention',
         assetId: 'asset-six',
         assetVersion: 2,
         entityName: '良',
+        inline: true,
       }),
     ]);
+    expect(readInlinePrompt(screen.getByRole('textbox', { name: '提示词' }))).toBe(
+      `让良${INLINE_REFERENCE}`,
+    );
   });
 
   it.each(['asset', 'version'] as const)(
     '同名对应不同%s身份时不按首个字符串匹配擅自绑定',
-    (difference) => {
+    async (difference) => {
+      const user = userEvent.setup();
       const onDocumentChange = vi.fn();
       const document: PromptDocument = {
         version: 1,
@@ -297,14 +332,18 @@ describe('TextPromptEditor 连线别名自动提及', () => {
           ariaLabel="提示词"
         />,
       );
-      fireEvent.change(screen.getByRole('textbox', { name: '提示词' }), {
-        target: { value: '良与良看向良' },
-      });
+      const editor = screen.getByRole('textbox', { name: '提示词' });
+      editor.focus();
+      selectInlinePrompt(editor, readInlinePrompt(editor).length);
+      await user.keyboard('良');
       const saved = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
       expect(saved.blocks.filter((block) => block.type === 'mention')).toEqual(
-        document.blocks.filter((block) => block.type === 'mention'),
+        document.blocks
+          .filter((block) => block.type === 'mention')
+          .map((block) => ({ ...block, inline: true })),
       );
       expect(saved.blocks.at(-1)).toEqual({ type: 'text', text: '看向良' });
+      expect(readInlinePrompt(editor).replaceAll(INLINE_REFERENCE, '')).toBe('良与良看向良');
     },
   );
 

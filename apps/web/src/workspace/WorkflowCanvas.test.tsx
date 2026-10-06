@@ -2651,6 +2651,38 @@ describe('当前节点连续添加参考资源', () => {
     expect(props.onNodeSelect).toHaveBeenCalledWith(sourceNode);
   });
 
+  it('进入添加模式立即显示退出说明，完成添加会清理 Ant Design Message', async () => {
+    const props = createProps({
+      nodes: [generateNode, sourceNode],
+      selectedNode: generateNode,
+      onAddNodeReference: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+    const picker = await screen.findByRole('button', { name: '添加参考资料' });
+
+    fireEvent.click(picker);
+
+    const notice = await screen.findByText(
+      '当前处于添加参考资料模式；连续点击画布中的图片、视频、音频或文字，按 Esc 或点击“完成添加”退出',
+    );
+    expect(notice).toBeVisible();
+    expect(notice.closest('.ant-message')).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByText(notice.textContent ?? '')).not.toBeInTheDocument(),
+    );
+    expect(picker).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(picker);
+    const secondNotice = await screen.findByText(notice.textContent ?? '');
+    expect(secondNotice).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '完成添加' }));
+    await waitFor(() =>
+      expect(screen.queryByText(secondNotice.textContent ?? '')).not.toBeInTheDocument(),
+    );
+  });
+
   it('添加错误保留模式和目标，可继续点击其它资源或主动退出', async () => {
     const props = createProps({
       nodes: [generateNode, sourceNode],

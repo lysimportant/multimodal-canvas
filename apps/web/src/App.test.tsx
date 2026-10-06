@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { Button } from '@multimodal-canvas/ui';
 import type { ComponentProps, DragEvent } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveImageOutputParameters } from '@multimodal-canvas/domain';
+import { renderPromptDocument, resolveImageOutputParameters } from '@multimodal-canvas/domain';
 import type {
   Asset,
   CanvasDocument,
@@ -1218,7 +1218,12 @@ describe('App 组件库迁移', () => {
       stale: true,
       resourceRefs: [
         retained,
-        { id: 'connected:' + asset.id, assetId: asset.id, mediaType: 'image', name: '主角' },
+        {
+          id: 'connected:' + asset.id,
+          assetId: asset.id,
+          mediaType: 'image',
+          name: '主角',
+        },
       ],
     });
     expect(renamed.data.promptDocument).toBeUndefined();
@@ -1236,7 +1241,12 @@ describe('App 组件库迁移', () => {
     act(() => view.canvas!.onConnectedResourceRename!(asset.id, '配角', 'target'));
     expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual([
       retained,
-      { id: 'connected:' + asset.id, assetId: asset.id, mediaType: 'image', name: '配角' },
+      {
+        id: 'connected:' + asset.id,
+        assetId: asset.id,
+        mediaType: 'image',
+        name: '配角',
+      },
     ]);
     act(() => view.canvas!.onUndoCanvas?.());
     expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual(
@@ -1254,6 +1264,60 @@ describe('App 组件库迁移', () => {
     expect(view.canvas!.nodes.find((node) => node.id === 'target')?.data.resourceRefs).toEqual([
       retained,
     ]);
+  });
+
+  it('只有旧正文引用且无资料池或连线时立即改名，保留冻结版本和普通正文', async () => {
+    const mention = {
+      type: 'mention' as const,
+      mentionId: 'legacy-independent-image',
+      assetId: asset.id,
+      assetVersion: 3,
+      mediaType: 'image' as const,
+      label: asset.name,
+      entityName: '旧别名',
+    };
+    const document: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '保持正文；' },
+        mention,
+        { type: 'text', text: '；主角是普通文字。' },
+      ],
+    };
+    const prompt = renderPromptDocument(document);
+    resourceAssets = [{ ...asset, latestVersion: 9 }];
+    canvas.nodes = [
+      {
+        ...imageNode('target', 'image-model'),
+        data: { ...imageNode('target', 'image-model').data, prompt, promptDocument: document },
+      },
+    ];
+    canvas.edges = [];
+    await renderCanvas(0);
+    expect(view.canvas!.nodes[0].data.resourceRefs).toBeUndefined();
+
+    act(() => view.canvas!.onConnectedResourceRename!(asset.id, '主角', 'target', 3));
+
+    const renamed = view.canvas!.nodes[0].data;
+    expect(renamed.resourceRefs).toEqual([
+      expect.objectContaining({
+        assetId: asset.id,
+        assetVersion: 3,
+        mediaType: 'image',
+        name: '主角',
+        attached: true,
+      }),
+    ]);
+    expect(renamed.prompt).toBe(prompt);
+    expect(renderPromptDocument(renamed.promptDocument!)).toBe(prompt);
+    expect(renamed.promptDocument?.blocks.filter((block) => block.type === 'mention')).toEqual([
+      { ...mention, inline: true, entityName: '主角' },
+    ]);
+    expect(view.canvas!.edges).toEqual([]);
+    expect(view.canvas!.assets?.find((item) => item.id === asset.id)?.name).toBe(asset.name);
+    await waitFor(() => expect(canvas.nodes[0].data.resourceRefs).toEqual(renamed.resourceRefs));
+    expect(canvas.nodes[0].data.prompt).toBe(prompt);
+    expect(renameRequests()).toHaveLength(0);
   });
 
   it.each([false, true])(
@@ -1369,7 +1433,8 @@ describe('App 组件库迁移', () => {
       ],
     };
     act(() => view.canvas!.onPromptDocumentChange!(mentioned, 'target'));
-    expect(view.canvas!.nodes[1].data.resourceRefs).toEqual(firstAlias);
+    const attachedAlias = firstAlias;
+    expect(view.canvas!.nodes[1].data.resourceRefs).toEqual(attachedAlias);
     const renamed: PromptDocument = {
       ...mentioned,
       blocks: mentioned.blocks.map((block) =>
@@ -1380,7 +1445,7 @@ describe('App 组件库迁移', () => {
       view.canvas!.onConnectedResourceRename!(asset.id, '配角', 'target');
       view.canvas!.onPromptDocumentChange!(renamed, 'target');
     });
-    const finalAlias = [{ ...firstAlias[0], name: '配角' }];
+    const finalAlias = [{ ...attachedAlias[0], name: '配角' }];
     expect(view.canvas!.nodes[1].data).toMatchObject({
       prompt: '请绘制 配角',
       resourceRefs: finalAlias,

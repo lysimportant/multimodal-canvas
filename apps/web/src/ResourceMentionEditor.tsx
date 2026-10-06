@@ -1,8 +1,4 @@
-import {
-  Button as UiButton,
-  Textarea as UiTextarea,
-  Input as UiInput,
-} from '@multimodal-canvas/ui';
+import { Button as UiButton, Input as UiInput } from '@multimodal-canvas/ui';
 import {
   AudioLines,
   Check,
@@ -21,12 +17,10 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
-  type ReactElement,
-  type ReactNode,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -43,16 +37,21 @@ import type {
 } from '@multimodal-canvas/domain';
 import {
   getEffectivePromptDocument,
+  defaultResourceDisplayName,
   mentionDisplayName,
   promptDocumentSchema,
   renderPromptDocument,
-  uniqueResourceDisplayName,
 } from '@multimodal-canvas/domain';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@multimodal-canvas/ui';
 
-import { isImeKeyboardEvent, useImeDraft } from './ime';
-import { PromptCaret } from './PromptCaret';
-import { canPromoteResourceNameAt, createPromptMentionId } from './resource-mention-sync';
+import { isImeKeyboardEvent } from './ime';
+import {
+  InlinePromptInput,
+  INLINE_REFERENCE,
+  type InlinePromptInputHandle,
+  type InlinePromptPosition,
+} from './InlinePromptInput';
+import { createPromptMentionId } from './resource-mention-sync';
 import { AssetPreview } from './workspace/AssetPreview';
 import { CameraCaptureDialog } from './workspace/CameraCaptureDialog';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
@@ -91,7 +90,7 @@ export type ResourceMentionEditorProps = {
     document: PromptDocument,
   ) => void;
   /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
-  onConnectedResourceRename?: (assetId: string, name: string) => void;
+  onConnectedResourceRename?: (assetId: string, name: string, assetVersion?: number) => void;
   /** 纯文本兼容回调；始终接收当前文档渲染后的文字。 */
   onChange?: (value: string) => void;
   /** 结构化文档回调；新引用能力应优先使用此回调持久化。 */
@@ -119,6 +118,8 @@ type SelectedTextRange = { start: number; end: number; name: string };
 type EditorSnapshot = {
   text: string;
   ranges: MentionRange[];
+  /** 仅显式移除资料时记录池，普通文字撤销不会删除已添加资料。 */
+  pool?: MentionRange[];
 };
 
 type MentionBindingDraft = {
@@ -151,8 +152,8 @@ const RESOURCE_FILTERS = ['all', 'image', 'video', 'audio', 'text'] as const;
 /**
  * 通用资源提及编辑器。
  *
- * 文本域通过组件库 Textarea 渲染，底层保留原生选区、粘贴和 IME 行为；
- * 名称以原子范围绑定到不可变 mentionId，资源条按 assetId 与冻结版本去重。
+ * 普通文字保留原生输入，引用以独立缩略图参与排版；名称不绑定文字选区。
+ * 引用标记使用不可变 mentionId，资料条按 assetId 与冻结版本去重。
  * 提交时同时回传纯文本和 PromptDocument，旧调用方只接收
  * 纯文本也可以继续工作。
  */
@@ -186,17 +187,18 @@ export function ResourceMentionEditor({
     () => promptDocument !== undefined && !promptDocumentSchema.safeParse(promptDocument).success,
     [promptDocument],
   );
-  const initialText = useMemo(() => renderPromptDocument(initialDocument), [initialDocument]);
+  const initialText = useMemo(() => editorText(initialDocument), [initialDocument]);
   const initialRanges = useMemo(() => rangesFromDocument(initialDocument), [initialDocument]);
   const [text, setText] = useState(initialText);
+  const [inputResetKey, setInputResetKey] = useState(0);
   const [ranges, setRanges] = useState<MentionRange[]>(initialRanges);
   const textRef = useRef(initialText);
   const rangesRef = useRef<MentionRange[]>(initialRanges);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<InlinePromptInputHandle>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const highlightRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const pickerPopoverRef = useRef<GetRef<typeof Popover>>(null);
+  const pickerAnchorRef = useRef<HTMLSpanElement>(null);
   const pickerDismissedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const caretRef = useRef(initialText.length);
@@ -244,7 +246,9 @@ export function ResourceMentionEditor({
   const draggedResourceRef = useRef<string | null>(null);
   const [draggedResourceKey, setDraggedResourceKey] = useState<string | null>(null);
   const [protectedEditMessage, setProtectedEditMessage] = useState<string | null>(null);
-  const [draftResetKey, setDraftResetKey] = useState(0);
+  const [retainedMentions, setRetainedMentions] = useState(initialRanges);
+  const retainedMentionsRef = useRef(retainedMentions);
+  retainedMentionsRef.current = retainedMentions;
   const historyRef = useRef<{ past: EditorSnapshot[]; future: EditorSnapshot[] }>({
     past: [],
     future: [],
@@ -261,11 +265,24 @@ export function ResourceMentionEditor({
   }, [nodeId]);
 
   const commitState = useCallback(
-    (nextText: string, nextRanges: MentionRange[], options?: { recordHistory?: boolean }) => {
+    (
+      nextText: string,
+      nextRanges: MentionRange[],
+      options?: { recordHistory?: boolean; capturePool?: boolean },
+    ) => {
       setSelectedTextRange(null);
       const normalizedRanges = normalizeRanges(nextText, nextRanges);
-      const previous = { text: textRef.current, ranges: rangesRef.current };
-      if (previous.text === nextText && rangesEqual(previous.ranges, normalizedRanges)) return;
+      const previous = {
+        text: textRef.current,
+        ranges: rangesRef.current,
+        ...(options?.capturePool ? { pool: retainedMentionsRef.current } : {}),
+      };
+      if (
+        previous.text === nextText &&
+        rangesEqual(previous.ranges, normalizedRanges) &&
+        !options?.capturePool
+      )
+        return;
       if (options?.recordHistory !== false) pushHistory(historyRef.current, previous);
       textRef.current = nextText;
       rangesRef.current = normalizedRanges;
@@ -274,7 +291,8 @@ export function ResourceMentionEditor({
       caretRef.current = Math.max(0, Math.min(nextText.length, caretRef.current));
       const document = documentFromRanges(nextText, normalizedRanges);
       pendingLocalSignatureRef.current = documentSignature(document, nextText);
-      onChange?.(nextText);
+      setRetainedMentions((current) => retainMentionPool(current, normalizedRanges));
+      onChange?.(renderPromptDocument(document));
       onDocumentChange?.(document);
     },
     [onChange, onDocumentChange],
@@ -285,13 +303,16 @@ export function ResourceMentionEditor({
       textRef.current = snapshot.text;
       rangesRef.current = normalizeRanges(snapshot.text, snapshot.ranges);
       setText(snapshot.text);
+      setInputResetKey((revision) => revision + 1);
       setRanges(rangesRef.current);
       // 撤销是明确的本地替换，不能被 IME 的迟到回填保护当成旧值忽略。
-      setDraftResetKey((current) => current + 1);
       caretRef.current = Math.min(caretRef.current, snapshot.text.length);
       const document = documentFromRanges(snapshot.text, rangesRef.current);
       pendingLocalSignatureRef.current = documentSignature(document, snapshot.text);
-      onChange?.(snapshot.text);
+      setRetainedMentions(
+        (current) => snapshot.pool ?? retainMentionPool(current, rangesRef.current),
+      );
+      onChange?.(renderPromptDocument(document));
       onDocumentChange?.(document);
       requestAnimationFrame(() => {
         const input = textareaRef.current;
@@ -310,7 +331,7 @@ export function ResourceMentionEditor({
       const edit = explicitEdit ?? inferTextEdit(previousText, nextText);
       const touched = rangesRef.current.filter((range) => editTouchesMention(edit, range));
       if (touched.length > 0) {
-        // 名称是原子引用：删除或覆盖其中任意字符时移除整段名称，保留输入的替换文字。
+        // 引用只占一个编辑位置；移除标记不影响其前后的普通文字和资料池。
         const start = Math.min(edit.editStart, ...touched.map((range) => range.start));
         const end = Math.max(edit.editEnd, ...touched.map((range) => range.end));
         const replacement = nextText.slice(edit.editStart, edit.editStart + edit.replacementLength);
@@ -318,7 +339,6 @@ export function ResourceMentionEditor({
         edit.editStart = start;
         edit.editEnd = end;
         caretRef.current = start + replacement.length;
-        setDraftResetKey((current) => current + 1);
         setReplaceMentionId(null);
         setPendingDropAssetId(null);
         setHoveredMentionId(null);
@@ -327,28 +347,18 @@ export function ResourceMentionEditor({
         });
       }
       setProtectedEditMessage(null);
-      const nextRanges = promotePlaintextResourceNames(
-        nextText,
-        updateRangesForTextEdit(previousText, nextText, rangesRef.current, edit),
-        collectNamedResourcePool(rangesRef.current, connectedAssets),
-      );
+      const nextRanges = updateRangesForTextEdit(previousText, nextText, rangesRef.current, edit);
       commitState(nextText, nextRanges);
       setSearchQuery(null);
       updateTrigger(nextText, caretRef.current, setTrigger);
     },
-    [commitState, connectedAssets],
+    [commitState],
   );
-
-  const ime = useImeDraft<HTMLTextAreaElement>({
-    identity: nodeId,
-    value: text,
-    resetKey: draftResetKey,
-    onCommit: handleCommittedText,
-  });
 
   // 仅在父层确实提供了新的文档时重置；本地编辑等待父层确认期间不覆盖输入。
   useEffect(() => {
     const signature = documentSignature(promptDocument, value);
+    const identityChanged = identityRef.current !== nodeId;
     if (identityRef.current !== nodeId || signature !== lastPropSignatureRef.current) {
       setSelectedTextRange(null);
       setResourceDialogId(null);
@@ -359,27 +369,30 @@ export function ResourceMentionEditor({
       setDraggedResourceKey(null);
       historyRef.current = { past: [], future: [] };
       pendingLocalSignatureRef.current = null;
+      pickerDismissedRef.current = false;
       setTrigger(null);
       setReplaceMentionId(null);
       setPendingDropAssetId(null);
       setBindingMentionId(null);
       setProtectedEditMessage(null);
     }
-    if (signature === lastPropSignatureRef.current) return;
+    if (!identityChanged && signature === lastPropSignatureRef.current) return;
     lastPropSignatureRef.current = signature;
     const incoming = normalizeDocument(promptDocument, value);
-    const incomingText = renderPromptDocument(incoming);
+    const incomingText = editorText(incoming);
     const incomingRanges = rangesFromDocument(incoming);
     const incomingLocalSignature = documentSignature(incoming, incomingText);
     if (pendingLocalSignatureRef.current === incomingLocalSignature) {
       pendingLocalSignatureRef.current = null;
       return;
     }
+    setRetainedMentions(incomingRanges);
     pendingLocalSignatureRef.current = null;
     historyRef.current = { past: [], future: [] };
     textRef.current = incomingText;
     rangesRef.current = incomingRanges;
     setText(incomingText);
+    setInputResetKey((revision) => revision + 1);
     setRanges(incomingRanges);
     caretRef.current = Math.min(caretRef.current, incomingText.length);
     setTrigger(null);
@@ -409,8 +422,14 @@ export function ResourceMentionEditor({
     [assets],
   );
   const nodeSearchEntries = useMemo(
-    () => collectNodeSearchEntries(ranges, assets, connectedAssets, resourceRefs),
-    [ranges, assets, connectedAssets, resourceRefs],
+    () =>
+      collectNodeSearchEntries(
+        retainMentionPool(retainedMentions, ranges),
+        assets,
+        connectedAssets,
+        resourceRefs,
+      ),
+    [ranges, retainedMentions, assets, connectedAssets, resourceRefs],
   );
   const defaultResourceScope = nodeSearchEntries.length === 0 ? 'project' : 'node';
   const pickerQuery = searchQuery ?? trigger?.query ?? '';
@@ -482,6 +501,35 @@ export function ResourceMentionEditor({
       trigger || replaceMentionId !== null || pendingDropAssetId !== null || selectedTextRange,
     );
   const pickerId = `resource-mention-picker-${nodeId}`;
+  const pickerOffset = selectedTextRange?.end ?? trigger?.start ?? caretRef.current;
+  useLayoutEffect(() => {
+    if (!pickerOpen) return;
+    const input = textareaRef.current?.element;
+    const anchor = pickerAnchorRef.current;
+    const host = anchor?.parentElement;
+    if (!input || !anchor || !host) return;
+    const sync = () => {
+      const rect = textareaRef.current?.getCaretRect(pickerOffset);
+      if (!rect) return;
+      const hostRect = host.getBoundingClientRect();
+      const scaleX = host.offsetWidth ? hostRect.width / host.offsetWidth : 1;
+      const scaleY = host.offsetHeight ? hostRect.height / host.offsetHeight : 1;
+      anchor.style.left = `${(rect.left - hostRect.left) / (scaleX || 1)}px`;
+      anchor.style.top = `${(rect.top - hostRect.top) / (scaleY || 1)}px`;
+      anchor.style.height = `${rect.height / (scaleY || 1)}px`;
+      pickerPopoverRef.current?.forceAlign();
+    };
+    sync();
+    input.addEventListener('scroll', sync);
+    window.addEventListener('resize', sync);
+    const observer = new ResizeObserver(sync);
+    observer.observe(input);
+    return () => {
+      input.removeEventListener('scroll', sync);
+      window.removeEventListener('resize', sync);
+      observer.disconnect();
+    };
+  }, [pickerOpen, pickerOffset, text]);
   /** 独立分页查询整个项目，关闭、切换或重新搜索时取消旧请求，不回退成已加载缓存。 */
   useEffect(() => {
     if (!pickerOpen || !remoteProject || !onSearchProjectResources) {
@@ -607,30 +655,28 @@ export function ResourceMentionEditor({
           setProtectedEditMessage('选中文字已变化，请重新选择');
           return;
         }
-        const pool = collectNamedResourcePool(rangesRef.current, connectedAssets);
-        if (
-          pool.some(
-            (item) =>
-              item.name === name &&
-              (item.assetId !== asset.id || item.assetVersion !== assetVersion),
-          )
-        ) {
-          setProtectedEditMessage('这个名字已被其他资源占用，请选择其他文字');
-          return;
-        }
-        caretRef.current = end;
-        commitState(textRef.current, [
-          ...rangesRef.current,
+        const nextText =
+          textRef.current.slice(0, end) + INLINE_REFERENCE + textRef.current.slice(end);
+        caretRef.current = end + 1;
+        commitState(nextText, [
+          ...updateRangesForTextEdit(textRef.current, nextText, rangesRef.current, {
+            editStart: end,
+            editEnd: end,
+            replacementLength: 1,
+          }),
           {
-            start,
-            end,
+            start: end,
+            end: end + 1,
             mention: {
               type: 'mention',
+              inline: true,
               mentionId: createMentionId(rangesRef.current),
               assetId: asset.id,
               label: asset.name,
               mediaType: asset.mediaType,
-              entityName: name,
+              entityName:
+                nodeSearchEntries.find((item) => item.key === entry.key)?.name ??
+                defaultResourceDisplayName(entry.name),
               ...(assetVersion ? { assetVersion } : {}),
             },
           },
@@ -639,7 +685,7 @@ export function ResourceMentionEditor({
         closePicker();
         requestAnimationFrame(() => {
           textareaRef.current?.focus({ preventScroll: true });
-          textareaRef.current?.setSelectionRange(end, end);
+          textareaRef.current?.setSelectionRange(end + 1, end + 1);
         });
         return;
       }
@@ -661,10 +707,13 @@ export function ResourceMentionEditor({
           ...(assetVersion ? { assetVersion } : {}),
         };
         const previousTokenLength = replacing.end - replacing.start;
-        const nextToken = mentionDisplayName(previousMention);
+        const nextToken = INLINE_REFERENCE;
         const nextMentionNamed: PromptMention = {
           ...nextMention,
-          entityName: nextToken,
+          inline: true,
+          entityName:
+            nodeSearchEntries.find((item) => item.key === entry.key)?.name ??
+            defaultResourceDisplayName(entry.name),
         };
         const delta = nextToken.length - previousTokenLength;
         const nextText =
@@ -702,7 +751,7 @@ export function ResourceMentionEditor({
       }
 
       const input = textareaRef.current;
-      const editorFocused = Boolean(input && document.activeElement === input);
+      const editorFocused = Boolean(input && document.activeElement === input.element);
       const selectionStart = editorFocused
         ? (input?.selectionStart ?? caretRef.current)
         : caretRef.current;
@@ -712,7 +761,10 @@ export function ResourceMentionEditor({
       const activeTrigger = trigger ?? findMentionTrigger(textRef.current, selectionStart);
       const start = activeTrigger?.start ?? selectionStart;
       const end = Math.max(start, selectionEnd);
-      const token = uniqueResourceDisplayName(entry.name, takenDisplayNames(rangesRef.current));
+      const token = INLINE_REFERENCE;
+      const name =
+        nodeSearchEntries.find((item) => item.key === entry.key)?.name ??
+        defaultResourceDisplayName(entry.name);
       const nextText = `${textRef.current.slice(0, start)}${token}${textRef.current.slice(end)}`;
       const editedRanges = updateRangesForTextEdit(textRef.current, nextText, rangesRef.current, {
         editStart: start,
@@ -721,11 +773,12 @@ export function ResourceMentionEditor({
       });
       const mention: PromptMention = {
         type: 'mention',
+        inline: true,
         mentionId: createMentionId(rangesRef.current),
         assetId: asset.id,
         label: asset.name,
         mediaType: asset.mediaType,
-        entityName: token,
+        entityName: name,
         ...(assetVersion ? { assetVersion } : {}),
       };
       const nextStart = start;
@@ -752,13 +805,14 @@ export function ResourceMentionEditor({
       replaceMentionId,
       trigger,
       selectedTextRange,
+      nodeSearchEntries,
       closePicker,
       connectedAssets,
       disabled,
     ],
   );
 
-  /** 资源条占位按钮选中本地文件后上传并插入同名提及。 */
+  /** 资源条占位按钮选中本地文件后上传并插入独立引用。 */
   const handleUploadFiles = useCallback(
     async (files: readonly File[]) => {
       if (!onUploadResource || files.length === 0 || disabled) return;
@@ -798,23 +852,35 @@ export function ResourceMentionEditor({
   /**
    * 移除资源条中指定版本的引用，所有名称保留为普通文字，其他版本和文字范围不变。
    * @param resource 当前缩略图的资产及冻结版本；只有连线没有提及时仍通知父层。
-   * @returns 父层将文档、引用和连线合并为一次撤销；独立编辑器只更新文档。
+   * @returns 父层将文档、引用和连线合并为一次撤销；独立编辑器记录正文与资料池的撤销边界。
    */
   const unlinkResource = useCallback(
     (resource: { assetId: string; assetVersion?: number }) => {
       if (disabled) return;
-      const nextRanges = rangesRef.current.filter(
-        (range) =>
-          range.mention.assetId !== resource.assetId ||
-          range.mention.assetVersion !== resource.assetVersion,
+      const keep = (range: MentionRange) =>
+        range.mention.assetId !== resource.assetId ||
+        range.mention.assetVersion !== resource.assetVersion;
+      const current = documentFromRanges(textRef.current, rangesRef.current);
+      const blocks = current.blocks.filter(
+        (block) =>
+          block.type !== 'mention' ||
+          block.assetId !== resource.assetId ||
+          block.assetVersion !== resource.assetVersion,
       );
+      const document: PromptDocument = {
+        version: 1,
+        blocks: blocks.length ? blocks : [{ type: 'text', text: '' }],
+      };
       try {
         if (onResourceRemove) {
           // 等待父层整体更新；不先提交文档，避免把一次解绑拆成两个撤销步骤。
-          onResourceRemove(resource, documentFromRanges(textRef.current, nextRanges));
-        } else if (nextRanges.length !== rangesRef.current.length) {
-          commitState(textRef.current, nextRanges);
+          onResourceRemove(resource, document);
+        } else {
+          commitState(editorText(document), rangesFromDocument(document), {
+            capturePool: retainedMentionsRef.current.some((range) => !keep(range)),
+          });
         }
+        setRetainedMentions((current) => current.filter(keep));
         setTrigger(null);
         setProtectedEditMessage(null);
       } catch (error) {
@@ -876,21 +942,30 @@ export function ResourceMentionEditor({
   }, [bindingDraft, bindingMentionId, commitState]);
 
   const handleTextChange = useCallback(
-    (event: ChangeEvent<HTMLTextAreaElement>) => {
+    (value: string, start: number, _end: number, references?: InlinePromptPosition[]) => {
       pickerDismissedRef.current = false;
       setSelectedTextRange(null);
-      caretRef.current = event.currentTarget.selectionStart ?? event.currentTarget.value.length;
-      ime.bind.onChange(event);
+      caretRef.current = start;
+      if (references) {
+        const nextRanges = references.flatMap(({ id, start }) => {
+          const previous = rangesRef.current.find((range) => range.mention.mentionId === id);
+          return previous ? [{ mention: previous.mention, start, end: start + 1 }] : [];
+        });
+        commitState(value, nextRanges);
+        setSearchQuery(null);
+        setProtectedEditMessage(null);
+        updateTrigger(value, start, setTrigger);
+      } else handleCommittedText(value);
     },
-    [ime.bind],
+    [handleCommittedText, commitState],
   );
 
   const handleKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (isImeKeyboardEvent(event)) return;
+    (event: KeyboardEvent<HTMLElement>) => {
+      if (disabled || isImeKeyboardEvent(event) || textareaRef.current?.isComposing()) return;
       const command = event.metaKey || event.ctrlKey;
       if (event.key === 'Backspace' || event.key === 'Delete') {
-        const input = event.currentTarget;
+        const input = textareaRef.current!;
         const start = input.selectionStart;
         const end = input.selectionEnd;
         const editStart =
@@ -912,7 +987,11 @@ export function ResourceMentionEditor({
         const history = historyRef.current;
         const previous = event.shiftKey ? history.future.pop() : history.past.pop();
         if (!previous) return;
-        const current = { text: textRef.current, ranges: rangesRef.current };
+        const current = {
+          text: textRef.current,
+          ranges: rangesRef.current,
+          ...(previous.pool ? { pool: retainedMentionsRef.current } : {}),
+        };
         if (event.shiftKey) history.past.push(current);
         else history.future.push(current);
         restoreSnapshot(previous);
@@ -923,7 +1002,11 @@ export function ResourceMentionEditor({
         const history = historyRef.current;
         const next = history.future.pop();
         if (!next) return;
-        history.past.push({ text: textRef.current, ranges: rangesRef.current });
+        history.past.push({
+          text: textRef.current,
+          ranges: rangesRef.current,
+          ...(next.pool ? { pool: retainedMentionsRef.current } : {}),
+        });
         restoreSnapshot(next);
         return;
       }
@@ -972,12 +1055,13 @@ export function ResourceMentionEditor({
       selectMention,
       trigger,
       handleCommittedText,
+      disabled,
     ],
   );
 
   /** 搜索框和筛选按钮共用列表键盘操作，组合输入确认不触发引用。 */
   const handlePickerKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
+    (event: KeyboardEvent<HTMLElement>) => {
       if (isImeKeyboardEvent(event)) return;
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -999,30 +1083,9 @@ export function ResourceMentionEditor({
   );
 
   const handleComposerMouseMove = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    const overlay = highlightRef.current;
-    const textarea = textareaRef.current;
-    if (!overlay || !textarea) return;
-    const previousTextarea = textarea.style.pointerEvents;
-    const previousOverlay = overlay.style.pointerEvents;
-    let hit: Element | null = null;
-    textarea.style.pointerEvents = 'none';
-    overlay.style.pointerEvents = 'auto';
-    try {
-      hit =
-        typeof document.elementFromPoint === 'function'
-          ? document.elementFromPoint(event.clientX, event.clientY)
-          : null;
-    } finally {
-      textarea.style.pointerEvents = previousTextarea;
-      overlay.style.pointerEvents = previousOverlay;
-    }
-    const token = hit instanceof Element ? hit.closest('.resource-mention-token') : null;
-    const mentionId = token instanceof HTMLElement ? (token.dataset.mentionId ?? null) : null;
-    if (!mentionId) {
-      setHoveredMentionId(null);
-      return;
-    }
-    setHoveredMentionId(mentionId);
+    const token =
+      event.target instanceof Element ? event.target.closest('[data-mention-id]') : null;
+    setHoveredMentionId(token instanceof HTMLElement ? (token.dataset.mentionId ?? null) : null);
   }, []);
 
   const handleComposerMouseLeave = useCallback(() => {
@@ -1039,50 +1102,55 @@ export function ResourceMentionEditor({
     };
   }, [handleComposerMouseLeave, hoveredMentionId]);
 
-  const handleSelect = useCallback(() => {
-    const input = textareaRef.current;
-    if (!input || disabled || ime.isComposing()) return;
-    const start = input.selectionStart ?? 0;
-    const end = input.selectionEnd ?? start;
-    caretRef.current = start;
-    if (pickerDismissedRef.current) return;
-    const selected = rangesRef.current.find((range) => start === range.start && end === range.end);
-    if (selected && start !== end) {
-      setSelectedTextRange(null);
-      setReplaceMentionId(selected.mention.mentionId);
-      setTrigger({ start: selected.start, query: '' });
-      setActiveIndex(0);
-      setHoveredMentionId(null);
-      return;
-    }
-    setReplaceMentionId(null);
-    if (start !== end) {
-      setTrigger(null);
-      setHoveredMentionId(null);
-      const selectedText = textRef.current.slice(start, end);
-      const name = selectedText.trim();
-      const overlapsMention = rangesRef.current.some(
-        (range) => start < range.end && end > range.start,
+  const handleSelect = useCallback(
+    (pointer = false) => {
+      const input = textareaRef.current;
+      if (!input || disabled || input.isComposing()) return;
+      const start = input.selectionStart ?? 0;
+      const end = input.selectionEnd ?? start;
+      caretRef.current = start;
+      if (pointer) pickerDismissedRef.current = false;
+      if (pickerDismissedRef.current) return;
+      const selected = rangesRef.current.find(
+        (range) => start === range.start && end === range.end,
       );
-      if (!name || overlapsMention || name.length > 160) {
+      if (selected && start !== end) {
         setSelectedTextRange(null);
-        if (name.length > 160) setProtectedEditMessage('引用名称不能超过 160 个字符，请缩小选区');
+        setReplaceMentionId(selected.mention.mentionId);
+        setTrigger({ start: selected.start, query: '' });
+        setActiveIndex(0);
+        setHoveredMentionId(null);
         return;
       }
-      const nameStart = start + selectedText.length - selectedText.trimStart().length;
-      setSelectedTextRange({ start: nameStart, end: nameStart + name.length, name });
-      setPendingDropAssetId(null);
-      setProtectedEditMessage(null);
-      return;
-    }
-    setSelectedTextRange(null);
-    const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
-    if (inside) setHoveredMentionId(inside.mention.mentionId);
-    updateTrigger(textRef.current, caretRef.current, setTrigger);
-  }, [disabled, ime.isComposing]);
+      setReplaceMentionId(null);
+      if (start !== end) {
+        setTrigger(null);
+        setHoveredMentionId(null);
+        const selectedText = textRef.current.slice(start, end);
+        const name = selectedText.trim();
+        const overlapsMention = rangesRef.current.some(
+          (range) => start < range.end && end > range.start,
+        );
+        if (!name || overlapsMention || name.length > 160) {
+          setSelectedTextRange(null);
+          if (name.length > 160) setProtectedEditMessage('引用名称不能超过 160 个字符，请缩小选区');
+          return;
+        }
+        setSelectedTextRange({ start, end, name: selectedText });
+        setPendingDropAssetId(null);
+        setProtectedEditMessage(null);
+        return;
+      }
+      setSelectedTextRange(null);
+      const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
+      if (inside) setHoveredMentionId(inside.mention.mentionId);
+      updateTrigger(textRef.current, caretRef.current, setTrigger);
+    },
+    [disabled],
+  );
 
   const handleKeyUp = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    (event: KeyboardEvent<HTMLElement>) => {
       // Esc/Enter/方向键由弹层键盘处理；它们的 keyup 不应重新扫描同一个
       // `@` 查询，否则取消或确认后弹层会在下一帧再次出现。
       if (
@@ -1148,74 +1216,28 @@ export function ResourceMentionEditor({
   );
 
   const stripItems = useMemo(() => {
-    const items: Array<{
-      key: string;
-      assetId: string;
-      assetVersion?: number;
-      mediaType: (typeof mentionRanges)[number]['mention']['mediaType'];
-      name: string;
-      mentionId?: string;
-      asset?: Pick<Asset, 'id' | 'name' | 'mediaType'> &
-        Partial<Pick<Asset, 'contentUrl' | 'mimeType' | 'status' | 'sizeBytes' | 'tags'>>;
-    }> = [];
-    const seen = new Set<string>();
-    const taken = new Set<string>();
-    for (const range of mentionRanges) {
-      const identity = resourceIdentity(range.mention.assetId, range.mention.assetVersion);
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      const connected = connectedAssets.find(
-        (asset) =>
-          asset.id === range.mention.assetId && asset.assetVersion === range.mention.assetVersion,
-      );
-      const name = connected?.referenceName ?? mentionDisplayName(range.mention);
-      const namedRange = connected?.referenceName
-        ? mentionRanges.find(
-            (item) =>
-              item.mention.assetId === range.mention.assetId &&
-              item.mention.assetVersion === range.mention.assetVersion &&
-              mentionDisplayName(item.mention) === name,
-          )
-        : range;
-      taken.add(name);
-      items.push({
-        key: identity,
-        assetId: range.mention.assetId,
-        assetVersion: range.mention.assetVersion,
-        mediaType: range.mention.mediaType,
-        name,
-        mentionId: namedRange?.mention.mentionId,
-        asset: resolveMentionAsset(range.mention, assets, connectedAssets),
-      });
-    }
-    for (const asset of connectedAssets) {
-      const identity = resourceIdentity(asset.id, asset.assetVersion);
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      const name = asset.referenceName ?? uniqueResourceDisplayName(asset.name, taken);
-      taken.add(name);
-      items.push({
-        key: identity,
-        assetId: asset.id,
-        assetVersion: asset.assetVersion,
-        mediaType: asset.mediaType,
-        name,
-        asset,
-      });
-    }
-    // 旧 resourceRefs 只记录别名，不能把历史改名误当成用户排序。
-    if (!resourceRefs.some((ref) => ref.id.startsWith('ordered:'))) return items;
-    const order = new Map<string, number>();
-    resourceRefs.forEach((ref, index) => {
-      const identity = resourceIdentity(ref.assetId, ref.assetVersion);
-      if (!order.has(identity)) order.set(identity, index);
-    });
-    return items.sort(
-      (left, right) =>
-        (order.get(left.key) ?? resourceRefs.length) -
-        (order.get(right.key) ?? resourceRefs.length),
+    const entries = nodeSearchEntries.map((entry) => ({
+      key: entry.key,
+      assetId: entry.asset.id,
+      assetVersion: entry.assetVersion,
+      mediaType: entry.asset.mediaType,
+      name: entry.name,
+      asset: entry.asset,
+      mentionId: mentionRanges.find(
+        (range) =>
+          resourceIdentity(range.mention.assetId, range.mention.assetVersion) === entry.key,
+      )?.mention.mentionId,
+    }));
+    const order = new Map(
+      resourceRefs.map((reference, index) => [
+        resourceIdentity(reference.assetId, reference.assetVersion),
+        index,
+      ]),
     );
-  }, [assets, connectedAssets, mentionRanges, resourceRefs]);
+    return entries.sort(
+      (left, right) => (order.get(left.key) ?? Infinity) - (order.get(right.key) ?? Infinity),
+    );
+  }, [nodeSearchEntries, mentionRanges, resourceRefs]);
 
   /**
    * 只回传完整资源条的新顺序，等待父层保存；不修改正文或提前更新序号。
@@ -1259,53 +1281,19 @@ export function ResourceMentionEditor({
 
   const dialogItem = stripItems.find((item) => item.key === resourceDialogId) ?? null;
 
-  /** 按选中提及的资产、版本和别名原子更新，不覆盖历史版本或其它自定义别名。 */
+  /** 修改引用名称只更新元数据，不替换或绑定普通正文。 */
   const renameStripResource = useCallback(
     (mentionId: string, nextName: string) => {
-      const trimmed = nextName.trim();
-      if (!trimmed) return;
+      const name = nextName.trim();
       const target = rangesRef.current.find((range) => range.mention.mentionId === mentionId);
-      if (!target) return;
-      const previousName = mentionDisplayName(target.mention);
-      let nextText = textRef.current;
-      const nextRanges: MentionRange[] = [];
-      let delta = 0;
-      for (const range of [...rangesRef.current].sort((left, right) => left.start - right.start)) {
-        const shifted = {
-          ...range,
-          start: range.start + delta,
-          end: range.end + delta,
-        };
-        const sameReference =
-          range.mention.assetId === target.mention.assetId &&
-          range.mention.assetVersion === target.mention.assetVersion &&
-          mentionDisplayName(range.mention) === previousName;
-        if (!sameReference) {
-          nextRanges.push(shifted);
-          continue;
-        }
-        nextText = nextText.slice(0, shifted.start) + trimmed + nextText.slice(shifted.end);
-        const sizeDelta = trimmed.length - (shifted.end - shifted.start);
-        nextRanges.push({
-          ...shifted,
-          end: shifted.start + trimmed.length,
-          mention: { ...range.mention, entityName: trimmed },
-        });
-        delta += sizeDelta;
-      }
-      caretRef.current = Math.min(nextText.length, caretRef.current);
-      commitState(
-        nextText,
-        promotePlaintextResourceNames(nextText, nextRanges, [
-          {
-            name: trimmed,
-            assetId: target.mention.assetId,
-            label: target.mention.label,
-            mediaType: target.mention.mediaType,
-            assetVersion: target.mention.assetVersion,
-          },
-        ]),
-      );
+      if (!target || !name) return;
+      const update = (range: MentionRange) =>
+        resourceIdentity(range.mention.assetId, range.mention.assetVersion) ===
+        resourceIdentity(target.mention.assetId, target.mention.assetVersion)
+          ? { ...range, mention: { ...range.mention, entityName: name } }
+          : range;
+      commitState(textRef.current, rangesRef.current.map(update));
+      setRetainedMentions((current) => current.map(update));
       setProtectedEditMessage(null);
     },
     [commitState],
@@ -1397,7 +1385,7 @@ export function ResourceMentionEditor({
       </div>
       {selectedTextRange && (
         <p className="resource-mention-selection-label">
-          选择资源，将「{selectedTextRange.name}」设为引用名称
+          选择资源，插入到「{selectedTextRange.name}」后面
         </p>
       )}
       <div
@@ -1713,136 +1701,91 @@ export function ResourceMentionEditor({
         onMouseMove={handleComposerMouseMove}
         onMouseLeave={handleComposerMouseLeave}
       >
-        <div className="resource-mention-highlight" aria-hidden="true" ref={highlightRef}>
-          {renderHighlightedPrompt(
-            text,
-            mentionRanges,
-            pickerOpen
-              ? {
-                  offset: selectedTextRange?.end ?? trigger?.start ?? caretRef.current,
-                  render: (character) => (
-                    <Popover
-                      ref={pickerPopoverRef}
-                      open
-                      trigger={['click']}
-                      onOpenChange={(next) => {
-                        if (!next) closePicker();
-                      }}
-                      placement="rightTop"
-                      arrow={false}
-                      autoAdjustOverflow
-                      destroyOnHidden
-                      getPopupContainer={(anchor) =>
-                        anchor.closest<HTMLElement>('[role="dialog"]') ?? document.body
-                      }
-                      classNames={{
-                        root: 'resource-mention-picker-popover',
-                        container: 'resource-mention-picker-container',
-                      }}
-                      styles={{ root: { pointerEvents: 'auto' } }}
-                      content={pickerContent}
-                    >
-                      <span
-                        className={
-                          character
-                            ? 'resource-mention-picker-anchor'
-                            : 'resource-mention-picker-anchor is-empty'
-                        }
-                        data-resource-picker-anchor
-                        data-offset={selectedTextRange?.end ?? trigger?.start ?? caretRef.current}
-                      >
-                        {character}
-                      </span>
-                    </Popover>
-                  ),
-                }
-              : undefined,
-            (mentionId, mark) => {
-              const mention = mentionRanges.find(
-                (range) => range.mention.mentionId === mentionId,
-              )!.mention;
-              const asset = resolveMentionAsset(mention, assets, connectedAssets);
-              return (
+        <InlinePromptInput
+          key={nodeId}
+          ref={textareaRef}
+          value={text}
+          resetKey={inputResetKey}
+          atoms={mentionRanges.map(({ mention, start }) => {
+            const asset = resolveMentionAsset(mention, assets, connectedAssets);
+            return {
+              id: mention.mentionId,
+              start,
+              label: mentionDisplayName(mention),
+              content: (
                 <Popover
-                  key={mentionId}
-                  open={hoveredMentionId === mentionId}
+                  open={hoveredMentionId === mention.mentionId}
                   trigger={[]}
                   placement="bottom"
                   arrow={false}
-                  autoAdjustOverflow
                   destroyOnHidden
-                  onOpenChange={(next) => {
-                    if (!next) setHoveredMentionId(null);
-                  }}
                   getPopupContainer={(anchor) =>
                     anchor.closest<HTMLElement>('[role="dialog"]') ?? document.body
                   }
                   classNames={{ root: 'resource-mention-hover-popover' }}
-                  styles={{ container: { padding: 0 } }}
                   content={
                     <div
                       className="resource-mention-hover-content"
                       role="region"
                       aria-label={`预览 ${mentionDisplayName(mention)}`}
                     >
-                      {canPreviewMentionAsset(asset) &&
-                      !getMentionUnavailableReason(mention, asset as Asset | undefined) ? (
-                        <AssetPreview
-                          asset={asset as Asset}
-                          mode="compact"
-                          className="resource-mention-hover-preview"
-                        />
-                      ) : (
-                        <MentionMediaIcon mediaType={mention.mediaType} />
-                      )}
+                      <MentionPreview asset={asset} mediaType={mention.mediaType} />
                     </div>
                   }
                 >
-                  {mark}
+                  <span className="resource-mention-token" data-mention-id={mention.mentionId}>
+                    <MentionPreview asset={asset} mediaType={mention.mediaType} />
+                  </span>
                 </Popover>
-              );
-            },
-          )}
-        </div>
-        <UiTextarea
-          ref={textareaRef}
-          rows={4}
-          {...ime.bind}
+              ),
+            };
+          })}
           onChange={handleTextChange}
-          onKeyDown={handleKeyDown}
           onSelect={handleSelect}
-          onClick={() => {
-            pickerDismissedRef.current = false;
-            handleSelect();
-          }}
+          onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
-          onMouseUp={handleSelect}
-          onScroll={(event) => {
-            const highlight = highlightRef.current;
-            if (!highlight) return;
-            highlight.scrollTop = event.currentTarget.scrollTop;
-            highlight.scrollLeft = event.currentTarget.scrollLeft;
-            pickerPopoverRef.current?.forceAlign();
-          }}
+          onScroll={() => pickerPopoverRef.current?.forceAlign()}
           placeholder={placeholder}
-          aria-label={ariaLabel}
-          aria-autocomplete={pickerOpen ? 'list' : undefined}
-          aria-controls={pickerOpen ? pickerId : undefined}
-          aria-expanded={pickerOpen ? true : undefined}
-          aria-activedescendant={
-            pickerOpen && searchEntries.length > 0
+          ariaLabel={ariaLabel}
+          disabled={disabled}
+          controls={pickerOpen ? pickerId : undefined}
+          expanded={pickerOpen || undefined}
+          activeDescendant={
+            pickerOpen && searchEntries.length
               ? `${pickerId}-option-${activeIndex % searchEntries.length}`
               : undefined
           }
-          disabled={disabled}
-          className="resource-mention-textarea"
         />
-        <PromptCaret
-          inputRef={textareaRef}
-          highlightRef={highlightRef}
-          value={ime.bind.value}
-          disabled={disabled}
-        />
+        {pickerOpen && (
+          <Popover
+            ref={pickerPopoverRef}
+            open
+            trigger={['click']}
+            onOpenChange={(next) => {
+              if (!next) closePicker();
+            }}
+            placement="rightTop"
+            arrow={false}
+            autoAdjustOverflow
+            destroyOnHidden
+            getPopupContainer={(anchor) =>
+              anchor.closest<HTMLElement>('[role="dialog"]') ?? document.body
+            }
+            classNames={{
+              root: 'resource-mention-picker-popover',
+              container: 'resource-mention-picker-container',
+            }}
+            styles={{ root: { pointerEvents: 'auto' } }}
+            content={pickerContent}
+          >
+            <span
+              ref={pickerAnchorRef}
+              className="resource-mention-picker-anchor is-empty"
+              data-resource-picker-anchor
+              data-offset={pickerOffset}
+            />
+          </Popover>
+        )}
       </div>
 
       {protectedEditMessage && (
@@ -1912,19 +1855,9 @@ export function ResourceMentionEditor({
                     setResourceNameError('资源名称应为 1 至 160 个字符');
                     return;
                   }
-                  const pool = collectNamedResourcePool(rangesRef.current, connectedAssets);
-                  const mention = rangesRef.current.find(
-                    (range) => range.mention.mentionId === dialogItem.mentionId,
-                  )?.mention;
-                  const connected = connectedAssets.find(
-                    (asset) =>
-                      asset.id === dialogItem.assetId &&
-                      asset.assetVersion === dialogItem.assetVersion &&
-                      (!mention || asset.referenceName === dialogItem.name),
-                  );
                   const version = dialogItem.assetVersion;
                   if (
-                    pool.some(
+                    stripItems.some(
                       (item) =>
                         item.name === name &&
                         (item.assetId !== dialogItem.assetId || item.assetVersion !== version),
@@ -1934,8 +1867,8 @@ export function ResourceMentionEditor({
                     return;
                   }
                   try {
-                    if (onConnectedResourceRename && connected) {
-                      onConnectedResourceRename(dialogItem.assetId, name);
+                    if (onConnectedResourceRename) {
+                      onConnectedResourceRename(dialogItem.assetId, name, version);
                     } else if (dialogItem.mentionId) {
                       renameStripResource(dialogItem.mentionId, name);
                     }
@@ -1964,14 +1897,48 @@ export function ResourceMentionEditor({
 
 /** 将旧字符串或结构化文档规范化为可编辑文档。 */
 function normalizeDocument(document: PromptDocument | undefined, value: string): PromptDocument {
-  if (document !== undefined) {
-    const parsed = promptDocumentSchema.safeParse(document);
-    if (parsed.success) return parsed.data;
-  }
-  return getEffectivePromptDocument({ prompt: value });
+  const parsed = document && promptDocumentSchema.safeParse(document);
+  const source =
+    parsed && parsed.success ? parsed.data : getEffectivePromptDocument({ prompt: value });
+  return {
+    ...source,
+    blocks: source.blocks.flatMap((block): PromptDocument['blocks'] =>
+      block.type === 'mention' && !block.inline
+        ? [
+            { type: 'text', text: mentionDisplayName(block) },
+            { ...block, inline: true },
+          ]
+        : [block],
+    ),
+  };
 }
 
-/** 从块结构计算每个提及在 textarea 纯文本中的范围。 */
+/** 普通文字与独立引用各自占位；内部对象字符不会发送给模型或保存到正文。 */
+function editorText(document: PromptDocument): string {
+  return document.blocks
+    .map((block) => (block.type === 'text' ? block.text : INLINE_REFERENCE))
+    .join('');
+}
+
+/** 已加入资料按首次出现保留，正文删除和重复插入不缩减或移动资料池。 */
+function retainMentionPool(
+  previous: readonly MentionRange[],
+  next: readonly MentionRange[],
+): MentionRange[] {
+  const result = [...previous];
+  for (const range of next) {
+    const key = resourceIdentity(range.mention.assetId, range.mention.assetVersion);
+    if (
+      !result.some(
+        (item) => resourceIdentity(item.mention.assetId, item.mention.assetVersion) === key,
+      )
+    )
+      result.push(range);
+  }
+  return result;
+}
+
+/** 从块结构计算每个引用在内部编辑文本中的单字符范围。 */
 function rangesFromDocument(document: PromptDocument): MentionRange[] {
   let offset = 0;
   const result: MentionRange[] = [];
@@ -1980,7 +1947,7 @@ function rangesFromDocument(document: PromptDocument): MentionRange[] {
       offset += block.text.length;
       continue;
     }
-    const token = mentionDisplayName(block);
+    const token = INLINE_REFERENCE;
     result.push({ mention: block, start: offset, end: offset + token.length });
     offset += token.length;
   }
@@ -1993,12 +1960,16 @@ function documentFromRanges(text: string, ranges: readonly MentionRange[]): Prom
   const blocks: PromptDocument['blocks'] = [];
   let cursor = 0;
   for (const range of sorted) {
-    if (range.start > cursor) blocks.push({ type: 'text', text: text.slice(cursor, range.start) });
+    if (range.start > cursor)
+      blocks.push({
+        type: 'text',
+        text: text.slice(cursor, range.start).replaceAll(INLINE_REFERENCE, ''),
+      });
     blocks.push({ ...range.mention });
     cursor = range.end;
   }
   if (cursor < text.length || blocks.length === 0) {
-    blocks.push({ type: 'text', text: text.slice(cursor) });
+    blocks.push({ type: 'text', text: text.slice(cursor).replaceAll(INLINE_REFERENCE, '') });
   }
   // 相邻文字块合并，避免连续编辑产生无意义的结构噪声。
   const merged: PromptDocument['blocks'] = [];
@@ -2075,7 +2046,7 @@ function normalizeRanges(text: string, ranges: readonly MentionRange[]): Mention
         range.start >= 0 &&
         range.end > range.start &&
         range.end <= text.length &&
-        text.slice(range.start, range.end) === mentionDisplayName(range.mention),
+        text.slice(range.start, range.end) === INLINE_REFERENCE,
     )
     .sort((left, right) => left.start - right.start)
     .filter((range, index, all) => index === 0 || range.start >= all[index - 1].end);
@@ -2100,7 +2071,11 @@ function pushHistory(
 }
 
 function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
-  return { text: snapshot.text, ranges: structuredClone(snapshot.ranges) };
+  return {
+    text: snapshot.text,
+    ranges: structuredClone(snapshot.ranges),
+    ...(snapshot.pool ? { pool: structuredClone(snapshot.pool) } : {}),
+  };
 }
 
 function documentSignature(document: PromptDocument | undefined, fallbackText: string): string {
@@ -2175,6 +2150,32 @@ function collectNodeSearchEntries(
       ],
     });
   };
+  for (const reference of resourceRefs) {
+    if (!reference.attached) continue;
+    const mention: PromptMention = {
+      type: 'mention',
+      mentionId: reference.id,
+      assetId: reference.assetId,
+      assetVersion: reference.assetVersion,
+      mediaType: reference.mediaType,
+      label: reference.name,
+      inline: true,
+    };
+    const resolved = resolveMentionAsset(mention, assets, connectedAssets);
+    addEntry({
+      key: resourceIdentity(reference.assetId, reference.assetVersion),
+      asset: {
+        ...resolved,
+        id: reference.assetId,
+        name: reference.name,
+        mediaType: reference.mediaType,
+      },
+      assetVersion: reference.assetVersion,
+      name: reference.name,
+      aliases: [reference.name],
+      unavailableReason: getMentionUnavailableReason(mention, resolved as Asset | undefined)?.label,
+    });
+  }
   for (const { mention } of ranges) {
     const catalog = assets.find((asset) => asset.id === mention.assetId);
     const connected = connectedAssets.find(
@@ -2203,7 +2204,7 @@ function collectNodeSearchEntries(
   }
   for (const connected of connectedAssets) {
     const catalog = assets.find((asset) => asset.id === connected.id);
-    const name = connected.referenceName ?? connected.name;
+    const name = connected.referenceName ?? defaultResourceDisplayName(connected.name);
     addEntry({
       key: resourceIdentity(connected.id, connected.assetVersion),
       asset: {
@@ -2337,181 +2338,6 @@ function resolveMentionAsset(
 /** 为本地编辑生成唯一提及 ID，保留已有范围的稳定身份。 */
 function createMentionId(ranges: readonly MentionRange[]): string {
   return createPromptMentionId(ranges.map((range) => range.mention.mentionId));
-}
-
-/**
- * 只收集当前节点已经挂上的名字：已有提及，以及连到本节点的资源。
- * 不能扫整个项目资产库，否则输入 2、3 会误引用别的节点的 `2.mp4`。
- */
-function collectNamedResourcePool(
-  ranges: readonly MentionRange[],
-  connectedAssets: readonly ConnectedPromptAsset[],
-): Array<{
-  name: string;
-  assetId: string;
-  mediaType: Asset['mediaType'];
-  label: string;
-  assetVersion?: number;
-}> {
-  const pool: Array<{
-    name: string;
-    assetId: string;
-    mediaType: Asset['mediaType'];
-    label: string;
-    assetVersion?: number;
-  }> = [];
-  for (const range of ranges) {
-    const name = mentionDisplayName(range.mention);
-    if (
-      pool.some(
-        (item) =>
-          item.name === name &&
-          item.assetId === range.mention.assetId &&
-          item.assetVersion === range.mention.assetVersion,
-      )
-    )
-      continue;
-    pool.push({
-      name,
-      assetId: range.mention.assetId,
-      mediaType: range.mention.mediaType,
-      label: range.mention.label,
-      assetVersion: range.mention.assetVersion,
-    });
-  }
-  for (const asset of connectedAssets) {
-    if (asset.versionUnavailable) continue;
-    if (
-      pool.some(
-        (item) =>
-          item.assetId === asset.id &&
-          item.assetVersion === asset.assetVersion &&
-          (!asset.referenceName || item.name === asset.referenceName),
-      )
-    )
-      continue;
-    const name =
-      asset.referenceName ??
-      uniqueResourceDisplayName(
-        asset.name,
-        pool.map((item) => item.name),
-      );
-    pool.push({
-      name,
-      assetId: asset.id,
-      mediaType: asset.mediaType,
-      label: asset.name,
-      assetVersion: asset.assetVersion,
-    });
-  }
-  return pool;
-}
-
-/**
- * 按本节点资源池提升文字；同名对应不同资产或版本时不推断身份。
- */
-function promotePlaintextResourceNames(
-  text: string,
-  ranges: readonly MentionRange[],
-  pool: ReturnType<typeof collectNamedResourcePool>,
-): MentionRange[] {
-  const next = [...ranges];
-  const names = pool
-    .filter(
-      (item) =>
-        !pool.some(
-          (other) =>
-            other.name === item.name &&
-            (other.assetId !== item.assetId || other.assetVersion !== item.assetVersion),
-        ),
-    )
-    .sort((left, right) => right.name.length - left.name.length);
-  for (const item of names) {
-    if (!item.name) continue;
-    let from = 0;
-    while (from <= text.length) {
-      const start = text.indexOf(item.name, from);
-      if (start < 0) break;
-      const end = start + item.name.length;
-      const overlap = next.some((range) => start < range.end && end > range.start);
-      if (overlap || !canPromoteResourceNameAt(text, start, end, item.name)) {
-        from = start + 1;
-        continue;
-      }
-      next.push({
-        start,
-        end,
-        mention: {
-          type: 'mention',
-          mentionId: createMentionId(next),
-          assetId: item.assetId,
-          label: item.label,
-          mediaType: item.mediaType,
-          entityName: item.name,
-          ...(item.assetVersion ? { assetVersion: item.assetVersion } : {}),
-        },
-      });
-      from = end;
-    }
-  }
-  return next.sort((left, right) => left.start - right.start);
-}
-
-/**
- * 按 UTF-16 范围保留原文与提及标记；在查询字符处嵌入无额外占位的库锚点。
- * 浮层始终由 getPopupContainer 挂到 Dialog/body，不进入 aria-hidden 高亮层。
- */
-function renderHighlightedPrompt(
-  text: string,
-  ranges: readonly MentionRange[],
-  picker: { offset: number; render: (character: string) => ReactNode } | undefined,
-  renderMention: (mentionId: string, mark: ReactElement) => ReactNode,
-) {
-  const parts: Array<{ key: string; start: number; end: number; mention?: boolean }> = [];
-  let cursor = 0;
-  for (const range of [...ranges].sort((left, right) => left.start - right.start)) {
-    if (range.start > cursor)
-      parts.push({ key: `text-${cursor}`, start: cursor, end: range.start });
-    parts.push({ key: range.mention.mentionId, start: range.start, end: range.end, mention: true });
-    cursor = range.end;
-  }
-  if (cursor < text.length || parts.length === 0)
-    parts.push({ key: `text-${cursor}`, start: cursor, end: text.length });
-  const offset = picker ? Math.max(0, Math.min(picker.offset, text.length)) : -1;
-  return parts.map((part, index) => {
-    const containsAnchor =
-      picker &&
-      offset >= part.start &&
-      (offset < part.end || (offset === text.length && index === parts.length - 1));
-    const character = text[offset] === '@' ? '@' : '';
-    const content = containsAnchor ? (
-      <>
-        {text.slice(part.start, offset)}
-        {picker.render(character)}
-        {text.slice(offset + character.length, part.end)}
-      </>
-    ) : (
-      text.slice(part.start, part.end)
-    );
-    return part.mention ? (
-      renderMention(
-        part.key,
-        <mark className="resource-mention-token" data-mention-id={part.key}>
-          {content}
-        </mark>,
-      )
-    ) : (
-      <span key={part.key}>{content}</span>
-    );
-  });
-}
-
-function takenDisplayNames(ranges: readonly MentionRange[], exceptId?: string): Set<string> {
-  return new Set(
-    ranges
-      .filter((range) => range.mention.mentionId !== exceptId)
-      .map((range) => mentionDisplayName(range.mention)),
-  );
 }
 
 function MentionMediaIcon({ mediaType }: { mediaType: MediaType }) {

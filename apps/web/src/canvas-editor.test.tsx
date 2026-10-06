@@ -6,6 +6,7 @@ import { createContext, createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Asset, CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
+import { INLINE_REFERENCE, readInlinePrompt } from './InlinePromptInput';
 
 type FlowConnection = {
   source: string;
@@ -1004,7 +1005,24 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     await user.click(await screen.findByRole('option', { name: /reference.png/ }));
 
-    expect((prompt as HTMLTextAreaElement).value).toMatch(/根据\s+@?reference(\.png)?/);
+    const inlinePrompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
+    expect(readInlinePrompt(inlinePrompt)).toBe(`根据 ${INLINE_REFERENCE}`);
+    expect(inlinePrompt.querySelector('[data-inline-reference]')).toBeInTheDocument();
+    const nodeId = node!.getAttribute('data-id')!;
+    await waitFor(() => {
+      expect(canvas.nodes.find((entry) => entry.id === nodeId)?.data).toMatchObject({
+        prompt: '根据 ',
+        promptDocument: {
+          version: 1,
+          blocks: [
+            { type: 'text', text: '根据 ' },
+            { type: 'mention', assetId: 'asset-reference', inline: true },
+          ],
+        },
+        resourceRefs: [expect.objectContaining({ assetId: 'asset-reference', attached: true })],
+      });
+    });
+    expect(nodeRunRequestCounts.size).toBe(0);
 
     await user.click(within(quickEditor).getByRole('button', { name: '生成' }));
     await waitFor(() => {
@@ -1028,10 +1046,11 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
               assetId: 'asset-reference',
               label: 'reference.png',
               mediaType: 'image',
+              inline: true,
             },
           ],
         },
-        parameters: { prompt: expect.stringMatching(/根据\s+@?reference(\.png)?/) },
+        parameters: { prompt: '根据' },
       });
     });
   });

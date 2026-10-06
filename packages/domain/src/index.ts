@@ -240,6 +240,8 @@ export const promptMentionSchema = z
     label: z.string().trim().min(1).max(512),
     mediaType: mediaTypeSchema,
     assetVersion: z.number().int().positive().optional(),
+    /** 独立内联引用标记，不占用普通正文；缺省为旧版名称绑定。 */
+    inline: z.literal(true).optional(),
     /** 导入时资源不可访问会保留身份并标记为不可执行占位。 */
     placeholder: z.boolean().optional(),
     placeholderReason: z
@@ -375,7 +377,9 @@ export function uniqueResourceDisplayName(fileName: string, taken: Iterable<stri
 export function renderPromptDocument(document: PromptDocument): string {
   const parsed = promptDocumentSchema.parse(document);
   return parsed.blocks
-    .map((block) => (block.type === 'text' ? block.text : mentionDisplayName(block)))
+    .map((block) =>
+      block.type === 'text' ? block.text : block.inline ? '' : mentionDisplayName(block),
+    )
     .join('');
 }
 
@@ -441,7 +445,58 @@ export const nodeResourceRefSchema = z.object({
   mediaType: mediaTypeSchema,
   name: z.string().trim().min(1).max(160),
   assetVersion: z.number().int().positive().optional(),
+  /** 独立添加的资料；即使正文没有引用标记，也作为节点的生成输入。 */
+  attached: z.boolean().optional(),
 });
+
+/**
+ * 把独立资料投影为执行用提及，保留保存的正文和已有提及身份。
+ * @param input 节点文字、结构化文档及独立资料列表；旧别名不自动变成输入。
+ * @returns 供权限校验、版本冻结和执行快照共用的文档；不修改 input。
+ * @throws 文档或合并后的提及数量超出协议限制时拒绝。
+ */
+export function getExecutionPromptDocument(input: {
+  prompt?: string;
+  promptDocument?: PromptDocument;
+  resourceRefs?: readonly NodeResourceRef[];
+}): PromptDocument | undefined {
+  const attached = input.resourceRefs?.filter((reference) => reference.attached) ?? [];
+  if (attached.length === 0) return input.promptDocument;
+  const document = getEffectivePromptDocument(input);
+  const ids = new Set(
+    document.blocks.flatMap((block) => (block.type === 'mention' ? [block.mentionId] : [])),
+  );
+  const identities = new Set(
+    document.blocks.flatMap((block) =>
+      block.type === 'mention' ? [promptResourceIdentity(block.assetId, block.assetVersion)] : [],
+    ),
+  );
+  const blocks = [...document.blocks];
+  for (const [index, reference] of attached.entries()) {
+    const key = promptResourceIdentity(reference.assetId, reference.assetVersion);
+    if (identities.has(key)) continue;
+    identities.add(key);
+    let mentionId = `attached_${index}`;
+    while (ids.has(mentionId)) mentionId += '_';
+    ids.add(mentionId);
+    blocks.push({
+      type: 'mention',
+      mentionId,
+      inline: true,
+      assetId: reference.assetId,
+      assetVersion: reference.assetVersion,
+      mediaType: reference.mediaType,
+      label: reference.name,
+      entityName: reference.name,
+    });
+  }
+  return promptDocumentSchema.parse({ ...document, blocks });
+}
+
+/** 生成提示词资料的稳定身份键；版本缺省与显式版本保持不同语义。 */
+function promptResourceIdentity(assetId: string, assetVersion?: number): string {
+  return JSON.stringify([assetId, assetVersion]);
+}
 
 /**
  * 图片编辑节点上冻结的来源图引用。

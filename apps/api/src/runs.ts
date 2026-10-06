@@ -8,6 +8,7 @@ import { ExecutionError, PrismaExecutionService } from '@multimodal-canvas/execu
 import type { PrismaClient } from '@prisma/client';
 import {
   canTransitionRunStatus,
+  getExecutionPromptDocument,
   createMockPromptOptimizationOutput,
   parsePromptOptimizationOutput,
   parseReversePromptOutput,
@@ -257,6 +258,10 @@ export function createRunSnapshot(
     .filter((node) => includedNodeIds.has(node.id))
     .map((node) => {
       const snapshotNode = clone(node);
+      if (!isRunAssetSource(node, targetNodeId)) {
+        const document = getExecutionPromptDocument(snapshotNode.data);
+        if (document) snapshotNode.data.promptDocument = document;
+      }
       if (node.data.manualOutput && node.id !== targetNodeId) {
         // 只改不可变执行快照；保存的生成配置保持原样，手动文本不会退回历史提示词。
         snapshotNode.data.mode = 'source';

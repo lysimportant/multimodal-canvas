@@ -8,6 +8,7 @@ import {
   nodeModeSchema,
   isCanvasNodeEnabled,
   getEffectivePromptDocument,
+  getExecutionPromptDocument,
   mediaTypes,
   nodeModes,
   portRoles,
@@ -488,6 +489,144 @@ describe('canvas protocol', () => {
       type: 'mention',
       mentionId: 'mention-product',
       binding: { entityName: '产品', future: 'keep' },
+    });
+  });
+
+  it('renders inline mentions as atoms without adding their display names', () => {
+    const document = promptDocumentSchema.parse({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '先说 ' },
+        {
+          type: 'mention',
+          mentionId: 'inline-reference',
+          assetId: 'asset-inline',
+          label: '角色.png',
+          mediaType: 'image',
+          inline: true,
+        },
+        { type: 'text', text: ' 再说' },
+      ],
+    });
+
+    expect(renderPromptDocument(document)).toBe('先说  再说');
+    expect(document.blocks[1]).toMatchObject({ inline: true });
+  });
+
+  it('projects attached resource refs in stable order and deduplicates exact identities', () => {
+    const source = {
+      version: 1 as const,
+      blocks: [
+        { type: 'text' as const, text: '说明' },
+        {
+          type: 'mention' as const,
+          mentionId: 'existing',
+          assetId: 'asset-existing',
+          assetVersion: 2,
+          label: '已有',
+          mediaType: 'image' as const,
+        },
+      ],
+    };
+    const projected = getExecutionPromptDocument({
+      promptDocument: source,
+      resourceRefs: [
+        {
+          id: 'first',
+          assetId: 'asset-first',
+          assetVersion: 3,
+          mediaType: 'image',
+          name: '第一份',
+          attached: true,
+        },
+        {
+          id: 'existing-ref',
+          assetId: 'asset-existing',
+          assetVersion: 2,
+          mediaType: 'image',
+          name: '重复已有',
+          attached: true,
+        },
+        {
+          id: 'first-duplicate',
+          assetId: 'asset-first',
+          assetVersion: 3,
+          mediaType: 'image',
+          name: '重复第一份',
+          attached: true,
+        },
+        {
+          id: 'second',
+          assetId: 'asset-second',
+          mediaType: 'text',
+          name: '第二份',
+          attached: true,
+        },
+      ],
+    });
+
+    expect(
+      projected?.blocks.map((block) => (block.type === 'mention' ? block.mentionId : block.text)),
+    ).toEqual(['说明', 'existing', 'attached_0', 'attached_3']);
+    expect(projected?.blocks.filter((block) => block.type === 'mention')).toEqual([
+      expect.objectContaining({
+        mentionId: 'existing',
+        assetId: 'asset-existing',
+        assetVersion: 2,
+      }),
+      expect.objectContaining({
+        mentionId: 'attached_0',
+        assetId: 'asset-first',
+        assetVersion: 3,
+        inline: true,
+        entityName: '第一份',
+      }),
+      expect.objectContaining({
+        mentionId: 'attached_3',
+        assetId: 'asset-second',
+        inline: true,
+      }),
+    ]);
+    // 旧资料缺少 attached 标记时仍只是元数据，不自动增加执行输入。
+    expect(
+      getExecutionPromptDocument({
+        promptDocument: source,
+        resourceRefs: [
+          {
+            id: 'legacy',
+            assetId: 'asset-legacy',
+            mediaType: 'image',
+            name: '旧资料',
+          },
+        ],
+      }),
+    ).toBe(source);
+  });
+
+  it('creates a document from legacy prompt text only when an attached ref needs projection', () => {
+    const projected = getExecutionPromptDocument({
+      prompt: '保留这段文字',
+      resourceRefs: [
+        {
+          id: 'attached',
+          assetId: 'asset-attached',
+          mediaType: 'image',
+          name: '参考图',
+          attached: true,
+        },
+      ],
+    });
+    expect(projected).toEqual({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '保留这段文字' },
+        expect.objectContaining({
+          type: 'mention',
+          mentionId: 'attached_0',
+          assetId: 'asset-attached',
+          inline: true,
+        }),
+      ],
     });
   });
 

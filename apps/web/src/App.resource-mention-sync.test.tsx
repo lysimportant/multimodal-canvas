@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   renderPromptDocument,
@@ -13,8 +14,12 @@ import {
 } from '@multimodal-canvas/domain';
 
 import type { WorkflowCanvasProps } from './workspace/WorkflowCanvas';
-import { collectConnectedPromptAssets } from './workspace/connected-prompt-assets';
+import {
+  collectConnectedPromptAssets,
+  createConnectedResourceReferenceId,
+} from './workspace/connected-prompt-assets';
 import { TextPromptEditor } from './TextPromptEditor';
+import { INLINE_REFERENCE, readInlinePrompt, selectInlinePrompt } from './InlinePromptInput';
 
 /** 只替换画布布局，保留 App 状态、连线回调和真实提示词编辑器。 */
 const view = vi.hoisted(() => ({ canvas: null as WorkflowCanvasProps | null }));
@@ -27,6 +32,7 @@ vi.mock('./workspace/WorkflowCanvas', () => ({
         nodeId={target.id}
         value={target.data.prompt ?? ''}
         promptDocument={target.data.promptDocument}
+        resourceRefs={target.data.resourceRefs}
         assets={props.assets}
         connectedAssets={collectConnectedPromptAssets(
           target.id,
@@ -34,8 +40,8 @@ vi.mock('./workspace/WorkflowCanvas', () => ({
           props.edges,
           props.assets,
         )}
-        onConnectedResourceRename={(assetId, name) =>
-          props.onConnectedResourceRename?.(assetId, name, target.id)
+        onConnectedResourceRename={(assetId, name, assetVersion) =>
+          props.onConnectedResourceRename?.(assetId, name, target.id, assetVersion)
         }
         onResourceRemove={(resource, document) =>
           props.onResourceRemove?.(resource, document, target.id)
@@ -246,6 +252,14 @@ async function openLegacyEditor() {
   return app;
 }
 
+/** 读取可见普通正文，textarea 与内联编辑器都不把引用占位算作正文文字。 */
+function promptText(): string {
+  return readInlinePrompt(screen.getByRole('textbox', { name: '提示词' })).replaceAll(
+    INLINE_REFERENCE,
+    '',
+  );
+}
+
 /** 只允许内存查询、预览授权和模拟画布保存；生成、资产写入及未声明请求全部拒绝。 */
 function installApi() {
   fetchMock = vi.fn<typeof fetch>(async (input, init) => {
@@ -324,20 +338,44 @@ describe('连线资源别名同步到提示词', () => {
     expect(persisted.data.promptDocument).toEqual(before.nodes[2].data.promptDocument);
     expect(persisted.data.resourceRefs).toEqual(before.nodes[2].data.resourceRefs);
     const edges = structuredClone(view.canvas!.edges);
-    fireEvent.change(screen.getByRole('textbox', { name: '提示词' }), {
-      target: { value: '良站在窗前，良转身。' },
-    });
+    const user = userEvent.setup();
+    const editor = screen.getByRole('textbox', { name: '提示词' });
+    editor.focus();
+    selectInlinePrompt(editor, readInlinePrompt(editor).length);
+    await user.keyboard('。');
     const edited = view.canvas!.nodes.find((node) => node.id === 'video-target')!;
     expect(edited.data.videoMode).toBe('first_last_frame');
     expect(view.canvas!.edges).toEqual(edges);
     expect(edited.data.promptDocument!.blocks.filter((block) => block.type === 'mention')).toEqual([
-      expect.objectContaining({ entityName: '良', assetId: image.id, assetVersion: 1 }),
-      expect.objectContaining({ entityName: '良', assetId: image.id, assetVersion: 1 }),
+      expect.objectContaining({
+        entityName: '良',
+        assetId: image.id,
+        assetVersion: 1,
+        inline: true,
+      }),
+      expect.objectContaining({
+        entityName: '良',
+        assetId: image.id,
+        assetVersion: 1,
+        inline: true,
+      }),
     ]);
     expect(edited.data.resourceRefs).toEqual([
-      before.nodes[2].data.resourceRefs![0],
-      { ...before.nodes[2].data.resourceRefs![1], assetVersion: 1 },
+      {
+        ...before.nodes[2].data.resourceRefs![1],
+        id: createConnectedResourceReferenceId('image-node-six', image.id),
+        assetVersion: 1,
+      },
+      {
+        id: createConnectedResourceReferenceId('image-node-mansui', mansui.assetId),
+        assetId: mansui.assetId,
+        mediaType: 'image',
+        name: '满穗图片',
+        assetVersion: 4,
+      },
     ]);
+    expect(promptText()).toBe('良站在窗前，良转身。');
+    expect(renderPromptDocument(edited.data.promptDocument!)).toBe(promptText());
     await waitFor(() =>
       expect(canvas.nodes[2].data.promptDocument).toEqual(edited.data.promptDocument),
     );
@@ -394,7 +432,7 @@ describe('连线资源别名同步到提示词', () => {
       } else {
         await waitFor(() =>
           expect(canvas.nodes[2].data.resourceRefs).toContainEqual({
-            id: `connected:${image.id}`,
+            id: createConnectedResourceReferenceId('image-node-six', image.id),
             assetId: image.id,
             mediaType: 'image',
             name: '良',
@@ -402,6 +440,10 @@ describe('连线资源别名同步到提示词', () => {
           }),
         );
         expect(view.canvas!.edges).toEqual(edges);
+        expect(screen.getByRole('button', { name: '预览并命名 良' })).toBeVisible();
+        expect(canvas.nodes[2].data.resourceRefs?.some((reference) => reference.attached)).toBe(
+          false,
+        );
       }
       expect(canvas.nodes[2].data.promptDocument!.blocks).toEqual([{ type: 'text', text }]);
       app.unmount();
@@ -409,7 +451,7 @@ describe('连线资源别名同步到提示词', () => {
       render(<App />);
       await screen.findByRole('textbox', { name: '提示词' });
       await waitFor(() => expect(view.canvas?.nodes[0].data.resultAsset?.version).toBe(1));
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(text);
+      expect(promptText()).toBe(text);
       expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
       expect(view.canvas!.edges).toEqual(action === 'unlink' ? retainedEdges : edges);
       expect(
@@ -448,7 +490,7 @@ describe('连线资源别名同步到提示词', () => {
   });
 
   it.each([false, true])(
-    '保存良立即绑定既有正文并保留其它引用、冻结版本和两条连线（已保存别名：%s）',
+    '保存良只更新别名，不绑定普通文字并保留其它引用、冻结版本和两条连线（已有别名：%s）',
     async (alreadyNamed) => {
       const target = canvas.nodes[2];
       if (alreadyNamed)
@@ -456,7 +498,7 @@ describe('连线资源别名同步到提示词', () => {
           id: 'connected:' + image.id,
           assetId: image.id,
           mediaType: 'image',
-          name: '良',
+          name: '旧别名',
           assetVersion: 2,
         });
       const originalDocument = structuredClone(target.data.promptDocument!);
@@ -504,7 +546,9 @@ describe('连线资源别名同步到提示词', () => {
       expect(view.canvas!.edges).toHaveLength(2);
       const edges = structuredClone(view.canvas!.edges);
       fireEvent.click(
-        screen.getByRole('button', { name: '预览并命名 ' + (alreadyNamed ? '良' : image.name) }),
+        screen.getByRole('button', {
+          name: '预览并命名 ' + (alreadyNamed ? '旧别名' : image.name),
+        }),
       );
       const dialog = screen.getByRole('dialog', { name: '资源预览' });
       fireEvent.change(within(dialog).getByRole('textbox', { name: '资源名称' }), {
@@ -517,19 +561,17 @@ describe('连线资源别名同步到提示词', () => {
       const mentions = document.blocks.filter(
         (block): block is PromptMention => block.type === 'mention' && block.assetId === image.id,
       );
-      expect(mentions).toHaveLength(2);
-      expect(mentions).toEqual([
-        expect.objectContaining({ entityName: '良', assetVersion: 2 }),
-        expect.objectContaining({ entityName: '良', assetVersion: 2 }),
-      ]);
-      expect(new Set(mentions.map((mention) => mention.mentionId)).size).toBe(2);
+      expect(mentions).toEqual([]);
+      expect(document).toEqual(originalDocument);
       expect(document.blocks).toContainEqual(mansui);
       expect(document.blocks).toContainEqual(jar);
       expect(renderPromptDocument(document)).toBe(originalText);
-      expect(renamed.data.prompt).toBe(originalText);
+      expect(renamed.data.prompt).toBe(target.data.prompt);
       expect(renamed.data.videoMode).toBe('omni_reference');
       expect(renamed.data.resourceRefs).toContainEqual({
-        id: 'connected:' + image.id,
+        id: alreadyNamed
+          ? 'connected:' + image.id
+          : createConnectedResourceReferenceId('image-node-six', image.id),
         assetId: image.id,
         mediaType: 'image',
         name: '良',
@@ -537,15 +579,15 @@ describe('连线资源别名同步到提示词', () => {
       });
       expect(view.canvas!.nodes[0].data).toEqual(originalSource);
       expect(view.canvas!.edges).toEqual(edges);
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(originalText);
+      expect(promptText()).toBe(originalText);
       expect(
-        [...globalThis.document.querySelectorAll('.resource-mention-token')].map(
-          (token) => token.textContent,
+        [...globalThis.document.querySelectorAll('[data-inline-reference]')].map((token) =>
+          token.getAttribute('aria-label'),
         ),
-      ).toEqual(['良', '满穗', '陶缸', '良']);
+      ).toEqual(['引用 满穗', '引用 陶缸']);
       await waitFor(() =>
-        expect(canvas.nodes.find((node) => node.id === target.id)?.data.promptDocument).toEqual(
-          document,
+        expect(canvas.nodes.find((node) => node.id === target.id)?.data.resourceRefs).toEqual(
+          renamed.data.resourceRefs,
         ),
       );
       fireEvent.click(screen.getByRole('button', { name: '预览并命名 良' }));
@@ -558,7 +600,7 @@ describe('连线资源别名同步到提示词', () => {
       );
       fireEvent.click(
         within(screen.getByRole('dialog', { name: '资源预览' })).getByRole('button', {
-          name: '关闭',
+          name: '保存名称',
         }),
       );
       expect(
@@ -582,8 +624,8 @@ describe('连线资源别名同步到提示词', () => {
         document,
       );
       await waitFor(() =>
-        expect(canvas.nodes.find((node) => node.id === target.id)?.data.promptDocument).toEqual(
-          document,
+        expect(canvas.nodes.find((node) => node.id === target.id)?.data.resourceRefs).toEqual(
+          renamed.data.resourceRefs,
         ),
       );
       app.unmount();
@@ -593,12 +635,12 @@ describe('连线资源别名同步到提示词', () => {
       expect(view.canvas!.nodes.find((node) => node.id === target.id)?.data.promptDocument).toEqual(
         document,
       );
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue(originalText);
+      expect(promptText()).toBe(originalText);
       expect(
-        [...globalThis.document.querySelectorAll('.resource-mention-token')].map(
-          (token) => token.textContent,
+        [...globalThis.document.querySelectorAll('[data-inline-reference]')].map((token) =>
+          token.getAttribute('aria-label'),
         ),
-      ).toEqual(['良', '满穗', '陶缸', '良']);
+      ).toEqual(['引用 满穗', '引用 陶缸']);
     },
   );
 });

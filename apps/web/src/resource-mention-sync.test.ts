@@ -55,11 +55,13 @@ describe('renameConnectedPromptDocument', () => {
     expect(result.blocks).toEqual([
       closeup,
       { type: 'text', text: '看向' },
-      { ...named, entityName: '主角' },
+      { type: 'text', text: '良' },
+      { ...named, entityName: '主角', inline: true },
     ]);
+    expect(renderPromptDocument(result)).toBe('近景良看向良');
   });
 
-  it('没有权威旧名时不猜第一个提及，也不覆盖自定义名称', () => {
+  it('没有权威旧名时不猜第一个提及，也不扫描普通文字', () => {
     const custom = { ...mention, entityName: '近景良' };
     const input = {
       promptDocument: {
@@ -71,14 +73,9 @@ describe('renameConnectedPromptDocument', () => {
       input,
       { ...resource, referenceName: undefined },
       '良',
-    )!;
-    expect(result.blocks[0]).toEqual(custom);
-    expect(result.blocks.at(-1)).toMatchObject({
-      type: 'mention',
-      entityName: '良',
-      assetId: resource.id,
-      assetVersion: 2,
-    });
+    );
+    expect(result).toBeUndefined();
+    expect(input.promptDocument).toEqual(input.promptDocument);
   });
 
   it('只按资产、版本和既有别名同步，不替换普通旧称或覆盖其他自定义引用', () => {
@@ -98,14 +95,15 @@ describe('renameConnectedPromptDocument', () => {
     const before = structuredClone(document);
     const result = renameConnectedPromptDocument({ promptDocument: document }, resource, '良')!;
 
-    expect(result.blocks[0]).toEqual({ ...mention, entityName: '良' });
+    expect(result.blocks[0]).toEqual({ type: 'text', text: '旧称' });
+    expect(result.blocks[1]).toEqual({ ...mention, entityName: '良', inline: true });
     expect(result.blocks).toContainEqual(custom);
     expect(result.blocks).toContainEqual(historical);
     expect(result.blocks).toContainEqual(other);
-    expect(renderPromptDocument(result)).toBe('良；旧称保留在普通正文。良看见良。背影旧称旧称');
+    expect(renderPromptDocument(result)).toBe('旧称；旧称保留在普通正文。良看见良。背影旧称旧称');
     expect(
       result.blocks.filter((block) => block.type === 'mention' && block.entityName === '良'),
-    ).toHaveLength(3);
+    ).toHaveLength(1);
     expect(document).toEqual(before);
   });
 
@@ -115,22 +113,17 @@ describe('renameConnectedPromptDocument', () => {
     ).toBeUndefined();
   });
 
-  it('同一个名字可以重复引用同一冻结身份，新 mentionId 不与已有 ID 冲突', () => {
-    const id = vi
-      .spyOn(crypto, 'randomUUID')
-      .mockReturnValue('existing' as ReturnType<typeof crypto.randomUUID>);
-    try {
-      const result = renameConnectedPromptDocument(
-        { promptDocument: { version: 1, blocks: [mention, { type: 'text', text: ' 良 良' }] } },
-        resource,
-        '良',
-      )!;
-      expect(
-        result.blocks.filter((block) => block.type === 'mention').map((block) => block.mentionId),
-      ).toEqual(['existing', 'existing_2', 'existing_3']);
-    } finally {
-      id.mockRestore();
-    }
+  it('改名不会把普通文字中的同名词自动绑定为新提及', () => {
+    const input = {
+      promptDocument: {
+        version: 1 as const,
+        blocks: [mention, { type: 'text' as const, text: ' 良 良' }],
+      },
+    };
+    expect(renameConnectedPromptDocument(input, { ...resource, referenceName: '良' }, '主角')).toBe(
+      undefined,
+    );
+    expect(input.promptDocument.blocks[1]).toEqual({ type: 'text', text: ' 良 良' });
   });
 
   it.each(['asset', 'version'] as const)(
@@ -153,11 +146,9 @@ describe('renameConnectedPromptDocument', () => {
     },
   );
 
-  it('ASCII 名称只在词边界绑定，保留相邻文本', () => {
+  it('ASCII 名称改名不按词边界扫描普通文字', () => {
     const text = 'scatter cat cat2 cat_3 猫cat，cat';
-    const result = renameConnectedPromptDocument({ prompt: text }, resource, 'cat')!;
-    expect(result.blocks.filter((block) => block.type === 'mention')).toHaveLength(3);
-    expect(renderPromptDocument(result)).toBe(text);
+    expect(renameConnectedPromptDocument({ prompt: text }, resource, 'cat')).toBeUndefined();
   });
 
   it.each(['', ' ', ' 良', '良'.repeat(161)])('非法别名不会进入正文拆分：%j', (name) => {
@@ -166,10 +157,18 @@ describe('renameConnectedPromptDocument', () => {
     );
   });
 
-  it('引用提升超出文档块数上限时明确拒绝，不截断正文', () => {
+  it('旧式提及改名需要拆成正文和 inline 块，超出文档上限时明确拒绝', () => {
     const document: PromptDocument = {
       version: 1,
-      blocks: [{ type: 'text', text: '良 '.repeat(1001) }],
+      blocks: Array.from({ length: 1001 }, (_, index) => ({
+        type: 'mention' as const,
+        mentionId: `legacy-${index}`,
+        assetId: resource.id,
+        assetVersion: resource.assetVersion,
+        label: resource.name,
+        mediaType: resource.mediaType,
+        entityName: resource.referenceName,
+      })),
     };
     const before = structuredClone(document);
     expect(() =>

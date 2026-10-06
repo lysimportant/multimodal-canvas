@@ -26,8 +26,13 @@ import {
 export type NodeResourceIdentity = Pick<NodeResourceRef, 'assetId' | 'assetVersion'>;
 
 /** 返回可用于去重和排序的版本化身份，不依赖名称或卡片序号。 */
-function identity(resource: NodeResourceIdentity): string {
-  return JSON.stringify([resource.assetId, resource.assetVersion]);
+function identity(
+  resource: NodeResourceIdentity | Pick<ConnectedPromptAsset, 'id' | 'assetVersion'>,
+): string {
+  return JSON.stringify([
+    'assetId' in resource ? resource.assetId : resource.id,
+    resource.assetVersion,
+  ]);
 }
 
 /** 绑定来源节点而非来源当前版本；旧 ID 迁移只保留已有的显式排序标记。 */
@@ -49,17 +54,26 @@ function referencePool(
 ): { references: NodeResourceRef[]; document: PromptDocument; projected: boolean } {
   const references: NodeResourceRef[] = [];
   const savedReferences = target.data.resourceRefs ?? [];
-  const order = new Map<string, number>();
   const seen = new Set<string>();
   const connected = collectConnectedPromptAssets(target.id, nodes, edges, assets);
   const promptDocument = projectConnectedPromptDocument(target.data, connected);
   const document = getEffectivePromptDocument({ ...target.data, promptDocument });
+  const projected = promptDocument !== target.data.promptDocument;
   if (connected.some((input) => input.versionUnavailable)) {
     throw new Error('引用资源的来源绑定或版本不明确，请先确认来源连线');
   }
+  const mentions = document.blocks.filter((block) => block.type === 'mention');
+  const mentionKeys = new Set(mentions.map(identity));
+  const connectedByKey = new Map(connected.map((input) => [identity(input), input]));
   /** 按冻结身份去重，并把已解析的旧别名迁移到来源 ID，不改变已确认顺序。 */
-  const add = (resource: NodeResourceRef, input?: ConnectedPromptAsset) => {
+  const add = (resource: NodeResourceRef, input?: ConnectedPromptAsset, promote = false) => {
     const key = identity(resource);
+    const existingIndex = references.findIndex((item) => identity(item) === key);
+    if (existingIndex >= 0) {
+      if (promote && !references[existingIndex]!.attached)
+        references[existingIndex] = { ...references[existingIndex]!, attached: true };
+      return;
+    }
     if (seen.has(key)) return;
     seen.add(key);
     const saved =
@@ -72,21 +86,42 @@ function referencePool(
               item.name === input.referenceName,
           )
         : undefined);
-    if (saved) order.set(key, savedReferences.indexOf(saved));
     const reference = {
       ...resource,
       id: saved?.id ?? resource.id,
       name: saved?.name ?? resource.name,
+      ...(saved?.attached ? { attached: true } : {}),
     };
-    references.push(
-      input?.sourceNodeId ? bindReferenceSource(reference, input.sourceNodeId) : reference,
-    );
+    const bound = input?.sourceNodeId
+      ? bindReferenceSource(reference, input.sourceNodeId)
+      : reference;
+    references.push(promote ? { ...bound, attached: true } : bound);
   };
-  for (const block of document.blocks) {
-    if (block.type !== 'mention') continue;
-    const input = connected.find(
-      (item) => item.id === block.assetId && item.assetVersion === block.assetVersion,
-    );
+  // 先按已保存顺序恢复旧资料；正文删除不会复活未 attached 的旧引用，
+  // 仍存在的连线则保留其卡片顺序和来源绑定。
+  for (const resource of savedReferences) {
+    const input =
+      connectedByKey.get(identity(resource)) ??
+      (resource.assetVersion === undefined
+        ? connected.find(
+            (item) =>
+              item.referenceNeedsSync &&
+              item.id === resource.assetId &&
+              item.referenceName === resource.name,
+          )
+        : undefined);
+    const resolved =
+      input?.assetVersion !== undefined && resource.assetVersion === undefined
+        ? { ...resource, assetVersion: input.assetVersion }
+        : resource;
+    const key = identity(resolved);
+    if (!resource.attached && !mentionKeys.has(key) && !input) continue;
+    add(resolved, input, Boolean(resource.attached || (mentionKeys.has(key) && !input)));
+  }
+
+  // 没有资料池的旧节点按编辑器原顺序恢复正文引用，再追加连线资料。
+  for (const block of mentions) {
+    const input = connectedByKey.get(identity(block));
     add(
       {
         id: `reference:${block.mentionId}`,
@@ -96,10 +131,14 @@ function referencePool(
         ...(block.assetVersion !== undefined ? { assetVersion: block.assetVersion } : {}),
       },
       input,
+      !input,
     );
   }
+  // 连线输入默认只是执行图输入，尤其不能把首尾帧转成 generic attached。
   const names = new Set(references.map((reference) => reference.name));
   for (const input of connected) {
+    if (input.versionUnavailable || input.assetVersion === undefined) continue;
+    if (references.some((reference) => identity(reference) === identity(input))) continue;
     const name = input.referenceName ?? uniqueResourceDisplayName(input.name, names);
     names.add(name);
     add(
@@ -113,21 +152,16 @@ function referencePool(
       input,
     );
   }
-  if (savedReferences.some((item) => item.id.startsWith('ordered:'))) {
-    references.sort(
-      (left, right) =>
-        (order.get(identity(left)) ?? Infinity) - (order.get(identity(right)) ?? Infinity),
-    );
-  }
-  return { references, document, projected: promptDocument !== target.data.promptDocument };
+
+  return { references, document, projected };
 }
 
 /**
- * 原子添加一个已有节点的资源、正文引用和来源连线；重复点击同一身份不会重复添加。
+ * 原子添加节点资料及来源连线，不改正文；重复点击同一身份不会重复添加。
  * @param targetId 保持选中的生成节点，不允许选择自身或无资源来源。
  * @param sourceId 被点击的画布节点；引用其当前已确定版本，不生成新资源。
  * @returns 新图及 changed 标志；原数组和节点不变，成功变更可作为一个撤销步骤保存。
- * 素材/图片修改节点只保存正文提及，不添加输入边；其他节点原子添加连线。
+ * 素材/图片修改节点只保存独立资料，不添加输入边；其他节点原子添加连线。
  * 视频生成节点的文字资料尚无 mention 映射，需使用提示词连线；已有帧连线不得转成参考 mention。
  * @throws 资源缺失、版本未知、循环、输入类型不兼容、文档或引用数量超限时整次拒绝。
  */
@@ -142,7 +176,7 @@ export function addNodeResourceReference(
   const source = nodes.find((node) => node.id === sourceId);
   if (!target || !source) throw new Error('节点已不存在，请退出添加模式后重试');
   if (targetId === sourceId) throw new Error('不能把节点自身添加为参考资源');
-  // 素材节点没有输入口；图片修改节点保留原图连线，额外资料与上传一样保存为正文提及。
+  // 素材节点没有输入口；图片修改节点保留原图连线，额外资料独立保存到引用池。
   const referenceOnly = target.data.mode === 'source' || Boolean(target.data.imageEditSource);
   const currentSource = source.data.manualOutput
     ? { ...source, data: { ...source.data, resultAsset: undefined } }
@@ -167,22 +201,9 @@ export function addNodeResourceReference(
   }
   const { references: pool, document, projected } = referencePool(target, nodes, edges, assets);
   const existing = pool.find((item) => identity(item) === identity(picked));
-  const alreadyMentioned = document.blocks.some(
-    (block) => block.type === 'mention' && identity(block) === identity(picked),
-  );
   const name =
     existing?.name ??
     uniqueResourceDisplayName(picked.label, new Set(pool.map((item) => item.name)));
-  const nextDocument = alreadyMentioned
-    ? document
-    : {
-        ...document,
-        blocks: [
-          ...document.blocks,
-          ...(renderPromptDocument(document) ? [{ type: 'text' as const, text: '\n' }] : []),
-          { ...picked, entityName: name },
-        ],
-      };
   const hasEdge = edges.some((edge) => edge.source === sourceId && edge.target === targetId);
   const reference = existing ?? {
     id: `reference:${picked.mentionId}`,
@@ -206,8 +227,8 @@ export function addNodeResourceReference(
     throw new Error('该来源已绑定其他冻结版本，请先确认原引用；正文和连线未改变');
   }
   const resourceRefs = existing
-    ? pool.map((item) => (item === existing ? boundReference : item))
-    : [...pool, boundReference];
+    ? pool.map((item) => (item === existing ? { ...boundReference, attached: true } : item))
+    : [...pool, { ...boundReference, attached: true }];
   const unchangedReferences =
     resourceRefs.length === target.data.resourceRefs?.length &&
     resourceRefs.every((item, index) => {
@@ -216,10 +237,11 @@ export function addNodeResourceReference(
         item.id === saved.id &&
         identity(item) === identity(saved) &&
         item.name === saved.name &&
+        item.attached === saved.attached &&
         item.mediaType === saved.mediaType
       );
     });
-  if ((hasEdge || referenceOnly) && alreadyMentioned && !projected && unchangedReferences)
+  if ((hasEdge || referenceOnly) && !projected && unchangedReferences)
     return { nodes: [...nodes], edges: [...edges], changed: false };
   // 添加参考资料不删除原有首尾帧连接；兼容性必须在写入图之前整体检查。
   const nextTarget: AssetFlowNode = {
@@ -228,8 +250,7 @@ export function addNodeResourceReference(
       ...target.data,
       ...nodeDataSchema.parse({
         ...target.data,
-        promptDocument: nextDocument,
-        prompt: renderPromptDocument(nextDocument),
+        ...(projected ? { promptDocument: document } : {}),
         resourceRefs,
         stale: true,
         ...(!referenceOnly &&
@@ -369,7 +390,7 @@ export function removeNodeResourceReference(
   for (const block of (document ?? previousDocument).blocks) {
     const next =
       block.type === 'mention' && identity(block) === key
-        ? { type: 'text' as const, text: mentionDisplayName(block) }
+        ? { type: 'text' as const, text: block.inline ? '' : mentionDisplayName(block) }
         : block;
     const last = blocks.at(-1);
     if (next.type === 'text' && last?.type === 'text') {

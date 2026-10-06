@@ -69,6 +69,7 @@ import {
   type MediaType,
   type NodeMode,
   type PromptDocument,
+  type PromptMention,
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
@@ -78,6 +79,7 @@ import {
   getNodeGenerationCount,
   isValidGenerationCount,
   renderPromptDocument,
+  mentionDisplayName,
   defaultResourceDisplayName,
   nodeResourceRefSchema,
   resolveImageOutputParameters,
@@ -128,7 +130,7 @@ import {
   type NodeResourceIdentity,
 } from './workspace/node-resource-actions';
 import {
-  freezeConnectedResourceReferences,
+  retainNodeResourceReferences,
   projectConnectedPromptDocument,
   renameConnectedPromptDocument,
 } from './resource-mention-sync';
@@ -2794,7 +2796,7 @@ function WorkspaceApp({
     [effectiveSelectedNodeId, updateNodeEnabled],
   );
 
-  /** 更新指定或选中节点的纯文本提示词，并冻结当前连线资源引用。 */
+  /** 更新指定或选中节点的纯文本提示词，资料池独立保留。 */
   const updateSelectedPrompt = useCallback(
     (prompt: string, nodeId?: string) => {
       const targetNodeId = nodeId ?? effectiveSelectedNodeId;
@@ -2810,7 +2812,11 @@ function WorkspaceApp({
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         prompt: prompt || undefined,
-        resourceRefs: freezeConnectedResourceReferences(data.resourceRefs, connectedAssets),
+        resourceRefs: retainNodeResourceReferences(
+          data,
+          { version: 1, blocks: [{ type: 'text', text: prompt }] },
+          connectedAssets,
+        ),
         // 仅提供纯文本的调用方（例如结果编辑）会显式替换结构化文档，
         // 避免旧提及继续作为实际执行来源。
         ...(data.promptDocument
@@ -2937,6 +2943,11 @@ function WorkspaceApp({
         assets,
       );
       /** 恢复已有连线或编辑既有提及不会增加输入，不因此切换模式或剪掉原有连线。 */
+      const attachedIdentities = new Set(
+        (current?.data.resourceRefs ?? [])
+          .filter((reference) => reference.attached)
+          .map((reference) => JSON.stringify([reference.assetId, reference.assetVersion])),
+      );
       const hasNewResource = document.blocks.some(
         (block) =>
           block.type === 'mention' &&
@@ -2948,7 +2959,8 @@ function WorkspaceApp({
           ) &&
           !connectedAssets.some(
             (asset) => asset.id === block.assetId && asset.assetVersion === block.assetVersion,
-          ),
+          ) &&
+          !attachedIdentities.has(JSON.stringify([block.assetId, block.assetVersion])),
       );
       const promoteOmni =
         current?.data.mediaType === 'video' &&
@@ -2959,7 +2971,7 @@ function WorkspaceApp({
         ...data,
         prompt: prompt || undefined,
         promptDocument: document,
-        resourceRefs: freezeConnectedResourceReferences(data.resourceRefs, connectedAssets),
+        resourceRefs: retainNodeResourceReferences(data, document, connectedAssets),
         ...(promoteOmni ? { videoMode: 'omni_reference' as const } : {}),
       }));
       if (promoteOmni && current) {
@@ -2989,7 +3001,7 @@ function WorkspaceApp({
    * @throws 节点或连线已移除、身份/名称有歧义、格式非法或超出引用限制时拒绝保存。
    */
   const renameConnectedResource = useCallback(
-    (assetId: string, name: string, nodeId?: string) => {
+    (assetId: string, name: string, nodeId?: string, assetVersion?: number) => {
       const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       const current = nodesRef.current.find((node) => node.id === targetNodeId);
       if (!current) throw new Error('目标节点已不存在');
@@ -2999,33 +3011,93 @@ function WorkspaceApp({
         edgesRef.current,
         assets,
       );
-      const candidates = connectedAssets.filter((asset) => asset.id === assetId);
-      const connected = candidates[0];
-      if (!connected) throw new Error('连线资源已移除，请重新选择');
+      const candidates = connectedAssets.filter(
+        (asset) =>
+          asset.id === assetId &&
+          (assetVersion === undefined || asset.assetVersion === assetVersion),
+      );
       if (candidates.length > 1) throw new Error('连线资源包含多个版本，请先明确来源版本');
       const references = current.data.resourceRefs ?? [];
+      const connected = candidates[0];
+      if (connected?.versionUnavailable) {
+        throw new Error('连线生成结果缺少明确版本，请等待来源结果恢复后再引用');
+      }
+      const documentMentions = (current.data.promptDocument?.blocks ?? []).filter(
+        (block): block is PromptMention =>
+          block.type === 'mention' &&
+          block.assetId === assetId &&
+          (assetVersion === undefined || block.assetVersion === assetVersion),
+      );
+      if (
+        !connected &&
+        assetVersion === undefined &&
+        new Set(documentMentions.map((mention) => mention.assetVersion)).size > 1
+      )
+        throw new Error('引用资源包含多个版本，请先明确引用版本');
+      const existingMention = documentMentions[0];
+      const effectiveVersion =
+        connected?.assetVersion ?? assetVersion ?? existingMention?.assetVersion;
+      const sameIdentity = (item: { assetId: string; assetVersion?: number }) =>
+        item.assetId === assetId && item.assetVersion === effectiveVersion;
+      const sourceReferenceId =
+        connected?.sourceNodeId && connected.assetVersion !== undefined
+          ? `connected:source:${encodeURIComponent(connected.sourceNodeId)}:${encodeURIComponent(assetId)}`
+          : undefined;
+      const stripOrder = (id: string) => id.replace(/^(?:ordered:)+/u, '');
       const previous =
-        references.find((item) => item.id === 'connected:' + assetId) ??
-        references.find((item) => item.assetId === assetId);
+        (sourceReferenceId
+          ? references.find((item) => stripOrder(item.id) === sourceReferenceId)
+          : undefined) ??
+        references.find(
+          (item) => sameIdentity(item) && stripOrder(item.id) === `connected:${assetId}`,
+        ) ??
+        references.find((item) => sameIdentity(item)) ??
+        (existingMention
+          ? {
+              id: `reference:${existingMention.mentionId}`,
+              assetId,
+              assetVersion: existingMention.assetVersion,
+              mediaType: existingMention.mediaType,
+              name: mentionDisplayName(existingMention),
+              attached: true,
+            }
+          : undefined);
+      if (!connected && !previous) throw new Error('连线资源已移除，请重新选择');
+      if (
+        references.some((item) => item !== previous && item.name === name && !sameIdentity(item)) ||
+        connectedAssets.some(
+          (asset) =>
+            (asset.id !== assetId || asset.assetVersion !== effectiveVersion) &&
+            (asset.referenceName ?? defaultResourceDisplayName(asset.name)) === name,
+        )
+      ) {
+        throw new Error('这个名字已被其他资源占用');
+      }
+      const resource =
+        connected ??
+        (previous
+          ? {
+              id: previous.assetId,
+              name: previous.name,
+              mediaType: previous.mediaType,
+              ...(previous.assetVersion !== undefined
+                ? { assetVersion: previous.assetVersion }
+                : {}),
+              referenceName: previous.name,
+            }
+          : undefined);
+      if (!resource) throw new Error('连线资源已移除，请重新选择');
       const parsed = nodeResourceRefSchema.safeParse({
         ...previous,
-        id: previous?.id ?? 'connected:' + assetId,
+        id: previous?.id ?? sourceReferenceId ?? `connected:${assetId}`,
         assetId,
-        mediaType: connected.mediaType,
+        mediaType: resource.mediaType,
         name,
-        ...(connected.assetVersion !== undefined ? { assetVersion: connected.assetVersion } : {}),
+        ...(effectiveVersion !== undefined ? { assetVersion: effectiveVersion } : {}),
       });
       if (!parsed.success) throw new Error('资源名称或引用身份无效，名称须为 1 至 160 字符');
       const reference = parsed.data;
-      if (
-        connectedAssets.some(
-          (asset) =>
-            asset.id !== assetId &&
-            (asset.referenceName ?? defaultResourceDisplayName(asset.name)) === reference.name,
-        )
-      )
-        throw new Error('这个名字已被其他资源占用');
-      const document = renameConnectedPromptDocument(current.data, connected, reference.name);
+      const document = renameConnectedPromptDocument(current.data, resource, reference.name);
       if (
         previous?.name === reference.name &&
         previous.assetId === reference.assetId &&
@@ -3034,7 +3106,8 @@ function WorkspaceApp({
         !document
       )
         return;
-      if (!previous && references.length >= 40) throw new Error('节点引用资源不能超过 40 个');
+      if (!references.some((item) => item.id === reference.id) && references.length >= 40)
+        throw new Error('节点引用资源不能超过 40 个');
       rememberHistory();
       canvasDirtyRef.current = true;
       updateNodeDataAndMarkDownstreamStale(current.id, (data) => {

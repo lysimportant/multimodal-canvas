@@ -39,7 +39,7 @@ type TextPromptEditorProps = {
     document: PromptDocument,
   ) => void;
   /** 父层原子保存连线别名和正文引用，不重命名源资源。 */
-  onConnectedResourceRename?: (assetId: string, name: string) => void;
+  onConnectedResourceRename?: (assetId: string, name: string, assetVersion?: number) => void;
   /** 结构化文档保存回调。 */
   onDocumentChange?: (document: PromptDocument) => void;
   /** 提示词资源条点击上传后，把本地文件收成项目资源。 */

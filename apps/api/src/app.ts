@@ -45,6 +45,7 @@ import {
 } from './run-persistence';
 import {
   canvasDocumentSchema,
+  getExecutionPromptDocument,
   buildVideoRecreationPrompt,
   createPromptOptimizationCanvas,
   getVideoRecreationIssue,
@@ -1080,7 +1081,7 @@ async function resolvePromptMentionRefs(
     if (includedNodeIds && !includedNodeIds.has(node.id)) continue;
     // 来源和手动输出的旧提示词仅是配置，明确重跑该节点时才重新校验提及。
     if (isRunAssetSource(node, input.targetNodeId)) continue;
-    const document = node.data.promptDocument;
+    const document = getExecutionPromptDocument(node.data);
     if (!document) continue;
     const parsedDocument = promptDocumentSchema.parse(document);
     for (const [blockOrder, block] of parsedDocument.blocks.entries()) {

@@ -4377,7 +4377,7 @@ function orderedRunInputs(snapshot: RunSnapshot): RunInputSnapshot[] {
 
 /**
  * 在既有去重、角色分组之后应用目标节点的参考资源顺序，不参与正文或冻结提及校验。
- * @param snapshot 仅在目标 resourceRefs 含 ordered: ID 时排序；旧别名保持原输入顺序，名称不参与身份匹配。
+ * @param snapshot 目标 resourceRefs 含 attached:true 或 ordered: ID 时按保存顺序排序；旧别名保持原输入顺序，名称不参与身份匹配。
  * @param inputs 已按旧规则排序的参考数组，不包含需要固定槽位的首尾帧。
  * @param versionOf 运行输入的冻结版本；source-bound refs 不替换连线版本，也不据此新增原图。
  * @returns 按资产 ID 和明确版本精确匹配的新数组；重复排序项取首次，未列项稳定追加。
@@ -4388,7 +4388,7 @@ function orderResourceReferenceInputs<T extends RunInputSnapshot>(
   versionOf: (input: T) => number | undefined = (input) => input.sourceAssetVersion,
 ): T[] {
   const refs = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.resourceRefs;
-  if (!refs?.some((ref) => ref.id.startsWith('ordered:'))) return [...inputs];
+  if (!refs?.some((ref) => ref.attached || ref.id.startsWith('ordered:'))) return [...inputs];
   const orderByVersion = new Map<string, number>();
   refs.forEach((ref, index) => {
     // 缺少版本不能视为通配符，否则会把同一资产的不同冻结版本一起前置。

@@ -73,6 +73,47 @@ describe('提示词 Skill 契约', () => {
     expect(input.blocks[0]).toEqual({ type: 'text', text: '让 ' });
   });
 
+  it('优化结果序列化和恢复时保留独立资料的 inline 标记', () => {
+    const source: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '保留 ' },
+        {
+          type: 'mention',
+          mentionId: 'inline-reference',
+          assetId: 'asset-inline',
+          assetVersion: 4,
+          label: '参考图',
+          mediaType: 'image',
+          inline: true,
+        },
+        { type: 'text', text: ' 的约束' },
+      ],
+    };
+    const canvas = createPromptOptimizationCanvas({
+      skillId: 'character',
+      input: source,
+      mediaType: 'image',
+    });
+    const instruction = canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+    if (instruction.type !== 'text') throw new Error('优化任务必须只包含文字');
+    const token = '[[SKILL_REF_1]]';
+    const restored = parsePromptOptimizationOutput(
+      JSON.stringify({ prompt: `保留 ${token} 的约束与细节` }),
+      source,
+    ).promptDocument;
+    const serialized = JSON.parse(JSON.stringify(restored));
+    expect(serialized.blocks).toContainEqual(
+      expect.objectContaining({
+        mentionId: 'inline-reference',
+        assetId: 'asset-inline',
+        assetVersion: 4,
+        inline: true,
+      }),
+    );
+    expect(instruction.text).toContain(token);
+  });
+
   it.each([
     '只保留 [[SKILL_REF_1]]',
     '[[SKILL_REF_2]] [[SKILL_REF_1]]',

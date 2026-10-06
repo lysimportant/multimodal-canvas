@@ -374,6 +374,176 @@ describe('run credential snapshots', () => {
   });
 });
 
+describe('独立节点资料的执行快照投影', () => {
+  it('只在快照中追加内联资料，跳过来源节点并保持原画布不变', () => {
+    const canvas: CanvasDocument = {
+      revision: 7,
+      nodes: [
+        {
+          id: 'source',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '来源说明',
+            mediaType: 'text',
+            mode: 'source',
+            prompt: '来源正文',
+            resourceRefs: [
+              {
+                id: 'source-reference',
+                assetId: 'asset-source-only',
+                mediaType: 'image',
+                name: '来源资料',
+                attached: true,
+              },
+            ],
+          },
+        },
+        {
+          id: 'target',
+          type: 'text',
+          position: { x: 240, y: 0 },
+          data: {
+            label: '目标',
+            mediaType: 'text',
+            mode: 'generate',
+            prompt: '目标正文',
+            resourceRefs: [
+              {
+                id: 'target-first',
+                assetId: 'asset-first',
+                assetVersion: 2,
+                mediaType: 'image',
+                name: '第一份',
+                attached: true,
+              },
+              {
+                id: 'target-duplicate',
+                assetId: 'asset-first',
+                assetVersion: 2,
+                mediaType: 'image',
+                name: '第一份重复',
+                attached: true,
+              },
+              {
+                id: 'target-second',
+                assetId: 'asset-second',
+                mediaType: 'text',
+                name: '第二份',
+                attached: true,
+              },
+            ],
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'source-target',
+          sourceNodeId: 'source',
+          sourceHandle: 'output:text',
+          targetNodeId: 'target',
+          targetHandle: 'input:content',
+          order: 0,
+        },
+      ],
+    };
+    const before = structuredClone(canvas);
+
+    const snapshot = createRunSnapshot('project_1', canvas, 'target');
+    const target = snapshot.nodes.find((node) => node.id === 'target')!;
+    const source = snapshot.nodes.find((node) => node.id === 'source')!;
+
+    expect(target.data.promptDocument).toEqual({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '目标正文' },
+        expect.objectContaining({
+          type: 'mention',
+          mentionId: 'attached_0',
+          assetId: 'asset-first',
+          assetVersion: 2,
+          inline: true,
+          entityName: '第一份',
+        }),
+        expect.objectContaining({
+          type: 'mention',
+          mentionId: 'attached_2',
+          assetId: 'asset-second',
+          inline: true,
+        }),
+      ],
+    });
+    expect(source.data.promptDocument).toBeUndefined();
+    expect(source.data.prompt).toBe('来源正文');
+    expect(canvas).toEqual(before);
+  });
+
+  it('保留已有正文文档和提及顺序，只把没有正文标记的独立资料追加到末尾', () => {
+    const canvas: CanvasDocument = {
+      revision: 1,
+      nodes: [
+        {
+          id: 'target',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '目标',
+            mediaType: 'text',
+            mode: 'generate',
+            prompt: 'legacy prompt',
+            promptDocument: {
+              version: 1,
+              blocks: [
+                { type: 'text', text: '前文' },
+                {
+                  type: 'mention',
+                  mentionId: 'existing',
+                  assetId: 'asset-existing',
+                  assetVersion: 1,
+                  mediaType: 'image',
+                  label: '正文资料',
+                },
+                { type: 'text', text: '后文' },
+              ],
+            },
+            resourceRefs: [
+              {
+                id: 'existing-ref',
+                assetId: 'asset-existing',
+                assetVersion: 1,
+                mediaType: 'image',
+                name: '资料别名',
+                attached: true,
+              },
+              {
+                id: 'new-ref',
+                assetId: 'asset-new',
+                assetVersion: 3,
+                mediaType: 'image',
+                name: '新增资料',
+                attached: true,
+              },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    };
+    const originalDocument = structuredClone(canvas.nodes[0]!.data.promptDocument);
+
+    const snapshot = createRunSnapshot('project_1', canvas, 'target');
+    const blocks = snapshot.nodes[0]!.data.promptDocument!.blocks;
+    expect(blocks.map((block) => (block.type === 'text' ? block.text : block.mentionId))).toEqual([
+      '前文',
+      'existing',
+      '后文',
+      'attached_1',
+    ]);
+    expect(snapshot.nodes[0]!.data.prompt).toBe('legacy prompt');
+    expect(canvas.nodes[0]!.data.promptDocument).toEqual(originalDocument);
+  });
+});
+
 describe('disabled canvas nodes', () => {
   it('keeps a shared ancestor needed by the target but removes its edge into a manual source', () => {
     const canvas: CanvasDocument = {

@@ -680,6 +680,255 @@ describe('资源提及 HTTP 边界', () => {
     expect(submitted.json().run.snapshot.promptMentions).toBeUndefined();
   });
 
+  it('无正文的独立资料按授权版本进入执行快照，重复身份只冻结一次且不改画布', async () => {
+    vi.stubEnv('WORKER_PROVIDER', 'newapi');
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const runService = new MemoryRunService({ providerName: 'newapi', stepDelayMs: 0 });
+    const settingsStore = new MemoryAiSettingsStore('attached-reference-snapshot');
+    settingsStore.update({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-attached-reference-key',
+    });
+    const credential = settingsStore.listCredentials()[0]!;
+    settingsStore.replaceModels(
+      [
+        {
+          id: 'attached-text-model',
+          name: 'attached-text-model',
+          mediaTypes: ['text'],
+          refreshedAt: new Date().toISOString(),
+        },
+      ],
+      credential.id,
+    );
+    const project = await projectStore.create({ name: '无正文独立资料' });
+    const asset = await assetStore.create({
+      projectId: project.id,
+      name: 'reference.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('version-one'),
+    });
+    await assetStore.createVersion(asset.id, { content: Buffer.from('version-two') });
+    const canvas: CanvasDocument = {
+      revision: 0,
+      nodes: [
+        {
+          id: 'attached-target',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '目标',
+            mediaType: 'text',
+            mode: 'generate',
+            modelAlias: 'attached-text-model',
+            credentialId: credential.id,
+            prompt: '只有正文',
+            resourceRefs: [
+              {
+                id: 'attached-one',
+                assetId: asset.id,
+                assetVersion: 1,
+                mediaType: 'image',
+                name: '参考图',
+                attached: true,
+              },
+              {
+                id: 'attached-duplicate',
+                assetId: asset.id,
+                assetVersion: 1,
+                mediaType: 'image',
+                name: '重复名称不会覆盖',
+                attached: true,
+              },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    };
+    const executor = vi.fn(async ({ snapshot }: RunExecutorRequest) => ({
+      provider: 'newapi',
+      summary: 'attached reference executed',
+      targetNodeId: snapshot.targetNodeId,
+      mediaType: 'text' as const,
+      inputCount: 0,
+    }));
+    const app = buildApp({
+      logger: false,
+      assetStore,
+      projectStore,
+      runService,
+      runExecutor: executor,
+      settingsStore,
+    });
+    apps.push(app);
+
+    const save = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${project.id}/canvas`,
+      payload: canvas,
+    });
+    expect(save.statusCode).toBe(200);
+    const savedCanvas = await projectStore.getCanvas(project.id);
+    expect(savedCanvas?.nodes[0]?.data.promptDocument).toBeUndefined();
+    const savedReferencePool = structuredClone(savedCanvas?.nodes[0]?.data.resourceRefs);
+
+    const submitted = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/attached-target/runs',
+      payload: { projectId: project.id },
+    });
+    expect(submitted.statusCode, submitted.body).toBe(202);
+    const submittedRun = submitted.json().run as RunRecord;
+    expect(submittedRun.snapshot.promptMentions).toEqual([
+      expect.objectContaining({
+        nodeId: 'attached-target',
+        mentionId: 'attached_0',
+        assetId: asset.id,
+        assetVersion: 1,
+        mediaType: 'image',
+      }),
+    ]);
+    const completed = await waitForRun(runService, submittedRun.id, 'succeeded');
+    expect(completed.snapshot.nodes[0]?.data.promptDocument).toEqual({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '只有正文' },
+        expect.objectContaining({
+          type: 'mention',
+          mentionId: 'attached_0',
+          assetId: asset.id,
+          assetVersion: 1,
+          inline: true,
+        }),
+      ],
+    });
+    expect(executor).toHaveBeenCalledOnce();
+
+    const afterRunCanvas = await projectStore.getCanvas(project.id);
+    expect(afterRunCanvas?.nodes[0]?.data.promptDocument).toBeUndefined();
+    expect(afterRunCanvas?.nodes[0]?.data.resourceRefs).toEqual(savedReferencePool);
+  });
+
+  it('无正文独立资料的权限、版本、归档、媒体和大小错误会聚合并阻止保存', async () => {
+    vi.stubEnv('RESOURCE_MENTION_MAX_BYTES', '3');
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const project = await projectStore.create({ name: '独立资料错误边界' });
+    const foreign = await assetStore.create({
+      projectId: 'another-project',
+      name: 'foreign.txt',
+      mediaType: 'text',
+      mimeType: 'text/plain',
+      content: Buffer.from('ok'),
+    });
+    const archived = await assetStore.create({
+      projectId: project.id,
+      name: 'archived.txt',
+      mediaType: 'text',
+      mimeType: 'text/plain',
+      content: Buffer.from('ok'),
+    });
+    await assetStore.setArchived(archived.id, true, { projectId: project.id });
+    const versioned = await assetStore.create({
+      projectId: project.id,
+      name: 'versioned.txt',
+      mediaType: 'text',
+      mimeType: 'text/plain',
+      content: Buffer.from('ok'),
+    });
+    const oversized = await assetStore.create({
+      projectId: project.id,
+      name: 'oversized.txt',
+      mediaType: 'text',
+      mimeType: 'text/plain',
+      content: Buffer.from('1234'),
+    });
+    const canvas: CanvasDocument = {
+      revision: 0,
+      nodes: [
+        {
+          id: 'attached-errors',
+          type: 'text',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '错误边界',
+            mediaType: 'text',
+            mode: 'generate',
+            prompt: '没有引用标记',
+            resourceRefs: [
+              {
+                id: 'missing',
+                assetId: 'asset-does-not-exist',
+                mediaType: 'text',
+                name: '不存在',
+                attached: true,
+              },
+              {
+                id: 'foreign',
+                assetId: foreign.id,
+                mediaType: 'text',
+                name: '无权访问',
+                attached: true,
+              },
+              {
+                id: 'archived',
+                assetId: archived.id,
+                mediaType: 'text',
+                name: '已归档',
+                attached: true,
+              },
+              {
+                id: 'version-missing',
+                assetId: versioned.id,
+                assetVersion: 99,
+                mediaType: 'text',
+                name: '版本不存在',
+                attached: true,
+              },
+              {
+                id: 'mime-mismatch',
+                assetId: versioned.id,
+                mediaType: 'image',
+                name: '媒体不符',
+                attached: true,
+              },
+              {
+                id: 'oversized',
+                assetId: oversized.id,
+                mediaType: 'text',
+                name: '过大',
+                attached: true,
+              },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    };
+    const app = buildApp({ logger: false, assetStore, projectStore });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${project.id}/canvas`,
+      payload: canvas,
+    });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'RESOURCE_MENTION_FREEZE_FAILED' });
+    expect(response.json().issues.map((issue: { code: string }) => issue.code)).toEqual([
+      'RESOURCE_MENTION_NOT_FOUND',
+      'RESOURCE_MENTION_FORBIDDEN',
+      'RESOURCE_MENTION_ARCHIVED',
+      'RESOURCE_MENTION_VERSION_MISSING',
+      'RESOURCE_MENTION_MIME_MISMATCH',
+      'RESOURCE_MENTION_SIZE_EXCEEDED',
+    ]);
+    expect((await projectStore.getCanvas(project.id))?.revision).toBe(0);
+  });
+
   it.each<{
     name: string;
     capabilities?: Record<string, unknown>;

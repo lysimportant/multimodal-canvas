@@ -196,6 +196,9 @@ const FLOW_SELECTION_PAN_ON_DRAG = [1];
 const FLOW_MULTI_SELECTION_KEYS = ['Control', 'Meta', 'Shift'];
 /** 空白连续点击复用常驻选择提示；结果消息另用自动 key 重新计时。 */
 const REFERENCE_PICK_MESSAGE_KEY = 'node-reference-pick';
+/** 添加模式入口立即展示的说明，告知用户如何结束当前选择。 */
+const REFERENCE_PICK_NOTICE =
+  '当前处于添加参考资料模式；连续点击画布中的图片、视频、音频或文字，按 Esc 或点击“完成添加”退出';
 
 export type WorkflowCanvasProps = {
   /** 当前项目用于创建独立 Skill 优化任务。 */
@@ -247,7 +250,12 @@ export type WorkflowCanvasProps = {
   onPromptChange?: (value: string, nodeId?: string) => void;
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
   /** 仅保存目标节点的连线资源别名，不修改源资源名称或提示词。 */
-  onConnectedResourceRename?: (assetId: string, name: string, nodeId?: string) => void;
+  onConnectedResourceRename?: (
+    assetId: string,
+    name: string,
+    nodeId?: string,
+    assetVersion?: number,
+  ) => void;
   /** 向固定目标添加已有资源及来源连线；失败时抛出可展示错误，不改变当前图。 */
   onAddNodeReference?: (sourceId: string, targetId: string) => void;
   /** 按当前项目在服务端分页搜索；未提供时兼容使用传入的完整目录。 */
@@ -471,7 +479,7 @@ export function WorkflowCanvas({
     setReferencePickMessage(null);
     referenceMessageApi.destroy();
   }, [referenceMessageApi]);
-  useEffect(() => () => referenceMessageApi.destroy(), [referenceMessageApi, referenceTargetId]);
+  useEffect(() => () => referenceMessageApi.destroy(), [referenceMessageApi]);
   useEffect(() => {
     if (
       referenceTargetId &&
@@ -1138,7 +1146,10 @@ export function WorkflowCanvas({
         connectedAssets={collectConnectedPromptAssets(editorNode.id, editorNodes, edges, assets)}
         onConnectedResourceRename={
           onConnectedResourceRename
-            ? (assetId, name) => onConnectedResourceRename(assetId, name, editorNode.id)
+            ? (assetId, name, assetVersion) =>
+                assetVersion === undefined
+                  ? onConnectedResourceRename(assetId, name, editorNode.id)
+                  : onConnectedResourceRename(assetId, name, editorNode.id, assetVersion)
             : undefined
         }
         onPromptChange={
@@ -1162,9 +1173,16 @@ export function WorkflowCanvas({
                 cancelSelectionGesture();
                 setContextMenu(null);
                 setReferencePickMessage(null);
-                setReferenceTargetId((current) =>
-                  current === editorNode.id ? null : editorNode.id,
-                );
+                if (referenceTargetId === editorNode.id) {
+                  exitReferencePick();
+                  return;
+                }
+                setReferenceTargetId(editorNode.id);
+                void referenceMessageApi.info({
+                  key: REFERENCE_PICK_MESSAGE_KEY,
+                  duration: 0,
+                  content: REFERENCE_PICK_NOTICE,
+                });
               }
             : undefined
         }
@@ -1262,6 +1280,8 @@ export function WorkflowCanvas({
     onAddNodeReference,
     referenceTargetId,
     cancelSelectionGesture,
+    exitReferencePick,
+    referenceMessageApi,
     onPromptChange,
     onPromptDocumentChange,
     onUploadResource,

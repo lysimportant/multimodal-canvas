@@ -155,7 +155,7 @@ export type NodeQuickEditorProps = {
   /** 显式连接到当前节点的输入文件，供完整编辑器展示。 */
   connectedAssets?: readonly ConnectedPromptAsset[];
   /** 保存当前节点的连线资源别名，不重命名源资源。 */
-  onConnectedResourceRename?: (assetId: string, name: string) => void;
+  onConnectedResourceRename?: (assetId: string, name: string, assetVersion?: number) => void;
   /** 更新节点的媒体参数；未提供时参数控件仍可显示但不会修改父状态。 */
   onParametersChange?: (value: NodeMediaParameters) => void;
   /** 保存本次操作的生成份数，范围为 1 至 20；不作为 Provider 参数发送。 */
@@ -1495,7 +1495,9 @@ export function NodeQuickEditor({
                 document.activeElement?.matches('.node-quick-editor-dialog-close') ||
                 !dialog.contains(document.activeElement))
             ) {
-              dialog.querySelector<HTMLTextAreaElement>('textarea')?.focus({ preventScroll: true });
+              dialog
+                .querySelector<HTMLElement>('.resource-mention-input')
+                ?.focus({ preventScroll: true });
             }
           }}
           onCloseAutoFocus={(event) => {

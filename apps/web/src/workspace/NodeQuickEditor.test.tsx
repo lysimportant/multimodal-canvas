@@ -347,7 +347,9 @@ describe('NodeQuickEditor', () => {
         expect(openFile).not.toHaveBeenCalled();
         expect(inputs.onReferencePickToggle).not.toHaveBeenCalled();
         expect(screen.queryByRole('dialog', { name: '拍照' })).not.toBeInTheDocument();
-        expect(within(prompt).getByRole('textbox', { name: '提示词' })).toBeVisible();
+        await waitFor(() =>
+          expect(within(prompt).getByRole('textbox', { name: '提示词' })).toBeVisible(),
+        );
 
         await user.click(within(strip).getByRole('button', { name: '上传引用资源' }));
         expect(openFile).toHaveBeenCalledOnce();
@@ -2877,10 +2879,17 @@ describe('NodeQuickEditor', () => {
     expect(within(dialog).getByRole('button', { name: '预览并命名 产品图' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '预览并命名 连线参考' })).toBeInTheDocument();
     expect(screen.getAllByRole('textbox', { name: '提示词' })).toHaveLength(1);
-    fireEvent.change(within(dialog).getByRole('textbox', { name: '提示词' }), {
-      target: { value: '参考 产品图 补充说明' },
-    });
-    expect(props.onPromptChange).toHaveBeenCalledWith('参考 产品图 补充说明');
+    const prompt = within(dialog).getByRole('textbox', { name: '提示词' });
+    prompt.focus();
+    const range = document.createRange();
+    range.selectNodeContents(prompt);
+    range.collapse(false);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    await user.keyboard(' 补充说明');
+    expect(props.onPromptChange).toHaveBeenLastCalledWith(
+      expect.stringContaining('产品图 补充说明'),
+    );
     await user.click(within(dialog).getByRole('button', { name: '关闭编辑器' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     await waitFor(() =>

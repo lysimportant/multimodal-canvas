@@ -311,9 +311,9 @@ describe('addNodeResourceReference', () => {
           input.id,
         );
         expect(next.nodes[1].data.mediaType).toBe(mediaType);
-        expect(next.nodes[1].data.promptDocument?.blocks).toContainEqual(
+        expect(next.nodes[1].data.resourceRefs).toContainEqual(
           expect.objectContaining({
-            type: 'mention',
+            attached: true,
             assetId: 'a',
             assetVersion: 1,
             mediaType: sourceType,
@@ -354,9 +354,10 @@ describe('addNodeResourceReference', () => {
         contentUrl: '/original',
         mediaType,
       });
-      expect(next.nodes[1].data.promptDocument?.blocks).toContainEqual(
-        expect.objectContaining({ type: 'mention', assetId: 'a', assetVersion: 1 }),
+      expect(next.nodes[1].data.resourceRefs).toContainEqual(
+        expect.objectContaining({ attached: true, assetId: 'a', assetVersion: 1 }),
       );
+      expect(next.nodes[1].data.prompt).toBe('原有说明');
       expect(next.nodes[1].data.resourceRefs?.[0].id).toMatch(/^reference:/);
       expect(
         addNodeResourceReference(next.nodes, next.edges, [], destination.id, 'a').changed,
@@ -364,7 +365,7 @@ describe('addNodeResourceReference', () => {
     },
   );
 
-  it('图片修改节点保留冻结原图和编辑连线，额外资料只进入正文引用', () => {
+  it('图片修改节点保留冻结原图和编辑连线，额外资料只进入独立资料池', () => {
     const destination: AssetFlowNode = {
       ...target(),
       type: 'image',
@@ -393,8 +394,8 @@ describe('addNodeResourceReference', () => {
     );
     expect(next.edges).toEqual(edges);
     expect(next.nodes[2].data.imageEditSource).toEqual(destination.data.imageEditSource);
-    expect(next.nodes[2].data.promptDocument?.blocks).toContainEqual(
-      expect.objectContaining({ type: 'mention', assetId: 'a', assetVersion: 1 }),
+    expect(next.nodes[2].data.resourceRefs).toContainEqual(
+      expect.objectContaining({ attached: true, assetId: 'a', assetVersion: 1 }),
     );
   });
 
@@ -405,7 +406,8 @@ describe('addNodeResourceReference', () => {
     expect(original[2].data.promptDocument).toBeUndefined();
     expect(second.nodes[0]).toBe(original[0]);
     expect(second.nodes[2].selected).toBe(true);
-    expect(second.nodes[2].data.prompt).toBe('保留原有正文。\n参考图\n参考图2');
+    expect(second.nodes[2].data.prompt).toBe('保留原有正文。');
+    expect(second.nodes[2].data.promptDocument).toBeUndefined();
     expect(
       second.nodes[2].data.resourceRefs?.map((ref) => [ref.assetId, ref.assetVersion]),
     ).toEqual([
@@ -417,6 +419,54 @@ describe('addNodeResourceReference', () => {
       ['b', 'video', 'input:referenceImage'],
     ]);
     expect(second.nodes[2].data.stale).toBe(true);
+  });
+
+  it('无资料池的旧正文引用排在既有连线前，新增资料只追加末尾', () => {
+    const document: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '保持旧正文：' },
+        {
+          type: 'mention',
+          mentionId: 'legacy-a',
+          assetId: 'a',
+          assetVersion: 7,
+          mediaType: 'image',
+          label: '角色甲',
+        },
+        { type: 'text', text: '。' },
+      ],
+    };
+    const video = target();
+    video.data.promptDocument = document;
+    video.data.prompt = renderPromptDocument(document);
+    const original = [source('b', 'b', 2), source('c', 'c', 3), video];
+    const edge: FlowEdge = {
+      id: 'existing-b',
+      source: 'b',
+      target: 'video',
+      sourceHandle: 'output:image',
+      targetHandle: 'input:referenceImage',
+    };
+
+    const next = addNodeResourceReference(original, [edge], assets, 'video', 'c');
+
+    expect(next.nodes[2].data.resourceRefs?.map((ref) => [ref.assetId, ref.assetVersion])).toEqual([
+      ['a', 7],
+      ['b', 2],
+      ['c', 3],
+    ]);
+    expect(next.nodes[2].data.resourceRefs?.[0]).toMatchObject({
+      name: '角色甲',
+      attached: true,
+    });
+    expect(next.nodes[2].data.resourceRefs?.[1]).not.toHaveProperty('attached');
+    expect(next.nodes[2].data.resourceRefs?.[2]).toMatchObject({ attached: true });
+    expect(next.nodes[2].data.promptDocument).toEqual(document);
+    expect(next.nodes[2].data.prompt).toBe(video.data.prompt);
+    expect(next.edges[0]).toEqual(edge);
+    expect(next.edges.map((item) => item.source)).toEqual(['b', 'c']);
+    expect(video.data.resourceRefs).toBeUndefined();
   });
 
   it('重复点击同一来源不重复追加正文、引用或边', () => {
@@ -436,9 +486,9 @@ describe('addNodeResourceReference', () => {
     };
     const next = addNodeResourceReference([source('a'), target()], [edge], assets, 'video', 'a');
     expect(next.edges).toEqual([edge]);
-    expect(
-      next.nodes[1].data.promptDocument?.blocks.filter((block) => block.type === 'mention'),
-    ).toHaveLength(1);
+    expect(next.nodes[1].data.resourceRefs?.filter((reference) => reference.attached)).toHaveLength(
+      1,
+    );
   });
 
   it('已有正文提及时只补来源边，不交换或复制正文', () => {
@@ -536,7 +586,7 @@ describe('旧引用与视频模式边界', () => {
       'c',
     );
     const refs = next.nodes[3].data.resourceRefs!;
-    expect(refs.map((ref) => ref.assetId)).toEqual(['a', 'b', 'c']);
+    expect(refs.map((ref) => ref.assetId)).toEqual(['b', 'a', 'c']);
     expect(refs.some((ref) => ref.id.startsWith('ordered:'))).toBe(false);
     expect(refs.find((ref) => ref.assetId === 'b')?.name).toBe('旧别名');
   });
@@ -552,7 +602,7 @@ describe('旧引用与视频模式边界', () => {
       'c',
     );
     const video = next.nodes[2];
-    expect(video.data.prompt).toBe('将角色甲放在角色乙旁边。\n参考图');
+    expect(video.data.prompt).toBe('将角色甲放在角色乙旁边。');
     expect(renderPromptDocument(video.data.promptDocument!)).toBe(video.data.prompt);
     expect(
       video.data.promptDocument?.blocks
@@ -561,7 +611,6 @@ describe('旧引用与视频模式边界', () => {
     ).toEqual([
       ['a', 1, '角色甲'],
       ['b', 1, '角色乙'],
-      ['c', 1, '参考图'],
     ]);
     expect(graph).toEqual(original);
   });
@@ -804,6 +853,7 @@ describe('来源绑定与显式排序共存', () => {
         assetVersion: 1,
         mediaType: 'image',
         name: '参考图',
+        attached: true,
       },
     ]);
     expect(data.promptDocument).toEqual(graph.nodes[1].data.promptDocument);
@@ -828,6 +878,7 @@ describe('来源绑定与显式排序共存', () => {
         assetVersion: 2,
         mediaType: 'image',
         name: '参考图',
+        attached: true,
       },
     ]);
   });

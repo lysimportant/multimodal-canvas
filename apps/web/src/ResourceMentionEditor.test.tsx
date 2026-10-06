@@ -13,7 +13,42 @@ import type {
 import { Dialog, DialogContent, DialogTitle, Button } from '@multimodal-canvas/ui';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
+import { INLINE_REFERENCE, readInlinePrompt, selectInlinePrompt } from './InlinePromptInput';
 import { ASSET_DRAG_TYPE } from './workspace/contracts';
+
+type PromptEditorElement = HTMLElement;
+
+/** 读取编辑器的内部文本；每个内联资源占一个 U+FFFC 位置。 */
+function editorValue(element: PromptEditorElement): string {
+  return readInlinePrompt(element);
+}
+
+/** 读取用户可见的普通文字；内联资源缩略图不把名称写回正文。 */
+function editorVisibleText(element: PromptEditorElement): string {
+  return editorValue(element).replaceAll(INLINE_REFERENCE, '');
+}
+
+/** 通过统一接口设置 textarea 与 contentEditable 的原生选区。 */
+function setEditorSelection(element: PromptEditorElement, start: number, end = start): void {
+  element.focus();
+  selectInlinePrompt(element, start, end);
+  fireEvent.select(element);
+}
+
+/** 兼容两种编辑器形态的文字断言。 */
+function expectEditorValue(element: PromptEditorElement, expected: string): void {
+  expect(editorValue(element)).toBe(expected);
+}
+
+/** 只比较用户可见正文；内联缩略图不渲染资源名称。 */
+function expectEditorVisibleValue(element: PromptEditorElement, expected: string): void {
+  expect(editorVisibleText(element)).toBe(expected);
+}
+
+/** 获取当前编辑元素；插入首个原子后 textarea 会升级为 contentEditable。 */
+function currentPromptEditor(name = '提示词'): PromptEditorElement {
+  return screen.getByRole('textbox', { name }) as PromptEditorElement;
+}
 
 const imageAsset: Asset = {
   id: 'asset-image',
@@ -174,10 +209,16 @@ describe('ResourceMentionEditor', () => {
     fireEvent.change(search, { target: { value: '参考' } });
     expect(screen.getAllByRole('option')).toHaveLength(2);
     await user.click(screen.getByRole('option', { name: /封面参考.*v1/ }));
-    expect(onDocumentChange.mock.lastCall?.[0].blocks.at(-1)).toMatchObject({
-      assetId: imageAsset.id,
-      assetVersion: 1,
-    });
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'mention',
+          assetId: imageAsset.id,
+          assetVersion: 1,
+          inline: true,
+        }),
+      ]),
+    );
   });
 
   it('目录外冻结连线结果可插入，版本未知的连线不借用目录最新版', async () => {
@@ -215,6 +256,9 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox', { name: '提示词' });
     await user.type(editor, '@');
+    // jsdom 不总是为末尾空查询派发 select；显式通知编辑器恢复光标触发器。
+    fireEvent.select(editor);
+    await waitFor(() => expect(screen.getByRole('tab', { name: '项目资源' })).toBeInTheDocument());
     expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getAllByRole('option')).toHaveLength(2);
     const controls = screen.getByRole('group', { name: '节点类型' }).parentElement;
@@ -228,7 +272,8 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('tab', { name: '节点资源' })).toHaveFocus();
     expect(screen.queryByRole('option')).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
-    await user.click(editor);
+    await user.clear(editor);
+    await user.type(editor, '@');
     expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
   });
@@ -338,7 +383,10 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(onDocumentChange).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('第三版接第一版和声音');
+    expectEditorVisibleValue(
+      screen.getByRole('textbox', { name: '提示词' }),
+      '第三版接第一版和声音',
+    );
     view.rerender(
       <ResourceMentionEditor
         {...props}
@@ -355,7 +403,10 @@ describe('ResourceMentionEditor', () => {
     );
     expect(screen.getAllByRole('article')[0]).toHaveAccessibleName('参考资源 1：声音样本');
     expect(screen.getByLabelText('引用顺序 3')).toHaveTextContent('3');
-    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('第三版接第一版和声音');
+    expectEditorVisibleValue(
+      screen.getByRole('textbox', { name: '提示词' }),
+      '第三版接第一版和声音',
+    );
   });
 
   it.each(['键盘', '拖动'])('%s排序同步报错时展示原因，不提前重排或修改正文', (mode) => {
@@ -409,7 +460,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument();
   });
 
-  it('only auto-binds a name already attached to this node', async () => {
+  it('does not auto-bind plain resource names typed into the prompt', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
@@ -434,15 +485,15 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="prompt"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: 'prompt' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: 'prompt' }) as PromptEditorElement;
     await user.click(editor);
-    editor.setSelectionRange(editor.value.length, editor.value.length);
+    setEditorSelection(editor, editorValue(editor).length, editorValue(editor).length);
     await user.type(editor, 'Mansui');
     const document = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
-    expect(document.blocks.filter((block) => block.type === 'mention')).toHaveLength(2);
+    expect(document.blocks.filter((block) => block.type === 'mention')).toHaveLength(1);
     expect(
-      document.blocks.filter((block) => block.type === 'mention').map((block) => block.assetId),
-    ).toEqual([imageAsset.id, imageAsset.id]);
+      document.blocks.some((block) => block.type === 'text' && block.text.includes('Mansui')),
+    ).toBe(true);
     await user.type(editor, '2');
     const afterDigit = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     expect(
@@ -496,10 +547,14 @@ describe('ResourceMentionEditor', () => {
             type: 'mention',
             assetId: imageAsset.id,
             entityName: '产品图',
+            inline: true,
           }),
         ]),
       );
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('生成 产品图');
+      expectEditorValue(
+        screen.getByRole('textbox', { name: '提示词' }),
+        `生成 ${INLINE_REFERENCE}`,
+      );
     });
   });
 
@@ -535,24 +590,20 @@ describe('ResourceMentionEditor', () => {
     );
     const tokens = document.querySelectorAll('.resource-mention-token');
     expect(tokens).toHaveLength(2);
-    const original = document.elementFromPoint;
-    document.elementFromPoint = () => tokens[1] as Element;
     const composer = screen.getByRole('textbox', { name: '提示词' }).parentElement as HTMLElement;
-    fireEvent.mouseMove(composer, { clientX: 48, clientY: 12 });
+    fireEvent.mouseMove(tokens[1]);
     expect(await screen.findByRole('region', { name: '预览 良爷' })).toBeInTheDocument();
-    document.elementFromPoint = () => tokens[0] as Element;
-    fireEvent.mouseMove(composer, { clientX: 12, clientY: 12 });
+    fireEvent.mouseMove(tokens[0]);
     const preview = await screen.findByRole('region', { name: '预览 满穗' });
     expect(preview).toHaveClass('resource-mention-hover-content');
     expect(preview.closest('.ant-popover')).toHaveClass('resource-mention-hover-popover');
     expect(document.body).toContainElement(preview);
     expect(preview.closest('[aria-hidden="true"]')).toBeNull();
-    expect(preview.querySelector('.resource-mention-hover-preview img')).toBeInTheDocument();
+    expect(preview.querySelector('img')).toBeInTheDocument();
     fireEvent.mouseLeave(composer);
     await waitFor(() =>
       expect(screen.queryByRole('region', { name: /预览/ })).not.toBeInTheDocument(),
     );
-    document.elementFromPoint = original;
   });
 
   it('资源预览由 Popover 定位到名称旁，滚动时关闭且不修改结构化文档', async () => {
@@ -578,26 +629,20 @@ describe('ResourceMentionEditor', () => {
     const token = document.querySelector('.resource-mention-token')!;
     const tokenRect = new DOMRect(window.innerWidth - 60, window.innerHeight - 40, 48, 20);
     const bounds = vi.spyOn(token, 'getBoundingClientRect').mockReturnValue(tokenRect);
-    const original = document.elementFromPoint;
-    document.elementFromPoint = () => token;
     try {
-      fireEvent.mouseMove(screen.getByRole('textbox', { name: '提示词' }).parentElement!, {
-        clientX: tokenRect.left + 4,
-        clientY: tokenRect.top + 4,
-      });
+      fireEvent.mouseMove(token);
       const preview = await screen.findByRole('region', { name: '预览 产品图' });
       await waitFor(() => expect(preview).toBeVisible());
       expect(preview.closest('.ant-popover')).toHaveClass('resource-mention-hover-popover');
       expect(bounds).toHaveBeenCalled();
       expect(preview.closest('[aria-hidden="true"]')).toBeNull();
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('产品图');
+      expectEditorVisibleValue(screen.getByRole('textbox', { name: '提示词' }), '产品图');
       fireEvent.scroll(document);
       await waitFor(() =>
         expect(screen.queryByRole('region', { name: '预览 产品图' })).not.toBeInTheDocument(),
       );
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('产品图');
+      expectEditorVisibleValue(screen.getByRole('textbox', { name: '提示词' }), '产品图');
     } finally {
-      document.elementFromPoint = original;
       bounds.mockRestore();
     }
   });
@@ -621,11 +666,13 @@ describe('ResourceMentionEditor', () => {
     await user.type(editor, '生成 @产');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
-    editor.focus();
+    const search = screen.getByRole('searchbox', { name: '搜索资源' });
+    search.focus();
     expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
     await user.keyboard('{Enter}');
 
-    expect(editor).toHaveValue('生成 产品图');
+    const currentEditor = currentPromptEditor();
+    expectEditorValue(currentEditor, `生成 ${INLINE_REFERENCE}`);
     const document = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     expect(document.blocks).toEqual([
       { type: 'text', text: '生成 ' },
@@ -638,7 +685,7 @@ describe('ResourceMentionEditor', () => {
         assetVersion: 3,
       }),
     ]);
-    expect(onChange).toHaveBeenLastCalledWith('生成 产品图');
+    expect(onChange).toHaveBeenLastCalledWith('生成 ');
   });
 
   it('优先使用资源索引的 latestVersion，并兼容旧 metadata.version', async () => {
@@ -716,7 +763,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByLabelText('引用资源')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '上传引用资源' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox')).toHaveValue('产品图 产品图');
+    expectEditorVisibleValue(screen.getByRole('textbox'), '产品图 产品图');
     expect(onDocumentChange).toHaveBeenCalledExactlyOnceWith({
       version: 1,
       blocks: [{ type: 'text', text: '产品图 产品图' }],
@@ -780,13 +827,29 @@ describe('ResourceMentionEditor', () => {
       };
       const middle = '：\n“主角🙂” 与 侧影主角🙂；普通名字主角🙂\t';
       const originalText = '  🎬开场' + middle + '尾声。\n';
+      const normalizedDocument: PromptDocument = {
+        version: 1,
+        blocks: [
+          { type: 'text', text: '  🎬开场' },
+          { ...before, inline: true },
+          { type: 'text', text: '：\n“主角🙂' },
+          { ...first, inline: true },
+          { type: 'text', text: '” 与 侧影' },
+          { ...alias, inline: true },
+          { type: 'text', text: '主角🙂' },
+          { ...first, mentionId: 'mention-adjacent', inline: true },
+          { type: 'text', text: '；普通名字主角🙂\t尾声' },
+          { ...after, inline: true },
+          { type: 'text', text: '。\n' },
+        ],
+      };
       const unlinkedDocument: PromptDocument = {
         version: 1,
         blocks: [
-          { type: 'text', text: '  🎬' },
-          before,
-          { type: 'text', text: middle },
-          after,
+          { type: 'text', text: '  🎬开场' },
+          { ...before, inline: true },
+          { type: 'text', text: middle + '尾声' },
+          { ...after, inline: true },
           { type: 'text', text: '。\n' },
         ],
       };
@@ -800,69 +863,71 @@ describe('ResourceMentionEditor', () => {
           ariaLabel="提示词"
         />,
       );
-      const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-      expect(editor).toHaveValue(originalText);
+      const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+      expectEditorVisibleValue(editor, originalText);
 
       await user.click(screen.getByRole('button', { name: '删除 主角🙂' }));
 
-      expect(editor).toHaveValue(originalText);
+      expectEditorVisibleValue(editor, originalText);
       expect(onChange).toHaveBeenCalledExactlyOnceWith(originalText);
       expect(onDocumentChange).toHaveBeenCalledExactlyOnceWith(unlinkedDocument);
       expect(screen.queryByRole('button', { name: '删除 主角🙂' })).not.toBeInTheDocument();
       expect(
-        Array.from(
-          document.querySelectorAll('.resource-mention-token'),
-          (token) => token.textContent,
+        Array.from(document.querySelectorAll('.resource-mention-token'), (token) =>
+          token.getAttribute('data-mention-id'),
         ),
-      ).toEqual(['开场', '尾声']);
+      ).toEqual(['mention-before', 'mention-after']);
 
       fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
-      expect(editor).toHaveValue(originalText);
-      expect(onDocumentChange).toHaveBeenLastCalledWith(promptDocument);
+      expectEditorVisibleValue(editor, originalText);
+      expect(onDocumentChange).toHaveBeenLastCalledWith(normalizedDocument);
+      expect(screen.getByRole('button', { name: '删除 主角🙂' })).toBeInTheDocument();
       fireEvent.keyDown(editor, { key: 'y', ctrlKey: true });
-      expect(editor).toHaveValue(originalText);
+      expectEditorVisibleValue(editor, originalText);
       expect(onDocumentChange).toHaveBeenLastCalledWith(unlinkedDocument);
+      expect(screen.queryByRole('button', { name: '删除 主角🙂' })).not.toBeInTheDocument();
 
       await waitFor(() => expect(editor).toHaveFocus());
-      const plainNameStart = editor.value.indexOf('主角🙂');
-      editor.setSelectionRange(plainNameStart + 1, plainNameStart + 1);
+      const plainNameStart = editorValue(editor).indexOf('主角🙂');
+      setEditorSelection(editor, plainNameStart + 1, plainNameStart + 1);
       await user.keyboard('{Backspace}');
       const editedMiddle = middle.replace('主角🙂', '角🙂');
-      expect(editor).toHaveValue('  🎬开场' + editedMiddle + '尾声。\n');
+      expectEditorVisibleValue(editor, '  🎬开场' + editedMiddle + '尾声。\n');
       expect(onDocumentChange).toHaveBeenLastCalledWith({
         ...unlinkedDocument,
         blocks: [
-          { type: 'text', text: '  🎬' },
-          before,
-          { type: 'text', text: editedMiddle },
-          after,
+          { type: 'text', text: '  🎬开场' },
+          { ...before, inline: true },
+          { type: 'text', text: editedMiddle + '尾声' },
+          { ...after, inline: true },
           { type: 'text', text: '。\n' },
         ],
       });
 
-      const remainingStart = editor.value.indexOf('尾声');
-      editor.setSelectionRange(remainingStart, remainingStart);
+      const remainingStart = editorValue(editor).lastIndexOf(INLINE_REFERENCE);
+      setEditorSelection(editor, remainingStart, remainingStart + 1);
       fireEvent.keyDown(editor, { key: 'Delete' });
-      expect(editor).toHaveValue('  🎬开场' + editedMiddle + '。\n');
+      expectEditorVisibleValue(editor, '  🎬开场' + editedMiddle + '尾声。\n');
       expect(onDocumentChange).toHaveBeenLastCalledWith({
         version: 1,
         blocks: [
-          { type: 'text', text: '  🎬' },
-          before,
-          { type: 'text', text: editedMiddle + '。\n' },
+          { type: 'text', text: '  🎬开场' },
+          { ...before, inline: true },
+          { type: 'text', text: editedMiddle + '尾声。\n' },
         ],
       });
       expect(screen.getByRole('button', { name: '删除 开场' })).toBeInTheDocument();
 
-      const lastStart = editor.value.indexOf('开场');
-      editor.setSelectionRange(lastStart, lastStart);
+      const lastStart = editorValue(editor).indexOf(INLINE_REFERENCE);
+      setEditorSelection(editor, lastStart, lastStart + 1);
       fireEvent.keyDown(editor, { key: 'Delete' });
-      expect(editor).toHaveValue('  🎬' + editedMiddle + '。\n');
+      expectEditorVisibleValue(editor, '  🎬开场' + editedMiddle + '尾声。\n');
       expect(onDocumentChange).toHaveBeenLastCalledWith({
         version: 1,
-        blocks: [{ type: 'text', text: '  🎬' + editedMiddle + '。\n' }],
+        blocks: [{ type: 'text', text: '  🎬开场' + editedMiddle + '尾声。\n' }],
       });
-      expect(screen.queryByRole('article')).not.toBeInTheDocument();
+      expect(screen.getAllByRole('article')).toHaveLength(2);
+      expect(document.querySelectorAll('[data-inline-reference]')).toHaveLength(0);
     },
   );
 
@@ -902,7 +967,7 @@ describe('ResourceMentionEditor', () => {
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await user.click(screen.getByRole('button', { name: '删除 主角' }));
-      expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('让主角回头');
+      expectEditorVisibleValue(screen.getByRole('textbox', { name: '提示词' }), '让主角回头');
       expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeInTheDocument();
       expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
     }
@@ -976,7 +1041,11 @@ describe('ResourceMentionEditor', () => {
     await user.click(screen.getByRole('button', { name: '删除 旧图' }));
     const nextDocument: PromptDocument = {
       version: 1,
-      blocks: [{ type: 'text', text: '旧图 与 ' }, newMention],
+      blocks: [
+        { type: 'text', text: '旧图' },
+        { type: 'text', text: ' 与 新图' },
+        { ...newMention, inline: true },
+      ],
     };
     expect(onResourceRemove).toHaveBeenCalledExactlyOnceWith(
       { assetId: imageAsset.id, assetVersion: 1 },
@@ -986,7 +1055,7 @@ describe('ResourceMentionEditor', () => {
     view.rerender(<ResourceMentionEditor {...props} promptDocument={nextDocument} />);
     expect(screen.queryByRole('button', { name: '删除 旧图' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '删除 新图' })).toBeInTheDocument();
-    expect(screen.getByRole('textbox')).toHaveValue('旧图 与 新图');
+    expectEditorVisibleValue(screen.getByRole('textbox'), '旧图 与 新图');
     expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(1);
   });
 
@@ -1017,7 +1086,7 @@ describe('ResourceMentionEditor', () => {
     );
     await user.click(screen.getByRole('button', { name: '删除 产品图' }));
     expect(screen.getByRole('status')).toHaveTextContent('节点正在生成，请完成后再移除引用');
-    expect(screen.getByRole('textbox')).toHaveValue('产品图');
+    expectEditorVisibleValue(screen.getByRole('textbox'), '产品图');
     expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
     expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(1);
     expect(onDocumentChange).not.toHaveBeenCalled();
@@ -1066,18 +1135,13 @@ describe('ResourceMentionEditor', () => {
     );
 
     const editor = screen.getByRole('textbox', { name: '提示词' });
-    expect(editor).toHaveValue('萧炎 + 声音样本 -> 产品视频');
+    expectEditorVisibleValue(editor, '萧炎 + 声音样本 -> 产品视频');
     expect(screen.getByRole('button', { name: '预览并命名 萧炎' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '预览并命名 声音样本' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '预览并命名 产品视频' })).toBeInTheDocument();
   });
 
-  it.each([
-    { name: '末尾 Backspace', key: '{Backspace}', offset: 3 },
-    { name: '名称中 Backspace', key: '{Backspace}', offset: 2 },
-    { name: '开头 Delete', key: '{Delete}', offset: 0 },
-    { name: '名称中 Delete', key: '{Delete}', offset: 1 },
-  ])('$name 会原子删除完整引用', async ({ key, offset }) => {
+  it.each(['{Backspace}', '{Delete}'])('%s 删除内联原子但保留普通正文和资料卡', async (key) => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
@@ -1102,18 +1166,17 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    const mentionStart = editor.value.indexOf(imageAsset.name);
-    editor.focus();
-    editor.setSelectionRange(mentionStart + offset, mentionStart + offset);
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+    const mentionStart = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, mentionStart, mentionStart + 1);
 
     await user.keyboard(key);
 
-    expect(editor).toHaveValue('前  后');
-    expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
+    expectEditorVisibleValue(editor, '前 产品图 后');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
-      blocks: [{ type: 'text', text: '前  后' }],
+      blocks: [{ type: 'text', text: '前 产品图 后' }],
     });
   });
 
@@ -1142,18 +1205,17 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    const mentionStart = editor.value.indexOf(imageAsset.name);
-    editor.focus();
-    editor.setSelectionRange(mentionStart, mentionStart + imageAsset.name.length);
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+    const mentionStart = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, mentionStart, mentionStart + 1);
 
     await user.keyboard(key);
 
-    expect(editor).toHaveValue('前  后');
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expectEditorVisibleValue(editor, '前 产品图 后');
+    expect(screen.getByRole('article')).toBeInTheDocument();
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
-      blocks: [{ type: 'text', text: '前  后' }],
+      blocks: [{ type: 'text', text: '前 产品图 后' }],
     });
   });
 
@@ -1190,23 +1252,23 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    const selectionStart = editor.value.indexOf(imageAsset.name) + 1;
-    const selectionEnd = editor.value.indexOf(audioAsset.name) + 2;
-    editor.focus();
-    editor.setSelectionRange(selectionStart, selectionEnd);
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+    const selectionStart = editorValue(editor).indexOf(INLINE_REFERENCE);
+    const selectionEnd = editorValue(editor).lastIndexOf(INLINE_REFERENCE) + 1;
+    setEditorSelection(editor, selectionStart, selectionEnd);
 
     await user.keyboard('{Delete}');
 
-    expect(editor).toHaveValue('前  后');
-    expect(screen.queryAllByRole('article')).toHaveLength(0);
+    expectEditorVisibleValue(editor, '前 产品图 后');
+    expect(screen.queryAllByRole('article')).toHaveLength(2);
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
-      blocks: [{ type: 'text', text: '前  后' }],
+      blocks: [{ type: 'text', text: '前 产品图 后' }],
     });
   });
 
-  it('输入覆盖部分名称会移除该引用，保留替换文字并可撤销恢复', async () => {
+  it('输入覆盖选中的内联原子时保留资料与普通名称，并可撤销恢复', async () => {
+    const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
       <ResourceMentionEditor
@@ -1230,28 +1292,22 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    const mentionStart = editor.value.indexOf(imageAsset.name);
-    editor.focus();
-    editor.setSelectionRange(mentionStart + 1, mentionStart + 2);
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+    const mentionStart = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, mentionStart, mentionStart + 1);
+    await user.keyboard('主体');
 
-    fireEvent.change(editor, {
-      target: {
-        value: '前 产主体图 后',
-        selectionStart: mentionStart + 3,
-        selectionEnd: mentionStart + 3,
-      },
-    });
-
-    expect(editor).toHaveValue('前 主体 后');
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expectEditorVisibleValue(editor, '前 产品图主体 后');
+    expect(screen.getByRole('article')).toBeInTheDocument();
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
-      blocks: [{ type: 'text', text: '前 主体 后' }],
+      blocks: [{ type: 'text', text: '前 产品图主体 后' }],
     });
 
     fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
-    expect(editor).toHaveValue('前 产品图 后');
+    expectEditorVisibleValue(editor, '前 产品图主 后');
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+    expectEditorVisibleValue(editor, '前 产品图 后');
     expect(screen.getByRole('article')).toHaveAttribute('data-mention-id', 'mention-replace-image');
     expect(onDocumentChange.mock.lastCall?.[0].blocks[1]).toMatchObject({
       type: 'mention',
@@ -1260,7 +1316,7 @@ describe('ResourceMentionEditor', () => {
     });
   });
 
-  it('重复同资源只删除命中的引用，最后一处删除后清理缩略图且撤销可恢复', async () => {
+  it('重复同资源只删除命中的内联原子，最后一处删除仍保留资料且撤销可恢复', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
@@ -1292,38 +1348,105 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    editor.focus();
-    editor.setSelectionRange(1, 1);
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+    const firstMarker = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, firstMarker, firstMarker + 1);
     await user.keyboard('{Backspace}');
 
-    expect(editor).toHaveValue(' + 产品图');
+    expectEditorVisibleValue(editor, '产品图 + 产品图');
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
-      { type: 'text', text: ' + ' },
+      { type: 'text', text: '产品图 + 产品图' },
       expect.objectContaining({
         type: 'mention',
         mentionId: 'mention-duplicate-second',
         assetId: imageAsset.id,
+        inline: true,
       }),
     ]);
     expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
 
-    const remainingStart = editor.value.indexOf(imageAsset.name);
-    editor.focus();
-    editor.setSelectionRange(remainingStart + 1, remainingStart + 1);
+    const remainingStart = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, remainingStart, remainingStart + 1);
     fireEvent.keyDown(editor, { key: 'Delete' });
 
-    expect(editor).toHaveValue(' + ');
-    expect(screen.queryByRole('button', { name: '删除 产品图' })).not.toBeInTheDocument();
+    expectEditorVisibleValue(editor, '产品图 + 产品图');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '预览并命名 声音样本' })).toBeInTheDocument();
 
     fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
-    expect(editor).toHaveValue(' + 产品图');
+    expectEditorValue(editor, `产品图 + 产品图${INLINE_REFERENCE}`);
     expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
     expect(onDocumentChange.mock.lastCall?.[0].blocks[1]).toMatchObject({
       type: 'mention',
       mentionId: 'mention-duplicate-second',
     });
+  });
+
+  it('删光正文引用后的资料删除独立撤销重做，普通文字撤销仍保留资料', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="node-remove-pool-only"
+        promptDocument={{
+          version: 1,
+          blocks: [
+            { type: 'text', text: '正文' },
+            {
+              type: 'mention',
+              inline: true,
+              mentionId: 'mention-pool-only',
+              assetId: imageAsset.id,
+              label: imageAsset.name,
+              mediaType: imageAsset.mediaType,
+              assetVersion: 3,
+            },
+          ],
+        }}
+        assets={[imageAsset]}
+        onDocumentChange={onDocumentChange}
+        ariaLabel="提示词"
+      />,
+    );
+    const editor = currentPromptEditor();
+    setEditorSelection(editor, 2, 3);
+    fireEvent.keyDown(editor, { key: 'Delete' });
+    expectEditorValue(editor, '正文');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+
+    setEditorSelection(editor, 2);
+    await user.keyboard('尾');
+    expectEditorValue(editor, '正文尾');
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+    expectEditorValue(editor, '正文');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true, shiftKey: true });
+    expectEditorValue(editor, '正文尾');
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '删除 产品图' }));
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expectEditorValue(editor, '正文尾');
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
+    expect(editor.querySelectorAll('[data-inline-reference]')).toHaveLength(0);
+    expectEditorValue(editor, '正文尾');
+    expect(onDocumentChange).toHaveBeenLastCalledWith({
+      version: 1,
+      blocks: [{ type: 'text', text: '正文尾' }],
+    });
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true, shiftKey: true });
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expect(editor.querySelectorAll('[data-inline-reference]')).toHaveLength(0);
+    expectEditorValue(editor, '正文尾');
+
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
+    expectEditorValue(editor, '正文');
+    expect(editor.querySelectorAll('[data-inline-reference]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
   });
 
   it('紧贴的同名引用从开头 Delete 只删除第一处', () => {
@@ -1355,17 +1478,18 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    editor.focus();
-    editor.setSelectionRange(0, 0);
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
+    const firstMarker = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, firstMarker, firstMarker + 1);
 
     fireEvent.keyDown(editor, { key: 'Delete' });
 
-    expect(editor).toHaveValue('产品图');
+    expectEditorVisibleValue(editor, '产品图产品图');
     expect(screen.getByRole('button', { name: '删除 产品图' })).toBeInTheDocument();
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
       blocks: [
+        { type: 'text', text: '产品图产品图' },
         expect.objectContaining({
           type: 'mention',
           mentionId: 'mention-adjacent-second',
@@ -1386,9 +1510,9 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(0, 0);
+    setEditorSelection(editor, 0, 0);
 
     fireEvent.compositionStart(editor);
     fireEvent.change(editor, { target: { value: 'zhong尾部', selectionStart: 5 } });
@@ -1400,10 +1524,10 @@ describe('ResourceMentionEditor', () => {
       version: 1,
       blocks: [{ type: 'text', text: '中文尾部' }],
     });
-    editor.setSelectionRange(2, 2);
+    setEditorSelection(editor, 2, 2);
     await user.paste('粘贴');
 
-    expect(editor).toHaveValue('中文粘贴尾部');
+    expectEditorValue(editor, '中文粘贴尾部');
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
       blocks: [{ type: 'text', text: '中文粘贴尾部' }],
@@ -1472,7 +1596,7 @@ describe('ResourceMentionEditor', () => {
     await user.type(nameInput, '萧炎');
     await user.click(screen.getByRole('button', { name: '保存名称' }));
     const document = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
-    expect(document.blocks[0]).toMatchObject({
+    expect(document.blocks.find((block) => block.type === 'mention')).toMatchObject({
       type: 'mention',
       entityName: '萧炎',
     });
@@ -1492,7 +1616,7 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox') as HTMLTextAreaElement;
     editor.focus();
-    editor.setSelectionRange(1, 1);
+    setEditorSelection(editor, 1, 1);
     fireEvent.select(editor);
     expect(screen.getByRole('listbox')).toBeInTheDocument();
     await user.keyboard('{Escape}');
@@ -1513,7 +1637,7 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox') as HTMLTextAreaElement;
     editor.focus();
-    editor.setSelectionRange(1, 1);
+    setEditorSelection(editor, 1, 1);
     fireEvent.select(editor);
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     const option = screen.getByRole('option', { name: /产品图/ });
@@ -1535,9 +1659,9 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(editor.value.length, editor.value.length);
+    setEditorSelection(editor, editorValue(editor).length, editorValue(editor).length);
     const root = editor.closest('.resource-mention-editor');
     expect(root).not.toBeNull();
 
@@ -1556,12 +1680,13 @@ describe('ResourceMentionEditor', () => {
     expect(onDocumentChange).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expect(editor).toHaveValue('海报 产品图');
+    expectEditorValue(currentPromptEditor(), `海报 ${INLINE_REFERENCE}`);
     expect(screen.getByRole('article')).toBeInTheDocument();
     expect(onDocumentChange.mock.lastCall?.[0].blocks[1]).toMatchObject({
       type: 'mention',
       assetId: imageAsset.id,
       assetVersion: 3,
+      inline: true,
     });
   });
 
@@ -1583,13 +1708,14 @@ describe('ResourceMentionEditor', () => {
     const insertedDocument = onDocumentChange.mock.lastCall?.[0] as PromptDocument;
     const insertedMention = insertedDocument.blocks[0];
     expect(insertedMention.type).toBe('mention');
+    expect(insertedMention).toHaveProperty('inline', true);
 
-    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true });
-    expect(editor).toHaveValue('@');
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    fireEvent.keyDown(currentPromptEditor(), { key: 'z', ctrlKey: true });
+    expectEditorValue(currentPromptEditor(), '@');
+    expect(screen.getByRole('article')).toBeInTheDocument();
 
-    fireEvent.keyDown(editor, { key: 'y', ctrlKey: true });
-    expect(editor).toHaveValue('产品图');
+    fireEvent.keyDown(currentPromptEditor(), { key: 'y', ctrlKey: true });
+    expectEditorValue(currentPromptEditor(), INLINE_REFERENCE);
     expect(screen.getByRole('article')).toBeInTheDocument();
     expect(onDocumentChange.mock.lastCall?.[0].blocks[0]).toEqual(insertedMention);
   });
@@ -1644,14 +1770,15 @@ describe('ResourceMentionEditor', () => {
       />,
     );
 
-    const editor = screen.getByRole('textbox') as HTMLTextAreaElement;
-    editor.focus();
-    editor.setSelectionRange(0, editor.value.length);
-    fireEvent.select(editor);
+    const editor = screen.getByRole('textbox') as PromptEditorElement;
+    const marker = editorValue(editor).indexOf(INLINE_REFERENCE);
+    setEditorSelection(editor, marker, marker + 1);
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
 
-    const mention = onDocumentChange.mock.lastCall?.[0].blocks[0];
+    const mention = onDocumentChange.mock.lastCall?.[0].blocks.find(
+      (block: PromptDocument['blocks'][number]) => block.type === 'mention',
+    );
     expect(mention).toMatchObject({
       type: 'mention',
       mentionId: 'mention-missing',
@@ -1662,7 +1789,9 @@ describe('ResourceMentionEditor', () => {
     });
     expect(mention).not.toHaveProperty('placeholder');
     expect(mention).not.toHaveProperty('placeholderReason');
-    expect(screen.getByRole('article')).not.toHaveClass('is-missing');
+    expect(
+      screen.getAllByRole('article').some((article) => !article.classList.contains('is-missing')),
+    ).toBe(true);
   });
 
   it('marks archived and imported unavailable mentions as non-executable placeholders', () => {
@@ -1740,14 +1869,14 @@ describe('ResourceMentionEditor', () => {
 
     await user.type(editor, '@采访');
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
-    expect(editor).toHaveValue('@采访');
+    expectEditorValue(editor, '@采访');
     expect(screen.getByRole('option', { name: /资料文档/ })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.clear(editor);
     await user.type(editor, '@广告');
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
-    expect(editor).toHaveValue('@广告');
+    expectEditorValue(editor, '@广告');
     expect(screen.getByRole('option', { name: /产品视频/ })).toBeInTheDocument();
   });
 
@@ -1784,7 +1913,7 @@ describe('ResourceMentionEditor', () => {
 
     await user.click(searchbox);
     await user.type(searchbox, '采访');
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
     expect(searchbox).toHaveValue('采访');
     expect(within(listbox).getByRole('option', { name: /资料文档/ })).toBeInTheDocument();
     expect(within(listbox).queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
@@ -1795,13 +1924,13 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(listbox).getByRole('option', { name: /产品视频/ })).toBeInTheDocument();
     expect(within(listbox).queryByRole('option', { name: /产品图/ })).not.toBeInTheDocument();
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
 
     await user.click(screen.getByRole('button', { name: '全部' }));
     await user.type(searchbox, '不存在的资源');
     expect(within(listbox).queryByRole('option')).not.toBeInTheDocument();
     expect(within(listbox).getByText(/没有.*资源/)).toBeInTheDocument();
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
   });
 
   it('portal 内交互不触发外点关闭，外部点击与 Escape 会关闭选择器', async () => {
@@ -1825,14 +1954,14 @@ describe('ResourceMentionEditor', () => {
 
     await user.click(screen.getByRole('button', { name: '编辑器外部' }));
     expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
 
     await user.clear(editor);
     await user.type(editor, '@');
     screen.getByRole('searchbox', { name: '搜索资源' }).focus();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
   });
 
   it('搜索框按 Enter 选择当前结果且不把搜索词写进提示词', async () => {
@@ -1852,10 +1981,10 @@ describe('ResourceMentionEditor', () => {
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     const searchbox = screen.getByRole('searchbox', { name: '搜索资源' });
     await user.type(searchbox, '产品');
-    expect(editor).toHaveValue('生成 @');
+    expectEditorValue(editor, '生成 @');
     await user.keyboard('{Enter}');
 
-    expect(editor).toHaveValue('生成 产品图');
+    expectEditorValue(currentPromptEditor(), `生成 ${INLINE_REFERENCE}`);
     expect(screen.queryByRole('listbox', { name: '选择资源' })).not.toBeInTheDocument();
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
       { type: 'text', text: '生成 ' },
@@ -1863,6 +1992,7 @@ describe('ResourceMentionEditor', () => {
         type: 'mention',
         assetId: imageAsset.id,
         label: imageAsset.name,
+        inline: true,
       }),
     ]);
   });
@@ -1888,7 +2018,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
     fireEvent.keyDown(searchbox, { key: 'Enter', keyCode: 229, isComposing: true });
 
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
     expect(onDocumentChange).toHaveBeenLastCalledWith({
@@ -1918,7 +2048,7 @@ describe('ResourceMentionEditor', () => {
     expect(within(dialog).getByRole('button', { name: '保存名称' })).toBeDisabled();
     await user.type(name, '主角');
     await user.click(within(dialog).getByRole('button', { name: '保存名称' }));
-    expect(onConnectedResourceRename).toHaveBeenCalledWith(imageAsset.id, '主角');
+    expect(onConnectedResourceRename).toHaveBeenCalledWith(imageAsset.id, '主角', undefined);
     expect(onDocumentChange).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('原提示词');
     view.rerender(
@@ -1928,15 +2058,8 @@ describe('ResourceMentionEditor', () => {
       />,
     );
     expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
-    await user.type(screen.getByRole('textbox', { name: '提示词' }), '主角');
-    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toContainEqual(
-      expect.objectContaining({
-        type: 'mention',
-        assetId: imageAsset.id,
-        entityName: '主角',
-        label: imageAsset.name,
-      }),
-    );
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expectEditorValue(currentPromptEditor(), '原提示词');
     expect(imageAsset.name).toBe('产品图');
   });
 
@@ -1967,7 +2090,7 @@ describe('ResourceMentionEditor', () => {
     expect(name).toHaveValue('主角');
   });
 
-  it('鼠标选中文字后使用同一资源选择器，并把选中文字保留为引用名', async () => {
+  it('鼠标选中文字后保留普通正文，在选区后插入独立资源引用', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const value = '让主角站在窗边，主角回头';
@@ -1980,9 +2103,9 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(1, 3);
+    setEditorSelection(editor, 1, 3);
     fireEvent.mouseUp(editor);
     await waitFor(() => expect(screen.getByRole('listbox', { name: '选择资源' })).toBeVisible());
     expect(screen.getByRole('searchbox', { name: '搜索资源' })).toHaveValue('');
@@ -1994,33 +2117,35 @@ describe('ResourceMentionEditor', () => {
     await user.click(screen.getByRole('button', { name: '图片' }));
     await user.type(screen.getByRole('searchbox', { name: '搜索资源' }), '产品');
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expect(editor).toHaveValue(value);
+    expectEditorValue(currentPromptEditor(), `让主角${INLINE_REFERENCE}站在窗边，主角回头`);
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
       blocks: [
-        { type: 'text', text: '让' },
+        { type: 'text', text: '让主角' },
         expect.objectContaining({
           type: 'mention',
           assetId: imageAsset.id,
           label: imageAsset.name,
-          entityName: '主角',
+          entityName: '产品图',
           assetVersion: 3,
+          inline: true,
         }),
         { type: 'text', text: '站在窗边，主角回头' },
       ],
     });
-    expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '预览并命名 产品图' })).toBeVisible();
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
-    await user.click(editor);
+    await user.click(currentPromptEditor());
     await user.keyboard('{Control>}z{/Control}');
-    expect(editor).toHaveValue(value);
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expectEditorValue(currentPromptEditor(), value);
+    expect(screen.getByRole('article')).toBeInTheDocument();
     await user.keyboard('{Control>}y{/Control}');
-    expect(screen.getByRole('button', { name: '预览并命名 主角' })).toBeVisible();
+    expectEditorValue(currentPromptEditor(), `让主角${INLINE_REFERENCE}站在窗边，主角回头`);
+    expect(screen.getByRole('button', { name: '预览并命名 产品图' })).toBeVisible();
   });
 
   it.each([imageAsset, audioAsset, videoAsset])(
-    '选中文字绑定 $mediaType 后反复从资源条解绑仍完整保留原文',
+    '选中文字插入 $mediaType 原子后反复从资源条解绑仍完整保留原文',
     async (asset) => {
       const user = userEvent.setup();
       const onDocumentChange = vi.fn();
@@ -2035,32 +2160,35 @@ describe('ResourceMentionEditor', () => {
           ariaLabel="提示词"
         />,
       );
-      const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        editor.focus();
-        editor.setSelectionRange(0, name.length + 4);
-        fireEvent.mouseUp(editor);
-        fireEvent.click(editor);
+        const current = currentPromptEditor();
+        setEditorSelection(current, 0);
+        fireEvent.mouseDown(current);
+        setEditorSelection(current, 0, name.length + 4);
+        fireEvent.mouseUp(current);
         await user.click(screen.getByRole('tab', { name: '项目资源' }));
         await user.click(screen.getByRole('option', { name: new RegExp(asset.name) }));
-        expect(editor).toHaveValue(value);
+        expectEditorValue(
+          currentPromptEditor(),
+          `${value.slice(0, name.length + 4)}${INLINE_REFERENCE}${value.slice(name.length + 4)}`,
+        );
         expect(onDocumentChange).toHaveBeenLastCalledWith({
           version: 1,
           blocks: [
-            { type: 'text', text: '  ' },
+            { type: 'text', text: '  ' + name + '  ' },
             expect.objectContaining({
               type: 'mention',
               assetId: asset.id,
               mediaType: asset.mediaType,
-              entityName: name,
+              entityName: asset.name,
+              inline: true,
             }),
-            { type: 'text', text: '  走过窗边；' + name + '回头。\n' },
+            { type: 'text', text: '走过窗边；' + name + '回头。\n' },
           ],
         });
 
-        await user.click(screen.getByRole('button', { name: '删除 ' + name }));
-        expect(editor).toHaveValue(value);
+        await user.click(screen.getByRole('button', { name: '删除 ' + asset.name }));
+        expectEditorVisibleValue(currentPromptEditor(), value);
         expect(onDocumentChange).toHaveBeenLastCalledWith({
           version: 1,
           blocks: [{ type: 'text', text: value }],
@@ -2084,16 +2212,19 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(0, 2);
+    setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
     await user.click(screen.getByRole('searchbox', { name: '搜索资源' }));
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
-    expect(editor).toHaveValue('主角回头');
+    expectEditorValue(editor, '主角回头');
     expect(onDocumentChange).not.toHaveBeenCalled();
-    fireEvent.click(editor);
+    setEditorSelection(editor, 0);
+    fireEvent.mouseDown(editor);
+    setEditorSelection(editor, 0, 2);
+    fireEvent.mouseUp(editor);
     await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
   });
 
@@ -2109,17 +2240,17 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(0, 6);
+    setEditorSelection(editor, 0, 6);
     fireEvent.mouseUp(editor);
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expect(editor).toHaveValue('  主角  回头');
+    expectEditorValue(currentPromptEditor(), `  主角  ${INLINE_REFERENCE}回头`);
     expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([
-      { type: 'text', text: '  ' },
-      expect.objectContaining({ entityName: '主角' }),
-      { type: 'text', text: '  回头' },
+      { type: 'text', text: '  主角  ' },
+      expect.objectContaining({ entityName: imageAsset.name, inline: true }),
+      { type: 'text', text: '回头' },
     ]);
     view.rerender(
       <ResourceMentionEditor
@@ -2129,14 +2260,15 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    editor.focus();
-    editor.setSelectionRange(0, 161);
-    fireEvent.click(editor);
+    const longEditor = currentPromptEditor();
+    fireEvent.mouseDown(longEditor);
+    setEditorSelection(longEditor, 0, 161);
+    fireEvent.mouseUp(longEditor);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('引用名称不能超过 160 个字符');
   });
 
-  it('选中文字与另一资源别名冲突时不自动加后缀或错绑', async () => {
+  it('选中文字与另一资源别名冲突时仍保留普通文字并插入独立原子', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     render(
@@ -2149,20 +2281,23 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(0, 2);
+    setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expect(editor).toHaveValue('主角回头');
-    expect(onDocumentChange).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('这个名字已被其他资源占用');
-    await user.click(screen.getByRole('option', { name: /声音样本/ }));
-    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks[0]).toMatchObject({
-      assetId: audioAsset.id,
-      entityName: '主角',
-    });
+    expectEditorValue(currentPromptEditor(), `主角${INLINE_REFERENCE}回头`);
+    expect(onDocumentChange).toHaveBeenCalledOnce();
+    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([
+      { type: 'text', text: '主角' },
+      expect.objectContaining({
+        type: 'mention',
+        assetId: imageAsset.id,
+        inline: true,
+      }),
+      { type: 'text', text: '回头' },
+    ]);
   });
 
   it('纯空白或只读编辑器不创建选字引用，父文档更新会关闭旧选区', async () => {
@@ -2178,10 +2313,10 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
     editor.focus();
-    editor.setSelectionRange(0, 2);
+    setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
-    editor.setSelectionRange(2, 4);
+    setEditorSelection(editor, 2, 4);
     fireEvent.mouseUp(editor);
     await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
     view.rerender(
@@ -2195,8 +2330,8 @@ describe('ResourceMentionEditor', () => {
       />,
     );
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
-    expect(editor).toHaveValue('新的提示词');
-    editor.setSelectionRange(0, 2);
+    expectEditorValue(editor, '新的提示词');
+    setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(onDocumentChange).not.toHaveBeenCalled();
@@ -2224,13 +2359,13 @@ describe('ResourceMentionEditor', () => {
         ariaLabel="提示词"
       />,
     );
-    const editor = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
+    const editor = screen.getByRole('textbox', { name: '提示词' }) as PromptEditorElement;
     editor.focus();
-    editor.setSelectionRange(1, 3);
+    setEditorSelection(editor, 1, 3);
     fireEvent.mouseUp(editor);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     fireEvent.compositionStart(editor);
-    editor.setSelectionRange(2, 4);
+    setEditorSelection(editor, 2, 4);
     fireEvent.mouseUp(editor);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     fireEvent.compositionEnd(editor);
@@ -2270,19 +2405,19 @@ describe('ResourceMentionEditor', () => {
     const editor = screen.getByRole('textbox', { name: '提示词' });
     await user.type(editor, '第一行\n第二行 @');
     const anchor = document.querySelector('[data-resource-picker-anchor]');
-    expect(anchor).toHaveTextContent('@');
+    expect(anchor).toBeInTheDocument();
     expect(anchor).toHaveAttribute('data-offset', String('第一行\n第二行 '.length));
     expect(
       editor.closest('.resource-mention-composer')?.querySelector('.resource-mention-highlight'),
-    ).toHaveTextContent('第一行 第二行 @');
+    ).toBeNull();
     const listbox = screen.getByRole('listbox', { name: '选择资源' });
     expect(listbox.closest('.ant-popover')).toHaveClass('resource-mention-picker-popover');
     expect(listbox.closest('[aria-hidden="true"]')).toBeNull();
     expect(editor.closest('.resource-mention-composer')).not.toContainElement(listbox);
-    expect(editor).toHaveValue('第一行\n第二行 @');
+    expectEditorValue(editor, '第一行\n第二行 @');
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expect(editor).toHaveValue('第一行\n第二行 产品图');
+    expectEditorValue(currentPromptEditor(), `第一行\n第二行 ${INLINE_REFERENCE}`);
   });
 
   it('Modal 内的选择器归属最近 Dialog，第一次 Escape 只关选择器并恢复编辑焦点', async () => {
@@ -2312,7 +2447,7 @@ describe('ResourceMentionEditor', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(onEscapeKeyDown).not.toHaveBeenCalled();
     expect(editor).toHaveFocus();
-    expect(editor).toHaveValue('@');
+    expectEditorValue(editor, '@');
     fireEvent.keyDown(editor, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27 });
     expect(onEscapeKeyDown).toHaveBeenCalledOnce();
     expect(onEscapeKeyDown.mock.calls[0]?.[0].defaultPrevented).toBe(false);
@@ -2359,7 +2494,7 @@ describe('ResourceMentionEditor', () => {
     );
     const input = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
     input.focus();
-    input.setSelectionRange(2, 6);
+    setEditorSelection(input, 2, 6);
     fireEvent.select(input);
     expect(fireEvent.keyDown(input, modifiers)).toBe(true);
     expect(input.selectionStart).toBe(2);
@@ -2378,23 +2513,19 @@ describe('ResourceMentionEditor', () => {
       />,
     );
     const input = screen.getByRole('textbox', { name: '提示词' }) as HTMLTextAreaElement;
-    const highlight = input
-      .closest('.resource-mention-composer')!
-      .querySelector('.resource-mention-highlight')!;
+    expect(
+      input.closest('.resource-mention-composer')?.querySelector('.resource-mention-highlight'),
+    ).toBeNull();
     await user.type(input, 'abc');
     await user.keyboard('{Control>}z{/Control}');
-    await waitFor(() => expect(input).toHaveValue('ab'));
-    expect(highlight.textContent).toBe(input.value);
+    await waitFor(() => expectEditorValue(input, 'ab'));
     await user.keyboard('{Control>}y{/Control}');
-    await waitFor(() => expect(input).toHaveValue('abc'));
-    expect(highlight.textContent).toBe(input.value);
-    input.setSelectionRange(1, 3);
-    fireEvent.select(input);
+    await waitFor(() => expectEditorValue(input, 'abc'));
+    setEditorSelection(input, 1, 3);
     await user.keyboard('Z');
-    expect(input).toHaveValue('aZ');
+    expectEditorValue(input, 'aZ');
     await user.keyboard('{Control>}z{/Control}');
-    await waitFor(() => expect(input).toHaveValue('abc'));
-    expect(highlight.textContent).toBe(input.value);
+    await waitFor(() => expectEditorValue(input, 'abc'));
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([{ type: 'text', text: 'abc' }]);
   });
 });

@@ -39,6 +39,19 @@ function reference(
   };
 }
 
+/** 构造新版独立资料；attached:true 本身声明保存的资料池顺序。 */
+function attachedReference(
+  assetId: string,
+  assetVersion?: number,
+  mediaType: MediaType = 'image',
+): NodeResourceRef {
+  return {
+    ...reference(assetId, assetVersion, mediaType),
+    id: `reference:${assetId}-${assetVersion ?? 'latest'}`,
+    attached: true,
+  };
+}
+
 /** 生成可辨认版本的内存图片或占位媒体地址；地址不会被下载。 */
 function contentUrl(assetId: string, assetVersion: number | undefined, mediaType: MediaType) {
   return mediaType === 'image'
@@ -242,6 +255,25 @@ describe('图片参考资源显式顺序', () => {
     expect(snapshot).toEqual(before);
   });
 
+  it('attached 资料池按保存顺序排列重复内联提及，并在图片输入中按冻结身份去重', async () => {
+    const snapshot = snapshotFor('image');
+    addMentions(snapshot, [
+      { assetId: 'alpha', assetVersion: 1 },
+      { assetId: 'beta', assetVersion: 1 },
+      { assetId: 'beta', assetVersion: 1 },
+    ]);
+    snapshot.nodes[0]!.data.resourceRefs = [
+      attachedReference('beta', 1),
+      attachedReference('alpha', 1),
+    ];
+    const { files, record } = await captureImages(snapshot);
+    expect(await Promise.all(files.map((file) => file.text()))).toEqual(['beta@1', 'alpha@1']);
+    expect(record.resources.map(({ assetId, assetVersion }) => [assetId, assetVersion])).toEqual([
+      ['beta', 1],
+      ['alpha', 1],
+    ]);
+  });
+
   it.each([
     { label: '未设置', refs: undefined },
     { label: '空列表', refs: [] },
@@ -403,6 +435,31 @@ describe('视频参考资源显式顺序', () => {
       ]);
       expect(body.prompt).toBe('Use alpha@1 / alpha@2 / alpha@2 / ');
       expect(snapshot).toEqual(before);
+    },
+  );
+
+  it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
+    '%s 的 attached 资料池保持重复内联提及的保存顺序并按冻结身份去重',
+    async (contract) => {
+      const snapshot = snapshotFor('video');
+      addMentions(snapshot, [
+        { assetId: 'alpha', assetVersion: 1 },
+        { assetId: 'beta', assetVersion: 1 },
+        { assetId: 'beta', assetVersion: 1 },
+      ]);
+      snapshot.nodes[0]!.data.resourceRefs = [
+        attachedReference('beta', 1),
+        attachedReference('alpha', 1),
+      ];
+      const { body, record } = await captureVideo(snapshot, contract);
+      expect(body.reference_images).toEqual([
+        { url: contentUrl('beta', 1, 'image') },
+        { url: contentUrl('alpha', 1, 'image') },
+      ]);
+      expect(record.resources.map(({ assetId, assetVersion }) => [assetId, assetVersion])).toEqual([
+        ['beta', 1],
+        ['alpha', 1],
+      ]);
     },
   );
 

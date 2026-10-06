@@ -128,6 +128,87 @@ describe('workflow import contract', () => {
     }
   });
 
+  it('工作流导出、解析和导入保留 inline 提及及 attached 资料标记', async () => {
+    const store = new MemoryAssetStore();
+    const asset = await store.create({
+      projectId: 'project-source',
+      name: 'inline-reference.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('reference'),
+    });
+    const base = canvasWithMention();
+    const sourceNode = base.nodes[0]!;
+    const canvas: CanvasDocument = {
+      ...base,
+      nodes: [
+        {
+          ...sourceNode,
+          data: {
+            ...sourceNode.data,
+            promptDocument: {
+              version: 1,
+              blocks: [
+                { type: 'text', text: '请参考 ' },
+                {
+                  type: 'mention',
+                  mentionId: 'inline-reference',
+                  assetId: asset.id,
+                  assetVersion: 1,
+                  label: asset.name,
+                  mediaType: 'image',
+                  inline: true,
+                },
+              ],
+            },
+            resourceRefs: [
+              {
+                id: 'reference:inline-reference',
+                assetId: asset.id,
+                assetVersion: 1,
+                mediaType: 'image',
+                name: asset.name,
+                attached: true,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const exported = createWorkflowExport({
+      project: {
+        id: 'project-source',
+        name: '导入测试',
+        createdAt: '2026-09-04T00:00:00.000Z',
+        updatedAt: '2026-09-04T00:00:00.000Z',
+      },
+      canvas,
+      runs: [],
+      exportedAt: '2026-09-04T00:00:00.000Z',
+    });
+    const parsed = parseWorkflowExport(JSON.parse(JSON.stringify(exported)));
+    expect(parsed.canvas.nodes[0]?.data.promptDocument?.blocks[1]).toMatchObject({
+      mentionId: 'inline-reference',
+      inline: true,
+    });
+    expect(parsed.canvas.nodes[0]?.data.resourceRefs).toEqual([
+      expect.objectContaining({ assetId: asset.id, assetVersion: 1, attached: true }),
+    ]);
+
+    const imported = await importWorkflowExport(parsed, {
+      assetStore: store,
+      projectId: 'project-source',
+    });
+    expect(imported.issues).toEqual([]);
+    expect(imported.canvas.nodes[0]?.data.promptDocument?.blocks[1]).toMatchObject({
+      mentionId: 'inline-reference',
+      inline: true,
+    });
+    expect(imported.canvas.nodes[0]?.data.resourceRefs).toEqual([
+      expect.objectContaining({ assetId: asset.id, assetVersion: 1, attached: true }),
+    ]);
+  });
+
   it('retains identity and binding when an imported mention is unavailable', async () => {
     const result = await importWorkflowExport(workflowForCanvas(canvasWithMention()), {
       assetStore: new MemoryAssetStore(),

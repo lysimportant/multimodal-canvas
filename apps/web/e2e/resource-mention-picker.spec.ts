@@ -644,54 +644,52 @@ function expectResourceRestored(
   ).toEqual([primary.id, retained.id]);
 }
 
-/** 读取提示词中当前光标前一个字符的实际矩形，用于验证 picker 贴近 @。 */
+/** 读取普通正文，缩略图的内部预览内容不参与提示词。 */
+async function readPromptText(input: Locator): Promise<string> {
+  return input.evaluate((element) =>
+    element instanceof HTMLTextAreaElement
+      ? element.value
+      : Array.from(element.childNodes)
+          .map((node) =>
+            node instanceof HTMLElement && node.hasAttribute('data-inline-reference')
+              ? ''
+              : (node.textContent ?? ''),
+          )
+          .join(''),
+  );
+}
+
+/** 读取原生富文本光标前一个字符的实际矩形，用于验证 picker 贴近 @。 */
 async function caretCharacterRect(textarea: Locator) {
   return textarea.evaluate((element) => {
-    const input = element as HTMLTextAreaElement;
-    const highlight =
-      input
-        .closest('.resource-mention-input-wrap')
-        ?.querySelector<HTMLElement>('.resource-mention-highlight') ??
-      input.parentElement?.querySelector<HTMLElement>('.resource-mention-highlight');
-    if (!highlight) throw new Error('缺少提示词高亮层');
-    const offset = Math.max(0, (input.selectionStart ?? 1) - 1);
-    const walker = document.createTreeWalker(highlight, NodeFilter.SHOW_TEXT);
-    let remaining = offset;
-    let node = walker.nextNode();
-    while (node) {
-      const length = node.textContent?.length ?? 0;
-      if (remaining < length) {
-        const range = document.createRange();
-        range.setStart(node, remaining);
-        range.setEnd(node, Math.min(length, remaining + 1));
-        const rect = range.getBoundingClientRect();
-        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-      }
-      remaining -= length;
-      node = walker.nextNode();
-    }
-    const rect = input.getBoundingClientRect();
-    return { left: rect.left, right: rect.left, top: rect.top, bottom: rect.top };
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !element.contains(selection.anchorNode))
+      throw new Error('提示词原生选区已丢失');
+    const range = selection.getRangeAt(0).cloneRange();
+    if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0)
+      range.setStart(range.startContainer, range.startOffset - 1);
+    const rect = range.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
   });
 }
 
-/** 将原生 textarea 光标放进指定次序的资源名称。 */
-async function placeCaretInside(textarea: Locator, name: string, occurrence: number) {
-  await textarea.evaluate(
+/** 将光标放在独立引用前后，普通名称文字不参与原子删除。 */
+async function placeReferenceCaret(input: Locator, name: string, after: boolean) {
+  const position = await input.evaluate(
     (element, target) => {
-      const input = element as HTMLTextAreaElement;
-      let index = -1;
-      let from = 0;
-      for (let current = 0; current <= target.occurrence; current += 1) {
-        index = input.value.indexOf(target.name, from);
-        if (index < 0) throw new Error(`找不到第 ${target.occurrence + 1} 处 ${target.name}`);
-        from = index + target.name.length;
+      let offset = 0;
+      for (const child of element.childNodes) {
+        if (child instanceof HTMLElement && child.hasAttribute('data-inline-reference')) {
+          if (child.getAttribute('aria-label') === `引用 ${target.name}`)
+            return offset + (target.after ? 1 : 0);
+          offset += 1;
+        } else offset += child.textContent?.length ?? 0;
       }
-      input.focus();
-      input.setSelectionRange(index + 1, index + 1);
+      throw new Error(`找不到引用 ${target.name}`);
     },
-    { name, occurrence },
+    { name, after },
   );
+  await selectReferenceText(input, position);
 }
 
 /** 比较节点外框，确保 portal 内容不会反向撑大 React Flow 节点。 */
@@ -774,7 +772,7 @@ for (const mediaType of ['text', 'image', 'audio'] as const) {
     await page.goto(`/projects/${project.id}`);
     let { editor, scope } = await openResourceRemovalEditor(page, targetId);
     const prompt = scope.getByRole('textbox', { name: '提示词', exact: true });
-    const originalPrompt = await prompt.inputValue();
+    const originalPrompt = await readPromptText(prompt);
     await expect(
       scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
     ).toBeVisible();
@@ -784,7 +782,7 @@ for (const mediaType of ['text', 'image', 'audio'] as const) {
 
     const removedRevision = fixture.canvas().revision;
     await scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }).click();
-    await expect(prompt).toHaveValue(originalPrompt);
+    await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
     await expect(
       scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
     ).toHaveCount(0);
@@ -798,7 +796,7 @@ for (const mediaType of ['text', 'image', 'audio'] as const) {
     if (mediaType === 'text') {
       const restoredRevision = fixture.canvas().revision;
       await page.getByRole('button', { name: '撤销', exact: true }).click();
-      await expect(prompt).toHaveValue(originalPrompt);
+      await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
       await expect(
         scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
       ).toBeVisible();
@@ -808,7 +806,7 @@ for (const mediaType of ['text', 'image', 'audio'] as const) {
 
       const redoneRevision = fixture.canvas().revision;
       await page.getByRole('button', { name: '重做', exact: true }).click();
-      await expect(prompt).toHaveValue(originalPrompt);
+      await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
       await expect(
         scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
       ).toHaveCount(0);
@@ -819,9 +817,9 @@ for (const mediaType of ['text', 'image', 'audio'] as const) {
 
     await page.reload();
     ({ editor, scope } = await openResourceRemovalEditor(page, targetId));
-    await expect(scope.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
-      originalPrompt,
-    );
+    await expect
+      .poll(() => readPromptText(scope.getByRole('textbox', { name: '提示词', exact: true })))
+      .toBe(originalPrompt);
     await expect(
       scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
     ).toHaveCount(0);
@@ -844,11 +842,11 @@ test('PC video 完整编辑器解绑资源引用、连线和冻结资源且刷�
   await page.goto(`/projects/${project.id}`);
   let { scope } = await openResourceRemovalEditor(page, targetId, true);
   const prompt = scope.getByRole('textbox', { name: '提示词', exact: true });
-  const originalPrompt = await prompt.inputValue();
+  const originalPrompt = await readPromptText(prompt);
 
   const removedRevision = fixture.canvas().revision;
   await scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }).click();
-  await expect(prompt).toHaveValue(originalPrompt);
+  await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
   await expect(
     scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
   ).toHaveCount(0);
@@ -863,9 +861,9 @@ test('PC video 完整编辑器解绑资源引用、连线和冻结资源且刷�
 
   await page.reload();
   ({ scope } = await openResourceRemovalEditor(page, targetId, true));
-  await expect(scope.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
-    originalPrompt,
-  );
+  await expect
+    .poll(() => readPromptText(scope.getByRole('textbox', { name: '提示词', exact: true })))
+    .toBe(originalPrompt);
   await expect(
     scope.getByRole('button', { name: `删除 ${primary.name}`, exact: true }),
   ).toHaveCount(0);
@@ -887,7 +885,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   const prompt = editor.getByRole('textbox', { name: '提示词' });
   const nodeBefore = await node.boundingBox();
   expect(nodeBefore).not.toBeNull();
-  const initialPrompt = await prompt.inputValue();
+  const initialPrompt = await readPromptText(prompt);
 
   await prompt.press('End');
   await prompt.type(' @');
@@ -952,7 +950,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   expect(resultsBox!.y).toBeGreaterThanOrEqual(filtersBox!.y + filtersBox!.height - 1);
 
   await searchbox.fill('采访');
-  await expect(prompt).toHaveValue(`${initialPrompt} @`);
+  await expect.poll(() => readPromptText(prompt)).toBe(`${initialPrompt} @`);
   await expect(listbox.getByRole('option', { name: /采访脚本/ })).toBeVisible();
   await expect(listbox.getByRole('option', { name: /产品图/ })).toHaveCount(0);
   await page.screenshot({
@@ -975,7 +973,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   );
   await expect(listbox.getByRole('option', { name: /产品视频/ })).toBeVisible();
   await expect(listbox.getByRole('option', { name: /产品图/ })).toHaveCount(0);
-  await expect(prompt).toHaveValue(`${initialPrompt} @`);
+  await expect.poll(() => readPromptText(prompt)).toBe(`${initialPrompt} @`);
 
   await picker.getByRole('button', { name: '全部', exact: true }).click();
   await expect(listbox.getByRole('option')).toHaveCount(10);
@@ -1006,21 +1004,22 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   await searchbox.press('ArrowDown');
   await searchbox.press('Enter');
   await expect(picker).toHaveCount(0);
-  await expect(prompt).toHaveValue(`${initialPrompt} 声音样本`);
+  await expect.poll(() => readPromptText(prompt)).toBe(`${initialPrompt} `);
   await expect(editor.getByRole('button', { name: '删除 声音样本' })).toBeVisible();
 
-  await placeCaretInside(prompt, '产品图', 0);
+  await placeReferenceCaret(prompt, '产品图', true);
   await prompt.press('Backspace');
-  expect(occurrenceCount(await prompt.inputValue(), '产品图')).toBe(1);
+  await expect(prompt.locator('[data-inline-reference][aria-label="引用 产品图"]')).toHaveCount(1);
   await expect(editor.getByRole('button', { name: '删除 产品图' })).toBeVisible();
 
-  await placeCaretInside(prompt, '产品图', 0);
+  await placeReferenceCaret(prompt, '产品图', false);
   await prompt.press('Delete');
-  expect(occurrenceCount(await prompt.inputValue(), '产品图')).toBe(0);
-  await expect(editor.getByRole('button', { name: '删除 产品图' })).toHaveCount(0);
+  await expect(prompt.locator('[data-inline-reference][aria-label="引用 产品图"]')).toHaveCount(0);
+  await expect(editor.getByRole('button', { name: '删除 产品图' })).toBeVisible();
 
   await prompt.press('Control+z');
-  expect(occurrenceCount(await prompt.inputValue(), '产品图')).toBe(1);
+  await expect(prompt.locator('[data-inline-reference][aria-label="引用 产品图"]')).toHaveCount(1);
+  expect(occurrenceCount(await readPromptText(prompt), '产品图')).toBe(2);
   await expect(editor.getByRole('button', { name: '删除 产品图' })).toBeVisible();
   const nodeAfter = await node.boundingBox();
   expect(nodeAfter).not.toBeNull();
@@ -1044,7 +1043,7 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   await expect(dialog).toBeVisible();
   const prompt = dialog.getByRole('textbox', { name: '提示词' });
   await expect(prompt).toBeFocused();
-  const original = await prompt.inputValue();
+  const original = await readPromptText(prompt);
   await prompt.press('End');
   await prompt.type(' @');
 
@@ -1063,7 +1062,7 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   await expect(picker.getByRole('navigation', { name: '项目资源分页' })).toHaveCount(0);
   await searchbox.fill('需求');
   await expect(searchbox).toBeFocused();
-  await expect(prompt).toHaveValue(`${original} @`);
+  await expect.poll(() => readPromptText(prompt)).toBe(`${original} @`);
   await expect(listbox.getByRole('option', { name: /资料文档/ })).toBeVisible();
   await expect(listbox.getByRole('option')).toHaveCount(1);
 
@@ -1099,7 +1098,7 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   await searchbox.press('Enter');
   await expect(dialog).toBeVisible();
   await expect(picker).toHaveCount(0);
-  await expect(prompt).toHaveValue(`${original} 资料文档`);
+  await expect.poll(() => readPromptText(prompt)).toBe(`${original} `);
   await expect(prompt).toBeFocused();
 
   await prompt.press('End');
@@ -1112,7 +1111,7 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
   await expect(reopenedPicker).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await expect(prompt).toBeFocused();
-  await expect(prompt).toHaveValue(`${original} 资料文档 @`);
+  await expect.poll(() => readPromptText(prompt)).toBe(`${original}  @`);
 
   const nodeAfter = await node.boundingBox();
   expect(nodeAfter).not.toBeNull();
@@ -1807,9 +1806,9 @@ test('Skill 优化预览在悬浮卡片和完整编辑器中可编辑，关闭�
     path: testInfo.outputPath('inline-skill-preview.png'),
     animations: 'disabled',
   });
-  await expect(editor.getByRole('textbox', { name: '提示词', exact: true })).not.toHaveValue(
-    /优化后/,
-  );
+  await expect
+    .poll(() => readPromptText(editor.getByRole('textbox', { name: '提示词', exact: true })))
+    .not.toMatch(/优化后/);
   await page.keyboard.press('Escape');
   await expect(configuration).toBeHidden();
   await expect(trigger).toHaveAttribute('aria-description', '优化预览待应用');
@@ -1846,9 +1845,9 @@ test('Skill 优化预览在悬浮卡片和完整编辑器中可编辑，关闭�
     animations: 'disabled',
   });
   await dialogPreview.getByRole('button', { name: '应用', exact: true }).click();
-  await expect(dialog.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
-    /完整编辑器/,
-  );
+  await expect
+    .poll(() => readPromptText(dialog.getByRole('textbox', { name: '提示词', exact: true })))
+    .toMatch(/完整编辑器/);
   await expect(dialogPreview).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: '关闭编辑器' }).click();
@@ -1866,6 +1865,7 @@ test('Skill 优化预览在悬浮卡片和完整编辑器中可编辑，关闭�
 });
 
 test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载', async ({ page, baseURL }) => {
+  test.setTimeout(60_000);
   await page.setViewportSize({ width: 1600, height: 1000 });
   const initial = initialCanvas();
   const target = initial.nodes[0]!;
@@ -1990,7 +1990,7 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
   expect(children[3]).toContain('参考资源 1：');
   expect(children[4]).toContain('参考资源 2：');
   const prompt = editor.getByRole('textbox', { name: '提示词' });
-  const originalPrompt = await prompt.inputValue();
+  const originalPrompt = await readPromptText(prompt);
   const originalDocument = fixture.canvas().nodes[0]!.data.promptDocument;
   const first = editor.getByRole('article').nth(0);
   const second = editor.getByRole('article').nth(1);
@@ -2000,7 +2000,7 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
     .poll(() => fixture.canvas().nodes[0]!.data.resourceRefs?.map((ref) => ref.assetId))
     .toEqual(['scene-image-2', 'scene-image-1']);
   expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(originalDocument);
-  await expect(prompt).toHaveValue(originalPrompt);
+  await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
   await page.screenshot({
     path: test.info().outputPath('reference-order.png'),
     animations: 'disabled',
@@ -2039,6 +2039,229 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
       (request) => request.method === 'POST' && /runs|generations/.test(request.path),
     ),
   ).toEqual([]);
+});
+
+/** 按正文字符和每个缩略图一个位置设置浏览器选区，不模拟 textarea 属性。 */
+async function selectReferenceText(input: Locator, start: number, end = start) {
+  await input.evaluate(
+    (element, selection) => {
+      element.focus();
+      if (element instanceof HTMLTextAreaElement) {
+        element.setSelectionRange(selection.start, selection.end);
+      } else {
+        const locate = (position: number): [Node, number] => {
+          let remaining = position;
+          for (const child of element.childNodes) {
+            if (child instanceof HTMLElement && child.hasAttribute('data-inline-reference')) {
+              if (remaining <= 1)
+                return [element, Array.from(element.childNodes).indexOf(child) + remaining];
+              remaining -= 1;
+            } else if (child.nodeType === Node.TEXT_NODE) {
+              const length = child.textContent?.length ?? 0;
+              if (remaining <= length) return [child, remaining];
+              remaining -= length;
+            }
+          }
+          return [element, element.childNodes.length];
+        };
+        const range = document.createRange();
+        range.setStart(...locate(selection.start));
+        range.setEnd(...locate(selection.end));
+        window.getSelection()?.removeAllRanges();
+        window.getSelection()?.addRange(range);
+      }
+      element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    },
+    { start, end },
+  );
+}
+
+for (const expanded of [false, true]) {
+  test(`PC 引用解耦：${expanded ? '完整' : '快捷'}编辑器保留正文、复用缩略图和独立资料`, async ({
+    page,
+    baseURL,
+  }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    const initial = initialCanvas();
+    const target = initial.nodes[0]!;
+    target.position = { x: 360, y: 430 };
+    target.type = 'video';
+    target.data.mediaType = 'video';
+    target.data.videoMode = 'omni_reference';
+    target.data.modelAlias = 'mock-video';
+    target.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: '让小明走进房间' }] };
+    for (const index of [1, 2]) {
+      const source = assets[index]!;
+      initial.nodes.push({
+        id: `decouple-${index}`,
+        type: 'image',
+        width: 240,
+        height: 150,
+        position: { x: 60 + (index - 1) * 700, y: 100 },
+        data: {
+          label: source.name,
+          mode: 'source',
+          mediaType: 'image',
+          assetId: source.id,
+          contentUrl: source.contentUrl,
+          mimeType: source.mimeType,
+          enabled: true,
+        },
+      });
+    }
+    const fixture = await installFixture(page, baseURL, initial);
+    await page.goto(`/projects/${project.id}`);
+    const { node, editor } = await openQuickEditor(page);
+    const before = (await node.boundingBox())!;
+    await editor.getByRole('button', { name: '添加参考资料' }).click();
+    await expect(visibleMessage(page, '当前处于添加参考资料模式')).toBeVisible();
+    for (const index of [1, 2, 1])
+      await page
+        .locator(`.react-flow__node[data-id="decouple-${index}"]`)
+        .click({ position: { x: 30, y: 50 } });
+    await page.keyboard.press('Escape');
+    await expect(editor.getByRole('article')).toHaveCount(2);
+    await expect(editor.getByRole('textbox', { name: '提示词' })).toHaveValue('让小明走进房间');
+    const scope = expanded
+      ? page.getByRole('dialog', { name: /· 编辑设置$/, exact: true })
+      : editor;
+    if (expanded) {
+      await editor.getByRole('button', { name: '打开完整编辑器' }).click();
+      await page.setViewportSize({ width: 1024, height: 1000 });
+    }
+    const input = scope.getByRole('textbox', { name: '提示词' });
+    await selectReferenceText(input, 1, 3);
+    let picker = page.locator('.resource-mention-picker');
+    await picker.getByRole('option', { name: /场景参考图 2/ }).click();
+    await expect(input).toHaveAttribute('contenteditable', 'true');
+    await expect(input.locator('[data-inline-reference]')).toHaveCount(1);
+    await expect(input.locator('[data-inline-reference] img')).toBeVisible();
+    expect(await input.evaluate((element) => element.childNodes[0]?.textContent)).toBe('让小明');
+    await expect(scope.getByRole('article').nth(0)).toHaveAccessibleName(
+      '参考资源 1：场景参考图 1',
+    );
+    await expect(scope.getByRole('article').nth(1)).toHaveAccessibleName(
+      '参考资源 2：场景参考图 2',
+    );
+    await selectReferenceText(input, 1, 3);
+    await input.press('Backspace');
+    await expect(input.locator('[data-inline-reference]')).toHaveCount(1);
+    await expect(input).toHaveText('让走进房间');
+    await selectReferenceText(input, 1, 2);
+    await input.press('Backspace');
+    await expect(input.locator('[data-inline-reference]')).toHaveCount(0);
+    await expect(scope.getByRole('article')).toHaveCount(2);
+    for (let i = 0; i < 2; i++) {
+      await input.press('Control+End');
+      await input.pressSequentially(' @');
+      picker = page.locator('.resource-mention-picker');
+      await picker.getByRole('option', { name: /场景参考图 2/ }).click();
+    }
+    await expect(input.locator('[data-inline-reference]')).toHaveCount(2);
+    await expect(scope.getByRole('article')).toHaveCount(2);
+    await expect(input.locator('[data-inline-reference]').first()).toHaveAttribute(
+      'aria-label',
+      '引用 场景参考图 2',
+    );
+    await expect(input.locator('[data-inline-reference]').last()).toHaveAttribute(
+      'aria-label',
+      '引用 场景参考图 2',
+    );
+    await input.press('Control+z');
+    await expect(input.locator('[data-inline-reference]')).toHaveCount(1);
+    await input.press('Control+y');
+    await expect(input.locator('[data-inline-reference]')).toHaveCount(2);
+    await expect
+      .poll(() =>
+        fixture.canvas().nodes[0].data.resourceRefs?.map((reference) => reference.assetId),
+      )
+      .toEqual(['scene-image-1', 'scene-image-2']);
+    await expect
+      .poll(
+        () =>
+          fixture
+            .canvas()
+            .nodes[0].data.promptDocument?.blocks.filter((block) => block.type === 'mention')
+            .length,
+      )
+      .toBe(2);
+    await page.screenshot({
+      path: test.info().outputPath('inline-reference-decoupled.png'),
+      animations: 'disabled',
+    });
+    if (expanded) await page.keyboard.press('Escape');
+    expectSameNodeSize(before, (await node.boundingBox())!);
+    await page.reload();
+    const restored = await openQuickEditor(page);
+    await expect(restored.editor.getByRole('article')).toHaveCount(2);
+    await expect(restored.editor.locator('[data-inline-reference]')).toHaveCount(2);
+    await restored.editor.getByRole('button', { name: '删除 场景参考图 2', exact: true }).click();
+    await expect(restored.editor.getByRole('article')).toHaveCount(1);
+    await expect(restored.editor.locator('[data-inline-reference]')).toHaveCount(0);
+    await expect(restored.editor.getByRole('textbox', { name: '提示词' })).toHaveText(
+      '让走进房间  ',
+    );
+    expect(fixture.errors).toEqual([]);
+    expect(
+      fixture.apiRequests.filter(
+        (request) => request.method === 'POST' && /runs|generations/.test(request.path),
+      ),
+    ).toEqual([]);
+  });
+}
+
+test('PC 内联引用保留中文组合输入、换行和纯文本粘贴', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const fixture = await installFixture(page, baseURL);
+  await page.goto(`/projects/${project.id}`);
+  const { editor } = await openQuickEditor(page);
+  const input = editor.getByRole('textbox', { name: '提示词' });
+  const original = await readPromptText(input);
+  await input.press('Control+End');
+  const session = await page.context().newCDPSession(page);
+  await session.send('Input.imeSetComposition', {
+    text: 'xiaoming',
+    selectionStart: 8,
+    selectionEnd: 8,
+  });
+  expect(fixture.canvas().nodes[0].data.promptDocument?.blocks).toEqual(
+    initialCanvas().nodes[0].data.promptDocument?.blocks,
+  );
+  await session.send('Input.imeSetComposition', {
+    text: '小明',
+    selectionStart: 2,
+    selectionEnd: 2,
+  });
+  await session.send('Input.insertText', { text: '小明' });
+  await expect.poll(() => readPromptText(input)).toBe(original + '小明');
+  await expect(input.locator('[data-inline-reference]')).toHaveCount(2);
+  await input.press('Enter');
+  await page.keyboard.insertText('走进房间');
+  await expect.poll(() => readPromptText(input)).toBe(original + '小明\n走进房间');
+  await input.evaluate((element) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', '粘贴\uFFFC');
+    clipboardData.setData('text/html', '<img src=x onerror="window.__unsafePaste=true">');
+    element.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+    );
+  });
+  await expect.poll(() => readPromptText(input)).toBe(original + '小明\n走进房间粘贴');
+  expect(await page.evaluate(() => '__unsafePaste' in window)).toBe(false);
+  await expect(input.locator('[data-inline-reference]')).toHaveCount(2);
+  await expect
+    .poll(() => fixture.canvas().nodes[0].data.prompt)
+    .toBe(original + '小明\n走进房间粘贴');
+  await session.detach();
+  await page.reload();
+  await expect(page.getByRole('status', { name: '已从项目恢复', exact: true })).toBeVisible();
+  const restored = await openQuickEditor(page);
+  await expect
+    .poll(() => readPromptText(restored.editor.getByRole('textbox', { name: '提示词' })))
+    .toBe(original + '小明\n走进房间粘贴');
+  await expect(restored.editor.locator('[data-inline-reference]')).toHaveCount(2);
+  expect(fixture.errors).toEqual([]);
 });
 
 /** 零节点引用默认项目资源；空词只展示 10 项，关键词按真实匹配总数翻页。 */
@@ -2177,31 +2400,20 @@ test('PC 目录外冻结引用的光标预览与卡片详情降级图标，节�
   const { editor, node } = await openQuickEditor(page);
   const prompt = editor.getByRole('textbox', { name: '提示词' });
   const originalPrompt = `开场 ${frozenMention.label} 收尾`;
-  await expect(prompt).toHaveValue(originalPrompt);
+  await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
   const card = editor.getByRole('article', { name: `参考资源 1：${frozenMention.label}` });
   await expect(card).toBeVisible();
   await expect(card).not.toHaveClass(/is-missing/);
 
-  // “开场 ”占 3 个字符；真实键盘右移 4 次，把折叠光标放进冻结引用而非选中整段。
-  await prompt.press('Control+Home');
-  for (let step = 0; step < 4; step += 1) await prompt.press('ArrowRight');
-  await expect
-    .poll(() =>
-      prompt.evaluate((element) => {
-        const input = element as HTMLTextAreaElement;
-        return {
-          start: input.selectionStart,
-          end: input.selectionEnd,
-          focused: document.activeElement === input,
-        };
-      }),
-    )
-    .toEqual({ start: 4, end: 4, focused: true });
+  // 未加载的冻结资源也常显占位图标，Hover 只负责扩展预览。
+  const inline = prompt.locator('[data-inline-reference]');
+  await expect(inline.locator('.resource-mention-media-icon.is-image')).toBeVisible();
+  await inline.hover();
   const hover = page.getByRole('region', { name: `预览 ${frozenMention.label}`, exact: true });
   await expect(hover).toBeVisible();
   await expect(hover.locator('.resource-mention-media-icon.is-image')).toBeVisible();
   await expect(hover.locator('img, video, audio')).toHaveCount(0);
-  await expect(prompt).toHaveValue(originalPrompt);
+  await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
   await expect(node).toBeVisible();
   expect(fixture.errors).toEqual([]);
 
@@ -2217,7 +2429,7 @@ test('PC 目录外冻结引用的光标预览与卡片详情降级图标，节�
   await expect(dialog.getByRole('textbox', { name: '资源名称' })).toHaveValue(frozenMention.label);
   await dialog.getByRole('button', { name: '关闭', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(prompt).toHaveValue(originalPrompt);
+  await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
   expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(
     canvas.nodes[0]!.data.promptDocument,
   );
@@ -2239,8 +2451,8 @@ test('PC 目录外冻结引用的光标预览与卡片详情降级图标，节�
   expect(fixture.assetQueries.some((query) => query.query === frozenMention.label)).toBe(false);
   await option.click();
   await expect(picker).toHaveCount(0);
-  // 再次插入沿用同名引用的编号规则，下面另验资源身份和冻结版本没有变化。
-  await expect(prompt).toHaveValue(`${originalPrompt} ${frozenMention.label}2`);
+  // 再次插入复用名称，下面另验资源身份和冻结版本没有变化。
+  await expect.poll(() => readPromptText(prompt)).toBe(`${originalPrompt} `);
   await expect
     .poll(() =>
       fixture
@@ -2493,10 +2705,13 @@ async function useSyntheticReferencePhoto(
     );
   await expect(
     editor
-      .getByRole('article')
-      .filter({ has: page.getByRole('img', { name: upload.asset!.name, exact: true }) }),
+      .locator(`[role="article"][data-resource-key='${JSON.stringify([upload.asset!.id, 1])}']`)
+      .locator('img'),
   ).toBeVisible();
-  expect(fixture.canvas().nodes[0]!.data.resourceRefs).toEqual(originalRefs);
+  expect(fixture.canvas().nodes[0]!.data.resourceRefs).toEqual([
+    ...(originalRefs ?? []),
+    expect.objectContaining({ assetId: upload.asset!.id, assetVersion: 1, attached: true }),
+  ]);
   return upload.asset!;
 }
 
@@ -2575,10 +2790,18 @@ for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
       expect(persisted.nodes[0]!.data.mode).toBe('generate');
       expect(persisted.nodes[0]!.data.promptDocument!.blocks).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ type: 'mention', assetId: reference.id, assetVersion: 1 }),
           expect.objectContaining({ type: 'mention', assetId: photo.id, assetVersion: 1 }),
         ]),
       );
+      expect(persisted.nodes[0]!.data.resourceRefs).toEqual([
+        expect.objectContaining({ assetId: reference.id, assetVersion: 1, attached: true }),
+        expect.objectContaining({ assetId: photo.id, assetVersion: 1, attached: true }),
+      ]);
+      expect(
+        persisted.nodes[0]!.data.promptDocument!.blocks.some(
+          (block) => block.type === 'mention' && block.assetId === reference.id,
+        ),
+      ).toBe(false);
       expectSameNodeSize(before, (await node.boundingBox())!);
       await expectReferenceIconButtons(editor);
       await page.screenshot({
@@ -2627,6 +2850,11 @@ test('PC 参考资料与拍照隔离：source 节点引用和拍照不连边、�
   expect(saved.nodes[0]!.data.resultAsset).toBeUndefined();
   expect(saved.nodes[0]!.data.resourceRefs).toEqual([
     expect.objectContaining({ assetId: reference.id, assetVersion: 1 }),
+    expect.objectContaining({
+      assetId: fixture.uploads[0]!.asset!.id,
+      assetVersion: 1,
+      attached: true,
+    }),
   ]);
   await expect(node.locator('.react-flow__handle-target')).toHaveCount(0);
   await expect(node.locator('img').first()).toHaveAttribute('src', originalPreview!);
@@ -2653,7 +2881,7 @@ test('PC 参考资料与拍照隔离：完整编辑器嵌套相机 Escape 只关
   await expect(fullEditor).toBeVisible();
   await expectReferenceIconButtons(fullEditor);
   const prompt = fullEditor.getByRole('textbox', { name: '提示词', exact: true });
-  const originalPrompt = await prompt.inputValue();
+  const originalPrompt = await readPromptText(prompt);
   expect((await readReferenceCamera(page)).requests).toEqual([]);
   const camera = await openSyntheticReferenceCamera(page, fullEditor);
   await page.screenshot({
@@ -2663,7 +2891,7 @@ test('PC 参考资料与拍照隔离：完整编辑器嵌套相机 Escape 只关
   await page.keyboard.press('Escape');
   await expect(camera).toBeHidden();
   await expect(fullEditor).toBeVisible();
-  await expect(prompt).toHaveValue(originalPrompt);
+  await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
   expect(fixture.uploads).toEqual([]);
   await expect
     .poll(async () =>
@@ -2705,9 +2933,9 @@ test('PC 参考资料与拍照隔离：照片保存重载后保留资产版本�
   const accessCount = fixture.assetAccesses.filter((item) => item.assetId === photo.id).length;
   await page.reload();
   ({ node, editor } = await openReferenceCameraEditor(page));
-  const card = editor
-    .getByRole('article')
-    .filter({ has: page.getByRole('img', { name: photo.name, exact: true }) });
+  const card = editor.locator(
+    `[role="article"][data-resource-key='${JSON.stringify([photo.id, 1])}']`,
+  );
   await expect(card).toBeVisible();
   const preview = card.locator('img');
   await expect
@@ -2757,7 +2985,7 @@ for (const presentation of ['快捷', '完整'] as const) {
         : quickEditor;
     await expect(editor).toBeVisible();
     const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
-    const originalPrompt = await prompt.inputValue();
+    const originalPrompt = await readPromptText(prompt);
     const strip = editor.locator('.resource-mention-strip');
     const buttons = ['上传引用资源', '添加参考资料', '拍照引用'].map((name) =>
       editor.getByRole('button', { name, exact: true }),
@@ -2791,7 +3019,7 @@ for (const presentation of ['快捷', '完整'] as const) {
     }
     expect(fileChooserCount).toBe(0);
     expect((await readReferenceCamera(page)).requests).toEqual([]);
-    await expect(prompt).toHaveValue(originalPrompt);
+    await expect.poll(() => readPromptText(prompt)).toBe(originalPrompt);
     await page.screenshot({
       path: test.info().outputPath('reference-buttons-hitbox.png'),
       animations: 'disabled',
