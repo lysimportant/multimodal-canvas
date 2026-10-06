@@ -24,6 +24,32 @@ export type PromptSkill = {
 /** Skill 工作台模型辅助升级所用的内置元技能稳定 ID，不代表画布节点或待升级技能。 */
 export const SKILL_AUTHORING_SKILL_ID = 'skill-authoring';
 
+/**
+ * Skill 优化输出的稳定校验错误分类；调用方可据此停止无意义的归档重试。
+ */
+export type PromptOptimizationOutputErrorCode =
+  'invalid_json' | 'invalid_prompt' | 'invalid_references';
+
+/**
+ * 模型已经返回结果但结果不符合 Skill 优化合同时抛出的错误。
+ *
+ * 该错误表示原始输出本身需要重新生成或人工处理，不能通过重复归档同一输出修复。
+ */
+export class PromptOptimizationOutputError extends Error {
+  readonly code: PromptOptimizationOutputErrorCode;
+
+  /**
+   * @param code 失败分类：JSON 不完整/无效、提示词字段无效或资源引用损坏。
+   * @param message 面向日志和用户的脱敏诊断，不应包含模型输出正文或资源内容。
+   */
+  constructor(code: PromptOptimizationOutputErrorCode, message: string) {
+    super(message);
+    this.name = 'PromptOptimizationOutputError';
+    this.code = code;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /** 应用内置的提示词优化技能目录；所有媒体节点共用，不按节点类型隐藏。 */
 export const PROMPT_SKILLS: readonly PromptSkill[] = [
   {
@@ -540,7 +566,7 @@ export function createPromptOptimizationCanvas(input: {
  * @param text 模型返回的 JSON，可带单层 JSON 代码围栏。
  * @param input 本次提交时冻结的提示词文档。
  * @returns 可预览和采用的结构化提示词；原始资源元数据完整保留。
- * @throws JSON 无效、文字为空/超长或资源标记损坏时拒绝结果。
+ * @throws {PromptOptimizationOutputError} JSON 无效、文字为空/超长或资源标记损坏时拒绝结果。
  */
 export function parsePromptOptimizationOutput(
   text: string,
@@ -553,7 +579,10 @@ export function parsePromptOptimizationOutput(
   try {
     value = JSON.parse(fenced?.[1] ?? trimmed);
   } catch {
-    throw new Error('Skill 返回格式无效：需要包含 prompt 的 JSON 对象');
+    throw new PromptOptimizationOutputError(
+      'invalid_json',
+      'Skill 返回的 JSON 无效或不完整，需要包含有效的 prompt 字段；无法通过归档重试修复，请检查模型后手动重新优化',
+    );
   }
   if (
     !value ||
@@ -563,15 +592,29 @@ export function parsePromptOptimizationOutput(
     !value.prompt.trim() ||
     value.prompt.length > 20_000
   )
-    throw new Error('Skill 未返回有效提示词，或结果超过 20000 字符');
+    throw new PromptOptimizationOutputError(
+      'invalid_prompt',
+      'Skill 未返回有效提示词：prompt 必须是非空且不超过 20000 字符的字符串；不能通过归档重试修复',
+    );
   const refs = optimizationReferences(source);
   const prompt = value.prompt;
   const found = prompt.match(new RegExp(`\\[\\[${refs.prefix}[^\\]]*\\]\\]`, 'g')) ?? [];
   if (JSON.stringify(found) !== JSON.stringify(refs.tokens))
-    throw new Error('Skill 结果改变了资源引用，请重新优化');
+    throw new PromptOptimizationOutputError(
+      'invalid_references',
+      'Skill 结果改变了资源引用：必须保持原顺序且各出现一次；不能通过归档重试修复',
+    );
   const remainder = refs.tokens.reduce((value, token) => value.replace(token, ''), prompt);
-  if (remainder.includes(refs.prefix)) throw new Error('Skill 结果包含损坏的资源标记，请重新优化');
-  if (!remainder.trim()) throw new Error('Skill 结果缺少提示词文字，请重新优化');
+  if (remainder.includes(refs.prefix))
+    throw new PromptOptimizationOutputError(
+      'invalid_references',
+      'Skill 结果包含损坏的资源标记；不能通过归档重试修复',
+    );
+  if (!remainder.trim())
+    throw new PromptOptimizationOutputError(
+      'invalid_prompt',
+      'Skill 结果缺少提示词文字；不能通过归档重试修复',
+    );
   const blocks: PromptDocument['blocks'] = [];
   let offset = 0;
   refs.tokens.forEach((token, index) => {
@@ -581,5 +624,11 @@ export function parsePromptOptimizationOutput(
     offset = position + token.length;
   });
   if (offset < prompt.length) blocks.push({ type: 'text', text: prompt.slice(offset) });
-  return { promptDocument: promptDocumentSchema.parse({ version: 1, blocks }) };
+  const parsed = promptDocumentSchema.safeParse({ version: 1, blocks });
+  if (!parsed.success)
+    throw new PromptOptimizationOutputError(
+      'invalid_prompt',
+      'Skill 结果无法构造有效提示词文档；无法通过归档重试修复，请检查模型后手动重新优化',
+    );
+  return { promptDocument: parsed.data };
 }

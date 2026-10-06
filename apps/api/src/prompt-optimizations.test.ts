@@ -843,6 +843,32 @@ describe('独立 Skill 提示词优化 API', () => {
     ).toBe(runId);
   });
 
+  it('升级结果在 JSON 字符串中途截断时不返回部分指令，同键查询不再次生成', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        choices: [{ message: { content: '{"prompt":"## 漫剧篇章\\n【音效】心跳声' } }],
+      }),
+    );
+    const ctx = await fixture({ fetchImpl: fetchImpl as typeof fetch });
+    const payload = { ...ctx.payload, skillId: SKILL_AUTHORING_SKILL_ID, mediaType: 'text' };
+    const started = await ctx.app.inject({ method: 'POST', url: ctx.url, payload });
+    expect(started.statusCode).toBe(202);
+    const runId = started.json().optimization.runId;
+    await vi.waitFor(async () => expect((await ctx.runService.get(runId))?.status).toBe('failed'));
+    const read = await ctx.app.inject({ method: 'GET', url: `${ctx.url}/${runId}` });
+    expect(read.json().optimization).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('JSON'),
+    });
+    expect(read.json().optimization.error).toContain('归档重试');
+    expect(read.json().optimization.error).not.toContain('生成已完成');
+    expect(read.json().optimization).not.toHaveProperty('promptDocument');
+    const repeated = await ctx.app.inject({ method: 'POST', url: ctx.url, payload });
+    expect(repeated.json().optimization).toMatchObject({ runId, status: 'failed' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(ctx.archiver).not.toHaveBeenCalled();
+  });
+
   it.each(['not JSON', '{"prompt":"引用已丢失"}', '{"prompt":123}', '{"prompt":""}'])(
     '模型格式或引用损坏时失败且不归档：%s',
     async (output) => {

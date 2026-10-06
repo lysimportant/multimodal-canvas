@@ -761,6 +761,60 @@ describe('Skill 工作台', () => {
     ]);
   });
 
+  it('提交 payload 使用单一 JSON prompt 字符串并保留原文、长 Markdown 和资源占位', () => {
+    const instruction = [
+      '# 小说正文创作',
+      '保留 "原句"、{{character}} 和 [[__SKILL_REF_1]]。',
+      '```markdown',
+      '长 Markdown 内容保持原语言，不要翻译或改写。',
+      '```',
+    ].join('\n');
+    const requirements = '保留 "引号"、/v1/videos/generations 和原文换行。';
+    const context: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '临时参考：' },
+        {
+          type: 'mention',
+          mentionId: 'context-mention',
+          assetId: 'asset-context',
+          assetVersion: 2,
+          mediaType: 'image',
+          label: '人物.png',
+        },
+      ],
+    };
+    const document = buildSkillAuthoringPrompt({
+      draft: {
+        name: '小说正文',
+        category: '小说创作',
+        description: '保留原文和占位符',
+        instruction,
+      },
+      requirements,
+      contextDocument: context,
+    });
+    const block = document.blocks[0];
+    if (block?.type !== 'text') throw new Error('Skill 升级 payload 必须以文字块开始');
+    const metadata = JSON.parse(block.text) as Record<string, unknown> & {
+      skill: { instruction: string };
+      requirements: string;
+      output: string;
+    };
+    expect(metadata.skill.instruction).toBe(instruction);
+    expect(metadata.requirements).toBe(requirements);
+    expect(metadata.output).toBe(
+      'Return exactly one JSON object {"prompt":"..."}. The prompt value must contain only the complete revised reusable Skill instruction, preserving its language and exact placeholders, with a maximum of 12000 characters. Escape newlines, quotation marks, backslashes and other control characters inside the prompt value as required by JSON. Do not return bare text, surrounding metadata or commentary.',
+    );
+    expect(block.text).toContain('\\n');
+    expect(block.text).toContain('\\"原句\\"');
+    expect(block.text).toContain('[[__SKILL_REF_1]]');
+    expect(document.blocks.slice(1)).toEqual([
+      { type: 'text', text: '\n\nTemporary optimization context:\n' },
+      ...context.blocks,
+    ]);
+  });
+
   it('写入期间阻止重复保存、关闭和切换，成功才通知父级', async () => {
     let resolve!: (skill: PromptSkill) => void;
     vi.mocked(updateSkill).mockReturnValue(

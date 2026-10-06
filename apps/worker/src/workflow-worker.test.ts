@@ -1007,77 +1007,140 @@ describe('worker workflow DAG execution', () => {
     expect(JSON.stringify(job.data)).not.toContain('data:image/png');
   });
 
-  it.each(['not JSON', '{"prompt":"引用已丢失"}', '{"prompt":123}'])(
-    'Skill 输出格式或引用损坏后重放不再次请求：%s',
-    async (text) => {
-      bullmqState.jobs.clear();
-      const runId = '123e4567-e89b-42d3-a456-426614174192';
-      const input: PromptDocument = {
-        version: 1,
-        blocks: [
-          { type: 'text', text: '参考 ' },
-          {
-            type: 'mention',
-            mentionId: 'ref',
-            assetId: 'not-uploaded',
-            assetVersion: 1,
-            mediaType: 'image',
-            label: '参考',
-          },
-        ],
-      };
-      const skill = PROMPT_SKILLS[0]!;
-      const canvas = createPromptOptimizationCanvas({
-        skillId: skill.id,
-        input,
-        mediaType: 'image',
-      });
-      const optimizationSnapshot: RunSnapshot = {
-        ...createTextSnapshot(),
-        nodes: canvas.nodes,
-        edges: [],
-        inputs: [],
-        targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
-        promptOptimization: {
-          nodeId: 'unsaved-node',
-          skillId: skill.id,
-          skillVersion: skill.version,
-          input,
-        },
-      };
-      const provider = {
-        execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
-          ...createExecution(snapshot),
-          output: {
-            kind: 'text' as const,
-            mediaType: 'text' as const,
-            text,
-            mimeType: 'text/plain',
-          },
-        })),
-      };
-      const archiver = vi.fn();
-      const job = createJob({
-        runId,
-        snapshot: optimizationSnapshot,
-        attempt: 1,
-        provider: 'newapi',
-        providerJob: createProviderJobRecord(runId, 'newapi'),
-        cancelRequested: false,
-      });
-      createRunWorker({
-        connection: { host: '127.0.0.1', port: 6379 },
-        providerName: 'newapi',
-        provider,
-        stepDelayMs: 0,
-        resultArchiver: archiver,
-      });
-      await expect(bullmqState.processor?.(job)).rejects.toThrow('Skill');
-      await expect(bullmqState.processor?.(job)).rejects.toThrow('优化请求已发送或发送状态不确定');
-      expect(provider.execute).toHaveBeenCalledTimes(1);
-      expect(archiver).not.toHaveBeenCalled();
+  it.each([
+    {
+      name: 'JSON 字符串中途截断',
+      text: '{"prompt":"参考 [[resource:ref:1]] 绘制近景',
+      expectedError: 'JSON 无效或不完整',
     },
-  );
+    {
+      name: '资源引用丢失',
+      text: '{"prompt":"引用已丢失"}',
+      expectedError: '改变了资源引用',
+    },
+  ])('Skill $name 后从暂存重放仍终止且不再次请求', async ({ text, expectedError }) => {
+    bullmqState.jobs.clear();
+    const runId = '123e4567-e89b-42d3-a456-426614174192';
+    const staging = createStagingFixture();
+    const input: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '参考 ' },
+        {
+          type: 'mention',
+          mentionId: 'ref',
+          assetId: 'not-uploaded',
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '参考',
+        },
+      ],
+    };
+    const skill = PROMPT_SKILLS[0]!;
+    const canvas = createPromptOptimizationCanvas({
+      skillId: skill.id,
+      input,
+      mediaType: 'image',
+    });
+    const optimizationSnapshot: RunSnapshot = {
+      ...createTextSnapshot(),
+      nodes: canvas.nodes,
+      edges: [],
+      inputs: [],
+      targetNodeId: PROMPT_OPTIMIZATION_NODE_ID,
+      promptOptimization: {
+        nodeId: 'unsaved-node',
+        skillId: skill.id,
+        skillVersion: skill.version,
+        input,
+      },
+    };
+    const provider = {
+      execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
+        ...createExecution(snapshot),
+        usage: {
+          amount: '0.01',
+          currency: 'USD',
+          metadata: { promptTokens: 128, completionTokens: 512 },
+        },
+        output: {
+          kind: 'text' as const,
+          mediaType: 'text' as const,
+          text,
+          mimeType: 'text/plain',
+        },
+      })),
+    };
+    const archiver = vi.fn();
+    const updates: unknown[] = [];
+    const job = createJob({
+      runId,
+      snapshot: optimizationSnapshot,
+      attempt: 1,
+      provider: 'newapi',
+      providerJob: createProviderJobRecord(runId, 'newapi'),
+      cancelRequested: false,
+    });
+    const options: Parameters<typeof createRunWorker>[0] = {
+      connection: { host: '127.0.0.1', port: 6379 },
+      providerName: 'newapi',
+      provider,
+      stepDelayMs: 0,
+      resultArchiver: archiver,
+      persistence: {
+        getProviderCredentials: getTestProviderCredentials,
+        async upsertProviderJob() {},
+        async recordUsage() {},
+        async updateRun(update) {
+          updates.push(update);
+        },
+      },
+    };
+    createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+    const firstAttempt = bullmqState.processor?.(job);
+    await expect(firstAttempt).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(firstAttempt).rejects.toThrow(expectedError);
+    await expect(firstAttempt).rejects.not.toThrow('仅重试归档');
+
+    const receipt = job.data.providerJob as ProviderJob;
+    expect(receipt.payload).toMatchObject({
+      code: 'PROMPT_OPTIMIZATION_OUTPUT_INVALID',
+      deliveryState: 'received',
+      usageStatus: 'external',
+      reportedUsage: { amount: '0.01', currency: 'USD', runId },
+      usage: { promptTokens: 128, completionTokens: 512 },
+      error: expect.stringContaining(expectedError),
+    });
+    expect(receipt.payload).not.toHaveProperty('firstArchiveError');
+    expect(staging.values.size).toBe(1);
+    expect(updates).toContainEqual(
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining(expectedError),
+      }),
+    );
+
+    // 模拟 Worker 重启：仅保留持久回执和加密暂存，重新加载同一输出。
+    delete job.data.workflowState;
+    createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+    const replayAttempt = bullmqState.processor?.(job);
+    await expect(replayAttempt).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(replayAttempt).rejects.toThrow(expectedError);
+    await expect(replayAttempt).rejects.not.toThrow('仅重试归档');
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+    expect(archiver).not.toHaveBeenCalled();
+    expect(staging.values.size).toBe(1);
+
+    // 暂存不可用时只依赖持久回执中的固定错误码，仍不得回退为重新请求。
+    delete job.data.workflowState;
+    createRunWorker(options);
+    const receiptOnlyAttempt = bullmqState.processor?.(job);
+    await expect(receiptOnlyAttempt).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(receiptOnlyAttempt).rejects.toThrow(expectedError);
+    await expect(receiptOnlyAttempt).rejects.not.toThrow('仅重试归档');
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+    expect(archiver).not.toHaveBeenCalled();
+  });
 
   it('内置 Mock 返回明确模拟优化文档，无需结果归档器', async () => {
     bullmqState.jobs.clear();

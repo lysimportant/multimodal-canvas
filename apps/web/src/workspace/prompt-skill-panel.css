@@ -113,6 +113,10 @@
 
 .prompt-skill-error {
   color: var(--mc-danger, #b42318);
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .prompt-skill-progress,
@@ -203,6 +207,11 @@
   line-height: 1.65;
   min-height: 200px;
   width: 100%;
+}
+
+/* 失败文案可能换成多行；收紧本次升级表单间距，避免末行落到滚动视口之外。 */
+.skill-authoring-assistant:has(.prompt-skill-error) {
+  gap: 10px;
 }
 
 /* 长用途说明保持在悬浮卡片内滚动，不撑开 Select 或节点输入面板。 */

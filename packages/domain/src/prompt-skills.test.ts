@@ -3,6 +3,7 @@ import {
   createPromptOptimizationCanvas,
   createMockPromptOptimizationOutput,
   parsePromptOptimizationOutput,
+  PromptOptimizationOutputError,
   PROMPT_SKILLS,
   SKILL_AUTHORING_SKILL_ID,
   PROMPT_OPTIMIZATION_NODE_ID,
@@ -126,6 +127,51 @@ describe('提示词 Skill 契约', () => {
       JSON.stringify({ prompt: 'x'.repeat(20_001) }),
     ])
       expect(() => parsePromptOptimizationOutput(text, input)).toThrow();
+  });
+
+  it('将供应商截断的 JSON 识别为不可通过归档重试修复的完整性错误', () => {
+    const truncated = '{"prompt":"## Skill名称：小说正文 → 漫剧篇章生成与优化\\n...【音效】心跳声';
+
+    try {
+      parsePromptOptimizationOutput(truncated, input);
+      throw new Error('截断的 Skill JSON 不应通过解析');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PromptOptimizationOutputError);
+      expect(error).toMatchObject({
+        code: 'invalid_json',
+        message: expect.stringContaining('JSON 无效或不完整'),
+      });
+      expect((error as PromptOptimizationOutputError).message).toContain('无法通过归档重试修复');
+    }
+  });
+
+  it('为提示词字段和资源引用错误保留可区分的终止性分类', () => {
+    expect(() => parsePromptOptimizationOutput('{"prompt":123}', input)).toThrowError(
+      expect.objectContaining({ code: 'invalid_prompt' }),
+    );
+    expect(() =>
+      parsePromptOptimizationOutput(JSON.stringify({ prompt: '只保留 [[SKILL_REF_1]]' }), input),
+    ).toThrowError(expect.objectContaining({ code: 'invalid_references' }));
+  });
+
+  it('将输出文档超过块数上限归类为提示词完整性错误', () => {
+    const mentions = Array.from({ length: 1_000 }, (_, index) => ({
+      type: 'mention' as const,
+      mentionId: `mention-${index}`,
+      assetId: `asset-${index}`,
+      assetVersion: 1,
+      mediaType: 'image' as const,
+      label: `参考图${index}`,
+    }));
+    const source: PromptDocument = {
+      version: 1,
+      blocks: [...mentions, { type: 'text', text: '原始提示词' }],
+    };
+    const prompt = `${mentions.map((_, index) => `x[[SKILL_REF_${index + 1}]]`).join('')}y`;
+
+    expect(() => parsePromptOptimizationOutput(JSON.stringify({ prompt }), source)).toThrowError(
+      expect.objectContaining({ code: 'invalid_prompt' }),
+    );
   });
 
   it.each(['scene', 'character', 'xianxia-dress-character'])(

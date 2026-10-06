@@ -59,7 +59,15 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 /** 模拟用户级目录、画布保存与独立优化；未知接口和出站请求一律拒绝。 */
-async function installFixture(page: Page, mediaType: MediaType = 'image') {
+async function installFixture(
+  page: Page,
+  mediaType: MediaType = 'image',
+  options: {
+    /** 为工作台升级助手返回明确失败终态，验证前端不会覆盖草稿或自动重发。 */
+    authoringStatus?: 'succeeded' | 'failed';
+    authoringError?: string;
+  } = {},
+) {
   let canvas = canvasDocumentSchema.parse({
     revision: 1,
     nodes: [
@@ -108,6 +116,10 @@ async function installFixture(page: Page, mediaType: MediaType = 'image') {
   };
   let serial = 0;
   let hold = false;
+  const authoringStatus = options.authoringStatus ?? 'succeeded';
+  const authoringError =
+    options.authoringError ??
+    'Skill 返回的 JSON 无效或不完整，需要包含有效的 prompt 字段；无法通过归档重试修复，请检查模型后手动重新优化';
   const optimizations = new Map<string, Record<string, unknown>>();
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
@@ -298,7 +310,16 @@ async function installFixture(page: Page, mediaType: MediaType = 'image') {
     if (method === 'GET' && path.startsWith(`/v1/projects/${project.id}/prompt-optimizations/`)) {
       const result = optimizations.get(path.split('/').at(-1)!);
       if (!result) return json(route, { error: '优化任务不存在' }, 404);
-      return json(route, { optimization: { ...result, status: hold ? 'running' : 'succeeded' } });
+      const failedAuthoring =
+        result.skillId === SKILL_AUTHORING_SKILL_ID && authoringStatus === 'failed';
+      const status = failedAuthoring ? 'failed' : hold ? 'running' : 'succeeded';
+      return json(route, {
+        optimization: {
+          ...result,
+          status,
+          ...(failedAuthoring ? { error: authoringError } : {}),
+        },
+      });
     }
     errors.push(`未声明接口：${method} ${path}`);
     return json(route, { error: '未声明接口' }, 404);
@@ -1335,7 +1356,7 @@ for (const sourceKind of ['custom', 'builtin'] as const) {
       },
       requirements,
       output:
-        'Only the revised reusable Skill instruction, preserving its language and exact placeholders. Do not repeat the surrounding metadata. Maximum 12000 characters.',
+        'Return exactly one JSON object {"prompt":"..."}. The prompt value must contain only the complete revised reusable Skill instruction, preserving its language and exact placeholders, with a maximum of 12000 characters. Escape newlines, quotation marks, backslashes and other control characters inside the prompt value as required by JSON. Do not return bare text, surrounding metadata or commentary.',
     });
     const optimizationWrite = {
       method: 'POST',
@@ -1432,6 +1453,77 @@ for (const sourceKind of ['custom', 'builtin'] as const) {
     expect(fixture.errors).toEqual([]);
   });
 }
+
+test('工作台 AI 升级：失败终态保留原草稿且不自动重发 POST', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const failure =
+    'Skill 返回的 JSON 无效或不完整，需要包含有效的 prompt 字段；无法通过归档重试修复，请检查模型后手动重新优化';
+  const fixture = await installFixture(page, 'image', {
+    authoringStatus: 'failed',
+    authoringError: failure,
+  });
+  const source: PromptSkill = {
+    id: 'custom-authoring-failure',
+    name: '失败保留草稿',
+    category: '技能创作',
+    description: '验证失败结果不覆盖待编辑指令。',
+    instruction: 'Keep {{subject}} and the original long Markdown draft unchanged until adoption.',
+    version: '1.0.3',
+    revision: 4,
+    builtin: false,
+    enabled: true,
+  };
+  fixture.skills().push(source);
+  await page.goto(`/projects/${project.id}`);
+  const panel = await editor(page);
+  await panel.getByRole('button', { name: 'Skill 配置', exact: true }).click();
+  await page.getByRole('button', { name: '技能工作台', exact: true }).click();
+  const workbench = page.getByRole('dialog', { name: 'Skill 工作台', exact: true });
+  await workbench.getByRole('button', { name: source.name, exact: true }).click();
+  const instruction = workbench.getByRole('textbox', { name: '指令', exact: true });
+  await expect(instruction).toHaveValue(source.instruction);
+  const assistant = workbench.getByRole('complementary', { name: 'AI 升级 Skill', exact: true });
+  await assistant
+    .getByRole('textbox', { name: 'Skill 升级要求', exact: true })
+    .fill('Clarify the reusable output contract while preserving exact placeholders.');
+  await assistant.getByRole('button', { name: '生成升级预览', exact: true }).click();
+  const alert = assistant.getByRole('alert');
+  await expect(alert).toHaveText(failure);
+  const alertGeometry = await alert.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const scrollport = element.closest('.skill-authoring-assistant');
+    if (!(scrollport instanceof HTMLElement)) throw new Error('缺少 Skill 升级滚动容器');
+    const bounds = element.getBoundingClientRect();
+    const scrollportBounds = scrollport.getBoundingClientRect();
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      height: bounds.height,
+      lineHeight: Number.parseFloat(style.lineHeight),
+      fullyVisible: bounds.top >= scrollportBounds.top && bounds.bottom <= scrollportBounds.bottom,
+    };
+  });
+  expect(alertGeometry.scrollWidth).toBeLessThanOrEqual(alertGeometry.clientWidth);
+  expect(alertGeometry.height).toBeGreaterThan(alertGeometry.lineHeight * 1.5);
+  expect(alertGeometry.fullyVisible).toBe(true);
+  await expect(instruction).toHaveValue(source.instruction);
+  await expect(assistant.getByRole('group', { name: 'Skill 升级预览', exact: true })).toHaveCount(
+    0,
+  );
+  await expect(assistant.getByRole('button', { name: '生成升级预览', exact: true })).toBeEnabled();
+  await page.waitForTimeout(1_200);
+  expect(fixture.submissions).toHaveLength(1);
+  expect(
+    fixture.writes.filter(
+      (write) =>
+        write.method === 'POST' && write.path === `/v1/projects/${project.id}/prompt-optimizations`,
+    ),
+  ).toHaveLength(1);
+  expect(fixture.skills().find((skill) => skill.id === source.id)).toEqual(source);
+  expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(original);
+  await page.screenshot({ path: testInfo.outputPath('skill-authoring-failed-desktop.png') });
+  expect(fixture.errors).toEqual([]);
+});
 
 /** 核对工具包扩充后的真实工作台目录；只验证界面与合同，不代表模型输出质量。 */
 test('应用内 Skill 目录保留三十三项及原有顺序并提供匹配版本的中文说明', async ({

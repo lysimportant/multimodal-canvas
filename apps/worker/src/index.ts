@@ -16,6 +16,7 @@ import {
   parseReversePromptOutput,
   createMockPromptOptimizationOutput,
   parsePromptOptimizationOutput,
+  PromptOptimizationOutputError,
   promptDocumentSchema,
   reversePromptResultSchema,
   runJobDataSchema,
@@ -355,6 +356,9 @@ export function normalizeProviderExecution(
 
 /** 网关可能已经收到请求的可重试状态：不构成“明确拒绝”。 */
 const RETRYABLE_REJECTION_STATUSES = new Set([408, 425, 429]);
+
+/** Skill 输出合同校验失败的内部持久代码；恢复时不依赖可变错误文案。 */
+const PROMPT_OPTIMIZATION_OUTPUT_INVALID = 'PROMPT_OPTIMIZATION_OUTPUT_INVALID';
 
 /** 只接受可用的 HTTP 状态码；缺失或非法值按“无法判定”处理。 */
 function usableHttpStatus(value: unknown): number | undefined {
@@ -999,6 +1003,8 @@ export function createRunWorker(options: {
       const queuedAtByNode = new Map<string, string>();
       /** 反推请求结果不确定时只允许显式新建，队列重放不能再次收费。 */
       const uncertainReversePromptNodes = new Set<string>();
+      /** 已持久化的 Skill 输出校验错误；重放同一回执不能把它改写成归档故障。 */
+      const promptOptimizationOutputErrors = new Map<string, string>();
       /** 返回或归档证据已存在但结果不可恢复时，只能核实原请求，不能自动重新生成。 */
       const unrecoverableDeliveryNodes = new Set<string>();
       /** 同一 Run 已明确拒绝的创建请求保留原错；不拦截新 Run 的显式重试。 */
@@ -1225,8 +1231,16 @@ export function createRunWorker(options: {
               (candidate.payload?.deliveryState === 'received' && !canResumeProviderJob(candidate)),
           );
           if (receivedProviderJob) {
-            if (executionSnapshot.reversePrompt || executionSnapshot.promptOptimization)
-              uncertainReversePromptNodes.add(node.id);
+            if (executionSnapshot.promptOptimization) {
+              const outputError = receivedProviderJob.payload?.error;
+              if (
+                receivedProviderJob.payload?.code === PROMPT_OPTIMIZATION_OUTPUT_INVALID &&
+                typeof outputError === 'string' &&
+                outputError.trim()
+              )
+                promptOptimizationOutputErrors.set(node.id, outputError);
+              else uncertainReversePromptNodes.add(node.id);
+            } else if (executionSnapshot.reversePrompt) uncertainReversePromptNodes.add(node.id);
             else unrecoverableDeliveryNodes.add(node.id);
             workflowState = replaceWorkflowNodeState(workflowState, {
               nodeId: node.id,
@@ -1519,6 +1533,12 @@ export function createRunWorker(options: {
             activeNodeId = node.id;
             activeProviderJob = nodeState.providerJob;
             throw new UnrecoverableError(rejectedCreationError);
+          }
+          const promptOptimizationOutputError = promptOptimizationOutputErrors.get(node.id);
+          if (promptOptimizationOutputError !== undefined) {
+            activeNodeId = node.id;
+            activeProviderJob = nodeState.providerJob;
+            throw new UnrecoverableError(promptOptimizationOutputError);
           }
           if (uncertainReversePromptNodes.has(node.id)) {
             if (executionSnapshot.promptOptimization)
@@ -2398,6 +2418,10 @@ export function createRunWorker(options: {
           },
         };
       } catch (rawError) {
+        // Skill 输出已经收到但不符合输出合同；这不是归档失败，也不能通过
+        // 重放同一份暂存结果修复。先记录错误类型，再做脱敏，避免错误对象
+        // 被包装后无法终止 BullMQ 的无意义重试。
+        const promptOptimizationOutputError = rawError instanceof PromptOptimizationOutputError;
         let error = redactTransientAssetData(rawError);
         // 仅明确拒绝且没有结果或平台任务可恢复的创建请求终止队列重试。
         const rejectedCreation =
@@ -2406,7 +2430,11 @@ export function createRunWorker(options: {
           activeProviderJob?.payload?.deliveryState !== 'received' &&
           activeProviderJob?.payload?.deliveryState !== 'archived' &&
           requestPromptSendStatusForFailure(rawError) === 'failed';
-        if (activeArchivePhase && activeProviderJob?.payload?.deliveryState === 'received') {
+        if (
+          !promptOptimizationOutputError &&
+          activeArchivePhase &&
+          activeProviderJob?.payload?.deliveryState === 'received'
+        ) {
           const previous = activeProviderJob.payload.firstArchiveError;
           const firstArchiveError =
             typeof previous === 'string' ? previous : safeArchiveError(error);
@@ -2495,7 +2523,11 @@ export function createRunWorker(options: {
             failedNodeId,
             {
               ...(failedNodeWithMetadata.payload ?? {}),
-              ...(rejectedCreation ? { sendStatus: 'failed', error: errorMessage } : {}),
+              ...(rejectedCreation
+                ? { sendStatus: 'failed', error: errorMessage }
+                : promptOptimizationOutputError
+                  ? { code: PROMPT_OPTIMIZATION_OUTPUT_INVALID, error: errorMessage }
+                  : {}),
             },
             snapshotFingerprint,
           ),
@@ -2553,7 +2585,7 @@ export function createRunWorker(options: {
           'workflow.node_id': failedNodeId,
         });
         finishRunSpan('error', 'failed');
-        if (rejectedCreation) {
+        if (rejectedCreation || promptOptimizationOutputError) {
           const terminalError = new UnrecoverableError(errorMessage);
           terminalError.cause = error;
           throw terminalError;

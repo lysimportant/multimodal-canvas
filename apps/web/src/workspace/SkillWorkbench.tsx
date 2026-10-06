@@ -286,7 +286,7 @@ export function buildSkillAuthoringPrompt(input: {
               ? 'The following text and resource references are temporary context for this optimization. Do not embed resource names or references in the reusable Skill instruction.'
               : undefined,
             output:
-              'Only the revised reusable Skill instruction, preserving its language and exact placeholders. Do not repeat the surrounding metadata. Maximum 12000 characters.',
+              'Return exactly one JSON object {"prompt":"..."}. The prompt value must contain only the complete revised reusable Skill instruction, preserving its language and exact placeholders, with a maximum of 12000 characters. Escape newlines, quotation marks, backslashes and other control characters inside the prompt value as required by JSON. Do not return bare text, surrounding metadata or commentary.',
           },
           null,
           2,
