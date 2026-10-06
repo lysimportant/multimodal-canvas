@@ -2636,7 +2636,9 @@ describe('当前节点连续添加参考资源', () => {
     const button = await screen.findByRole('button', { name: '添加参考资料' });
     fireEvent.click(button);
     expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(document.querySelector('.node-reference-pick-backdrop')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    expect(await screen.findByText('已添加参考资料')).toBeVisible();
     fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
     expect(props.onAddNodeReference).toHaveBeenCalledTimes(2);
     expect(props.onAddNodeReference).toHaveBeenLastCalledWith(sourceNode.id, generateNode.id);
@@ -2644,6 +2646,7 @@ describe('当前节点连续添加参考资源', () => {
     expect(screen.getByRole('button', { name: '完成添加' })).toBeVisible();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(button).toHaveAttribute('aria-pressed', 'false');
+    expect(document.querySelector('.node-reference-pick-backdrop')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
     expect(props.onNodeSelect).toHaveBeenCalledWith(sourceNode);
   });
@@ -2660,14 +2663,38 @@ describe('当前节点连续添加参考资源', () => {
     fireEvent.click(await screen.findByRole('button', { name: '添加参考资料' }));
     fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
     expect(screen.getByRole('status')).toHaveTextContent('来源尚无资源');
+    expect(screen.queryByText('已添加参考资料')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '添加参考资料' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
     fireEvent.click(screen.getByRole('button', { name: '完成添加' }));
-    expect(screen.queryByText('来源尚无资源')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('来源尚无资源')).not.toBeInTheDocument());
     expect(props.onNodeSelect).not.toHaveBeenCalled();
   });
+
+  it('连续添加的成功提示从最近一次操作重新计时', async () => {
+    render(
+      <WorkflowCanvas
+        {...createProps({
+          nodes: [generateNode, sourceNode],
+          selectedNode: generateNode,
+          onAddNodeReference: vi.fn(),
+        })}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '添加参考资料' }));
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    expect(await screen.findByText('已添加参考资料')).toBeVisible();
+    // 用真实时间同时验证 RAF 倒计时与消息离场，避免分离两套时钟。
+    await act(() => new Promise((resolve) => setTimeout(resolve, 1_800)));
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 1_800)));
+    expect(screen.getByText('已添加参考资料')).toBeVisible();
+    await waitFor(() => expect(screen.queryByText('已添加参考资料')).not.toBeInTheDocument(), {
+      timeout: 3_000,
+    });
+  }, 10_000);
 
   it('连续添加期间点击画布空白不清除目标，切换节点后退出模式', async () => {
     const props = createProps({
@@ -2679,7 +2706,66 @@ describe('当前节点连续添加参考资源', () => {
     fireEvent.click(await screen.findByRole('button', { name: '添加参考资料' }));
     fireEvent.click(document.querySelector('.react-flow__pane')!);
     expect(props.onClearNodeSelection).not.toHaveBeenCalled();
+    expect(await screen.findByText('当前处于添加参考资料模式')).toBeVisible();
     view.rerender(<WorkflowCanvas {...props} selectedNode={sourceNode} />);
     expect(screen.queryByRole('button', { name: '完成添加' })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('当前处于添加参考资料模式')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('空白点击的提示可继续添加或退出，重复点击不会叠加提示', async () => {
+    const props = createProps({
+      nodes: [generateNode, sourceNode],
+      selectedNode: generateNode,
+      onAddNodeReference: vi.fn(),
+    });
+    render(<WorkflowCanvas {...props} />);
+    const picker = await screen.findByRole('button', { name: '添加参考资料' });
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByTestId('canvas-pane'));
+    fireEvent.click(screen.getByTestId('canvas-pane'));
+    expect(await screen.findAllByText('当前处于添加参考资料模式')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '继续添加资料' }));
+    expect(picker).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() =>
+      expect(screen.queryByText('当前处于添加参考资料模式')).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId(`canvas-node-${sourceNode.id}`));
+    expect(props.onAddNodeReference).toHaveBeenCalledExactlyOnceWith(
+      sourceNode.id,
+      generateNode.id,
+    );
+    expect(await screen.findByText('已添加参考资料')).toBeVisible();
+    fireEvent.click(screen.getByTestId('canvas-pane'));
+    fireEvent.click(await screen.findByRole('button', { name: '退出模式' }));
+    expect(picker).toHaveAttribute('aria-pressed', 'false');
+    expect(document.querySelector('.node-reference-pick-backdrop')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('当前处于添加参考资料模式')).not.toBeInTheDocument(),
+    );
+    expect(props.onClearNodeSelection).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('canvas-pane'));
+    expect(props.onClearNodeSelection).toHaveBeenCalledOnce();
+  });
+
+  it('提示待选择时按 Esc 同时关闭提示与蒙版', async () => {
+    render(
+      <WorkflowCanvas
+        {...createProps({
+          nodes: [generateNode, sourceNode],
+          selectedNode: generateNode,
+          onAddNodeReference: vi.fn(),
+        })}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '添加参考资料' }));
+    fireEvent.click(screen.getByTestId('canvas-pane'));
+    expect(await screen.findByRole('button', { name: '退出模式' })).toBeVisible();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(document.querySelector('.node-reference-pick-backdrop')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '退出模式' })).not.toBeInTheDocument(),
+    );
   });
 });

@@ -1,4 +1,12 @@
 /* 添加模式只改变命中与提示，不改变节点坐标、大小或资源内容。 */
+.node-reference-pick-backdrop {
+  background: rgb(15 23 42 / 22%);
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 4;
+}
+
 .canvas-area.is-reference-picking .react-flow__node {
   cursor: crosshair;
 }
@@ -28,4 +36,16 @@
 
 .node-reference-pick-banner button {
   flex-shrink: 0;
+}
+
+.node-reference-pick-message,
+.node-reference-pick-message-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.node-reference-pick-message-actions {
+  gap: 8px;
 }

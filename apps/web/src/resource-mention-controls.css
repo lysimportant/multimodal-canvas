@@ -35,7 +35,13 @@
 .resource-mention-picker-popover .resource-mention-picker-content.resource-mention-picker-scoped {
   height: min(480px, calc(100dvh - 24px));
   max-height: calc(100dvh - 24px);
-  width: min(400px, calc(100vw - 24px));
+  width: min(380px, calc(100vw - 24px));
+}
+
+.resource-mention-picker-scoped .resource-mention-search {
+  align-self: center;
+  box-sizing: border-box;
+  width: calc(100% - 20px);
 }
 
 .resource-mention-picker-scoped .resource-mention-picker-controls {

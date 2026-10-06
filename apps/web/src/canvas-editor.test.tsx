@@ -1001,8 +1001,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const prompt = within(quickEditor).getByRole('textbox', { name: '提示词' });
     await user.type(prompt, '根据 @ref');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
-    await user.click(screen.getByRole('tab', { name: '项目资源' }));
+    expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     await user.click(await screen.findByRole('option', { name: /reference.png/ }));
 
     expect((prompt as HTMLTextAreaElement).value).toMatch(/根据\s+@?reference(\.png)?/);

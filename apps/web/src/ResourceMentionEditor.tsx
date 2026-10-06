@@ -205,7 +205,9 @@ export function ResourceMentionEditor({
   const [activeIndex, setActiveIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [mediaFilter, setMediaFilter] = useState<(typeof RESOURCE_FILTERS)[number]>('all');
-  const [resourceScope, setResourceScope] = useState<'node' | 'project'>('node');
+  const [resourceScope, setResourceScope] = useState<'node' | 'project'>(() =>
+    initialRanges.length === 0 && connectedAssets.length === 0 ? 'project' : 'node',
+  );
   const [projectPage, setProjectPage] = useState({ key: '', page: 1 });
   const [projectRevision, setProjectRevision] = useState(0);
   const [projectResult, setProjectResult] = useState<{
@@ -410,6 +412,7 @@ export function ResourceMentionEditor({
     () => collectNodeSearchEntries(ranges, assets, connectedAssets, resourceRefs),
     [ranges, assets, connectedAssets, resourceRefs],
   );
+  const defaultResourceScope = nodeSearchEntries.length === 0 ? 'project' : 'node';
   const pickerQuery = searchQuery ?? trigger?.query ?? '';
   const query = pickerQuery.trim().toLocaleLowerCase();
   // 项目范围空搜索只预览前十项；实际查询不截断服务端匹配结果。
@@ -532,16 +535,17 @@ export function ResourceMentionEditor({
     setActiveIndex(0);
     setSearchQuery(null);
     setMediaFilter('all');
-    setResourceScope('node');
+    setResourceScope(defaultResourceScope);
     setProjectPage({ key: '', page: 1 });
-  }, []);
+  }, [defaultResourceScope]);
 
   useEffect(() => {
     setSearchQuery(null);
     setMediaFilter('all');
-    setResourceScope('node');
+    setResourceScope(defaultResourceScope);
     setActiveIndex(0);
   }, [
+    defaultResourceScope,
     pickerOpen,
     nodeId,
     trigger?.start,

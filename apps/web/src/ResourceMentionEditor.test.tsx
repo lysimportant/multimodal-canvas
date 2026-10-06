@@ -204,7 +204,7 @@ describe('ResourceMentionEditor', () => {
     });
   });
 
-  it('节点空态可切换项目，类型与范围联动且再次打开恢复默认节点', async () => {
+  it('节点空态默认项目资源，类型与范围联动且再次打开恢复项目默认', async () => {
     const user = userEvent.setup();
     render(
       <ResourceMentionEditor
@@ -215,11 +215,11 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox', { name: '提示词' });
     await user.type(editor, '@');
-    expect(screen.getByText('当前节点尚未引用资源')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getAllByRole('option')).toHaveLength(2);
     const controls = screen.getByRole('group', { name: '节点类型' }).parentElement;
     expect(controls).toContainElement(screen.getByRole('tablist', { name: '资源范围' }));
     await user.click(screen.getByRole('button', { name: '音频' }));
-    await user.click(screen.getByRole('button', { name: '切换到项目资源' }));
     expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.getByRole('option', { name: /声音样本/ })).toBeInTheDocument();
     await user.type(screen.getByRole('searchbox', { name: '搜索资源' }), '角色');
@@ -229,7 +229,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('option')).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.click(editor);
-    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -620,8 +620,7 @@ describe('ResourceMentionEditor', () => {
 
     await user.type(editor, '生成 @产');
     expect(screen.getByRole('listbox', { name: '选择资源' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: '节点资源' })).toHaveAttribute('aria-selected', 'true');
-    await user.click(screen.getByRole('tab', { name: '项目资源' }));
+    expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     editor.focus();
     expect(screen.getByRole('option', { name: /产品图/ })).toBeInTheDocument();
     await user.keyboard('{Enter}');

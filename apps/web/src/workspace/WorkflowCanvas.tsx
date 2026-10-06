@@ -2,6 +2,7 @@ import type { ProjectResourceSearch } from '../project-resource-search';
 import './canvas-drag-performance.css';
 import './node-reference-pick.css';
 import { Button } from '@multimodal-canvas/ui';
+import { message } from 'antd';
 import {
   Background,
   BackgroundVariant,
@@ -193,6 +194,8 @@ const FLOW_PAN_ON_DRAG = [0, 1];
 const FLOW_SELECTION_PAN_ON_DRAG = [1];
 /** 跨平台修饰键点击使用 React Flow 的增减选择语义。 */
 const FLOW_MULTI_SELECTION_KEYS = ['Control', 'Meta', 'Shift'];
+/** 空白连续点击复用常驻选择提示；结果消息另用自动 key 重新计时。 */
+const REFERENCE_PICK_MESSAGE_KEY = 'node-reference-pick';
 
 export type WorkflowCanvasProps = {
   /** 当前项目用于创建独立 Skill 优化任务。 */
@@ -459,46 +462,57 @@ export function WorkflowCanvas({
   /** 添加模式锁定目标，点击来源时不切换当前编辑器。 */
   const [referenceTargetId, setReferenceTargetId] = useState<string | null>(null);
   const [referencePickMessage, setReferencePickMessage] = useState<string | null>(null);
+  const [referenceMessageApi, referenceMessageHolder] = message.useMessage({ maxCount: 1 });
   const referenceTargetRef = useRef<string | null>(null);
   referenceTargetRef.current = referenceTargetId;
+  /** 结束模式并移除待选择提示；不改变当前节点、已添加引用或画布位置。 */
+  const exitReferencePick = useCallback(() => {
+    setReferenceTargetId(null);
+    setReferencePickMessage(null);
+    referenceMessageApi.destroy();
+  }, [referenceMessageApi]);
+  useEffect(() => () => referenceMessageApi.destroy(), [referenceMessageApi, referenceTargetId]);
   useEffect(() => {
     if (
       referenceTargetId &&
       (selectedNode?.id !== referenceTargetId ||
         !nodes.some((node) => node.id === referenceTargetId))
     ) {
-      setReferenceTargetId(null);
-      setReferencePickMessage(null);
+      exitReferencePick();
     }
-  }, [nodes, selectedNode?.id, referenceTargetId]);
+  }, [nodes, selectedNode?.id, referenceTargetId, exitReferencePick]);
   useEffect(() => {
     if (!referenceTargetId) return;
     const cancel = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      setReferenceTargetId(null);
-      setReferencePickMessage(null);
+      exitReferencePick();
     };
     window.addEventListener('keydown', cancel);
     return () => window.removeEventListener('keydown', cancel);
-  }, [referenceTargetId]);
+  }, [referenceTargetId, exitReferencePick]);
   /** 在节点内控件之前消费资源点击，避免预览、删除或选择改变目标。 */
   const handleReferenceClick = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
-      if (!referenceTargetId || !(event.target instanceof Element)) return;
+      if (!referenceTargetId || !onAddNodeReference || !(event.target instanceof Element)) return;
       const element = event.target.closest('.react-flow__node[data-id]');
       const sourceId = element?.getAttribute('data-id');
       if (!sourceId) return;
       event.preventDefault();
       event.stopPropagation();
       try {
-        onAddNodeReference?.(sourceId, referenceTargetId);
+        onAddNodeReference(sourceId, referenceTargetId);
         setReferencePickMessage(null);
+        void referenceMessageApi.success({
+          content: '已添加参考资料',
+        });
       } catch (error) {
-        setReferencePickMessage(error instanceof Error ? error.message : '添加资源失败，请重试');
+        const errorMessage = error instanceof Error ? error.message : '添加资源失败，请重试';
+        setReferencePickMessage(errorMessage);
+        void referenceMessageApi.error({ content: errorMessage });
       }
     },
-    [onAddNodeReference, referenceTargetId],
+    [onAddNodeReference, referenceTargetId, referenceMessageApi],
   );
   /** 单次 Tab 锁存一次框选，松鼠标或取消后恢复默认平移。 */
   const [tabSelectionActive, setTabSelectionActive] = useState(false);
@@ -690,16 +704,39 @@ export function WorkflowCanvas({
   const handleConnectStart = useCallback<OnConnectStart>((_event, params) => {
     connectionStartRef.current = params;
   }, []);
-  /** 拖线后的首个背景点击不清空新菜单，普通点击仍清除节点选择。 */
+  /** React Flow 排除平移拖动后才回调；添加模式提示选择去留，普通点击清除节点选择。 */
   const handlePaneClick = useCallback(() => {
-    if (referenceTargetRef.current) return;
+    if (referenceTargetRef.current) {
+      void referenceMessageApi.info({
+        key: REFERENCE_PICK_MESSAGE_KEY,
+        duration: 0,
+        content: (
+          <div className="node-reference-pick-message">
+            <span>当前处于添加参考资料模式</span>
+            <div className="node-reference-pick-message-actions">
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => referenceMessageApi.destroy(REFERENCE_PICK_MESSAGE_KEY)}
+              >
+                继续添加资料
+              </Button>
+              <Button size="sm" onClick={exitReferencePick}>
+                退出模式
+              </Button>
+            </div>
+          </div>
+        ),
+      });
+      return;
+    }
     if (suppressPaneClickRef.current) {
       suppressPaneClickRef.current = false;
       return;
     }
     setContextMenu(null);
     onClearNodeSelection();
-  }, [onClearNodeSelection]);
+  }, [onClearNodeSelection, referenceMessageApi, exitReferencePick]);
   /** 资源拖入画布保持复制语义，不随节点位置重新绑定。 */
   const handleDragOver = useCallback((event: DragEvent) => {
     event.preventDefault();
@@ -1275,19 +1312,15 @@ export function WorkflowCanvas({
         if (!shouldKeepNativeContextMenu(event.target)) event.preventDefault();
       }}
     >
+      {referenceMessageHolder}
+      {referenceTargetId && <div className="node-reference-pick-backdrop" aria-hidden="true" />}
       {referenceTargetId && (
         <div className="node-reference-pick-banner nodrag nopan nowheel" role="status">
           <span>
             {referencePickMessage ??
               '添加参考资料：连续点击画布中的图片、视频、音频或文字，按 Esc 或再次点击添加按钮退出'}
           </span>
-          <Button
-            type="button"
-            onClick={() => {
-              setReferenceTargetId(null);
-              setReferencePickMessage(null);
-            }}
-          >
+          <Button type="button" onClick={exitReferencePick}>
             完成添加
           </Button>
         </div>

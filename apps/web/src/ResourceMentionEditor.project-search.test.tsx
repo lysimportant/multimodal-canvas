@@ -110,7 +110,7 @@ describe('资源引用的完整项目检索', () => {
     expect(onDocumentChange).not.toHaveBeenCalled();
   });
 
-  it('默认节点范围不请求项目；切换后可翻到未加载页并引用冻结版本', async () => {
+  it('无节点引用时默认请求项目，可翻到未加载页并引用冻结版本', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const search = vi.fn<ProjectResourceSearch>(async ({ page }) =>
@@ -129,8 +129,7 @@ describe('资源引用的完整项目检索', () => {
       />,
     );
     await user.type(screen.getByRole('textbox'), '@');
-    expect(search).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('tab', { name: '项目资源' }));
+    expect(screen.getByRole('tab', { name: '项目资源' })).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('option', { name: /首页资源/ });
     expect(search).toHaveBeenLastCalledWith(
       expect.objectContaining({ page: 1, query: '', mediaType: 'all' }),

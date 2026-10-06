@@ -703,6 +703,24 @@ function expectSameNodeSize(
   expect(after.height).toBeCloseTo(before.height, 0);
 }
 
+/** 在 PC 画布上寻找未被节点、编辑器或工具栏覆盖的真实 pane 坐标。 */
+async function blankPanePoint(page: Page) {
+  return page.locator('.react-flow__pane').evaluate((pane) => {
+    const rect = pane.getBoundingClientRect();
+    for (let y = rect.top + 48; y < rect.bottom - 48; y += 48) {
+      for (let x = rect.left + 48; x < rect.right - 48; x += 48) {
+        if (document.elementFromPoint(x, y) === pane) return { x, y };
+      }
+    }
+    throw new Error('找不到可用于点击和平移的画布空白区域');
+  });
+}
+
+/** 只匹配 Ant Design 当前可见的提示；退出动画会短暂保留上一条 notice DOM。 */
+function visibleMessage(page: Page, text: string) {
+  return page.locator('.ant-message-notice:visible').filter({ hasText: text });
+}
+
 /** 统计字符串中的非重叠资源名称次数。 */
 function occurrenceCount(value: string, name: string) {
   return value.split(name).length - 1;
@@ -897,7 +915,7 @@ test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原�
   const caretBox = await caretCharacterRect(prompt);
   expect(promptBox).not.toBeNull();
   expect(pickerBox).not.toBeNull();
-  expect(pickerBox!.width).toBeCloseTo(400, 0);
+  expect(pickerBox!.width).toBeCloseTo(380, 0);
   expect(pickerBox!.height).toBeCloseTo(480, 0);
   expect(pickerBox!.x).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
@@ -1051,7 +1069,7 @@ test('1024 PC 放大 Dialog 的顶层 picker 保持搜索焦点、可选中且 E
 
   const pickerBox = await picker.boundingBox();
   expect(pickerBox).not.toBeNull();
-  expect(pickerBox!.width).toBeCloseTo(400, 0);
+  expect(pickerBox!.width).toBeCloseTo(380, 0);
   expect(pickerBox!.height).toBeCloseTo(480, 0);
   expect(pickerBox!.x).toBeGreaterThanOrEqual(8);
   expect(pickerBox!.y).toBeGreaterThanOrEqual(8);
@@ -1888,16 +1906,80 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
   const pick = editor.getByRole('button', { name: '添加参考资料' });
   await pick.click();
   await expect(pick).toHaveAttribute('aria-pressed', 'true');
+  const backdrop = page.locator('.node-reference-pick-backdrop');
+  const banner = page.locator('.node-reference-pick-banner');
+  await expect(backdrop).toBeVisible();
+  await expect(backdrop).toHaveCSS('pointer-events', 'none');
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('添加参考资料');
+
+  const blank = await blankPanePoint(page);
+  await page.mouse.click(blank.x, blank.y);
+  const modeMessage = visibleMessage(page, '当前处于添加参考资料模式');
+  await expect(modeMessage).toBeVisible();
+  await expect(page.getByRole('button', { name: '继续添加资料', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '退出模式', exact: true })).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath('reference-pick-mode-guidance.png'),
+    animations: 'disabled',
+  });
+  await page.getByRole('button', { name: '继续添加资料', exact: true }).click();
+  await expect(modeMessage).toBeHidden();
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
+  await expect(backdrop).toBeVisible();
+
+  const viewport = page.locator('.react-flow__viewport');
+  const transformBeforePan = await viewport.evaluate(
+    (element) => getComputedStyle(element).transform,
+  );
+  const paneBox = (await page.locator('.react-flow__pane').boundingBox())!;
+  const panDelta = blank.x + 96 < paneBox.x + paneBox.width ? 80 : -80;
+  await page.mouse.move(blank.x, blank.y);
+  await page.mouse.down();
+  await page.mouse.move(blank.x + panDelta, blank.y, { steps: 6 });
+  await page.mouse.up();
+  await expect
+    .poll(() => viewport.evaluate((element) => getComputedStyle(element).transform))
+    .not.toBe(transformBeforePan);
+  await expect(modeMessage).toBeHidden();
+
   for (const index of [1, 2, 1]) {
     await page
       .locator(`.react-flow__node[data-id="pick-${index}"]`)
       .click({ position: { x: index === 1 ? 40 : 200, y: 50 } });
     await expect(editor).toBeVisible();
+    const successMessage = visibleMessage(page, '已添加参考资料');
+    await expect(successMessage).toHaveCount(1);
+    await expect(successMessage).toBeVisible();
   }
   await expect(editor.getByRole('article')).toHaveCount(2);
   await expect.poll(() => fixture.canvas().edges.length).toBe(2);
+  await page.screenshot({
+    path: test.info().outputPath('reference-pick-added.png'),
+    animations: 'disabled',
+  });
+  const postAddBlank = await blankPanePoint(page);
+  await page.mouse.click(postAddBlank.x, postAddBlank.y);
+  await expect(modeMessage).toBeVisible();
+  await expect(visibleMessage(page, '已添加参考资料')).toHaveCount(0);
+  await page.getByRole('button', { name: '继续添加资料', exact: true }).click();
+  await expect(modeMessage).toBeHidden();
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await expect(pick).toHaveAttribute('aria-pressed', 'false');
+  await expect(backdrop).toHaveCount(0);
+  await expect(banner).toHaveCount(0);
+  await expect(visibleMessage(page, '已添加参考资料')).toHaveCount(0);
+
+  await pick.click();
+  const exitBlank = await blankPanePoint(page);
+  await page.mouse.click(exitBlank.x, exitBlank.y);
+  await expect(modeMessage).toBeVisible();
+  await page.getByRole('button', { name: '退出模式', exact: true }).click();
+  await expect(pick).toHaveAttribute('aria-pressed', 'false');
+  await expect(backdrop).toHaveCount(0);
+  await expect(banner).toHaveCount(0);
+  await expect(modeMessage).toBeHidden();
   const strip = editor.getByLabel('引用资源', { exact: true });
   const children = await strip.evaluate((element) =>
     Array.from(element.children)
@@ -1959,8 +2041,8 @@ test('PC 连续添加参考、编号拖拽排序、搜索范围及保存重载',
   ).toEqual([]);
 });
 
-/** 空词只展示 10 项且不分页；关键词按真实匹配总数翻页，并能搜索引用第 65 项。 */
-test('项目资源搜索跨越首页并按服务端总数翻页', async ({ page, baseURL }) => {
+/** 零节点引用默认项目资源；空词只展示 10 项，关键词按真实匹配总数翻页。 */
+test('零引用默认项目资源并跨越首页按服务端总数翻页', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const catalog = [
     assets[0]!,
@@ -1968,24 +2050,38 @@ test('项目资源搜索跨越首页并按服务端总数翻页', async ({ page,
       asset('paged-' + index, index === 63 ? '跨页隐藏参考图' : '分页参考图 ' + index, 'image'),
     ),
   ];
-  const fixture = await installFixture(page, baseURL, initialCanvas(), catalog);
+  const canvas = initialCanvas();
+  canvas.nodes[0]!.data.promptDocument = {
+    version: 1,
+    blocks: [{ type: 'text', text: '从项目资源中寻找参考。' }],
+  };
+  const fixture = await installFixture(page, baseURL, canvas, catalog);
   await page.goto('/projects/' + project.id);
   const { editor } = await openQuickEditor(page);
   const prompt = editor.getByRole('textbox', { name: '提示词' });
   await prompt.press('Control+End');
   await prompt.pressSequentially(' @');
   const picker = page.locator('.resource-mention-picker');
-  await expect(picker.getByRole('tab', { name: '节点资源', exact: true })).toHaveAttribute(
+  await expect(picker.getByRole('tab', { name: '项目资源', exact: true })).toHaveAttribute(
     'aria-selected',
     'true',
   );
-  await expect(picker.getByRole('option')).toHaveCount(1);
-  await picker.getByRole('tab', { name: '项目资源', exact: true }).click();
+  await expect(picker.getByRole('tab', { name: '节点资源', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'false',
+  );
   const searchbox = picker.getByRole('searchbox', { name: '搜索资源' });
   const pagination = picker.getByRole('navigation', { name: '项目资源分页' });
   const nextPage = picker.getByRole('button', { name: '下一页项目资源' });
   await expect(searchbox).toHaveValue('');
   await expect(picker.getByRole('option')).toHaveCount(10);
+  const pickerBox = (await picker.boundingBox())!;
+  const searchPanelBox = (await picker.locator('.resource-mention-search').boundingBox())!;
+  expect(searchPanelBox.width).toBeCloseTo(pickerBox.width - 20, 0);
+  expect(searchPanelBox.x + searchPanelBox.width / 2).toBeCloseTo(
+    pickerBox.x + pickerBox.width / 2,
+    0,
+  );
   await expect(pagination).toHaveCount(0);
   await expect(nextPage).toHaveCount(0);
   await expect(picker.getByRole('option', { name: /跨页隐藏参考图/ })).toHaveCount(0);
