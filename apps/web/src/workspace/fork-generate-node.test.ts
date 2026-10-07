@@ -33,7 +33,7 @@ function imageNode(
 }
 
 describe('fork-generate-node', () => {
-  it('deep-clones complete 4K image output parameters and model identity', () => {
+  it('图片分叉保存完整像素，深拷贝其他配置且保留父节点旧参数', () => {
     const parameters = {
       resolution: '4k',
       quality: 'high',
@@ -55,8 +55,13 @@ describe('fork-generate-node', () => {
     expect(inherited).toMatchObject({
       modelAlias: 'gpt-image-2.5-sunburst',
       credentialId: 'cred_4k',
-      parameters,
+      parameters: {
+        size: '2160x3840',
+        quality: 'high',
+        providerOptions: parameters.providerOptions,
+      },
     });
+    expect(parameters).toMatchObject({ resolution: '4k', aspectRatio: '9:16' });
     expect(inheritedParameters).not.toBe(parameters);
     expect(inheritedParameters?.providerOptions).not.toBe(parameters.providerOptions);
     expect(inheritedParameters?.providerOptions.nested).not.toBe(parameters.providerOptions.nested);
@@ -96,7 +101,7 @@ describe('fork-generate-node', () => {
     expect(inherited).toMatchObject({
       modelAlias: 'image-edit-model',
       credentialId: 'cred_1',
-      parameters: { quality: '2k' },
+      parameters: { size: '2048x2048' },
       inferenceStrength: 'high',
     });
     expect(inherited).not.toHaveProperty('prompt');
@@ -105,6 +110,14 @@ describe('fork-generate-node', () => {
     expect(inherited).not.toHaveProperty('resultAsset');
     expect(inherited).not.toHaveProperty('assetId');
     expect(inherited).not.toHaveProperty('contentUrl');
+  });
+
+  it('未设置尺寸的图片不臆造像素，视频分辨率保持原合同', () => {
+    expect(inheritedGenerateData(imageNode().data)).not.toHaveProperty('parameters');
+    const parameters = { resolution: '720p', aspectRatio: '16:9', duration: 10 };
+    expect(
+      inheritedGenerateData({ ...imageNode().data, mediaType: 'video', parameters }),
+    ).toMatchObject({ parameters });
   });
 
   it('图片分叉只清理图片提及，保留文字和其他类型引用且不修改父文档', () => {

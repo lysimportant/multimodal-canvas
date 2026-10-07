@@ -1,25 +1,27 @@
 # 图片输出尺寸与节点参数合同
 
-## 清晰度、比例和生成质量
+## 像素分辨率、比例和生成质量
 
-图片清晰度是像素档位，不是 Images 接口的 `quality`。新编辑写入 `parameters.resolution`，`parameters.aspectRatio` 表示目标比例；`quality` 独立保留供应商的采样质量。旧画布的 `quality: 1k/2k/3k/4k` 仍能只读解析，不在打开或刷新时回写。
+图片分辨率使用明确的宽高像素，例如 `2160x3840`，新编辑直接写入官方 Images 字段 `parameters.size`。界面的分辨率选项和参数摘要显示完整像素，不再使用 K 档简称。比例选择只用于计算新尺寸，不再额外保存图片 `aspectRatio` 或 `resolution`；`quality` 独立保留供应商的生成质量。
+
+旧画布的 K 档 `resolution`、`quality` 和比例别名仍能只读解析为完整像素，打开或刷新不会回写。用户明确修改图片参数时才转存 `size` 并移除对应旧别名；历史 Run、素材和结果不迁移。实现及验证见[像素分辨率检查点](image-pixel-size-checkpoint.md)。
 
 统一解析器供 Web、API 和 Provider 共用。文生图 `/v1/images/generations` 使用 JSON，图生图 `/v1/images/edits` 使用 multipart，两者都把明确像素写入 `size`，不再透传清晰度字符串或未定义的 `aspect_ratio`。
 
-| 档位      | 请求长边 | 9:16 请求像素 | 16:9 请求像素 | 21:9 请求像素 |
-| --------- | -------: | ------------- | ------------- | ------------- |
-| 1K        |     1024 | 576×1024      | 1024×576      | 1024×432      |
-| 2K        |     2048 | 1152×2048     | 2048×1152     | 2048×880      |
-| 3K        |     3072 | 1728×3072     | 3072×1728     | 3072×1312     |
-| 4K（UHD） |     3840 | **2160×3840** | **3840×2160** | **3840×1648** |
+| 请求长边 | 9:16 请求像素 | 16:9 请求像素 | 21:9 请求像素 |
+| -------: | ------------- | ------------- | ------------- |
+|  1024 px | 576×1024      | 1024×576      | 1024×432      |
+|  2048 px | 1152×2048     | 2048×1152     | 2048×880      |
+|  3072 px | 1728×3072     | 3072×1728     | 3072×1312     |
+|  3840 px | **2160×3840** | **3840×2160** | **3840×1648** |
 
-这是档位计算规则，不是所有模型都支持的尺寸清单。短边按 16 px 对齐，因此部分比例有微小取整误差；界面显示“请求像素”，不能把它当成已有结果的真实尺寸。只选清晰度时使用明确的 1:1 默认比例；只选比例时按 1K 长边计算，再按模型校验。完全未设置时不臆造供应商尺寸。
+这是旧档位和比例的像素换算规则，不是所有模型都支持的尺寸清单。短边按 16 px 对齐，因此部分比例有微小取整误差；界面显示“请求像素”，不能把它当成已有结果的真实尺寸。旧参数只选清晰度时按 1:1 解析；只选比例时按 1024 px 长边计算，再按模型校验。完全未设置时不臆造供应商尺寸。
 
 显式 `size/image_size/imageSize` 及旧 `resolution: WIDTHxHEIGHT` 保持兼容。尺寸、清晰度或比例互相矛盾时明确拒绝，不静默覆盖，也不把不支持的高分辨率缩小成 1024。
 
 ## 已确认模型边界
 
-2026-09-30 本地取证实际读取了官方 [Images generation](https://developers.openai.com/api/reference/resources/images/methods/generate)、[Images edit](https://developers.openai.com/api/reference/resources/images/methods/edit) 和 [图像生成指南](https://developers.openai.com/api/docs/guides/image-generation)。
+2026-09-30 本地取证实际读取了官方 [Images generation](https://developers.openai.com/api/reference/resources/images/methods/generate)、[Images edit](https://developers.openai.com/api/reference/resources/images/methods/edit) 和 [图像生成指南](https://developers.openai.com/api/docs/guides/image-generation)。2026-10-07 重新读取 Images generation，确认尺寸请求仍使用 `size: "WIDTHxHEIGHT"`，`quality` 为独立字段。
 
 - `gpt-image-2`、`gpt-image-2-2026-04-21`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare` 及两个 2.5 模型的 `2026-09-08` 快照：宽高为 16 的倍数、最长边不超过 3840、长短边比不超过 3:1、总像素 655360–8294400。超过 2560×1440 的分辨率属于实验性支持。
 - 因此 4K 的 9:16、16:9、21:9 可构造合法请求；4K 方图或 4:3/3:2 超过总像素上限，3K 方图也超限。1K 的 9:16、16:9、21:9 低于最小像素数，必须重新选择，而不是偷偷改变长边。
@@ -67,4 +69,4 @@
 
 无数据库迁移或依赖升级，代码不包含画布、历史 Run 或资产的数据迁移。旧清晰度字段可读；只有用户明确编辑参数时才清理对应旧别名。既有图片不会自动变成 4K，也不会被本地放大。验证结果与当前进度见 [修复检查点](image-output-parameters-checkpoint.md)。
 
-本机更新仅替换 API、Worker、Web，保留数据服务和旧应用镜像。回滚前停止新提交并确认在途任务，不回退数据库、画布或资产，不重放历史请求。视频滑块这一轮的回滚目标 f7dd2f2 已包含图片尺寸修复；只有继续回退到图片修复之前的 Provider，才会恢复旧清晰度映射缺陷。两个交付阶段不能混用回滚结论。
+此前本机更新仅替换 API、Worker、Web，保留数据服务和旧应用镜像。回滚前停止新提交并确认在途任务，不回退数据库、画布或资产，不重放历史请求。视频滑块交付的回滚目标 f7dd2f2 已包含图片尺寸修复；只有继续回退到图片修复之前的 Provider，才会恢复旧清晰度映射缺陷。2026-10-07 的完整像素菜单调整仅完成代码与本地验证，尚未更新运行中的部署，回滚边界另见[像素分辨率检查点](image-pixel-size-checkpoint.md)。

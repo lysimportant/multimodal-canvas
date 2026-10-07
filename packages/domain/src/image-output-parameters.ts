@@ -224,6 +224,41 @@ export function resolveImageOutputParameters(
 }
 
 /**
+ * 将图片输出字段规范为 Provider 官方的 `size` 与原生 `quality`，保留其它参数。
+ *
+ * @param parameters 节点或冻结 Run 参数；函数复制输入，不修改原对象。
+ * @param modelAlias 可选精确模型名；沿用共享解析器的已知尺寸边界。
+ * @returns 删除图片尺寸、清晰度、比例和质量别名后的新对象；已解析尺寸写入
+ * `size`，供应商原生质量写入 `quality`，其它字段及假值保持不变。
+ * @throws ImageOutputParameterError 参数非法、别名冲突或超出已知模型尺寸边界时拒绝。
+ * @example normalizeImageOutputParameters({ size: '2160x3840', quality: 'high' })
+ * // { size: '2160x3840', quality: 'high' }
+ */
+export function normalizeImageOutputParameters(
+  parameters: Readonly<Record<string, unknown>>,
+  modelAlias?: string,
+): Record<string, unknown> {
+  const output = resolveImageOutputParameters(parameters, modelAlias);
+  const normalized = { ...parameters };
+  for (const key of [
+    'size',
+    'image_size',
+    'imageSize',
+    'resolution',
+    'quality',
+    'image_quality',
+    'imageQuality',
+    'aspectRatio',
+    'aspect_ratio',
+  ]) {
+    delete normalized[key];
+  }
+  if (output.size !== undefined) normalized.size = output.size;
+  if (output.quality !== undefined) normalized.quality = output.quality;
+  return normalized;
+}
+
+/**
  * 根据明确公开的模型尺寸合同预检，不向更小的尺寸回退。
  * @param dimensions 已解析的正整数像素。
  * @param modelAlias 可选精确模型 ID；未知别名由其网关按独立合同受理。

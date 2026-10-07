@@ -35,6 +35,30 @@ function sourceNode(count = 3): AssetFlowNode {
 }
 
 describe('批量生成画布', () => {
+  it('批量图片的新成员保存官方 size，不回写原节点的 K 档或共享嵌套参数', () => {
+    const source = sourceNode();
+    source.data.parameters = {
+      resolution: '4k',
+      aspectRatio: '9:16',
+      quality: 'high',
+      providerOptions: { enabled: false },
+    };
+    const original = structuredClone(source);
+    const result = createGenerationBatch(source, [source], []);
+    expect(result.targets[0]!.data.parameters).toEqual(original.data.parameters);
+    for (const sibling of result.targets.slice(1)) {
+      expect(sibling.data.parameters).toEqual({
+        size: '2160x3840',
+        quality: 'high',
+        providerOptions: { enabled: false },
+      });
+      expect(sibling.data.parameters?.providerOptions).not.toBe(
+        source.data.parameters.providerOptions,
+      );
+    }
+    expect(source).toEqual(original);
+  });
+
   it.each(['2026-09-01T08:00:00.000Z', undefined])(
     '批量子节点记录本次创建时间且不修改原节点：%s',
     (createdAt) => {

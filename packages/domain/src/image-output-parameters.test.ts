@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { ImageOutputParameterError, resolveImageOutputParameters } from './image-output-parameters';
+import {
+  ImageOutputParameterError,
+  normalizeImageOutputParameters,
+  resolveImageOutputParameters,
+} from './image-output-parameters';
 
 describe('resolveImageOutputParameters', () => {
   it.each([
@@ -178,4 +182,52 @@ describe('automatic size model compatibility', () => {
       expect(resolveImageOutputParameters({ size: 'auto' }, model)).toEqual({ size: 'auto' });
     },
   );
+});
+
+describe('normalizeImageOutputParameters', () => {
+  it('只保留官方 size 与真实 quality，并原样保留其它字段和假值', () => {
+    const parameters = {
+      size: '2160x3840',
+      image_size: '2160x3840',
+      imageSize: '2160x3840',
+      resolution: '4k',
+      quality: 'high',
+      image_quality: 'HIGH',
+      imageQuality: ' high ',
+      aspectRatio: '9:16',
+      aspect_ratio: '9:16',
+      prompt: 'Keep the subject unchanged.',
+      inferenceStrength: 'medium',
+      seed: 0,
+      useWatermark: false,
+      providerOption: '',
+    };
+    const before = structuredClone(parameters);
+
+    expect(normalizeImageOutputParameters(parameters, 'gpt-image-2.5-sunburst')).toEqual({
+      prompt: 'Keep the subject unchanged.',
+      inferenceStrength: 'medium',
+      seed: 0,
+      useWatermark: false,
+      providerOption: '',
+      size: '2160x3840',
+      quality: 'high',
+    });
+    expect(parameters).toEqual(before);
+  });
+
+  it('兼容旧 K 档但不放宽精确模型边界', () => {
+    expect(
+      normalizeImageOutputParameters(
+        { quality: '4k', aspectRatio: '9:16', providerOption: 'preserved' },
+        'gpt-image-2.5-sunburst',
+      ),
+    ).toEqual({ size: '2160x3840', providerOption: 'preserved' });
+    expect(() =>
+      normalizeImageOutputParameters(
+        { size: '3840x3840', quality: 'high' },
+        'gpt-image-2.5-sunburst',
+      ),
+    ).toThrow(ImageOutputParameterError);
+  });
 });

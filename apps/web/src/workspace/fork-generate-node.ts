@@ -7,6 +7,7 @@ import {
   getEffectivePromptDocument,
   isImageEditSourceNode,
   nodeHasEcho,
+  normalizeImageOutputParameters,
   promptDocumentSchema,
   renderPromptDocument,
 } from '@multimodal-canvas/domain';
@@ -66,16 +67,25 @@ export function canForkNewNode(node: AssetFlowNode): boolean {
 
 /**
  * 子节点从父节点继承的生成配置，不含产物字段、提示词和资源引用。
+ * 图片尺寸转为明确 size；不改父节点，模型尺寸范围仍在生成前校验。
  * @param data 父节点 data。
  * @returns 可写入 createGenerateNode 的覆盖字段。
+ * @throws ImageOutputParameterError 图片参数格式非法或别名冲突，拒绝继承不明确的尺寸。
  */
 export function inheritedGenerateData(data: AssetFlowNode['data']): Partial<AssetFlowNode['data']> {
+  const parameters = data.parameters
+    ? structuredClone(
+        data.mediaType === 'image'
+          ? normalizeImageOutputParameters(data.parameters)
+          : data.parameters,
+      )
+    : undefined;
   return {
     ...(data.generationCount !== undefined ? { generationCount: data.generationCount } : {}),
     ...(data.promptSkillId ? { promptSkillId: data.promptSkillId } : {}),
     ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
     ...(data.credentialId ? { credentialId: data.credentialId } : {}),
-    ...(data.parameters ? { parameters: structuredClone(data.parameters) } : {}),
+    ...(parameters ? { parameters } : {}),
     ...(data.inferenceStrength ? { inferenceStrength: data.inferenceStrength } : {}),
   };
 }

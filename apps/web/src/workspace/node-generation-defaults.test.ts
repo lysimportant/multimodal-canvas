@@ -40,7 +40,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual(original.parameters);
   });
 
-  it('图片清晰度和原生质量按独立枚举初始化，不把原生质量当作尺寸', () => {
+  it('新图片把目录 K 档和比例转换为官方像素尺寸，原生质量独立保存', () => {
     const configured = applyNodeGenerationDefaults(
       data('image'),
       model('image', {
@@ -50,10 +50,11 @@ describe('applyNodeGenerationDefaults', () => {
       }),
     );
     expect(configured.parameters).toEqual({
-      resolution: '2k',
+      size: '1152x2048',
       quality: 'high',
-      aspectRatio: '9:16',
     });
+    expect(configured.parameters).not.toHaveProperty('resolution');
+    expect(configured.parameters).not.toHaveProperty('aspectRatio');
   });
 
   it.each([
@@ -93,7 +94,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(original.parameters).toBeUndefined();
   });
 
-  it('跳过空项、重复项和目录禁用项，只有唯一可用项时选择该项', () => {
+  it('跳过空项、重复项和目录禁用项，只把原生质量保存为 quality', () => {
     const configured = applyNodeGenerationDefaults(
       data('image'),
       model('image', {
@@ -108,7 +109,7 @@ describe('applyNodeGenerationDefaults', () => {
         aspectRatios: [{ value: '1:1', available: false }, '16:9'],
       }),
     );
-    expect(configured.parameters).toEqual({ quality: 'medium', aspectRatio: '16:9' });
+    expect(configured.parameters).toEqual({ quality: 'medium' });
   });
 
   it('已有参数、未知字段与历史推理强度不被默认值覆盖', () => {
@@ -302,7 +303,7 @@ describe('applyNodeGenerationDefaults', () => {
     }
   });
 
-  it('新建节点沿用画布上一个同类节点的模型与参数', () => {
+  it('新建图片沿用时把历史 K 档规范为 size，且不修改源节点', () => {
     const previous = {
       id: 'node_old',
       type: 'image',
@@ -312,7 +313,7 @@ describe('applyNodeGenerationDefaults', () => {
         mode: 'generate',
         modelAlias: 'prev-model',
         credentialId: 'cred-1',
-        parameters: { quality: '4k', aspectRatio: '9:16' },
+        parameters: { quality: '4k', aspectRatio: '9:16', providerOption: false },
         inferenceStrength: 'medium',
       },
     } as const;
@@ -320,17 +321,22 @@ describe('applyNodeGenerationDefaults', () => {
     expect(seed).toEqual({
       modelAlias: 'prev-model',
       credentialId: 'cred-1',
-      parameters: { quality: '4k', aspectRatio: '9:16' },
+      parameters: { size: '2160x3840', providerOption: false },
       inferenceStrength: 'medium',
     });
     const configured = applyNodeGenerationDefaults(
       { ...data('image'), ...seed },
       model('image', { quality: ['1k', '2k', '4k'], aspectRatios: ['1:1', '9:16'] }),
     );
-    expect(configured.parameters).toEqual({ quality: '4k', aspectRatio: '9:16' });
+    expect(configured.parameters).toEqual({ size: '2160x3840', providerOption: false });
+    expect(previous.data.parameters).toEqual({
+      quality: '4k',
+      aspectRatio: '9:16',
+      providerOption: false,
+    });
   });
 
-  it('选项文案是默认值时改用实际取值，不把默认值三个字展示给用户', () => {
+  it('目录文案是默认值时仍用实际档位计算像素', () => {
     const configured = applyNodeGenerationDefaults(
       data('image'),
       model('image', {
@@ -341,6 +347,6 @@ describe('applyNodeGenerationDefaults', () => {
         aspectRatios: ['1:1'],
       }),
     );
-    expect(configured.parameters).toEqual({ resolution: '1k', aspectRatio: '1:1' });
+    expect(configured.parameters).toEqual({ size: '1024x1024' });
   });
 });

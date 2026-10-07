@@ -1,4 +1,4 @@
-import { getNodeGenerationCount } from '@multimodal-canvas/domain';
+import { getNodeGenerationCount, normalizeImageOutputParameters } from '@multimodal-canvas/domain';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { toCanvasDocument, withNodeAutoGrowthLimit } from '../canvas-utils';
 import { getNodePlacementRightOf } from './canvas-position';
@@ -20,6 +20,7 @@ export type GenerationBatch = {
  * @param edges 当前画布连线，复制输入边，不复制输出边。
  * @returns 新画布与运行目标；新子节点记录本次创建时间，原节点时间不变；数量为 1 时保持原图。
  * @throws RangeError 数量不在允许的整数范围内。
+ * @throws ImageOutputParameterError 图片子节点的尺寸参数非法或不符合已知模型合同。
  */
 export function createGenerationBatch(
   source: AssetFlowNode,
@@ -62,6 +63,12 @@ export function createGenerationBatch(
     generationBatchExpanded: _expanded,
     ...configuration
   } = saved;
+  if (configuration.mediaType === 'image' && configuration.parameters) {
+    configuration.parameters = normalizeImageOutputParameters(
+      configuration.parameters,
+      configuration.modelAlias,
+    );
+  }
   const inputs = edges.filter((edge) => edge.target === source.id);
   for (let index = 1; index < count; index += 1) {
     const previous = targets[index - 1]!;

@@ -192,6 +192,7 @@ describe.each([false, true])('image output HTTP to provider (edit=%s)', (edit) =
   it.each([
     { quality: '4k', aspectRatio: '9:16' },
     { resolution: '4k', quality: 'xhigh', aspectRatio: '9:16' },
+    { size: '2160x3840', quality: 'high' },
   ])('freezes saved parameters and sends their exact pixels once: %j', async (parameters) => {
     const fixture = await setup(parameters, edit);
     const before = await fixture.projectStore.getCanvas(fixture.project.id, {
@@ -214,8 +215,9 @@ describe.each([false, true])('image output HTTP to provider (edit=%s)', (edit) =
       ? Object.fromEntries((init!.body as FormData).entries())
       : JSON.parse(init!.body as string);
     expect(body.size).toBe('2160x3840');
-    expect(body.quality).toBe(parameters.quality === '4k' ? undefined : 'xhigh');
+    expect(body.quality).toBe(parameters.quality === '4k' ? undefined : parameters.quality);
     expect(body).not.toHaveProperty('aspect_ratio');
+    expect(body).not.toHaveProperty('aspectRatio');
     expect(body).not.toHaveProperty('resolution');
     expect(
       await fixture.projectStore.getCanvas(fixture.project.id, { ownerId: fixture.ownerId }),

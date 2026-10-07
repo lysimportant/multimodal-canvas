@@ -116,7 +116,7 @@ async function installFixture(
         method === 'GET' &&
         !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
         (path === `/projects/${project.id}` ||
-          /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|favicon\.)/.test(
+          /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|brand\/|favicon\.)/.test(
             path,
           ))
       )
@@ -317,24 +317,35 @@ for (const viewport of [
     test.describe.configure({ timeout: 60_000 });
 
     for (const presentation of ['快捷', '完整'] as const) {
-      test(`${presentation}编辑器显示请求像素，明确改比例后保存新字段并保持刷新`, async ({
+      test(`${presentation}编辑器显示完整分辨率，改比例后保存官方 size 并保持刷新`, async ({
         page,
         baseURL,
       }, testInfo) => {
         const fixture = await installFixture(page, baseURL, {
           parameters: { quality: '4k', aspectRatio: '21:9' },
         });
+        const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+        const initialBounds = (await node.boundingBox())!;
         if (presentation === '完整')
           await page.getByRole('button', { name: '打开完整编辑器' }).click();
         await openParameters(page);
         await expect(page.getByLabel('请求像素')).toHaveText('3840 × 1648');
+        await expect(
+          page.getByRole('combobox', { name: /^图片分辨率：3840\s*×\s*1648$/ }),
+        ).toBeVisible();
+        await expect(page.getByRole('region', { name: '生成参数' })).not.toContainText(
+          /\b[1-4]K\b/i,
+        );
         expect(fixture.patches).toHaveLength(0);
         expect(fixture.submissions).toHaveLength(0);
         await choose(page, '图片比例', /9:16/);
         await expect(page.getByLabel('请求像素')).toHaveText('2160 × 3840');
         await expect
           .poll(() => fixture.canvas().nodes[0]!.data.parameters)
-          .toEqual({ resolution: '4k', aspectRatio: '9:16' });
+          .toEqual({ size: '2160x3840' });
+        const updatedBounds = (await node.boundingBox())!;
+        expect(updatedBounds.width).toBeCloseTo(initialBounds.width, 2);
+        expect(updatedBounds.height).toBeCloseTo(initialBounds.height, 2);
         await page.screenshot({
           path: testInfo.outputPath('request-pixels.png'),
           animations: 'disabled',
@@ -346,20 +357,47 @@ for (const viewport of [
           modelAlias: 'gpt-image-2.5-sunburst',
           credentialId,
           parameters: {
-            resolution: '4k',
-            aspectRatio: '9:16',
+            size: '2160x3840',
             prompt: 'Create a scene with soft light.',
           },
         });
         expect(fixture.submissions[0]!.parameters).not.toHaveProperty('quality');
+        expect(fixture.submissions[0]!.parameters).not.toHaveProperty('resolution');
+        expect(fixture.submissions[0]!.parameters).not.toHaveProperty('aspectRatio');
         await page.reload();
         await selectNode(page);
         await openParameters(page);
         await expect(page.getByLabel('请求像素')).toHaveText('2160 × 3840');
+        await expect(
+          page.getByRole('combobox', { name: /^图片分辨率：2160\s*×\s*3840$/ }),
+        ).toBeVisible();
+        await expect(page.getByRole('region', { name: '生成参数' })).not.toContainText(
+          /\b[1-4]K\b/i,
+        );
         expect(fixture.submissions).toHaveLength(1);
         expect(fixture.errors).toEqual([]);
       });
     }
+
+    test('旧 K 档画布保持原值，新生成提交只使用明确 size', async ({ page, baseURL }) => {
+      const parameters = { resolution: '4k', aspectRatio: '9:16', quality: 'high' };
+      const fixture = await installFixture(page, baseURL, { parameters, nativeQuality: true });
+      await openParameters(page);
+      await expect(
+        page.getByRole('combobox', { name: /^图片分辨率：2160\s*×\s*3840$/ }),
+      ).toBeVisible();
+      expect(fixture.patches).toHaveLength(0);
+      await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+      await page.getByRole('button', { name: '生成', exact: true }).click();
+      await expect.poll(() => fixture.submissions.length).toBe(1);
+      expect(fixture.submissions[0]!.parameters).toEqual({
+        size: '2160x3840',
+        quality: 'high',
+        prompt: 'Create a scene with soft light.',
+      });
+      expect(fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
+      expect(fixture.errors).toEqual([]);
+    });
 
     test('已知模型不支持的历史组合不静默改写，用户改比例后才可生成', async ({
       page,
@@ -383,10 +421,7 @@ for (const viewport of [
       expect(fixture.errors).toEqual([]);
     });
 
-    test('显式改清晰度清除旧 size，真实质量保持独立且目录 max 原值提交', async ({
-      page,
-      baseURL,
-    }) => {
+    test('像素分辨率清除旧别名，真实质量保持独立且目录 max 原值提交', async ({ page, baseURL }) => {
       const fixture = await installFixture(page, baseURL, {
         parameters: {
           size: '1024x1024',
@@ -397,18 +432,17 @@ for (const viewport of [
         nativeQuality: true,
       });
       await openParameters(page);
-      await choose(page, '图片清晰度', /4K/);
-      await expect(page.getByText(/总像素范围/)).toBeVisible();
+      await choose(page, '图片分辨率', /2048\s*×\s*2048/);
       await choose(page, '图片比例', /9:16/);
+      await choose(page, '图片分辨率', /2160\s*×\s*3840/);
       await choose(page, '生成质量', /^MAX$/);
       await expect(page.getByLabel('请求像素')).toHaveText('2160 × 3840');
       await page.getByRole('button', { name: '媒体参数', exact: true }).click();
       await page.getByRole('button', { name: '生成', exact: true }).click();
       await expect.poll(() => fixture.submissions.length).toBe(1);
       expect(fixture.submissions[0]!.parameters).toEqual({
-        resolution: '4k',
+        size: '2160x3840',
         quality: 'max',
-        aspectRatio: '9:16',
         prompt: 'Create a scene with soft light.',
       });
       expect(fixture.errors).toEqual([]);

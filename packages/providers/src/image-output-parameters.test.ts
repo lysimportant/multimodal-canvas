@@ -105,6 +105,34 @@ const cases = [
 ] as const;
 
 describe.each([false, true])('image output parameters (edit=%s)', (edit) => {
+  it('sends canonical size and native quality without dimension aliases', async () => {
+    const { provider, fetchImpl } = imageProvider();
+    const snapshot = imageSnapshot({ size: '2160x3840', quality: 'high' }, edit);
+    snapshot.imageEditCapability = {
+      declared: true,
+      sizes: ['2160x3840'],
+      parameters: ['size', 'quality'],
+    };
+
+    await provider.execute({ snapshot });
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe(`https://newapi.example.test/v1/images/${edit ? 'edits' : 'generations'}`);
+    const body = edit
+      ? Object.fromEntries((init!.body as FormData).entries())
+      : JSON.parse(init!.body as string);
+    expect(body).toMatchObject({
+      model: 'gpt-image-2.5-sunburst',
+      prompt: 'Create a portrait.',
+      n: edit ? '1' : 1,
+      size: '2160x3840',
+      quality: 'high',
+    });
+    expect(Object.keys(body).sort()).toEqual(
+      [...(edit ? ['image'] : []), 'model', 'n', 'prompt', 'quality', 'size'].sort(),
+    );
+  });
+
   it.each(cases)(
     'sends legacy %s at %s as size %s, not quality',
     async (quality, aspectRatio, size) => {

@@ -31,6 +31,7 @@ import {
   displayVideoMode,
   imageEditCapability,
   ImageOutputParameterError,
+  normalizeImageOutputParameters,
   resolveImageOutputParameters,
   implementedVideoModes,
   isValidGenerationCount,
@@ -83,10 +84,11 @@ export type InferenceStrength = string;
  * 未识别的字段会原样保留，便于不同模型在父层扩展自己的参数。
  */
 export type NodeMediaParameters = Record<string, unknown> & {
+  /** Images 接口官方尺寸；新编辑只写 WIDTHxHEIGHT 或 auto。 */
   size?: string;
-  /** 供应商原生质量；历史 K 档仅兼容读取，显式编辑后改存 resolution。 */
+  /** 供应商原生质量；历史 K 档仅兼容读取，显式编辑后并入 size。 */
   quality?: string;
-  /** 图片使用 1k/2k/3k/4k；视频继续使用各自合同中的清晰度标识。 */
+  /** 图片仅兼容旧 K 档或像素别名；视频继续使用各自合同中的清晰度标识。 */
   resolution?: string;
   aspectRatio?: string;
   duration?: number;
@@ -200,18 +202,27 @@ type QuickOption = MediaOption & {
   trailingLabel?: string;
 };
 
-/** 通用图片像素档位仅供用户手选，不视为具体模型的能力声明。 */
-const imageResolutionOptions: MediaOption[] = [
-  { value: '1k', label: '1K', description: '标准' },
-  { value: '2k', label: '2K', description: '高清' },
-  { value: '3k', label: '3K', description: '超清' },
-  { value: '4k', label: '4K', description: '极致' },
+/** 旧 K 档仅用于兼容目录；菜单值和新保存值始终是完整像素。 */
+const legacyImageResolutionTiers: MediaOption[] = [
+  { value: '1k', label: '1k', description: '标准' },
+  { value: '2k', label: '2k', description: '高清' },
+  { value: '3k', label: '3k', description: '超清' },
+  { value: '4k', label: '4k', description: '极致' },
 ];
 
-/** 显式修改图片清晰度或比例时清理旧尺寸，避免隐藏值覆盖当前选择。 */
-const imageSizeParameterAliases = ['size', 'image_size', 'imageSize'] as const;
+/** 目录缺失时仅为精确固定尺寸模型补官方像素，不向相似名称或未知别名扩展。 */
+const fixedImageSizeFallbacks: Readonly<Record<string, readonly string[]>> = {
+  'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
+  'gpt-image-1-mini': ['1024x1024', '1536x1024', '1024x1536'],
+  'gpt-image-1.5': ['1024x1024', '1536x1024', '1024x1536'],
+  'dall-e-2': ['256x256', '512x512', '1024x1024'],
+  'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+};
 
-/** 供应商质量字段的兼容别名；只有识别为 K 档的旧值在尺寸编辑时迁移。 */
+/** 图片尺寸兼容字段；显式编辑后只保留官方 size。 */
+const imageSizeParameterAliases = ['size', 'image_size', 'imageSize', 'resolution'] as const;
+
+/** 供应商质量兼容字段；新编辑会把真实质量收敛到 quality。 */
 const imageQualityParameterAliases = ['quality', 'image_quality', 'imageQuality'] as const;
 
 const videoResolutionOptions: MediaOption[] = [
@@ -517,6 +528,8 @@ export function NodeQuickEditor({
   const parameters = readNodeMediaParameters(node.data);
   let imageOutputParameters: ImageOutputParameters | undefined;
   let imageOutputParameterIssue: string | undefined;
+  const compatibleImageOutputParameters =
+    node.data.mediaType === 'image' ? readCompatibleImageOutputParameters(parameters) : undefined;
   if (node.data.mediaType === 'image') {
     try {
       imageOutputParameters = resolveImageOutputParameters(parameters, currentModel);
@@ -743,35 +756,29 @@ export function NodeQuickEditor({
     onParametersChange(next);
   };
 
-  /** 仅用户明确编辑时迁移旧 K 档；尺寸和质量仍由共享合同解析，不在界面计算像素。 */
-  const updateImageParameter = (key: 'resolution' | 'aspectRatio' | 'quality', value: string) => {
+  /**
+   * 图片参数只有在用户明确编辑时收敛为官方 size 和原生 quality。
+   * 未知供应商字段原样保留；旧 K 档和比例别名不会继续写回新数据。
+   */
+  const updateImageParameter = (key: 'size' | 'aspectRatio' | 'quality', value: string) => {
     if (!onParametersChange) return;
-    const next = { ...parameters };
-    const storedResolution = mediaOptions.imageResolutionValue;
-    const currentResolution = readImageResolutionParameter(next.resolution);
-    if (storedResolution && !currentResolution?.resolution) {
-      if (
-        key === 'quality' &&
-        currentResolution?.size &&
-        !imageSizeParameterAliases.some((alias) => next[alias] !== undefined)
-      )
-        next.size = currentResolution.size;
-      if (next.resolution === undefined || currentResolution?.size)
-        next.resolution = storedResolution;
+    const currentSize = compatibleImageOutputParameters?.size;
+    const nativeQuality = readNativeImageQuality(parameters);
+    let nextSize = currentSize;
+    let nextQuality = nativeQuality;
+    if (key === 'size') nextSize = value || undefined;
+    if (key === 'aspectRatio') {
+      const longEdge = compatibleImageOutputParameters
+        ? Math.max(
+            compatibleImageOutputParameters.width ?? 0,
+            compatibleImageOutputParameters.height ?? 0,
+          ) || 1024
+        : 1024;
+      nextSize = imageSizeForRatio(longEdge, value, currentModel)?.size;
+      if (!nextSize) return;
     }
-    for (const alias of imageQualityParameterAliases) {
-      if (key === 'quality' || readImageResolutionParameter(next[alias])?.resolution)
-        delete next[alias];
-    }
-    if (key !== 'quality') {
-      for (const alias of imageSizeParameterAliases) delete next[alias];
-      const output = readImageResolutionParameter(next.resolution);
-      if (output?.size && !output.resolution) delete next.resolution;
-      if (key === 'aspectRatio') delete next.aspect_ratio;
-    }
-    if (value) next[key] = value;
-    else delete next[key];
-    onParametersChange(next);
+    if (key === 'quality') nextQuality = value || undefined;
+    onParametersChange(canonicalImageParameters(parameters, nextSize, nextQuality));
   };
 
   /** 推理强度对文字节点直接显示，对媒体节点收进参数页。 */
@@ -998,16 +1005,16 @@ export function NodeQuickEditor({
           aria-label="媒体参数"
         >
           <NodeParameterSelect
-            label="图片清晰度"
-            value={imageOutputParameters?.resolution ?? mediaOptions.imageResolutionValue}
+            label="图片分辨率"
+            value={mediaOptions.imageResolutionValue}
             options={mediaOptions.resolution}
-            onChange={(value) => updateImageParameter('resolution', value)}
+            onChange={(value) => updateImageParameter('size', value)}
             className="node-quick-editor-select-group"
             optionLayout="grid"
           />
           <QuickOptionMenu
             label="图片比例"
-            value={normalizeCurrentOptionValue(parameters.aspectRatio ?? parameters.aspect_ratio)}
+            value={mediaOptions.imageAspectRatioValue}
             options={mediaOptions.aspectRatio}
             aspectOptions
             onChange={(value) => updateImageParameter('aspectRatio', value)}
@@ -1015,12 +1022,7 @@ export function NodeQuickEditor({
           {mediaOptions.hasNativeImageQuality && (
             <NodeParameterSelect
               label="生成质量"
-              value={
-                imageOutputParameters?.quality ??
-                (readImageResolutionParameter(parameters.quality)?.resolution
-                  ? ''
-                  : normalizeCurrentOptionValue(parameters.quality))
-              }
+              value={imageOutputParameters?.quality ?? readNativeImageQuality(parameters) ?? ''}
               options={mediaOptions.quality}
               onChange={(value) => updateImageParameter('quality', value)}
               className="node-quick-editor-select-group"
@@ -1198,7 +1200,8 @@ export function NodeQuickEditor({
   /** 摘要仅展示已保存值；未设置项不假装已提交模型默认参数。 */
   const summaryItems = getMediaSummary(node.data.mediaType, parameters, {
     ...mediaOptions,
-    imageResolutionValue: imageOutputParameters?.resolution ?? mediaOptions.imageResolutionValue,
+    imageResolutionValue:
+      compatibleImageOutputParameters?.size ?? mediaOptions.imageResolutionValue,
   });
   /** 容器级 Popover 为秒数及 Select 提供库层级上下文，避免子浮层落到参数页下面。 */
   const mediaSummary =
@@ -1563,14 +1566,12 @@ function getMediaSummary(
   if (mediaType === 'image') {
     return [
       {
-        label: '清晰度',
-        value: getOptionLabel(options.imageResolutionValue, options.resolution, '未设置'),
+        label: '分辨率',
+        value: formatImageSize(options.imageResolutionValue) || '未设置',
       },
       {
         label: '比例',
-        value:
-          normalizeCurrentOptionValue(parameters.aspectRatio ?? parameters.aspect_ratio) ||
-          '未设置',
+        value: options.imageAspectRatioValue || '未设置',
       },
     ];
   }
@@ -1624,6 +1625,198 @@ function readImageResolutionParameter(value: unknown): ImageOutputParameters | u
     if (!(error instanceof ImageOutputParameterError)) throw error;
     return undefined;
   }
+}
+
+/**
+ * 兼容读取旧图片参数并返回完整像素；冲突数据优先使用旧 K 档帮助用户显式修复。
+ * @param parameters 节点保存的原始图片参数。
+ * @returns 可用于只读显示和编辑迁移的尺寸；完全无法解析时返回 undefined。
+ */
+function readCompatibleImageOutputParameters(
+  parameters: NodeMediaParameters,
+): ImageOutputParameters | undefined {
+  try {
+    return resolveImageOutputParameters(parameters);
+  } catch (error) {
+    if (!(error instanceof ImageOutputParameterError)) throw error;
+  }
+  const aspectRatio = normalizeCurrentOptionValue(
+    parameters.aspectRatio ?? parameters.aspect_ratio,
+  );
+  for (const alias of ['resolution', ...imageQualityParameterAliases] as const) {
+    const resolution = readImageResolutionParameter(parameters[alias])?.resolution;
+    if (!resolution) continue;
+    try {
+      return resolveImageOutputParameters({
+        resolution,
+        ...(aspectRatio ? { aspectRatio } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+    }
+  }
+  for (const alias of imageSizeParameterAliases) {
+    try {
+      return resolveImageOutputParameters({ size: parameters[alias] });
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+    }
+  }
+  return undefined;
+}
+
+/** 从 quality 及兼容别名中读取真实供应商质量，旧 K 档不作为 quality 返回。 */
+function readNativeImageQuality(parameters: NodeMediaParameters): string | undefined {
+  for (const alias of imageQualityParameterAliases) {
+    const value = parameters[alias];
+    if (value === undefined) continue;
+    try {
+      const parsed = resolveImageOutputParameters({ [alias]: value });
+      if (parsed.quality) return parsed.quality;
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 把图片参数收敛为官方 size 与原生 quality，保留所有未知供应商字段。
+ * @param parameters 原始节点参数；函数不修改输入。
+ * @param size 新的官方尺寸；undefined 表示不配置图片尺寸。
+ * @param quality 供应商原生质量；undefined 表示不配置质量。
+ * @returns 可直接保存的新参数对象，不再包含图片尺寸、比例或质量别名。
+ */
+function canonicalImageParameters(
+  parameters: NodeMediaParameters,
+  size: string | undefined,
+  quality: string | undefined,
+): NodeMediaParameters {
+  const next = { ...parameters };
+  for (const alias of imageSizeParameterAliases) delete next[alias];
+  for (const alias of imageQualityParameterAliases) delete next[alias];
+  delete next.aspectRatio;
+  delete next.aspect_ratio;
+  if (size) next.size = size;
+  if (quality) next.quality = quality;
+  return normalizeImageOutputParameters(next) as NodeMediaParameters;
+}
+
+/** 按当前菜单比例和长边生成 16 px 对齐尺寸，并由共享解析器校验精确模型。 */
+function imageSizeForRatio(
+  longEdge: number,
+  aspectRatio: string,
+  modelAlias?: string,
+): ImageOutputParameters | undefined {
+  const match = /^(\d+)\s*:\s*(\d+)$/.exec(aspectRatio);
+  const horizontal = Number(match?.[1]);
+  const vertical = Number(match?.[2]);
+  if (
+    !Number.isSafeInteger(longEdge) ||
+    longEdge <= 0 ||
+    !Number.isSafeInteger(horizontal) ||
+    !Number.isSafeInteger(vertical) ||
+    horizontal <= 0 ||
+    vertical <= 0
+  )
+    return undefined;
+  const shortEdge =
+    Math.round((longEdge * Math.min(horizontal, vertical)) / Math.max(horizontal, vertical) / 16) *
+    16;
+  if (!Number.isSafeInteger(shortEdge) || shortEdge <= 0) return undefined;
+  const width = horizontal >= vertical ? longEdge : shortEdge;
+  const height = horizontal >= vertical ? shortEdge : longEdge;
+  try {
+    return resolveImageOutputParameters({ size: `${width}x${height}` }, modelAlias);
+  } catch (error) {
+    if (!(error instanceof ImageOutputParameterError)) throw error;
+    return undefined;
+  }
+}
+
+/**
+ * 用共享解析器的 8 px 容差从实际像素反推菜单比例，兼容 3840x1648 等对齐尺寸。
+ * @param size 官方 WIDTHxHEIGHT 尺寸。
+ * @returns 首个匹配的固定比例；自动或自定义比例返回 undefined。
+ */
+function imageAspectRatioForSize(size: string | undefined): string | undefined {
+  if (!size || size === 'auto') return undefined;
+  for (const option of aspectRatioOptions) {
+    try {
+      resolveImageOutputParameters({ size, aspectRatio: option.value });
+      return option.value;
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+    }
+  }
+  return undefined;
+}
+
+/** 将保存值或菜单值格式化为用户可读的完整像素，不显示历史 K 档。 */
+function formatImageSize(value: unknown): string {
+  const normalized = normalizeCurrentOptionValue(value);
+  if (normalized === 'auto') return '自动';
+  const match = /^(\d+)x(\d+)$/.exec(normalized);
+  return match ? `${match[1]} × ${match[2]}` : '';
+}
+
+/** 把目录 K 档或原生像素转换成唯一的官方 size 菜单项。 */
+function imageSizeOption(
+  option: MediaOption,
+  aspectRatio: string,
+  modelAlias?: string,
+): MediaOption | undefined {
+  const compatible = readImageResolutionParameter(option.value);
+  if (!compatible?.size) return undefined;
+  let size = compatible.size;
+  if (compatible.resolution) {
+    try {
+      size = resolveImageOutputParameters({
+        resolution: compatible.resolution,
+        aspectRatio,
+      }).size!;
+    } catch (error) {
+      if (!(error instanceof ImageOutputParameterError)) throw error;
+      return undefined;
+    }
+  }
+  let disabled = Boolean(option.disabled);
+  try {
+    resolveImageOutputParameters({ size }, modelAlias);
+  } catch (error) {
+    if (!(error instanceof ImageOutputParameterError)) throw error;
+    disabled = true;
+  }
+  const tierDescription = compatible.resolution
+    ? legacyImageResolutionTiers.find((candidate) => candidate.value === compatible.resolution)
+        ?.description
+    : undefined;
+  const catalogDescription = option.description?.match(/\b[1-4]k\b/i)
+    ? undefined
+    : option.description;
+  return {
+    value: size,
+    label: formatImageSize(size),
+    ...(catalogDescription || tierDescription
+      ? { description: catalogDescription ?? tierDescription }
+      : {}),
+    ...(disabled ? { disabled: true, description: '当前模型不支持此像素尺寸' } : {}),
+  };
+}
+
+/** 依目录顺序转换并去重图片尺寸，避免 K 档与像素枚举生成重复菜单项。 */
+function imageSizeOptions(
+  options: readonly MediaOption[],
+  aspectRatio: string,
+  modelAlias?: string,
+): MediaOption[] {
+  const seen = new Set<string>();
+  return options.flatMap((option) => {
+    const mapped = imageSizeOption(option, aspectRatio, modelAlias);
+    if (!mapped || seen.has(mapped.value)) return [];
+    seen.add(mapped.value);
+    return [mapped];
+  });
 }
 
 /** 检查已保存的语速；字符串、非有限值和越界值不能作为合法倍率提交。 */
@@ -2131,6 +2324,7 @@ function QuickOptionMenu({
  * 为新建节点或显式切换模型补齐媒体默认值；固定视频时长默认 10 秒。
  * 返回可直接写入节点的浅拷贝，不修改输入；已有参数和未知字段全部保留。
  * 时长默认值是编辑偏好，不是能力声明；目录不支持 10 秒时由生成预检明确阻止。
+ * 图片目录 K 档会与目录首个比例合成为官方 size，原生质量独立保存；已有图片参数不回写。
  * 其它媒体枚举仅使用目录或已确认合同；不支持的 -1/adaptive 在明确切模型时清理。
  * 音色和连续语速由用户填写，像素宽高仅保留旧值。不得在渲染或加载历史节点时自动调用。
  */
@@ -2170,40 +2364,24 @@ export function applyNodeGenerationDefaults(
   }
   if (!model?.mediaTypes.includes(mediaType)) return { ...data, parameters };
   const options = getMediaOptions(model, mediaType, {}, false, data.modelAlias);
-  const fields =
-    mediaType === 'image'
-      ? (['resolution', 'quality', 'aspectRatio'] as const)
-      : mediaType === 'video'
-        ? (['resolution', 'aspectRatio'] as const)
-        : [];
-  for (const field of fields) {
-    if (parameters[field] !== undefined) continue;
-    if (mediaType === 'image') {
-      const hasStoredSize =
-        imageSizeParameterAliases.some((alias) => parameters[alias] !== undefined) ||
-        Boolean(
-          parameters.resolution !== undefined &&
-          !readImageResolutionParameter(parameters.resolution)?.resolution,
-        );
-      if (
-        field === 'quality' &&
-        imageQualityParameterAliases.some((alias) => parameters[alias] !== undefined)
-      )
-        continue;
-      if (
-        field === 'resolution' &&
-        (hasStoredSize ||
-          imageQualityParameterAliases.some(
-            (alias) => readImageResolutionParameter(parameters[alias])?.resolution,
-          ))
-      )
-        continue;
-      if (field === 'aspectRatio' && (hasStoredSize || parameters.aspect_ratio !== undefined))
-        continue;
+  if (mediaType === 'image') {
+    const hasStoredImageOutput =
+      imageSizeParameterAliases.some((alias) => parameters[alias] !== undefined) ||
+      imageQualityParameterAliases.some((alias) => parameters[alias] !== undefined) ||
+      parameters.aspectRatio !== undefined ||
+      parameters.aspect_ratio !== undefined;
+    if (!hasStoredImageOutput) {
+      const size = firstAvailableOption(options.resolution);
+      const quality = firstAvailableOption(options.quality);
+      if (size !== undefined) parameters.size = size;
+      if (quality !== undefined) parameters.quality = quality;
     }
-    const value = firstAvailableOption(options[field]);
-    if (value === undefined) continue;
-    parameters[field] = value;
+  } else if (mediaType === 'video') {
+    for (const field of ['resolution', 'aspectRatio'] as const) {
+      if (parameters[field] !== undefined) continue;
+      const value = firstAvailableOption(options[field]);
+      if (value !== undefined) parameters[field] = value;
+    }
   }
   if (mediaType === 'audio' && parameters.response_format === undefined) {
     const format = firstAvailableOption(getSupportedAudioFormatOptions(model));
@@ -2235,7 +2413,9 @@ function firstAvailableOption(options: readonly MediaOption[]): string | undefin
  * @param nodes 当前画布节点，后创建的节点优先。
  * @param mediaType 新建节点的媒体类型。
  * @param mode 新建节点的操作模式。
+ * 图片参数在新建副本中规范为官方 size 与真实 quality，旧源节点保持不变。
  * @returns 最近同类型节点的模型、凭据、参数和推理强度；没有可沿用节点时返回 undefined。
+ * @throws ImageOutputParameterError 历史图片参数冲突或非法时阻止创建不确定的新副本。
  */
 export function resolvePreviousOperationSeed(
   nodes: readonly AssetFlowNode[],
@@ -2247,7 +2427,11 @@ export function resolvePreviousOperationSeed(
   for (let index = nodes.length - 1; index >= 0; index -= 1) {
     const data = nodes[index]?.data;
     if (!data || data.mediaType !== mediaType || data.mode !== mode) continue;
-    const parameters = readNodeMediaParameters(data);
+    const storedParameters = readNodeMediaParameters(data);
+    const parameters =
+      mediaType === 'image'
+        ? (normalizeImageOutputParameters(storedParameters) as NodeMediaParameters)
+        : storedParameters;
     return {
       ...(data.modelAlias ? { modelAlias: data.modelAlias } : {}),
       ...(data.credentialId ? { credentialId: data.credentialId } : {}),
@@ -2287,36 +2471,73 @@ function getMediaOptions(
   const nativeQuality = declaredQuality?.filter(
     (option) => !readImageResolutionParameter(option.value)?.resolution,
   );
-  const legacyResolution = readImageResolutionParameter(parameters.quality)?.resolution;
-  const quality = ensureCurrentOption(
-    nativeQuality ?? [],
-    legacyResolution ? undefined : parameters.quality,
-    'quality',
+  const storedNativeQuality = readNativeImageQuality(parameters);
+  const quality = ensureCurrentOption(nativeQuality ?? [], storedNativeQuality, 'quality');
+  const declaredImageAspectRatios = readCapabilityOptions(
+    roots,
+    ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
+    'aspectRatio',
   );
+  const compatibleImageOutput =
+    mediaType === 'image' ? readCompatibleImageOutputParameters(parameters) : undefined;
+  const imageAspectRatioValue = imageAspectRatioForSize(compatibleImageOutput?.size);
+  const imageTierAspectRatio =
+    imageAspectRatioValue ?? firstAvailableOption(declaredImageAspectRatios ?? []) ?? '1:1';
   const declaredImageResolution = readCapabilityOptions(
     roots,
-    ['resolution', 'resolutions', 'imageResolution', 'image_resolution', 'imageSize', 'image_size'],
+    [
+      'size',
+      'sizes',
+      'imageSize',
+      'imageSizes',
+      'image_size',
+      'image_sizes',
+      'resolution',
+      'resolutions',
+      'imageResolution',
+      'image_resolution',
+    ],
     'quality',
   );
-  const imageTiers = (declaredImageResolution ?? declaredQuality ?? []).flatMap((option) => {
-    const resolution = readImageResolutionParameter(option.value)?.resolution;
-    return resolution ? [{ ...option, value: resolution }] : [];
-  });
-  const imageResolutionValue = [
-    'resolution',
-    ...imageQualityParameterAliases,
-    ...imageSizeParameterAliases,
-  ]
-    .map((field) => readImageResolutionParameter(parameters[field])?.resolution)
-    .find((value) => value !== undefined);
-  const imageResolution = ensureCurrentOption(
-    declaredImageResolution !== undefined || imageTiers.length > 0
-      ? imageTiers
-      : allowLegacyFallback
-        ? imageResolutionOptions
-        : [],
-    imageResolutionValue,
-    'quality',
+  const legacyImageResolutionFromQuality = declaredQuality?.filter(
+    (option) => readImageResolutionParameter(option.value)?.resolution !== undefined,
+  );
+  const declaredImageSizeSource =
+    declaredImageResolution ??
+    (legacyImageResolutionFromQuality?.length ? legacyImageResolutionFromQuality : undefined);
+  const declaredImageSizes = imageSizeOptions(
+    declaredImageSizeSource ?? [],
+    imageTierAspectRatio,
+    resolvedModelAlias,
+  );
+  const declaredImageHasFlexibleTier = declaredImageSizeSource?.some(
+    (option) => readImageResolutionParameter(option.value)?.resolution !== undefined,
+  );
+  const fixedImageSizes = fixedImageSizeFallbacks[resolvedModelAlias ?? ''];
+  const exactImageSizes =
+    declaredImageSizeSource !== undefined && !declaredImageHasFlexibleTier
+      ? new Set(declaredImageSizes.map((option) => option.value))
+      : declaredImageSizeSource === undefined && fixedImageSizes
+        ? new Set(fixedImageSizes)
+        : undefined;
+  const fallbackImageSizes = imageSizeOptions(
+    fixedImageSizes?.map((value) => ({ value, label: value })) ?? legacyImageResolutionTiers,
+    imageTierAspectRatio,
+    resolvedModelAlias,
+  );
+  const imageResolutionValue = compatibleImageOutput?.size;
+  const imageResolution = imageSizeOptions(
+    ensureCurrentOption(
+      declaredImageResolution !== undefined || declaredImageSizes.length > 0
+        ? declaredImageSizes
+        : allowLegacyFallback
+          ? fallbackImageSizes
+          : [],
+      imageResolutionValue,
+      'resolution',
+    ),
+    imageTierAspectRatio,
+    resolvedModelAlias,
   );
   const declaredResolution = readCapabilityOptions(
     roots,
@@ -2360,11 +2581,7 @@ function getMediaOptions(
               ]
             : undefined;
   const declaredAspectRatios =
-    readCapabilityOptions(
-      roots,
-      ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
-      'aspectRatio',
-    ) ?? (allowLegacyFallback ? aspectRatioOptions : []);
+    declaredImageAspectRatios ?? (allowLegacyFallback ? aspectRatioOptions : []);
   const supportedAspectRatios = moonContract
     ? moonContract.aspectRatios.map(
         (value) =>
@@ -2382,13 +2599,20 @@ function getMediaOptions(
         );
   const aspectRatio = ensureCurrentOption(
     supportedAspectRatios,
-    parameters.aspectRatio ?? (mediaType === 'image' ? parameters.aspect_ratio : undefined),
+    mediaType === 'image' ? imageAspectRatioValue : parameters.aspectRatio,
     'aspectRatio',
-  ).map((option) =>
-    ratioContract && !ratioContract.includes(option.value)
-      ? { ...option, disabled: true, description: '已保存，当前模型不支持' }
-      : option,
-  );
+  ).map((option) => {
+    if (ratioContract && !ratioContract.includes(option.value))
+      return { ...option, disabled: true, description: '已保存，当前模型不支持' };
+    if (mediaType !== 'image') return option;
+    const longEdge = compatibleImageOutput
+      ? Math.max(compatibleImageOutput.width ?? 0, compatibleImageOutput.height ?? 0) || 1024
+      : 1024;
+    const ratioSize = imageSizeForRatio(longEdge, option.value, resolvedModelAlias)?.size;
+    return ratioSize && (!exactImageSizes || exactImageSizes.has(ratioSize))
+      ? option
+      : { ...option, disabled: true, description: '当前模型不支持此比例对应的像素尺寸' };
+  });
   const declaredDuration = readCapabilityOptions(
     roots,
     ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
@@ -2444,6 +2668,7 @@ function getMediaOptions(
     aspectRatio,
     duration,
     imageResolutionValue,
+    imageAspectRatioValue,
     hasNativeImageQuality: Boolean(nativeQuality?.length),
   };
 }

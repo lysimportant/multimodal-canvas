@@ -83,6 +83,7 @@ import {
   defaultResourceDisplayName,
   nodeResourceRefSchema,
   resolveImageOutputParameters,
+  normalizeImageOutputParameters,
 } from '@multimodal-canvas/domain';
 import {
   fromCanvasDocument,
@@ -2450,7 +2451,16 @@ function WorkspaceApp({
         position ??
         canvasCenterPositionRef.current ??
         ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
-      const node = createGenerateNode(mediaType, nodePosition);
+      let node: AssetFlowNode;
+      try {
+        node = createGenerateNode(mediaType, nodePosition);
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '节点输出参数无效',
+        });
+        return;
+      }
       rememberHistory();
       appendNodesAndSelect([node]);
       canvasDirtyRef.current = true;
@@ -2534,7 +2544,16 @@ function WorkspaceApp({
     (request: ConnectedGenerateNodeRequest) => {
       const existing = nodesRef.current.find((node) => node.id === request.existingNodeId);
       if (!existing) return;
-      const node = createGenerateNode(request.mediaType, request.position);
+      let node: AssetFlowNode;
+      try {
+        node = createGenerateNode(request.mediaType, request.position);
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '节点输出参数无效',
+        });
+        return;
+      }
       if (request.mediaType === 'video' && request.videoMode) {
         node.data = { ...node.data, videoMode: request.videoMode };
       }
@@ -4028,6 +4047,11 @@ function WorkspaceApp({
               : { kind: 'success', message: `已创建${child.data.label}并开始生成` },
           );
           await runNode(child, 'sameNode', runPromptOverride, operation);
+        } catch (error) {
+          setNotice({
+            kind: 'error',
+            message: error instanceof Error ? error.message : '新节点生成失败',
+          });
         } finally {
           for (const operationNodeId of operation.nodeIds) {
             if (nodeRunOperationByNodeRef.current.get(operationNodeId) !== operation) continue;
@@ -4049,8 +4073,16 @@ function WorkspaceApp({
         setNotice({ kind: 'error', message: '项目尚未连接' });
         return;
       }
-      if (nodeSnapshot.data.mode === 'source') {
-        nodeSnapshot = promoteSourceNodeToGenerate(nodeSnapshot);
+      try {
+        if (nodeSnapshot.data.mode === 'source') {
+          nodeSnapshot = promoteSourceNodeToGenerate(nodeSnapshot);
+        }
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '节点输出参数无效',
+        });
+        return;
       }
       if (nodeSnapshot.data.enabled === false) {
         setNotice({ kind: 'error', message: '节点已停用，请先启用后再运行' });
@@ -4134,6 +4166,10 @@ function WorkspaceApp({
               : (promptOverride?.prompt ?? target.data.prompt)
           )?.trim();
           const inferenceStrength = target.data.inferenceStrength;
+          const parameters =
+            target.data.mediaType === 'image'
+              ? normalizeImageOutputParameters(target.data.parameters ?? {}, target.data.modelAlias)
+              : (target.data.parameters ?? {});
           return {
             path: `/v1/nodes/${target.id}/runs`,
             body: {
@@ -4145,7 +4181,7 @@ function WorkspaceApp({
                   }
                 : {}),
               parameters: {
-                ...(target.data.parameters ?? {}),
+                ...parameters,
                 ...(prompt ? { prompt } : {}),
                 ...(inferenceStrength ? { inferenceStrength } : {}),
               },
@@ -4352,11 +4388,20 @@ function WorkspaceApp({
       }
       const dimensions = getNewNodeDimensions('image');
       const position = getNodePlacementRightOf(source, nodesRef.current, dimensions);
-      const child = createGenerateNode('image', position, {
-        ...inheritedGenerateData(source.data),
-        label: createUniqueForkLabel(source.data.label, nodesRef.current),
-        imageEditSource,
-      });
+      let child: AssetFlowNode;
+      try {
+        child = createGenerateNode('image', position, {
+          ...inheritedGenerateData(source.data),
+          label: createUniqueForkLabel(source.data.label, nodesRef.current),
+          imageEditSource,
+        });
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '图片输出参数无效',
+        });
+        return;
+      }
       const connection = buildConnectedGenerateNodeConnection(
         {
           mediaType: 'image',

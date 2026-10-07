@@ -53,6 +53,26 @@ function parameterCanvas(): CanvasDocument {
 }
 
 describe('运行参数冻结', () => {
+  it('原样冻结 canonical 图片 size 与真实 quality，保留其它字段和假值', () => {
+    const canvas = parameterCanvas();
+    const parameters = {
+      size: '2160x3840',
+      quality: 'high',
+      seed: 0,
+      useWatermark: false,
+      providerOption: '',
+    };
+    canvas.nodes[1].data.parameters = structuredClone(parameters);
+    delete canvas.nodes[1].data.inferenceStrength;
+    const before = structuredClone(canvas);
+
+    const snapshot = createRunSnapshot('synthetic-project', canvas, 'image-target');
+
+    expect(snapshot.parameters).toEqual(parameters);
+    expect(snapshot.nodes[1].data.parameters).toEqual(parameters);
+    expect(canvas).toEqual(before);
+  });
+
   it.each([
     { name: '省略提交', parameters: undefined },
     { name: '提交空对象', parameters: {} },

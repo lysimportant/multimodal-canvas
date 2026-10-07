@@ -17,7 +17,7 @@ import type {
 import {
   ImageOutputParameterError,
   imageEditSourceSchema,
-  resolveImageOutputParameters,
+  normalizeImageOutputParameters,
   precheckVideoGenerationInputs,
   renderPromptDocument,
   resolveImageEditMaxImages,
@@ -4112,9 +4112,8 @@ function providerParameters(
     providerParameters.reasoning_effort = inferenceStrength.trim();
   }
   if (mediaType === 'image') {
-    let output;
     try {
-      output = resolveImageOutputParameters(parameters, modelAlias);
+      return normalizeImageOutputParameters(providerParameters, modelAlias);
     } catch (error) {
       if (!(error instanceof ImageOutputParameterError)) throw error;
       throw new NewApiProviderError(error.message, {
@@ -4122,21 +4121,6 @@ function providerParameters(
         retryable: false,
       });
     }
-    // 清晰度、比例和旧别名都由 size 表达，不能把 4k 作为采样质量或发送未定义的比例字段。
-    for (const key of [
-      'size',
-      'image_size',
-      'imageSize',
-      'resolution',
-      'quality',
-      'image_quality',
-      'imageQuality',
-      'aspectRatio',
-      'aspect_ratio',
-    ])
-      delete providerParameters[key];
-    if (output.size) providerParameters.size = output.size;
-    if (output.quality) providerParameters.quality = output.quality;
   }
   return providerParameters;
 }

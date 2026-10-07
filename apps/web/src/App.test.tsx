@@ -2089,6 +2089,18 @@ describe('App 组件库迁移', () => {
 });
 
 describe('App 节点参数提交', () => {
+  it('新建沿用的旧图片参数冲突时显示错误，不添加节点或发起运行', async () => {
+    const node = imageNode('image-node', 'image-model');
+    node.data.parameters = { quality: '4k', aspectRatio: '9:16', size: '1024x1024' };
+    canvas.nodes = [node];
+    await renderCanvas(1);
+    act(() => view.canvas!.onAddGenerateNode('image'));
+    expect(screen.getByText(/图片参数.*冲突/)).toBeInTheDocument();
+    expect(view.canvas!.nodes).toHaveLength(1);
+    expect(canvas.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+
   it.each(['sameNode', 'newNode'] as const)(
     '不支持的音色在 %s 入口提前拒绝且保留历史值',
     async (target) => {
@@ -2156,54 +2168,75 @@ describe('App 节点参数提交', () => {
   );
 
   it.each([
-    ['image', { quality: 'standard', aspectRatio: '1:1' }],
-    ['image', { quality: '2k', aspectRatio: '16:9' }],
-    ['image', { quality: '3k', aspectRatio: '4:3' }],
-    ['image', { quality: '4k', aspectRatio: '9:16' }],
-    ['image', { quality: '4k', aspectRatio: '21:9', size: '3840x1648' }],
-    ['video', { resolution: '1080p', aspectRatio: '9:16', duration: 10 }],
-    ['audio', { voice: 'alloy', response_format: 'wav', speed: 1.25 }],
-    ['text', { temperature: 0.7, max_tokens: 512, top_p: 0.9 }],
-  ] as const)('%s 节点保存与提交不改写已选参数 %j', async (mediaType, parameters) => {
-    const node: CanvasDocument['nodes'][number] = {
-      ...emptyNode('image-node'),
-      type: mediaType,
-      data: {
-        label: '参数提交测试',
-        mediaType,
-        mode: 'generate',
+    [
+      'image',
+      { quality: 'standard', aspectRatio: '1:1' },
+      { quality: 'standard', size: '1024x1024' },
+    ],
+    ['image', { quality: '2k', aspectRatio: '16:9' }, { size: '2048x1152' }],
+    ['image', { quality: '3k', aspectRatio: '4:3' }, { size: '3072x2304' }],
+    ['image', { quality: '4k', aspectRatio: '9:16' }, { size: '2160x3840' }],
+    ['image', { quality: '4k', aspectRatio: '21:9', size: '3840x1648' }, { size: '3840x1648' }],
+    ['image', { size: '2160x3840', quality: 'high' }, { size: '2160x3840', quality: 'high' }],
+    [
+      'video',
+      { resolution: '1080p', aspectRatio: '9:16', duration: 10 },
+      { resolution: '1080p', aspectRatio: '9:16', duration: 10 },
+    ],
+    [
+      'audio',
+      { voice: 'alloy', response_format: 'wav', speed: 1.25 },
+      { voice: 'alloy', response_format: 'wav', speed: 1.25 },
+    ],
+    [
+      'text',
+      { temperature: 0.7, max_tokens: 512, top_p: 0.9 },
+      { temperature: 0.7, max_tokens: 512, top_p: 0.9 },
+    ],
+  ] as const)(
+    '%s 节点保留保存参数，图片提交使用完整 size：%j',
+    async (mediaType, parameters, expected) => {
+      const node: CanvasDocument['nodes'][number] = {
+        ...emptyNode('image-node'),
+        type: mediaType,
+        data: {
+          label: '参数提交测试',
+          mediaType,
+          mode: 'generate',
+          modelAlias: 'exact-model-alias',
+          credentialId: 'synthetic-parameter-credential',
+          prompt: 'Describe the sample.',
+          inferenceStrength: 'medium',
+          parameters: { providerOption: 'preserved' },
+        },
+      };
+      canvas.nodes = [node];
+      currentRun = runRecord({ status: 'succeeded', error: undefined });
+      await renderCanvas(0);
+      const savedParameters = { ...parameters, providerOption: 'preserved' };
+      act(() => view.canvas!.onParametersChange!(savedParameters, node.id));
+      await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!));
+
+      const requests = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'POST' && String(url).endsWith('/nodes/image-node/runs'),
+      );
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(String(requests[0]![1]!.body))).toEqual({
+        projectId: project.id,
         modelAlias: 'exact-model-alias',
         credentialId: 'synthetic-parameter-credential',
-        prompt: 'Describe the sample.',
-        inferenceStrength: 'medium',
-        parameters: { providerOption: 'preserved' },
-      },
-    };
-    canvas.nodes = [node];
-    currentRun = runRecord({ status: 'succeeded', error: undefined });
-    await renderCanvas(0);
-    const savedParameters = { ...parameters, providerOption: 'preserved' };
-    act(() => view.canvas!.onParametersChange!(savedParameters, node.id));
-    await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!));
+        parameters: {
+          ...expected,
+          providerOption: 'preserved',
+          prompt: 'Describe the sample.',
+          inferenceStrength: 'medium',
+        },
+      });
+      expect(canvas.nodes[0]!.data.parameters).toEqual(savedParameters);
+    },
+  );
 
-    const requests = fetchMock.mock.calls.filter(
-      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/nodes/image-node/runs'),
-    );
-    expect(requests).toHaveLength(1);
-    expect(JSON.parse(String(requests[0]![1]!.body))).toEqual({
-      projectId: project.id,
-      modelAlias: 'exact-model-alias',
-      credentialId: 'synthetic-parameter-credential',
-      parameters: {
-        ...savedParameters,
-        prompt: 'Describe the sample.',
-        inferenceStrength: 'medium',
-      },
-    });
-    expect(canvas.nodes[0]!.data.parameters).toEqual(savedParameters);
-  });
-
-  it('拖动并修改图片参数后，旧运行入口仍按最新位置生成新节点并继承 4K 竖屏参数', async () => {
+  it('拖动并修改图片参数后，旧运行入口按最新位置分叉并保存完整竖屏 size', async () => {
     const node = imageNode('image-node', 'exact-image-model', 'synthetic-image-credential');
     node.data = {
       ...node.data,
@@ -2272,12 +2305,11 @@ describe('App 节点参数提交', () => {
     expect(child!.position.y).toBe(480);
     expect(child!.data.modelAlias).toBe('exact-image-model');
     expect(child!.data.credentialId).toBe('synthetic-image-credential');
-    expect(child!.data.parameters).toEqual(selectedParameters);
+    expect(child!.data.parameters).toEqual({ size: '2160x3840', providerOption: 'preserved' });
     expect(
       resolveImageOutputParameters(child!.data.parameters ?? {}, child!.data.modelAlias),
     ).toEqual(
       expect.objectContaining({
-        resolution: '4k',
         width: 2160,
         height: 3840,
         size: '2160x3840',
@@ -2290,7 +2322,8 @@ describe('App 节点参数提交', () => {
       modelAlias: 'exact-image-model',
       credentialId: 'synthetic-image-credential',
       parameters: {
-        ...selectedParameters,
+        size: '2160x3840',
+        providerOption: 'preserved',
         prompt: 'Change the lighting.',
       },
     });
