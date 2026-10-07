@@ -115,6 +115,12 @@ let unexpectedRequests: string[];
 let archivedRuns: RunRecord[];
 /** 仅提交投影用例允许一次合成 400，不创建运行或访问真实 Provider。 */
 let allowRejectedSubmission: boolean;
+/** 仅为本文件会实际展示的冻结图片版本提供缩略图，其他资源请求继续失败。 */
+const thumbnailPaths = new Set([
+  `/v1/assets/${image.id}/versions/1/derivatives/thumbnail`,
+  `/v1/assets/${image.id}/versions/2/derivatives/thumbnail`,
+  `/v1/assets/${mansui.assetId}/versions/4/derivatives/thumbnail`,
+]);
 
 /** 构造两张上游图片；节点 6 的标题始终不改名。 */
 function initialCanvas(): CanvasDocument {
@@ -293,6 +299,11 @@ function installApi() {
     if (path.endsWith('/runs') && method === 'GET') return Response.json({ runs: archivedRuns });
     if (/^\/v1\/nodes\/[^/]+\/runs$/.test(path) && method === 'POST' && allowRejectedSubmission) {
       return Response.json({ error: '合成拒绝，不创建任务' }, { status: 400 });
+    }
+    if (method === 'GET' && thumbnailPaths.has(path)) {
+      return new Response(new Uint8Array([137, 80, 78, 71]), {
+        headers: { 'content-type': 'image/png' },
+      });
     }
     unexpectedRequests.push(method + ' ' + path);
     throw new Error('禁止测试请求：' + method + ' ' + path);

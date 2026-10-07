@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import {
   DeleteObjectCommand,
@@ -130,6 +130,14 @@ export class MemoryBlobStore implements BlobStore {
   async delete(key: string): Promise<void> {
     this.blobs.delete(key);
   }
+
+  /**
+   * 检查内存对象是否存在，不复制内容。
+   * @returns 对象存在时返回 true，缺失时返回 false。
+   */
+  async exists(key: string): Promise<boolean> {
+    return this.blobs.has(key);
+  }
 }
 
 /** Filesystem-backed object storage constrained to a single root directory. */
@@ -161,6 +169,20 @@ export class FileSystemBlobStore implements BlobStore {
 
   async delete(key: string): Promise<void> {
     await rm(this.pathFor(key), { force: true });
+  }
+
+  /**
+   * 只检查文件是否存在；目录和缺失路径均不作为可读对象。
+   * @returns 普通文件存在时返回 true，目录或缺失路径返回 false。
+   * @throws 路径越界、权限不足或其它文件系统错误。
+   */
+  async exists(key: string): Promise<boolean> {
+    try {
+      return (await stat(this.pathFor(key))).isFile();
+    } catch (error) {
+      if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return false;
+      throw error;
+    }
   }
 
   private pathFor(key: string): string {
@@ -216,6 +238,9 @@ export type AssetScope = {
   projectId?: string | null;
   ownerId?: string;
 };
+
+/** 指定源文件、固定版本或派生文件；version 与 derivative 不能同时提供。 */
+export type AssetContentSelector = { version?: number; derivative?: string };
 
 /**
  * 资源索引查询条件。`list` 仍返回数组以兼容旧调用；分页参数只在
@@ -373,6 +398,18 @@ export interface AssetStore {
     scope?: AssetScope,
     options?: Omit<AssetListOptions, 'page' | 'pageSize'>,
   ): Promise<number>;
+  /**
+   * 读取公开元数据但不读取对象字节；旧适配器可省略并由调用方回退到 get。
+   * @returns 资源存在且获授权时返回元数据，资源缺失或未授权时返回 undefined。
+   * @throws 元数据查询失败时保留底层错误。
+   */
+  getMetadata?(id: string, scope?: AssetScope): Promise<Asset | undefined>;
+  /**
+   * 检查授权范围内的目标对象是否存在，但不返回对象字节。
+   * @returns 资源及目标对象存在时返回 true；缺失、未授权或选择器冲突时返回 false。
+   * @throws 对象存储权限、网络或其它存在性检查错误。
+   */
+  hasContent?(id: string, selector?: AssetContentSelector, scope?: AssetScope): Promise<boolean>;
   get(id: string, scope?: AssetScope): Promise<StoredAsset | undefined>;
   delete(id: string, scope?: AssetScope): Promise<boolean>;
   createVersion(
@@ -556,6 +593,39 @@ export class MemoryAssetStore implements AssetStore {
           this.latestVersionFor(id),
         )
       : undefined;
+  }
+
+  /**
+   * 返回授权范围内的内存资源元数据，不复制内容字节。
+   * @returns 资源存在且获授权时返回元数据，否则返回 undefined。
+   */
+  async getMetadata(id: string, scope: AssetScope = {}): Promise<Asset | undefined> {
+    const asset = this.assets.get(id);
+    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    const { content: _content, ...metadata } = asset;
+    return withLatestAssetVersion(metadata, this.latestVersionFor(id));
+  }
+
+  /**
+   * 检查授权范围内的内存源文件、固定版本或派生文件是否存在。
+   * @returns 资源及所选内容存在时返回 true；缺失、未授权或选择器冲突时返回 false。
+   */
+  async hasContent(
+    id: string,
+    selector: AssetContentSelector = {},
+    scope: AssetScope = {},
+  ): Promise<boolean> {
+    if (!this.assets.has(id) || !this.matchesScope(id, scope)) return false;
+    if (selector.version !== undefined && selector.derivative !== undefined) return false;
+    if (selector.version !== undefined)
+      return this.versions.get(id)?.has(selector.version) ?? false;
+    if (selector.derivative !== undefined) {
+      return (
+        isSafeDerivativeKind(selector.derivative) &&
+        (this.derivatives.get(id)?.has(selector.derivative) ?? false)
+      );
+    }
+    return true;
   }
 
   async delete(id: string, scope: AssetScope = {}): Promise<boolean> {
@@ -880,6 +950,53 @@ export class PrismaAssetStore implements AssetStore {
       ...mapAsset(row, this.contentUrl, await this.latestVersionFor(id)),
       content,
     };
+  }
+
+  /**
+   * 从数据库读取公开元数据，不触发对象存储下载。
+   * @returns 资源存在且获授权时返回元数据，缺失或未授权时返回 undefined。
+   * @throws 数据库查询失败时保留底层错误。
+   */
+  async getMetadata(id: string, scope: AssetScope = {}): Promise<Asset | undefined> {
+    const row = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+    });
+    return row ? mapAsset(row, this.contentUrl, await this.latestVersionFor(id)) : undefined;
+  }
+
+  /**
+   * 使用 HEAD 或等价本地检查确认目标对象存在。
+   * @returns 资源及所选对象存在时返回 true；缺失、未授权或选择器冲突时返回 false。
+   * @throws 数据库、对象存储权限、网络或其它存在性检查错误。
+   */
+  async hasContent(
+    id: string,
+    selector: AssetContentSelector = {},
+    scope: AssetScope = {},
+  ): Promise<boolean> {
+    if (selector.version !== undefined && selector.derivative !== undefined) return false;
+    const asset = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+      select: { contentKey: true, metadata: true },
+    });
+    if (!asset) return false;
+    if (selector.version !== undefined) {
+      const version = await this.prisma.assetVersion.findFirst({
+        where: { assetId: id, version: selector.version },
+        select: { contentKey: true },
+      });
+      return version ? this.blobExists(version.contentKey) : false;
+    }
+    if (selector.derivative !== undefined) {
+      if (!isSafeDerivativeKind(selector.derivative)) return false;
+      const descriptor = asRecord(asRecord(asset.metadata)?.derivatives)?.[selector.derivative];
+      if (!asRecord(descriptor)?.mimeType) return false;
+      for (const key of this.derivativeReadKeys(asset.contentKey, selector.derivative)) {
+        if (await this.blobExists(key)) return true;
+      }
+      return false;
+    }
+    return this.blobExists(asset.contentKey);
   }
 
   async delete(id: string, scope: AssetScope = {}): Promise<boolean> {
@@ -1273,6 +1390,13 @@ export class PrismaAssetStore implements AssetStore {
   /** 优先新键，只有不存在时才读取旧 S3 键；不迁移、不重写旧对象。 */
   private derivativeReadKeys(contentKey: string, kind: string): [string, string] {
     return [this.derivativeKey(contentKey, kind), `${contentKey}/derivatives/${kind}`];
+  }
+
+  /** 优先调用存储的无内容检查；旧 BlobStore 才回退读取，以保持兼容。 */
+  private async blobExists(key: string): Promise<boolean> {
+    return this.blobStore.exists
+      ? this.blobStore.exists(key)
+      : (await this.blobStore.get(key)) !== undefined;
   }
 }
 

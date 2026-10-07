@@ -57,6 +57,7 @@ import {
   renderPromptDocument,
   runSnapshotSchema,
   type CanvasDocument,
+  type Asset,
   type FrozenImageEditCapability,
   type FrozenPromptMention,
   type MediaType,
@@ -4285,24 +4286,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
 
       const scope = assetScope(requestPrincipals, request);
-      const asset = await assetStore.get(request.params.assetId, scope);
+      const asset = await getReadableAssetMetadata(assetStore, request.params.assetId, scope);
       if (!asset) return reply.code(404).send({ error: 'asset not found' });
 
       const resource = accessResource(request.params.assetId, result.data);
       if (result.data.version !== undefined) {
-        const content = await assetStore.getVersionContent(
+        const exists = await assetContentExists(
+          assetStore,
           request.params.assetId,
-          result.data.version,
+          { version: result.data.version },
           scope,
         );
-        if (!content) return reply.code(404).send({ error: 'asset version not found' });
+        if (!exists) return reply.code(404).send({ error: 'asset version not found' });
       } else if (result.data.derivative !== undefined) {
-        const derivative = await assetStore.getDerivative(
+        const exists = await assetContentExists(
+          assetStore,
           request.params.assetId,
-          result.data.derivative,
+          { derivative: result.data.derivative },
           scope,
         );
-        if (!derivative) return reply.code(404).send({ error: 'derivative not found' });
+        if (!exists) return reply.code(404).send({ error: 'derivative not found' });
       }
 
       const expiresIn = result.data.expiresInSeconds ?? 300;
@@ -4464,7 +4467,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         return reply.code(400).send({ error: 'invalid asset version' });
       }
       const scope = assetScope(requestPrincipals, request);
-      const asset = await assetStore.get(request.params.assetId, scope);
+      const asset = await getReadableAssetMetadata(assetStore, request.params.assetId, scope);
       if (!asset) return reply.code(404).send({ error: 'asset version not found' });
       const content = await assetStore.getVersionContent(request.params.assetId, version, scope);
       if (!content) return reply.code(404).send({ error: 'asset version not found' });
@@ -4676,6 +4679,40 @@ type AccessUrlRequest = {
   version?: number;
   derivative?: 'thumbnail' | 'poster' | 'waveform' | 'final_frame';
 };
+
+/**
+ * 读取可公开的资源元数据并确认当前源对象仍可读。内置存储只做 HEAD/存在性检查；
+ * 旧适配器继续通过 get 保持原有错误语义。
+ */
+async function getReadableAssetMetadata(
+  assetStore: AssetStore,
+  assetId: string,
+  scope: AssetScope,
+): Promise<Asset | undefined> {
+  if (assetStore.getMetadata && assetStore.hasContent) {
+    const metadata = await assetStore.getMetadata(assetId, scope);
+    if (!metadata || !(await assetStore.hasContent(assetId, {}, scope))) return undefined;
+    return metadata;
+  }
+  return assetStore.get(assetId, scope);
+}
+
+/** 只检查所选版本或派生对象；旧适配器回退到原有完整读取。 */
+async function assetContentExists(
+  assetStore: AssetStore,
+  assetId: string,
+  selector: AccessUrlRequest,
+  scope: AssetScope,
+): Promise<boolean> {
+  if (assetStore.hasContent) return assetStore.hasContent(assetId, selector, scope);
+  if (selector.version !== undefined) {
+    return Boolean(await assetStore.getVersionContent(assetId, selector.version, scope));
+  }
+  if (selector.derivative !== undefined) {
+    return Boolean(await assetStore.getDerivative(assetId, selector.derivative, scope));
+  }
+  return Boolean(await assetStore.get(assetId, scope));
+}
 
 function accessResource(assetId: string, options: AccessUrlRequest): string {
   if (options.version !== undefined) return `asset:${assetId}:version:${options.version}`;

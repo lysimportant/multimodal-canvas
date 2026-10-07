@@ -51,7 +51,7 @@
   width: min(280px, calc(100vw - 24px));
 }
 
-.resource-mention-hover-content .resource-mention-hover-preview {
+.resource-mention-hover-content > .resource-mention-hover-preview {
   align-items: center;
   background: var(--mc-surface-muted, #f0f3f5);
   border-radius: 4px;
@@ -65,7 +65,9 @@
   width: 100%;
 }
 
-.resource-mention-hover-content .resource-mention-hover-preview .artifact-preview-media {
+.resource-mention-hover-content
+  > .resource-mention-hover-preview.artifact-preview-media-shell
+  > .artifact-preview-media {
   height: 100%;
   object-fit: contain;
   object-position: center;

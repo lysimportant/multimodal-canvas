@@ -110,11 +110,157 @@ async function createFixture(mode?: S3DownloadMode, logger: BuildAppOptions['log
 }
 
 describe('proxy asset access URLs', () => {
+  it.each([
+    {
+      method: 'POST' as const,
+      payload: { version: 1 },
+      error: 'asset not found',
+    },
+    {
+      method: 'GET' as const,
+      payload: undefined,
+      error: 'asset version not found',
+    },
+  ])('keeps a missing source object as 404 for $method fixed-version access', async (request) => {
+    const { app, store, asset, ownerHeaders, presign } = await createFixture('proxy');
+    const get = vi.spyOn(store, 'get');
+    const hasContent = vi.spyOn(store, 'hasContent').mockResolvedValue(false);
+    const getVersionContent = vi.spyOn(store, 'getVersionContent');
+
+    const response = await app.inject({
+      method: request.method,
+      url:
+        request.method === 'POST'
+          ? `/v1/assets/${asset.id}/access-url`
+          : `/v1/assets/${asset.id}/versions/1/content`,
+      headers: ownerHeaders,
+      ...(request.payload ? { payload: request.payload } : {}),
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: request.error });
+    expect(hasContent).toHaveBeenCalledExactlyOnceWith(asset.id, {}, { ownerId });
+    expect(get).not.toHaveBeenCalled();
+    expect(getVersionContent).not.toHaveBeenCalled();
+    expect(presign).not.toHaveBeenCalled();
+  });
+
+  it('falls back to full reads for an ownership-aware legacy store', async () => {
+    const { app: fixtureApp, store, asset, ownerHeaders } = await createFixture('proxy');
+    await fixtureApp.close();
+    apps.splice(apps.indexOf(fixtureApp), 1);
+    const get = vi.spyOn(store, 'get');
+    const getVersionContent = vi.spyOn(store, 'getVersionContent');
+    const legacyStore: AssetStore = {
+      create: store.create.bind(store),
+      list: store.list.bind(store),
+      getOwnership: store.getOwnership.bind(store),
+      get: store.get.bind(store),
+      delete: store.delete.bind(store),
+      createVersion: store.createVersion.bind(store),
+      listVersions: store.listVersions.bind(store),
+      getVersionContent: store.getVersionContent.bind(store),
+      getDerivative: store.getDerivative.bind(store),
+      update: store.update.bind(store),
+      setArchived: store.setArchived.bind(store),
+    };
+    const app = buildApp({
+      logger: false,
+      assetStore: legacyStore,
+      s3DownloadMode: 'proxy',
+      userExists: async (userId) => [ownerId, otherOwnerId].includes(userId),
+    });
+    apps.push(app);
+
+    const issued = await app.inject({
+      method: 'POST',
+      url: `/v1/assets/${asset.id}/access-url`,
+      headers: ownerHeaders,
+      payload: { version: 1 },
+    });
+
+    expect(issued.statusCode).toBe(200);
+    expect(get).toHaveBeenCalledExactlyOnceWith(asset.id, { ownerId });
+    expect(getVersionContent).toHaveBeenCalledExactlyOnceWith(asset.id, 1, { ownerId });
+  });
+
+  it.each(['proxy', 'direct'] as const)(
+    'issues a fixed-version URL in %s mode without reading source or version bytes',
+    async (mode) => {
+      const { app, store, asset, ownerHeaders, presign } = await createFixture(mode);
+      const get = vi.spyOn(store, 'get');
+      const getMetadata = vi.spyOn(store, 'getMetadata');
+      const hasContent = vi.spyOn(store, 'hasContent');
+      const getVersionContent = vi.spyOn(store, 'getVersionContent');
+
+      const issued = await app.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        headers: ownerHeaders,
+        payload: { version: 1 },
+      });
+
+      expect(issued.statusCode).toBe(200);
+      expect(get).not.toHaveBeenCalled();
+      expect(getVersionContent).not.toHaveBeenCalled();
+      expect(getMetadata).toHaveBeenCalledExactlyOnceWith(asset.id, { ownerId });
+      expect(hasContent.mock.calls).toEqual([
+        [asset.id, {}, { ownerId }],
+        [asset.id, { version: 1 }, { ownerId }],
+      ]);
+      expect(presign).toHaveBeenCalledTimes(mode === 'direct' ? 1 : 0);
+    },
+  );
+
+  it.each(['proxy', 'direct'] as const)(
+    'keeps a missing fixed version as 404 in %s mode without reading object bytes',
+    async (mode) => {
+      const { app, store, asset, ownerHeaders, presign } = await createFixture(mode);
+      const get = vi.spyOn(store, 'get');
+      const getVersionContent = vi.spyOn(store, 'getVersionContent');
+
+      const issued = await app.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        headers: ownerHeaders,
+        payload: { version: 99 },
+      });
+
+      expect(issued.statusCode).toBe(404);
+      expect(issued.json()).toEqual({ error: 'asset version not found' });
+      expect(get).not.toHaveBeenCalled();
+      expect(getVersionContent).not.toHaveBeenCalled();
+      expect(presign).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads only the requested object once for fixed-version content', async () => {
+    const { app, store, asset, ownerHeaders } = await createFixture('proxy');
+    const get = vi.spyOn(store, 'get');
+    const getMetadata = vi.spyOn(store, 'getMetadata');
+    const hasContent = vi.spyOn(store, 'hasContent');
+    const getVersionContent = vi.spyOn(store, 'getVersionContent');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/assets/${asset.id}/versions/1/content`,
+      headers: ownerHeaders,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.rawPayload).toEqual(Buffer.from('source-bytes'));
+    expect(get).not.toHaveBeenCalled();
+    expect(getMetadata).toHaveBeenCalledExactlyOnceWith(asset.id, { ownerId });
+    expect(hasContent).toHaveBeenCalledExactlyOnceWith(asset.id, {}, { ownerId });
+    expect(getVersionContent).toHaveBeenCalledExactlyOnceWith(asset.id, 1, { ownerId });
+  });
+
   it.each(resources)(
     'serves $name without Bearer and rejects expired or tampered URLs',
     async ({ body, path, content, mimeType }) => {
       const { app, store, asset, ownerHeaders, presign } = await createFixture('proxy');
       const getAsset = vi.spyOn(store, 'get');
+      const getMetadata = vi.spyOn(store, 'getMetadata');
       const unsignedPath = `/v1/assets/${asset.id}${path}`;
       expect((await app.inject({ method: 'GET', url: unsignedPath })).statusCode).toBe(401);
 
@@ -137,7 +283,12 @@ describe('proxy asset access URLs', () => {
       expect(downloaded.statusCode).toBe(200);
       expect(downloaded.headers['content-type']).toContain(mimeType);
       expect(downloaded.rawPayload).toEqual(Buffer.from(content));
-      expect(getAsset).toHaveBeenCalledWith(asset.id, { ownerId });
+      if (path === '/content') {
+        expect(getAsset).toHaveBeenCalledWith(asset.id, { ownerId });
+      } else {
+        expect(getAsset).not.toHaveBeenCalled();
+        expect(getMetadata).toHaveBeenCalledWith(asset.id, { ownerId });
+      }
 
       parsed.searchParams.set('access_token', `${parsed.searchParams.get('access_token')}x`);
       expect(

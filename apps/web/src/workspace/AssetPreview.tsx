@@ -12,7 +12,16 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
 import {
@@ -23,7 +32,12 @@ import {
   DialogContent,
   DialogTitle,
 } from '@multimodal-canvas/ui';
-import { apiFetch, readAuthSession } from '../auth-client';
+import {
+  apiFetch,
+  getAuthSessionGeneration,
+  readAuthSession,
+  subscribeAuthSession,
+} from '../auth-client';
 import { downloadProjectExport } from '../export-utils';
 import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
@@ -63,48 +77,231 @@ export type AssetPreviewProps = {
 
 type ArtifactKind = MediaType | 'file';
 
-/** 申请受保护产物的签名地址；相对签名按 API 地址解析，失败不降级成未鉴权请求。 */
+/** 已授权地址的共享结果；只保存短期签名，不读取或缓存资源内容。 */
+type AssetAccessUrl = { url: string };
+/** 共享签名请求及其当前消费者；无消费者的未完成请求会被取消。 */
+type AssetAccessUrlEntry = {
+  promise: Promise<AssetAccessUrl>;
+  abort: AbortController;
+  refs: number;
+  reusableUntil: number;
+  usedAt: number;
+};
+
+/** 精确版本签名只短暂复用，且始终早于服务端声明的到期时间。 */
+const ASSET_ACCESS_URL_CACHE_TTL_MS = 30_000;
+const ASSET_ACCESS_URL_EXPIRY_SKEW_MS = 5_000;
+const MAX_ASSET_ACCESS_URL_ENTRIES = 64;
+const assetAccessUrlCache = new Map<string, AssetAccessUrlEntry>();
+let assetAccessUrlGeneration = getAuthSessionGeneration();
+let unsubscribeAssetAccessUrlAuth: (() => void) | undefined;
+
+/** 解析签名目标；版本或衍生类型属于服务端授权范围，查询参数不进入缓存键。 */
+function assetAccessUrlRequest(asset: Asset): {
+  body: Record<string, unknown>;
+  key: string;
+  reusable: boolean;
+} {
+  const versionMatch = asset.contentUrl.match(/\/versions\/(\d+)\/content(?:$|\?)/);
+  const derivativeMatch = asset.contentUrl.match(
+    /\/derivatives\/(thumbnail|poster|waveform)(?:$|\?)/,
+  );
+  const body: Record<string, unknown> = versionMatch
+    ? { version: Number(versionMatch[1]) }
+    : derivativeMatch
+      ? { derivative: derivativeMatch[1] }
+      : {};
+  const scope = versionMatch
+    ? `version:${versionMatch[1]}`
+    : derivativeMatch
+      ? `derivative:${derivativeMatch[1]}`
+      : 'current';
+  return {
+    body,
+    key: `${getAuthSessionGeneration()}:${asset.id}:${scope}`,
+    reusable: Boolean(versionMatch),
+  };
+}
+
+/** 账户变化时立即丢弃全部签名并取消旧请求，避免旧账户地址留在内存或被晚到结果复用。 */
+function clearAssetAccessUrlCache(): void {
+  for (const entry of assetAccessUrlCache.values()) entry.abort.abort();
+  assetAccessUrlCache.clear();
+  assetAccessUrlGeneration = getAuthSessionGeneration();
+}
+
+/** 注册一次会话监听；普通续期不改变身份代次，因此可继续使用尚未到期的签名。 */
+function ensureAssetAccessUrlSessionIsolation(): void {
+  if (!unsubscribeAssetAccessUrlAuth)
+    unsubscribeAssetAccessUrlAuth = subscribeAuthSession(() => {
+      if (assetAccessUrlGeneration !== getAuthSessionGeneration()) clearAssetAccessUrlCache();
+    });
+  if (assetAccessUrlGeneration !== getAuthSessionGeneration()) clearAssetAccessUrlCache();
+}
+
+/** 淘汰过期或超过上限的闲置签名；正在使用的条目由消费者释放后再清理。 */
+function pruneAssetAccessUrls(): void {
+  const now = Date.now();
+  const idle = [...assetAccessUrlCache.entries()]
+    .filter(([, entry]) => entry.refs === 0)
+    .sort((left, right) => left[1].usedAt - right[1].usedAt);
+  for (const [key, entry] of idle) {
+    if (entry.reusableUntil > now && assetAccessUrlCache.size <= MAX_ASSET_ACCESS_URL_ENTRIES)
+      continue;
+    assetAccessUrlCache.delete(key);
+    entry.abort.abort();
+  }
+}
+
+/** 用户明确重载时废弃该版本的旧授权，下一位消费者将共享新的签名请求。 */
+function invalidateAssetAccessUrl(key: string): void {
+  const entry = assetAccessUrlCache.get(key);
+  if (!entry) return;
+  assetAccessUrlCache.delete(key);
+  if (entry.refs === 0) entry.abort.abort();
+}
+
+/**
+ * 合并同账户、同资产及同版本的授权请求；成功仅短暂保留签名地址，失败不进入缓存。
+ * @param asset 需要签名的受保护资源。
+ * @param request 已解析的授权范围和缓存键。
+ * @returns 共享 Promise 和幂等释放函数；最后消费者卸载会取消未完成请求。
+ */
+function acquireAssetAccessUrl(
+  asset: Asset,
+  request: ReturnType<typeof assetAccessUrlRequest>,
+): { promise: Promise<AssetAccessUrl>; release: () => void } {
+  ensureAssetAccessUrlSessionIsolation();
+  const now = Date.now();
+  let entry = assetAccessUrlCache.get(request.key);
+  if (entry && entry.reusableUntil <= now && entry.reusableUntil !== Infinity) {
+    assetAccessUrlCache.delete(request.key);
+    if (entry.refs === 0) entry.abort.abort();
+    entry = undefined;
+  }
+  if (!entry) {
+    const generation = getAuthSessionGeneration();
+    const next: AssetAccessUrlEntry = {
+      abort: new AbortController(),
+      refs: 0,
+      reusableUntil: Infinity,
+      usedAt: now,
+      promise: Promise.resolve({ url: '' }),
+    };
+    next.promise = apiFetch(
+      `${API_BASE_URL}/v1/assets/${encodeURIComponent(asset.id)}/access-url`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(request.body),
+        signal: next.abort.signal,
+      },
+    )
+      .then(async (response) => {
+        const result = (await response.json().catch(() => ({}))) as {
+          url?: string;
+          expiresAt?: string;
+        };
+        if (!response.ok || !result.url) throw new Error(`产物访问授权失败（${response.status}）`);
+        if (generation !== getAuthSessionGeneration())
+          throw new DOMException('产物访问授权已取消', 'AbortError');
+        const serverExpiresAt = result.expiresAt ? Date.parse(result.expiresAt) : NaN;
+        const reusableUntil =
+          request.reusable && Number.isFinite(serverExpiresAt)
+            ? Math.min(
+                Date.now() + ASSET_ACCESS_URL_CACHE_TTL_MS,
+                serverExpiresAt - ASSET_ACCESS_URL_EXPIRY_SKEW_MS,
+              )
+            : Date.now();
+        next.reusableUntil = reusableUntil;
+        return { url: resolveUploadUrl(result.url, API_BASE_URL) };
+      })
+      .catch((error: unknown) => {
+        if (assetAccessUrlCache.get(request.key) === next) assetAccessUrlCache.delete(request.key);
+        throw error;
+      })
+      .finally(() => {
+        pruneAssetAccessUrls();
+      });
+    assetAccessUrlCache.set(request.key, next);
+    entry = next;
+  }
+  const current = entry;
+  current.refs++;
+  current.usedAt = now;
+  pruneAssetAccessUrls();
+  let released = false;
+  return {
+    promise: current.promise,
+    release: () => {
+      if (released) return;
+      released = true;
+      current.refs--;
+      current.usedAt = Date.now();
+      if (current.refs === 0 && current.reusableUntil === Infinity) {
+        // React 严格模式会同步释放并重挂载；微任务内复核可避免重复授权。
+        queueMicrotask(() => {
+          if (current.refs !== 0 || current.reusableUntil !== Infinity) return;
+          if (assetAccessUrlCache.get(request.key) === current)
+            assetAccessUrlCache.delete(request.key);
+          current.abort.abort();
+        });
+      } else {
+        pruneAssetAccessUrls();
+      }
+    },
+  };
+}
+
+/**
+ * 申请受保护产物的签名地址；相对签名按 API 地址解析，失败不降级成未鉴权请求。
+ * @param asset 需要展示或链接的资源。
+ * @param reloadKey 显式重载代次；变化时废弃当前版本的共享授权。
+ * @param sign 是否需要为 API 产物申请签名。
+ * @returns 当前会话下的地址、加载状态或授权错误；账户变化时立即隐藏旧地址。
+ */
 function useAuthenticatedAssetUrl(
   asset: Asset,
   reloadKey: number,
   sign = true,
 ): { url: string; loading: boolean; error?: string } {
+  const generation = useSyncExternalStore(
+    subscribeAuthSession,
+    getAuthSessionGeneration,
+    getAuthSessionGeneration,
+  );
   const fallback = asset.contentUrl ? resolveUploadUrl(asset.contentUrl, API_BASE_URL) : '';
   const protectedAsset =
     sign &&
     Boolean(readAuthSession()) &&
     isApiResultUrl(fallback) &&
     new URL(fallback, window.location.href).pathname.includes('/v1/assets/');
-  const identity = `${asset.id}:${fallback}:${reloadKey}`;
+  const request = useMemo(
+    () => assetAccessUrlRequest(asset),
+    [asset.contentUrl, asset.id, generation],
+  );
+  const identity = `${generation}:${request.key}:${fallback}:${reloadKey}`;
   const [resolved, setResolved] = useState<{ identity: string; url: string; error?: string }>();
+  const observedReload = useRef({ key: request.key, reloadKey });
 
   useEffect(() => {
     if (!protectedAsset) return;
-    const abort = new AbortController();
-
-    const versionMatch = asset.contentUrl.match(/\/versions\/(\d+)\/content(?:$|\?)/);
-    const derivativeMatch = asset.contentUrl.match(
-      /\/derivatives\/(thumbnail|poster|waveform)(?:$|\?)/,
-    );
-    const body: Record<string, unknown> = versionMatch
-      ? { version: Number(versionMatch[1]) }
-      : derivativeMatch
-        ? { derivative: derivativeMatch[1] }
-        : {};
-    void apiFetch(`${API_BASE_URL}/v1/assets/${encodeURIComponent(asset.id)}/access-url`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: abort.signal,
-    })
-      .then(async (response) => {
-        const result = (await response.json().catch(() => ({}))) as { url?: string };
-        if (!response.ok || !result.url) throw new Error(`产物访问授权失败（${response.status}）`);
-        if (!abort.signal.aborted)
-          setResolved({ identity, url: resolveUploadUrl(result.url, API_BASE_URL) });
+    const previousReload = observedReload.current;
+    const explicitlyReloaded =
+      previousReload.key === request.key && reloadKey > previousReload.reloadKey;
+    observedReload.current = { key: request.key, reloadKey };
+    if (explicitlyReloaded) {
+      invalidateAssetAccessUrl(request.key);
+    }
+    let active = true;
+    const lease = acquireAssetAccessUrl(asset, request);
+    void lease.promise
+      .then((result) => {
+        if (active && generation === getAuthSessionGeneration())
+          setResolved({ identity, url: result.url });
       })
       .catch((reason: unknown) => {
-        if (!abort.signal.aborted)
+        if (active && generation === getAuthSessionGeneration())
           setResolved({
             identity,
             url: '',
@@ -112,9 +309,10 @@ function useAuthenticatedAssetUrl(
           });
       });
     return () => {
-      abort.abort();
+      active = false;
+      lease.release();
     };
-  }, [asset.contentUrl, asset.id, identity, protectedAsset]);
+  }, [asset.id, generation, identity, protectedAsset, reloadKey, request]);
 
   return protectedAsset
     ? resolved?.identity === identity

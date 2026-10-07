@@ -72,6 +72,22 @@ export function withAssetOwnershipPolicy(store: AssetStore, projects: ProjectSto
     async count(scope, options) {
       return (await filtered(scope, options)).length;
     },
+    ...(store.getMetadata
+      ? {
+          async getMetadata(id, scope) {
+            const resolved = await resolveScope(id, scope);
+            return resolved ? store.getMetadata!(id, resolved) : undefined;
+          },
+        }
+      : {}),
+    ...(store.hasContent
+      ? {
+          async hasContent(id, selector, scope) {
+            const resolved = await resolveScope(id, scope);
+            return resolved ? store.hasContent!(id, selector, resolved) : false;
+          },
+        }
+      : {}),
     async get(id, scope) {
       const resolved = await resolveScope(id, scope);
       return resolved ? store.get(id, resolved) : undefined;

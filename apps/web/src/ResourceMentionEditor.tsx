@@ -1448,7 +1448,7 @@ export function ResourceMentionEditor({
                 {entry.unavailableReason ? (
                   <MentionMediaIcon mediaType={entry.asset.mediaType} />
                 ) : (
-                  <MentionPreview asset={entry.asset} mediaType={entry.asset.mediaType} />
+                  <MentionPreview asset={entry.asset} mediaType={entry.asset.mediaType} thumbnail />
                 )}
                 <span className="resource-mention-option-copy">
                   <strong>{entry.name}</strong>
@@ -1653,7 +1653,11 @@ export function ResourceMentionEditor({
                 }}
               >
                 {canPreviewMentionAsset(resolvedAsset) && !unavailableReason ? (
-                  <MentionPreview asset={resolvedAsset as Asset} mediaType={item.mediaType} />
+                  <MentionPreview
+                    asset={resolvedAsset as Asset}
+                    mediaType={item.mediaType}
+                    thumbnail
+                  />
                 ) : (
                   <MentionMediaIcon mediaType={item.mediaType} />
                 )}
@@ -1729,12 +1733,17 @@ export function ResourceMentionEditor({
                       role="region"
                       aria-label={`预览 ${mentionDisplayName(mention)}`}
                     >
-                      <MentionPreview asset={asset} mediaType={mention.mediaType} />
+                      <MentionPreview
+                        asset={asset}
+                        mediaType={mention.mediaType}
+                        className="resource-mention-hover-preview"
+                        thumbnail
+                      />
                     </div>
                   }
                 >
                   <span className="resource-mention-token" data-mention-id={mention.mentionId}>
-                    <MentionPreview asset={asset} mediaType={mention.mediaType} />
+                    <MentionPreview asset={asset} mediaType={mention.mediaType} thumbnail />
                   </span>
                 </Popover>
               ),
@@ -2114,11 +2123,24 @@ function projectSearchEntry(asset: Asset): SearchEntry {
   const assetVersion = getAssetVersion(asset);
   return {
     key: resourceIdentity(asset.id, assetVersion),
-    asset,
+    asset: versionedPreviewAsset(asset, assetVersion),
     assetVersion,
     name: asset.name,
     aliases: [asset.name],
   };
+}
+
+/**
+ * 为目录预览构造只读的版本地址；仅改写可确认的应用内无版本内容路径。
+ *
+ * @param asset 项目目录返回的资源，不修改原对象。
+ * @param assetVersion 目录明确给出的当前版本。
+ * @returns 可安全定位到相同版本的展示副本；外部或已版本化地址保持原样。
+ */
+function versionedPreviewAsset(asset: Asset, assetVersion: number | undefined): Asset {
+  if (assetVersion === undefined || asset.contentUrl !== resultAssetContentUrl(asset.id))
+    return asset;
+  return { ...asset, contentUrl: resultAssetContentUrl(asset.id, assetVersion) };
 }
 
 /**
@@ -2360,13 +2382,22 @@ function MentionMediaIcon({ mediaType }: { mediaType: MediaType }) {
 function MentionPreview({
   asset,
   mediaType,
+  className = 'resource-mention-preview',
+  thumbnail = false,
 }: {
   asset: SearchEntry['asset'] | undefined;
   mediaType: MediaType;
+  className?: string;
+  thumbnail?: boolean;
 }) {
   if (!canPreviewMentionAsset(asset)) return <MentionMediaIcon mediaType={mediaType} />;
   return (
-    <AssetPreview asset={asset as Asset} mode="compact" className="resource-mention-preview" />
+    <AssetPreview
+      asset={asset as Asset}
+      mode="compact"
+      className={className}
+      thumbnail={thumbnail && mediaType === 'image'}
+    />
   );
 }
 

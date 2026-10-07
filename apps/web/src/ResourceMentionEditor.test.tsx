@@ -438,7 +438,7 @@ describe('ResourceMentionEditor', () => {
       { assetId: audioAsset.id },
       { assetId: imageAsset.id },
     ]);
-    expect(screen.getByRole('status')).toHaveTextContent('资源池已变化，请重试');
+    expect(screen.getByText('资源池已变化，请重试')).toHaveClass('resource-mention-edit-warning');
     expect(screen.getAllByRole('article')[0]).toBe(items[0]);
     expect(screen.getByRole('textbox')).toHaveValue('保持正文');
     expect(onDocumentChange).not.toHaveBeenCalled();
@@ -584,7 +584,10 @@ describe('ResourceMentionEditor', () => {
             },
           ],
         }}
-        assets={[imageAsset, audioAsset]}
+        assets={[
+          { ...imageAsset, contentUrl: 'https://assets.example.test/product.png' },
+          audioAsset,
+        ]}
         ariaLabel="提示词"
       />,
     );
@@ -936,8 +939,12 @@ describe('ResourceMentionEditor', () => {
     const onDocumentChange = vi.fn();
     const onConnectedResourceRename = vi.fn();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('禁止外部请求'));
-    const assets = [imageAsset];
-    const connectedAssets = [{ ...imageAsset, referenceName: '主角' }];
+    const externalImage = {
+      ...imageAsset,
+      contentUrl: 'https://assets.example.test/product.png',
+    };
+    const assets = [externalImage];
+    const connectedAssets = [{ ...externalImage, referenceName: '主角' }];
     const originalInputs = structuredClone({ assets, connectedAssets });
     render(
       <ResourceMentionEditor
@@ -1535,7 +1542,12 @@ describe('ResourceMentionEditor', () => {
   });
 
   it('renders confirmed cards for image, video, audio, and text resources', () => {
-    const resources = [imageAsset, videoAsset, audioAsset, textAsset];
+    const resources = [
+      { ...imageAsset, contentUrl: 'https://assets.example.test/product.png' },
+      videoAsset,
+      audioAsset,
+      textAsset,
+    ];
     render(
       <ResourceMentionEditor
         nodeId="node-multimodal"

@@ -34,6 +34,60 @@ describe('BlobStore implementations', () => {
 describe('PrismaAssetStore', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it('checks source and version objects without downloading their bytes', async () => {
+    const blobStore = new MemoryBlobStore();
+    const exists = vi.spyOn(blobStore, 'exists');
+    const get = vi.spyOn(blobStore, 'get');
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore, projectId: 'project-1' });
+    const asset = await store.create({
+      name: 'source.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('source'),
+    });
+    exists.mockClear();
+    get.mockClear();
+
+    expect(await store.getMetadata(asset.id)).toMatchObject({
+      id: asset.id,
+      mimeType: 'image/png',
+    });
+    expect(await store.hasContent(asset.id)).toBe(true);
+    expect(await store.hasContent(asset.id, { version: 1 })).toBe(true);
+    expect(await store.hasContent(asset.id, { version: 99 })).toBe(false);
+    await blobStore.delete(`assets/${asset.id}/v1`);
+    expect(await store.hasContent(asset.id)).toBe(false);
+    expect(await store.hasContent(asset.id, { version: 1 })).toBe(false);
+    expect(exists.mock.calls.map(([key]) => key)).toEqual([
+      `assets/${asset.id}/v1`,
+      `assets/${asset.id}/v1`,
+      `assets/${asset.id}/v1`,
+      `assets/${asset.id}/v1`,
+    ]);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('does not turn existence-check failures into missing content', async () => {
+    const blobStore = new MemoryBlobStore();
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore });
+    const asset = await store.create({
+      name: 'source.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('source'),
+    });
+    const get = vi.spyOn(blobStore, 'get');
+    vi.spyOn(blobStore, 'exists').mockRejectedValue(new Error('storage access denied'));
+
+    await expect(store.hasContent(asset.id)).rejects.toThrow('storage access denied');
+    await expect(store.hasContent(asset.id, { version: 1 })).rejects.toThrow(
+      'storage access denied',
+    );
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it('prefers new derivative keys, falls back only when missing, and signs the selected key', async () => {
     const blobStore = new MemoryBlobStore();
     const presigner = vi.fn(async (key: string) => `https://storage.example/${key}`);

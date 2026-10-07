@@ -2374,6 +2374,139 @@ test('零引用默认项目资源并跨越首页按服务端总数翻页', async
   ).toEqual([]);
 });
 
+/** 使用可识别边缘的合成位图验证悬浮满框显示、冻结缩略图复用和节点尺寸不变。 */
+for (const orientation of ['横图', '竖图'] as const) {
+  test(`PC 引用预览复用缩略图，${orientation}完整适配悬浮卡片与完整编辑器`, async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const width = orientation === '横图' ? 480 : 270;
+    const height = orientation === '横图' ? 270 : 480;
+    const png = await page.evaluate(
+      ({ width, height }) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d')!;
+        context.fillStyle = '#224e69';
+        context.fillRect(0, 0, width, height);
+        context.fillStyle = '#ffd070';
+        context.fillRect(0, 0, width, 24);
+        context.fillStyle = '#5cdda6';
+        context.fillRect(0, height - 24, width, 24);
+        context.fillStyle = '#ffffff';
+        context.font = '24px sans-serif';
+        context.fillText(`${width} × ${height}`, 28, height / 2);
+        return canvas.toDataURL('image/png').split(',')[1]!;
+      },
+      { width, height },
+    );
+    const fixture = await installFixture(page, baseURL);
+    let thumbnailRequests = 0;
+    await page.route(
+      '**/v1/assets/product-image/versions/1/derivatives/thumbnail',
+      async (route) => {
+        thumbnailRequests++;
+        await route.fulfill({
+          contentType: 'image/png',
+          body: Buffer.from(png, 'base64'),
+        });
+      },
+    );
+    await page.goto('/projects/' + project.id);
+    const { node, editor: quickEditor } = await openQuickEditor(page);
+    const before = (await node.boundingBox())!;
+    const originalDocument = fixture.canvas().nodes[0]!.data.promptDocument;
+    for (const presentation of ['快捷', '完整'] as const) {
+      if (presentation === '完整') {
+        await quickEditor.getByRole('button', { name: '打开完整编辑器', exact: true }).click();
+      }
+      const editor =
+        presentation === '完整'
+          ? page.getByRole('dialog', { name: '资源引用节点 · 编辑设置', exact: true })
+          : quickEditor;
+      const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
+      const inline = prompt.locator('[data-inline-reference]').first();
+      await expect(inline.locator('img')).toHaveAttribute('src', /^blob:/);
+      await inline.hover();
+      const hover = page.getByRole('region', { name: '预览 产品图', exact: true });
+      await expect(hover).toBeVisible();
+      const preview = hover.locator('img');
+      await expect
+        .poll(() => preview.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+        .toBe(width);
+      await expect.poll(async () => (await preview.boundingBox())?.width ?? 0).toBeGreaterThan(240);
+      const geometry = await preview.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const container = element
+          .closest('.resource-mention-hover-content')!
+          .getBoundingClientRect();
+        return {
+          width: bounds.width,
+          height: bounds.height,
+          containerWidth: container.width,
+          containerHeight: container.height,
+          objectFit: getComputedStyle(element).objectFit,
+        };
+      });
+      expect(geometry.width).toBeGreaterThan(240);
+      expect(geometry.height).toBeGreaterThan(175);
+      expect(geometry.width / geometry.containerWidth).toBeGreaterThan(0.9);
+      expect(geometry.height / geometry.containerHeight).toBeGreaterThan(0.9);
+      expect(geometry.width).toBeLessThanOrEqual(geometry.containerWidth);
+      expect(geometry.height).toBeLessThanOrEqual(geometry.containerHeight);
+      expect(geometry.objectFit).toBe('contain');
+      expect(thumbnailRequests).toBe(1);
+      expect(fixture.assetAccesses.filter((entry) => entry.assetId === 'product-image')).toEqual(
+        [],
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`${orientation}-${presentation}.png`),
+        animations: 'disabled',
+      });
+      await page.mouse.move(8, 8);
+      await expect(hover).toBeHidden();
+      await inline.hover();
+      await expect(hover.locator('img')).toHaveAttribute(
+        'src',
+        (await inline.locator('img').getAttribute('src'))!,
+      );
+      expect(thumbnailRequests).toBe(1);
+      expectSameNodeSize(before, (await node.boundingBox())!);
+      await page.mouse.move(8, 8);
+      await expect(hover).toBeHidden();
+    }
+    const fullEditor = page.getByRole('dialog', { name: '资源引用节点 · 编辑设置', exact: true });
+    await fullEditor.getByRole('button', { name: '预览并命名 产品图', exact: true }).click();
+    const details = page.getByRole('dialog', { name: '资源预览', exact: true });
+    await expect(details.locator('img')).toHaveAttribute('src', /\/versions\/1\/content$/);
+    await expect
+      .poll(() =>
+        details.locator('img').evaluate((element) => (element as HTMLImageElement).naturalWidth),
+      )
+      .toBe(960);
+    await details.locator('img').click();
+    const viewer = page.getByRole('dialog', { name: '产品图', exact: true });
+    await expect(viewer).toBeVisible();
+    const download = page.waitForEvent('download');
+    await viewer.getByRole('button', { name: '下载原文件', exact: true }).click();
+    expect(readFileSync((await (await download).path())!)).toEqual(poster);
+    expect(
+      fixture.assetAccesses
+        .filter((entry) => entry.assetId === 'product-image')
+        .every((entry) => entry.version === 1),
+    ).toBe(true);
+    expect(fixture.canvas().nodes[0]!.data.promptDocument).toEqual(originalDocument);
+    expect(fixture.errors).toEqual([]);
+    expect(
+      fixture.apiRequests.filter(
+        (request) => request.method === 'POST' && /runs|generations/.test(request.path),
+      ),
+    ).toEqual([]);
+  });
+}
+
 /** 目录外冻结身份虽可解析版本地址，但没有 MIME；预览入口必须降级图标而非让整页崩溃。 */
 test('PC 目录外冻结引用的光标预览与卡片详情降级图标，节点检索保留 v4', async ({
   page,
