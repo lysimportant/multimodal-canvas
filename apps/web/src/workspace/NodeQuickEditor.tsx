@@ -2183,6 +2183,40 @@ function VideoDurationControl({
   );
 }
 
+/**
+ * 在固定图标槽中等比绘制比例；未声明固定比例的选项使用虚线方框。
+ * @param ratio 菜单声明的宽高比例，例如 `16 / 9`；无效或缺失时按方形绘制。
+ * @returns 纯装饰图形，不提供交互，也不修改节点参数。
+ */
+function AspectRatioPreview({ ratio }: { ratio?: string }) {
+  const [horizontal, vertical] = (ratio ?? '1 / 1').split('/').map(Number);
+  const aspect =
+    Number.isFinite(horizontal) && horizontal > 0 && Number.isFinite(vertical) && vertical > 0
+      ? horizontal / vertical
+      : 1;
+  const width = Math.min(40, 28 * aspect);
+  const height = Math.min(28, 40 / aspect);
+  return (
+    <span className="node-quick-editor-aspect-icon" aria-hidden="true">
+      <svg
+        className={['node-quick-editor-aspect-preview', !ratio && 'is-default']
+          .filter(Boolean)
+          .join(' ')}
+        viewBox="0 0 44 32"
+      >
+        <rect
+          x={(44 - width) / 2}
+          y={(32 - height) / 2}
+          width={width}
+          height={height}
+          rx={2}
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    </span>
+  );
+}
+
 /** 保留参数短枚举、模型分组和未设置语义；选项导航与焦点由 Ant Design 处理。 */
 function NodeParameterSelect({
   label,
@@ -2229,6 +2263,7 @@ function NodeParameterSelect({
       className={[
         'node-parameter-select',
         aspectOptions ? 'node-quick-editor-option-group' : 'compact-select',
+        aspectOptions && 'node-parameter-aspect-select',
         className,
       ]
         .filter(Boolean)
@@ -2244,17 +2279,30 @@ function NodeParameterSelect({
         options={grouped}
         onSelect={onChange}
         virtual={false}
-        styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+        styles={{
+          popup: { root: { pointerEvents: 'auto', ...(aspectOptions && { minWidth: 0 }) } },
+        }}
         placement="topLeft"
         getPopupContainer={nodePopupContainer}
         popupMatchSelectWidth={false}
         classNames={{
           popup: {
-            root: 'node-parameter-options',
+            root: ['node-parameter-options', aspectOptions && 'node-parameter-aspect-options']
+              .filter(Boolean)
+              .join(' '),
             list: optionLayout === 'grid' ? 'node-parameter-grid' : undefined,
           },
         }}
-        labelRender={() => selectionLabel}
+        labelRender={() =>
+          aspectOptions && selected ? (
+            <span className="node-parameter-aspect-selection">
+              <AspectRatioPreview ratio={selected.previewAspectRatio} />
+              <span>{selectionLabel}</span>
+            </span>
+          ) : (
+            selectionLabel
+          )
+        }
         popupRender={(menu) => (
           <div
             ref={(container) => {
@@ -2276,13 +2324,7 @@ function NodeParameterSelect({
         )}
         optionRender={(option) => (
           <span className="node-parameter-option">
-            {aspectOptions && option.data.previewAspectRatio && (
-              <span
-                className="node-quick-editor-aspect-preview"
-                style={{ aspectRatio: option.data.previewAspectRatio }}
-                aria-hidden="true"
-              />
-            )}
+            {aspectOptions && <AspectRatioPreview ratio={option.data.previewAspectRatio} />}
             <span className="node-quick-editor-option-copy">
               <strong>{option.data.label}</strong>
               {option.data.description && <small>{option.data.description}</small>}

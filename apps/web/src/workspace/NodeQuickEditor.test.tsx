@@ -4200,7 +4200,10 @@ describe('NodeQuickEditor', () => {
     const ratioButton = selectPopup(ratioGroup).getByRole('option', { name: /16:9/ });
     const ratioPreview = ratioButton.querySelector('.node-quick-editor-aspect-preview');
     expect(ratioPreview).toBeInTheDocument();
-    expect(ratioPreview).toHaveStyle({ aspectRatio: '16 / 9' });
+    const ratioShape = ratioPreview!.querySelector('rect')!;
+    expect(
+      Number(ratioShape.getAttribute('width')) / Number(ratioShape.getAttribute('height')),
+    ).toBeCloseTo(16 / 9);
     expect(ratioButton).toHaveAttribute('title', '16:9 · 横屏');
 
     await user.click(ratioButton);

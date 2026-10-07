@@ -21,6 +21,7 @@ async function json(route: Route, body: unknown) {
 /**
  * 提供有效 Cookie 会话和合成参数目录；PATCH 只更新本用例的内存画布。
  * modelAlias 选择视频合同或合成图片模型；mediaType 决定节点与模型目录类型，不请求供应商。
+ * initialParameters 可覆盖初始参数，用于区分未设置占位与已保存选择。
  * @returns 错误、请求及当前参数读取器，用于核实交互没有产生任何生成请求。
  */
 async function installFixture(
@@ -28,6 +29,7 @@ async function installFixture(
   baseURL: string | undefined,
   modelAlias = 'wan3.0-video',
   mediaType: 'image' | 'video' = 'video',
+  initialParameters?: Record<string, unknown>,
 ) {
   if (!baseURL) throw new Error('缺少隔离的 Playwright baseURL');
   const webUrl = new URL(baseURL);
@@ -64,7 +66,7 @@ async function installFixture(
           modelAlias,
           credentialId: 'synthetic-parameter-credential',
           prompt: 'A quiet room with soft daylight.',
-          parameters: {
+          parameters: initialParameters ?? {
             resolution:
               mediaType === 'image' ? '1k' : modelAlias === 'minimax-h3' ? '768p' : '720p',
             aspectRatio: '16:9',
@@ -103,7 +105,7 @@ async function installFixture(
         method === 'GET' &&
         !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
         (path === `/projects/${project.id}` ||
-          /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|favicon\.)/.test(
+          /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|brand\/|favicon\.)/.test(
             path,
           ))
       )
@@ -166,6 +168,17 @@ async function installFixture(
     return route.abort('blockedbyclient');
   });
   await page.goto(`/projects/${project.id}`);
+  await selectParameterNode(page);
+  return {
+    errors,
+    requests,
+    parameters: () => canvas.nodes[0]!.data.parameters,
+    node: () => canvas.nodes[0]!,
+  };
+}
+
+/** 选择合成节点并等缩放收敛；刷新回读仍沿用同一内存画布。 */
+async function selectParameterNode(page: Page) {
   const node = page.locator('.react-flow__node[data-id="parameter-node"]');
   await expect(node).toBeVisible({ timeout: 30_000 });
   await expect
@@ -178,7 +191,6 @@ async function installFixture(
   const box = (await node.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect(page.locator('.quick-editor-overlay')).toBeVisible();
-  return { errors, requests, parameters: () => canvas.nodes[0]!.data.parameters };
 }
 
 /** 按用户路径进入快捷或完整编辑器，再打开共享的媒体参数页。 */
@@ -204,8 +216,8 @@ async function expectUnobstructed(target: Locator) {
     .toBe(true);
 }
 
-/** 短枚举的标签和说明均应完整显示为单行，不能用 ellipsis 隐藏文字来通过验收。 */
-async function expectSingleLineOptions(list: Locator) {
+/** 短枚举须单行完整显示；自动比例的完整说明允许换行，但不能裁切或省略。 */
+async function expectSingleLineOptions(list: Locator, wrappingDescriptions: string[] = []) {
   const text = list.locator('.node-quick-editor-option-copy').locator('strong, small');
   await expect(text.first()).toBeVisible();
   const measurements = await text.evaluateAll((elements) =>
@@ -219,7 +231,134 @@ async function expectSingleLineOptions(list: Locator) {
       };
     }),
   );
-  expect(measurements.filter((item) => item.lines !== 1 || item.clipped)).toEqual([]);
+  expect(
+    measurements.filter(
+      (item) =>
+        (item.lines !== 1 && !wrappingDescriptions.includes(item.text ?? '')) || item.clipped,
+    ),
+  ).toEqual([]);
+}
+
+/** 用浏览器几何验证两列、固定图标槽及完整文本，不以 CSS 声明代替实际排版。 */
+async function expectAspectLayout(list: Locator) {
+  await expect(list).toBeInViewport({ ratio: 1 });
+  await list.evaluate(async (element) => {
+    const popup = element.closest('.node-parameter-aspect-options');
+    if (!popup) throw new Error('比例菜单未使用独立浮层');
+    await Promise.all(
+      popup
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished),
+    );
+  });
+  const listWidth = await list.evaluate((element) => {
+    const popup = element.closest('.node-parameter-aspect-options')!;
+    const bounds = popup.getBoundingClientRect();
+    const style = getComputedStyle(popup);
+    const scale = bounds.width / Number.parseFloat(style.width);
+    const horizontalInsets =
+      Number.parseFloat(style.paddingLeft) +
+      Number.parseFloat(style.paddingRight) +
+      Number.parseFloat(style.borderLeftWidth) +
+      Number.parseFloat(style.borderRightWidth);
+    return {
+      actual: element.getBoundingClientRect().width,
+      expected: bounds.width - horizontalInsets * scale,
+    };
+  });
+  expect(Math.abs(listWidth.actual - listWidth.expected)).toBeLessThanOrEqual(1);
+  const options = list.getByRole('option');
+  const measurements = await options.evaluateAll((elements) =>
+    elements.map((element) => {
+      const bounds = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const scaleX = bounds.width / Number.parseFloat(style.width);
+      const scaleY = bounds.height / Number.parseFloat(style.height);
+      const icon = element.querySelector('.node-quick-editor-aspect-icon');
+      const preview = element.querySelector('.node-quick-editor-aspect-preview');
+      const copy = element.querySelector('.node-quick-editor-option-copy');
+      const iconBounds = icon?.getBoundingClientRect();
+      const previewBounds = preview?.getBoundingClientRect();
+      const copyBounds = copy?.getBoundingClientRect();
+      const drawing = preview?.querySelector('rect')?.getBoundingClientRect();
+      const ratio = /^(\d+):(\d+)$/.exec(element.querySelector('strong')?.textContent ?? '');
+      return {
+        label: element.textContent,
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height / scaleY,
+        icon: iconBounds && {
+          width: iconBounds.width / scaleX,
+          height: iconBounds.height / scaleY,
+          right: iconBounds.right,
+        },
+        previewFits:
+          Boolean(iconBounds && previewBounds) &&
+          previewBounds!.x >= iconBounds!.x - 1 &&
+          previewBounds!.right <= iconBounds!.right + 1 &&
+          previewBounds!.y >= iconBounds!.y - 1 &&
+          previewBounds!.bottom <= iconBounds!.bottom + 1,
+        copy: copyBounds && { left: copyBounds.x - bounds.x, x: copyBounds.x },
+        drawingRatio: drawing && drawing.width / drawing.height,
+        expectedRatio: ratio ? Number(ratio[1]) / Number(ratio[2]) : undefined,
+        clippedText: Array.from(element.querySelectorAll('strong, small')).flatMap((text) => {
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          const rects = Array.from(range.getClientRects());
+          return text.scrollWidth > text.clientWidth + 1 ||
+            text.scrollHeight > text.clientHeight + 1 ||
+            rects.some(
+              (rect) =>
+                rect.x < bounds.x - 1 ||
+                rect.right > bounds.right + 1 ||
+                rect.y < bounds.y - 1 ||
+                rect.bottom > bounds.bottom + 1,
+            )
+            ? [text.textContent]
+            : [];
+        }),
+      };
+    }),
+  );
+  expect(measurements.length).toBeGreaterThanOrEqual(6);
+  expect(new Set(measurements.map((option) => Math.round(option.x))).size).toBe(2);
+  const widths = measurements.map((option) => option.width);
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+  for (let index = 0; index < measurements.length; index += 2) {
+    const left = measurements[index]!;
+    const right = measurements[index + 1];
+    if (right) {
+      expect(right.y).toBeCloseTo(left.y, 0);
+      expect(right.x).toBeGreaterThan(left.x + left.width - 1);
+    }
+    if (index > 0) expect(left.y).toBeGreaterThan(measurements[index - 2]!.y);
+  }
+  for (const option of measurements) {
+    expect(option.height, option.label ?? '').toBeGreaterThanOrEqual(55.9);
+    expect(option.icon, option.label ?? '').toBeDefined();
+    expect(option.icon!.width).toBeCloseTo(44, 1);
+    expect(option.icon!.height).toBeCloseTo(32, 1);
+    expect(option.previewFits, option.label ?? '').toBe(true);
+    expect(option.copy!.x).toBeGreaterThan(option.icon!.right);
+    expect(option.copy!.left).toBeCloseTo(measurements[0]!.copy!.left, 1);
+    expect(option.clippedText, option.label ?? '').toEqual([]);
+    if (option.expectedRatio !== undefined)
+      expect(option.drawingRatio, option.label ?? '').toBeCloseTo(option.expectedRatio, 2);
+  }
+  await expectSingleLineOptions(list, ['由模型根据提示词和素材决定']);
+}
+
+/** 读取选中控件 SVG 的真实矩形尺寸，确认缩小图标槽后仍保留原始横纵比例。 */
+async function expectSelectedAspectPreview(field: Locator, horizontal: number, vertical: number) {
+  const drawing = field.locator('.node-quick-editor-aspect-preview rect');
+  await expect(drawing).toBeVisible();
+  const ratio = await drawing.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.width / bounds.height;
+  });
+  expect(ratio).toBeCloseTo(horizontal / vertical, 2);
 }
 
 test.afterEach(async ({ page }, testInfo) => {
@@ -281,7 +420,7 @@ for (const presentation of ['快捷', '完整'] as const) {
   });
 
   for (const modelAlias of ['wan3.0-video', 'minimax-h3']) {
-    test(`${presentation} ${modelAlias} 比例值及中文说明不换行，短清晰度仍紧凑排列`, async ({
+    test(`${presentation} ${modelAlias} 固定比例与短说明不换行，清晰度仍紧凑排列`, async ({
       page,
       baseURL,
     }, testInfo) => {
@@ -289,7 +428,7 @@ for (const presentation of ['快捷', '完整'] as const) {
       const panel = await openParameters(page, presentation);
       await panel.getByRole('combobox', { name: /^视频比例：/ }).click();
       const ratios = page.getByRole('listbox', { name: '视频比例选项', exact: true });
-      await expectSingleLineOptions(ratios);
+      await expectSingleLineOptions(ratios, ['由模型根据提示词和素材决定']);
       if (modelAlias === 'minimax-h3') {
         for (const label of ['16:9', '21:9', '摄影横向', '标准横向', '超宽屏'])
           await expect(ratios.getByText(label, { exact: true })).toBeVisible();
@@ -381,13 +520,13 @@ test('模型长名称保持单列完整换行，不受短枚举排版影响', as
 for (const width of [1440, 1366]) {
   for (const presentation of ['快捷', '完整'] as const) {
     test(
-      width + ' PC ' + presentation + '图片四档清晰度等宽，4K 换行不拉满',
+      width + ' PC ' + presentation + '图片四档像素分辨率等宽，末项换行不拉满',
       async ({ page, baseURL }, info) => {
         await page.setViewportSize({ width, height: 900 });
         const fixture = await installFixture(page, baseURL, 'synthetic-image', 'image');
         const panel = await openParameters(page, presentation);
-        await panel.getByRole('combobox', { name: /^图片清晰度：/ }).click();
-        const list = page.getByRole('listbox', { name: '图片清晰度选项', exact: true });
+        await panel.getByRole('combobox', { name: /^图片分辨率：/ }).click();
+        const list = page.getByRole('listbox', { name: '图片分辨率选项', exact: true });
         const options = list.getByRole('option');
         await expect(options).toHaveCount(4);
         await expectSingleLineOptions(list);
@@ -399,16 +538,196 @@ for (const width of [1440, 1366]) {
           path: info.outputPath('image-resolution-four-options.png'),
           animations: 'disabled',
         });
-        const fourK = list.getByRole('option', { name: /^4K/i });
-        await expectUnobstructed(fourK);
-        await fourK.click();
-        await expect.poll(() => fixture.parameters()?.resolution).toBe('4k');
-        await expect(panel.getByRole('combobox', { name: /^图片清晰度：/ })).toHaveAccessibleName(
-          '图片清晰度：4K',
+        const largestSize = list.getByRole('option', { name: /^3840\s*×\s*2160/ });
+        await expectUnobstructed(largestSize);
+        await largestSize.click();
+        await expect.poll(() => fixture.parameters()?.size).toBe('3840x2160');
+        await expect(panel.getByRole('combobox', { name: /^图片分辨率：/ })).toHaveAccessibleName(
+          '图片分辨率：3840 × 2160',
         );
         expect(fixture.errors).toEqual([]);
         expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([]);
       },
     );
+  }
+}
+
+test('固定图片模型的比例禁用说明完整换行，灰色图标及键盘保留原参数', async ({
+  page,
+  baseURL,
+}, info) => {
+  const fixture = await installFixture(page, baseURL, 'gpt-image-1', 'image', {
+    size: '1024x1024',
+  });
+  const panel = await openParameters(page, '快捷');
+  const trigger = panel.getByRole('combobox', { name: '图片比例：1:1', exact: true });
+  await trigger.click();
+  const ratios = page.getByRole('listbox', { name: '图片比例选项', exact: true });
+  const disabled = ratios.getByRole('option', { name: /^9:16/ });
+  await expect(disabled).toHaveAttribute('aria-disabled', 'true');
+  await disabled.scrollIntoViewIfNeeded();
+  const description = disabled.locator('small');
+  await expect(description).toHaveText('当前模型不支持此比例对应的像素尺寸');
+  await page.locator('.node-parameter-aspect-options:visible').screenshot({
+    path: info.outputPath('aspect-disabled-description.png'),
+    animations: 'disabled',
+  });
+  const text = await description.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const option = element.closest('[role="option"]')!.getBoundingClientRect();
+    const rects = Array.from(range.getClientRects());
+    return {
+      lines: rects.length,
+      clipped:
+        element.scrollWidth > element.clientWidth + 1 ||
+        element.scrollHeight > element.clientHeight + 1 ||
+        rects.some(
+          (rect) =>
+            rect.x < option.x - 1 ||
+            rect.right > option.right + 1 ||
+            rect.y < option.y - 1 ||
+            rect.bottom > option.bottom + 1,
+        ),
+    };
+  });
+  expect(text.lines).toBeGreaterThan(1);
+  expect(text.clipped).toBe(false);
+  const colors = await disabled.evaluate((element) => ({
+    option: getComputedStyle(element).color,
+    icon: getComputedStyle(element.querySelector('.node-quick-editor-aspect-preview rect')!).stroke,
+  }));
+  expect(colors.icon).toBe(colors.option);
+  await disabled.click({ force: true });
+  await expect(trigger).toHaveAccessibleName('图片比例：1:1');
+  await trigger.press('ArrowDown');
+  const selected = ratios.getByRole('option', { name: /^1:1/ });
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  await expect(trigger).toHaveAttribute(
+    'aria-activedescendant',
+    (await selected.getAttribute('id'))!,
+  );
+  await trigger.press('Escape');
+  await expect(ratios).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(fixture.parameters()).toEqual({ size: '1024x1024' });
+  expect(fixture.requests.filter((request) => request.method === 'PATCH')).toEqual([]);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([]);
+});
+
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 1366, height: 768 },
+]) {
+  for (const presentation of ['快捷', '完整'] as const) {
+    for (const mediaType of ['image', 'video'] as const) {
+      const mediaLabel = mediaType === 'image' ? '图片' : '视频';
+      test(`${viewport.width}×${viewport.height} ${presentation}${mediaLabel}比例双列左图右文，保存及键盘不改变节点尺寸`, async ({
+        page,
+        baseURL,
+      }, info) => {
+        await page.setViewportSize(viewport);
+        const fixture = await installFixture(
+          page,
+          baseURL,
+          mediaType === 'image' ? 'synthetic-image' : 'wan3.0-video',
+          mediaType,
+          {},
+        );
+        const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+        const initialBounds = (await node.boundingBox())!;
+        let panel = await openParameters(page, presentation);
+        let trigger = panel.getByRole('combobox', { name: new RegExp(`^${mediaLabel}比例：`) });
+        let field = panel.locator('.node-parameter-select').filter({
+          has: page.getByRole('combobox', { name: new RegExp(`^${mediaLabel}比例：`) }),
+        });
+        await expect(trigger).toHaveAccessibleName(`${mediaLabel}比例：未设置`);
+        await expect(field.getByText('未设置', { exact: true })).toBeVisible();
+        await expect(field.locator('.node-quick-editor-aspect-preview')).toHaveCount(0);
+        expect(fixture.requests.filter((request) => request.method === 'PATCH')).toEqual([]);
+        await trigger.click();
+        const ratios = page.getByRole('listbox', { name: `${mediaLabel}比例选项`, exact: true });
+        await expectAspectLayout(ratios);
+        if (mediaType === 'video') {
+          const automatic = ratios.getByRole('option', { name: /^自动比例/ });
+          expect(
+            await automatic
+              .locator('.node-quick-editor-aspect-preview rect')
+              .evaluate((element) => getComputedStyle(element).strokeDasharray),
+          ).not.toBe('none');
+        }
+        await page.screenshot({
+          path: info.outputPath('aspect-two-columns-open.png'),
+          animations: 'disabled',
+          fullPage: true,
+        });
+        const landscape = ratios.getByRole('option', { name: /^16:9/ });
+        await expectUnobstructed(landscape);
+        await landscape.click();
+        await expect(ratios).toBeHidden();
+        await expect(trigger).toHaveAccessibleName(`${mediaLabel}比例：16:9`);
+        await expect(
+          field.locator('.node-parameter-aspect-selection').getByText('16:9', { exact: true }),
+        ).toBeVisible();
+        await expect(field.locator('.node-quick-editor-aspect-icon')).toHaveCount(1);
+        await expectSelectedAspectPreview(field, 16, 9);
+        await expect
+          .poll(() =>
+            mediaType === 'image' ? fixture.parameters()?.size : fixture.parameters()?.aspectRatio,
+          )
+          .toBe(mediaType === 'image' ? '1024x576' : '16:9');
+        await trigger.press('ArrowDown');
+        await expect(ratios).toBeVisible();
+        await expect(field.locator('.ant-select-content-has-value')).toHaveCSS('opacity', '1');
+        await page.screenshot({
+          path: info.outputPath('aspect-selected-open.png'),
+          animations: 'disabled',
+          fullPage: true,
+        });
+        await page.locator('.node-parameter-aspect-options:visible').screenshot({
+          path: info.outputPath('aspect-popup.png'),
+          animations: 'disabled',
+        });
+        await trigger.press('ArrowDown');
+        await trigger.press('Enter');
+        await expect(ratios).toBeHidden();
+        await expect(trigger).toHaveAccessibleName(`${mediaLabel}比例：9:16`);
+        await expect
+          .poll(() =>
+            mediaType === 'image' ? fixture.parameters()?.size : fixture.parameters()?.aspectRatio,
+          )
+          .toBe(mediaType === 'image' ? '576x1024' : '9:16');
+        await trigger.press('ArrowDown');
+        await expect(ratios.getByRole('option', { name: /^9:16/ })).toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        await trigger.press('Escape');
+        await expect(ratios).toBeHidden();
+        await expect(trigger).toBeFocused();
+        await expect(panel).toBeVisible();
+        await page.reload();
+        await selectParameterNode(page);
+        panel = await openParameters(page, presentation);
+        trigger = panel.getByRole('combobox', { name: `${mediaLabel}比例：9:16`, exact: true });
+        field = panel.locator('.node-parameter-select').filter({
+          has: page.getByRole('combobox', { name: `${mediaLabel}比例：9:16`, exact: true }),
+        });
+        await expect(trigger).toBeVisible();
+        await expectSelectedAspectPreview(field, 9, 16);
+        await page.screenshot({
+          path: info.outputPath('aspect-selected-restored.png'),
+          animations: 'disabled',
+          fullPage: true,
+        });
+        const updatedBounds = (await node.boundingBox())!;
+        expect(updatedBounds.width).toBeCloseTo(initialBounds.width, 2);
+        expect(updatedBounds.height).toBeCloseTo(initialBounds.height, 2);
+        expect(fixture.node()).toMatchObject({ width: 320, height: 180 });
+        expect(fixture.errors).toEqual([]);
+        expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([]);
+      });
+    }
   }
 }

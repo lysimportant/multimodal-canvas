@@ -448,6 +448,99 @@
   font-size: 11px;
 }
 
+/* 比例独立使用双列；列表填满浮层，图标槽不随横竖比例改变文案起点。 */
+.node-parameter-aspect-options {
+  width: min(340px, calc(100vw - 32px));
+}
+
+.node-parameter-aspect-options .node-parameter-grid {
+  width: 100%;
+}
+
+.node-parameter-aspect-options .node-parameter-grid [role='listbox'] {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.node-parameter-aspect-options .node-parameter-grid [role='option'] {
+  align-items: center;
+  min-height: 56px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.node-parameter-aspect-options .node-quick-editor-option-copy :is(strong, small) {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.node-parameter-aspect-options .node-quick-editor-option-copy strong {
+  font-size: 13px;
+}
+
+.node-parameter-aspect-options .node-quick-editor-option-copy small {
+  line-height: 1.4;
+}
+
+.node-quick-editor-aspect-icon {
+  color: var(--mc-accent);
+  display: grid;
+  flex: 0 0 44px;
+  height: 32px;
+  place-items: center;
+  width: 44px;
+}
+
+.node-parameter-aspect-options [aria-disabled='true'] .node-quick-editor-aspect-icon,
+.node-parameter-aspect-select .ant-select-disabled .node-quick-editor-aspect-icon {
+  color: inherit;
+}
+
+.node-quick-editor-aspect-preview {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.node-quick-editor-aspect-preview rect {
+  fill: color-mix(in srgb, currentColor 30%, transparent);
+  stroke: currentColor;
+  stroke-width: 1px;
+}
+
+.node-quick-editor-aspect-preview.is-default rect {
+  fill: none;
+  stroke-dasharray: 3 2;
+}
+
+.node-parameter-aspect-selection {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.node-parameter-aspect-selection .node-quick-editor-aspect-icon {
+  flex-basis: 28px;
+  height: 20px;
+  width: 28px;
+}
+
+.node-parameter-aspect-selection > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 库默认把展开后的已选值降到 25% 不透明度；比例需持续显示当前值。 */
+.node-parameter-aspect-select
+  .ant-select-single.ant-select-open:not(.ant-select-disabled)
+  .ant-select-content-has-value {
+  opacity: 1;
+}
+
 /* 时长使用独立浮卡，触发按钮与相邻库选择器保持相同尺寸。 */
 .node-quick-editor-duration-trigger {
   display: flex;

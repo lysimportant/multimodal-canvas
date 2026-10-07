@@ -2561,26 +2561,6 @@ h2 {
   color: #125d3d;
 }
 
-.node-quick-editor-aspect-preview {
-  background: #77b896;
-  border: 1px solid #18794e;
-  border-radius: 2px;
-  display: block;
-  flex: 0 0 auto;
-  height: 28px;
-  max-width: 46px;
-  min-width: 9px;
-  width: auto;
-}
-
-.node-quick-editor-aspect-preview.is-default {
-  aspect-ratio: 1;
-  background: transparent;
-  border-style: dashed;
-  height: 26px;
-  opacity: 0.65;
-}
-
 .node-quick-editor-option-copy {
   align-items: center;
   display: grid;
