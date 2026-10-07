@@ -10,6 +10,7 @@ import { type ModelCatalogEntry } from './settings';
 import { MemoryRunService, createRunSnapshot } from './runs';
 import { MemoryWebhookEventStore } from './webhooks';
 import { TestAuthContext, issueTestSession } from './fixtures/auth-session';
+import { ExecutionError } from '@multimodal-canvas/execution';
 
 const appSettingsStore = new MemoryAiSettingsStore('app-test-model-catalog');
 const appModelRefreshedAt = new Date().toISOString();
@@ -153,6 +154,17 @@ describe('OpenAPI endpoint', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().info.title).toBe('LoveTV API');
     expect(response.json().paths['/v1/runs/{runId}/retry']).toBeDefined();
+    expect(response.json().paths['/v1/runs/{runId}/recover'].post.requestBody).toMatchObject({
+      required: true,
+      content: {
+        'application/json': {
+          schema: {
+            required: ['retrieveOnly'],
+            properties: { retrieveOnly: { const: true } },
+          },
+        },
+      },
+    });
     expect(response.json().paths['/v1/projects/{projectId}/runs']).toBeDefined();
     expect(response.json().paths['/v1/projects/{projectId}/models/defaults']).toBeDefined();
     expect(response.json().paths['/v1/settings/ai'].get.responses).toMatchObject({
@@ -1661,6 +1673,7 @@ describe('run endpoints', () => {
             method: 'POST',
             url,
             headers: { authorization: `Bearer ${other.accessToken}` },
+            payload: { retrieveOnly: true },
           })
         ).statusCode,
       ).toBe(404);
@@ -1674,11 +1687,35 @@ describe('run endpoints', () => {
           })
         ).statusCode,
       ).toBe(400);
+      for (const payload of [{}, { retrieveOnly: false }]) {
+        const rejected = await recoveryApp.inject({ method: 'POST', url, headers, payload });
+        expect(rejected.statusCode).toBe(400);
+        expect(rejected.json().code).toBe('invalid_recovery_request');
+      }
       expect(recover).not.toHaveBeenCalled();
-      const restored = await recoveryApp.inject({ method: 'POST', url, headers, payload: {} });
+      const restored = await recoveryApp.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { retrieveOnly: true },
+      });
       expect(restored.statusCode).toBe(202);
       expect(restored.json().run).toMatchObject({ id: original.id, attempt: original.attempt });
-      expect(recover).toHaveBeenCalledExactlyOnceWith(original.id);
+      expect(recover).toHaveBeenCalledExactlyOnceWith(original.id, { retrieveOnly: true });
+      recover.mockRejectedValueOnce(
+        new ExecutionError('send_requires_review', '原请求发送结果不明，请先核实原任务'),
+      );
+      const blocked = await recoveryApp.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { retrieveOnly: true },
+      });
+      expect(blocked.statusCode).toBe(409);
+      expect(blocked.json()).toEqual({
+        code: 'send_requires_review',
+        error: '原请求发送结果不明，请先核实原任务',
+      });
     } finally {
       await recoveryApp.close();
       vi.unstubAllEnvs();

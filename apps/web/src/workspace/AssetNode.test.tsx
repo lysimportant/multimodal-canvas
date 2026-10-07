@@ -112,6 +112,7 @@ import {
   NodeLabelChangeContext,
   NodePromptContext,
   NodeQuickEditorIdContext,
+  NodeRecoverContext,
   NodeResizeStartContext,
   NodeRetryContext,
   NodeSelectionContext,
@@ -186,6 +187,7 @@ function renderNode(
     editImage?: NodeImageEditHandler;
     openPrompt?: NodePromptHandler;
   } = {},
+  onRecover?: (nodeId: string) => void | Promise<void>,
 ) {
   const props = {
     id: node.id,
@@ -197,15 +199,17 @@ function renderNode(
       <NodeLabelChangeContext.Provider value={onLabelChange ?? null}>
         <NodeEnabledContext.Provider value={onEnabled ?? null}>
           <NodeRetryContext.Provider value={onRetry ?? null}>
-            <NodeDeleteContext.Provider value={onDelete ?? null}>
-              <NodeContentContext.Provider value={actions.content ?? null}>
-                <NodeImageEditContext.Provider value={actions.editImage ?? null}>
-                  <NodePromptContext.Provider value={actions.openPrompt ?? null}>
-                    <AssetNode {...props} />
-                  </NodePromptContext.Provider>
-                </NodeImageEditContext.Provider>
-              </NodeContentContext.Provider>
-            </NodeDeleteContext.Provider>
+            <NodeRecoverContext.Provider value={onRecover ?? null}>
+              <NodeDeleteContext.Provider value={onDelete ?? null}>
+                <NodeContentContext.Provider value={actions.content ?? null}>
+                  <NodeImageEditContext.Provider value={actions.editImage ?? null}>
+                    <NodePromptContext.Provider value={actions.openPrompt ?? null}>
+                      <AssetNode {...props} />
+                    </NodePromptContext.Provider>
+                  </NodeImageEditContext.Provider>
+                </NodeContentContext.Provider>
+              </NodeDeleteContext.Provider>
+            </NodeRecoverContext.Provider>
           </NodeRetryContext.Provider>
         </NodeEnabledContext.Provider>
       </NodeLabelChangeContext.Provider>
@@ -549,6 +553,180 @@ describe('AssetNode result presentation', () => {
     expect(
       within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12秒'),
     ).toBeInTheDocument();
+  });
+
+  it('失败视频保留旧预览时仍并排显示获取资源和重试生成', async () => {
+    const onRecover = vi.fn().mockResolvedValue(undefined);
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    const { container } = renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'failed',
+        runError: '供应商超时，未重发请求',
+        resultAsset: {
+          assetId: 'old-video',
+          version: 1,
+          contentUrl: 'https://example.test/old.mp4',
+          mimeType: 'video/mp4',
+        },
+      }),
+      onRetry,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      onRecover,
+    );
+
+    expect(container.querySelector('video')).toHaveAttribute('src', 'https://example.test/old.mp4');
+    expect(screen.getByRole('button', { name: '获取资源' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '获取资源' }));
+    await waitFor(() => expect(onRecover).toHaveBeenCalledExactlyOnceWith('node_1'));
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('取消视频任务但保留旧预览时只显示重试生成', () => {
+    const onRecover = vi.fn().mockResolvedValue(undefined);
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'cancelled',
+        resultAsset: {
+          assetId: 'old-video',
+          version: 1,
+          contentUrl: 'https://example.test/old.mp4',
+          mimeType: 'video/mp4',
+        },
+      }),
+      onRetry,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      onRecover,
+    );
+
+    expect(screen.queryByRole('button', { name: '获取资源' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
+  });
+
+  it('成功视频即使产物缺失也不承诺只读获取', () => {
+    const onRecover = vi.fn();
+    const onRetry = vi.fn();
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'remote_missing',
+          mimeType: 'video/mp4',
+        },
+      }),
+      onRetry,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      onRecover,
+    );
+
+    expect(screen.queryByRole('button', { name: '获取资源' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['无产物', { runStatus: 'failed' as const, runError: '运行失败' }],
+    [
+      '无可用预览',
+      {
+        runStatus: 'failed' as const,
+        resultAsset: { assetId: 'remote_missing', mimeType: 'video/mp4' },
+      },
+    ],
+  ])('%s状态的获取与重试在进行中互斥且完成后恢复', async (_label, overrides) => {
+    let resolveRecover!: () => void;
+    const onRecover = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRecover = resolve;
+        }),
+    );
+    const onRetry = vi.fn();
+    renderNode(
+      makeNode({ mediaType: 'video', ...overrides }),
+      onRetry,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      onRecover,
+    );
+
+    const recover = screen.getByRole('button', { name: '获取资源' });
+    const retry = screen.getByRole('button', { name: '重试生成' });
+    await userEvent.click(recover);
+    expect(recover).toBeDisabled();
+    expect(retry).toBeDisabled();
+    expect(onRetry).not.toHaveBeenCalled();
+    resolveRecover();
+    await waitFor(() => expect(recover).toBeEnabled());
+    expect(retry).toBeEnabled();
+  });
+
+  it('获取原资源失败时显示错误且不触发重试生成', async () => {
+    const onRecover = vi.fn().mockRejectedValue(new Error('原任务查询失败'));
+    const onRetry = vi.fn();
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'failed',
+        resultAsset: {
+          assetId: 'old-video',
+          version: 1,
+          contentUrl: 'https://example.test/old.mp4',
+          mimeType: 'video/mp4',
+        },
+      }),
+      onRetry,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      onRecover,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '获取资源' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('原任务查询失败'));
+    expect(onRecover).toHaveBeenCalledExactlyOnceWith('node_1');
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('图片任务失败时不提供视频专用获取入口', () => {
+    renderNode(
+      makeNode({ mediaType: 'image', runStatus: 'failed' }),
+      vi.fn(),
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      vi.fn(),
+    );
+    expect(screen.queryByRole('button', { name: '获取资源' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
   });
 
   it('未展示的运行节点不订阅执行时钟，悬浮后开始并在离开后释放', () => {

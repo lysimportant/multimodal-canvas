@@ -96,6 +96,9 @@ export type NodeResizeStartHandler = (nodeId: string) => void;
 export const NodeResizeStartContext = createContext<NodeResizeStartHandler | null>(null);
 export type NodeRetryHandler = (nodeId: string) => void | Promise<void>;
 export const NodeRetryContext = createContext<NodeRetryHandler | null>(null);
+/** 视频任务失败后查询原上游任务，不创建新的生成请求。 */
+export type NodeRecoverHandler = (nodeId: string) => void | Promise<void>;
+export const NodeRecoverContext = createContext<NodeRecoverHandler | null>(null);
 export type NodeEnabledHandler = (nodeId: string, enabled: boolean) => void;
 export const NodeEnabledContext = createContext<NodeEnabledHandler | null>(null);
 /** 删除指定节点；画布负责确认、关联边清理、撤销记录及持久化。 */
@@ -240,6 +243,7 @@ export function AssetNode({
   const resizeNode = useContext(NodeResizeContext);
   const resizeStart = useContext(NodeResizeStartContext);
   const retryNode = useContext(NodeRetryContext);
+  const recoverNode = useContext(NodeRecoverContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
@@ -272,6 +276,8 @@ export function AssetNode({
   const [previewLoadState, setPreviewLoadState] = useState<AssetPreviewLoadState | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const [recoverError, setRecoverError] = useState<string | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -496,6 +502,11 @@ export function AssetNode({
     ? (previewLoadState ?? 'loading')
     : 'missing';
   const canRetry = Boolean(retryNode) && data.mode !== 'source';
+  const canRecover =
+    Boolean(recoverNode) &&
+    data.mode !== 'source' &&
+    data.mediaType === 'video' &&
+    data.runStatus === 'failed';
   const handlePreviewLoadState = useCallback((state: AssetPreviewLoadState) => {
     setPreviewLoadState(state);
   }, []);
@@ -512,7 +523,7 @@ export function AssetNode({
 
   useEffect(() => {
     setRetryError(null);
-    setIsRetrying(false);
+    setRecoverError(null);
   }, [data.runStatus]);
 
   useEffect(() => {
@@ -548,7 +559,7 @@ export function AssetNode({
 
   /** 提交重试并保留错误；同一节点在提交期间不重复发送请求。 */
   const handleRetry = async () => {
-    if (!retryNode || isRetrying) return;
+    if (!retryNode || isRetrying || isRecovering) return;
     setIsRetrying(true);
     setRetryError(null);
     try {
@@ -557,6 +568,20 @@ export function AssetNode({
       setRetryError(error instanceof Error ? error.message : '重试提交失败');
     } finally {
       setIsRetrying(false);
+    }
+  };
+
+  /** 查询原 Run 的上游任务；不会创建新的 Run 或重复提交 Provider 请求。 */
+  const handleRecover = async () => {
+    if (!recoverNode || isRecovering || isRetrying) return;
+    setIsRecovering(true);
+    setRecoverError(null);
+    try {
+      await recoverNode(id);
+    } catch (error) {
+      setRecoverError(error instanceof Error ? error.message : '获取原资源失败');
+    } finally {
+      setIsRecovering(false);
     }
   };
 
@@ -620,6 +645,38 @@ export function AssetNode({
           ? 'missing'
           : undefined;
   const statusTooltip = nodeStatusTooltip(data.runStatus, statusArtifactState);
+  const nodeStatePresentationState =
+    presentationState === 'preview' &&
+    (data.runStatus === 'failed' || data.runStatus === 'cancelled')
+      ? data.runStatus
+      : presentationState;
+  const nodeStateContent = (
+    <NodeStateContent
+      state={nodeStatePresentationState}
+      status={data.runStatus}
+      progress={data.runProgress}
+      error={data.runError}
+      canRetry={
+        canRetry &&
+        (nodeStatePresentationState === 'failed' ||
+          nodeStatePresentationState === 'cancelled' ||
+          nodeStatePresentationState === 'missing')
+      }
+      canRecover={canRecover}
+      isRetrying={isRetrying}
+      retryError={retryError}
+      onRetry={() => void handleRetry()}
+      isRecovering={isRecovering}
+      recoverError={recoverError}
+      onRecover={() => void handleRecover()}
+      stoppable={Boolean(stopNode) && (runControl.stoppable || isNodeRunning(data.runStatus))}
+      stopRequested={runControl.stopRequested || data.runStatus === 'cancel_requested'}
+      onStop={stopNode ? () => stopNode(id) : undefined}
+      emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
+      emptyHint={isVideoRecreation ? '点击节点，按流程开始复刻' : undefined}
+      icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
+    />
+  );
 
   return (
     <div
@@ -1270,29 +1327,14 @@ export function AssetNode({
             onLoadStateChange={handlePreviewLoadState}
             onNaturalSize={data.mediaType === 'image' ? handleNaturalImageSize : undefined}
           />
+          {(data.runStatus === 'failed' || data.runStatus === 'cancelled' || isRecovering) &&
+          presentationState === 'preview' &&
+          (canRecover || canRetry) ? (
+            <div className="flow-node-preview-recovery">{nodeStateContent}</div>
+          ) : null}
         </div>
       ) : (
-        <NodeStateContent
-          state={presentationState}
-          status={data.runStatus}
-          progress={data.runProgress}
-          error={data.runError}
-          canRetry={
-            canRetry &&
-            (presentationState === 'failed' ||
-              presentationState === 'cancelled' ||
-              presentationState === 'missing')
-          }
-          isRetrying={isRetrying}
-          retryError={retryError}
-          onRetry={() => void handleRetry()}
-          stoppable={Boolean(stopNode) && (runControl.stoppable || isNodeRunning(data.runStatus))}
-          stopRequested={runControl.stopRequested || data.runStatus === 'cancel_requested'}
-          onStop={stopNode ? () => stopNode(id) : undefined}
-          emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
-          emptyHint={isVideoRecreation ? '点击节点，按流程开始复刻' : undefined}
-          icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
-        />
+        nodeStateContent
       )}
       {!floatingControls && nodeLabel}
       {isDownloading && (
@@ -1330,9 +1372,13 @@ function NodeStateContent({
   progress,
   error,
   canRetry,
+  canRecover,
   isRetrying,
   retryError,
   onRetry,
+  isRecovering,
+  recoverError,
+  onRecover,
   stoppable,
   stopRequested,
   onStop,
@@ -1345,9 +1391,13 @@ function NodeStateContent({
   progress?: number;
   error?: string;
   canRetry: boolean;
+  canRecover: boolean;
   isRetrying: boolean;
   retryError: string | null;
   onRetry: () => void;
+  isRecovering: boolean;
+  recoverError: string | null;
+  onRecover: () => void;
   stoppable: boolean;
   stopRequested: boolean;
   onStop?: () => void | Promise<void>;
@@ -1364,7 +1414,9 @@ function NodeStateContent({
         aria-live="polite"
       >
         <LoaderCircle className="spin" size={22} aria-hidden="true" />
-        <span>{status ? runStatusLabel(status) : '运行中'}</span>
+        <span>
+          {isRecovering ? '获取原任务资源中…' : status ? runStatusLabel(status) : '运行中'}
+        </span>
         {typeof progress === 'number' ? (
           <span className="flow-node-progress" aria-label={`运行进度 ${progress}%`}>
             {progress}%
@@ -1407,22 +1459,43 @@ function NodeStateContent({
         <span className="flow-node-state-message" title={message}>
           {message}
         </span>
-        {canRetry ? (
-          <Button
-            type="button"
-            className="flow-node-retry nodrag nopan"
-            onClick={onRetry}
-            disabled={isRetrying}
-          >
-            {isRetrying ? (
-              <LoaderCircle className="spin" size={13} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={13} aria-hidden="true" />
-            )}
-            {isRetrying ? '提交中…' : '重试生成'}
-          </Button>
+        {canRecover || canRetry ? (
+          <div className="flow-node-retry-actions">
+            {canRecover ? (
+              <Button
+                type="button"
+                className="flow-node-recover nodrag nopan"
+                onClick={onRecover}
+                disabled={isRecovering || isRetrying}
+                title="尝试查询原上游任务；任务不可恢复时会提示原因，不会重新提交生成请求"
+              >
+                {isRecovering ? (
+                  <LoaderCircle className="spin" size={13} aria-hidden="true" />
+                ) : (
+                  <Download size={13} aria-hidden="true" />
+                )}
+                {isRecovering ? '获取中…' : '获取资源'}
+              </Button>
+            ) : null}
+            {canRetry ? (
+              <Button
+                type="button"
+                className="flow-node-retry nodrag nopan"
+                onClick={onRetry}
+                disabled={isRetrying || isRecovering}
+              >
+                {isRetrying ? (
+                  <LoaderCircle className="spin" size={13} aria-hidden="true" />
+                ) : (
+                  <RefreshCw size={13} aria-hidden="true" />
+                )}
+                {isRetrying ? '提交中…' : '重试生成'}
+              </Button>
+            ) : null}
+          </div>
         ) : null}
         {retryError ? <span className="flow-node-retry-error">{retryError}</span> : null}
+        {recoverError ? <span className="flow-node-retry-error">{recoverError}</span> : null}
       </div>
     );
   }

@@ -138,7 +138,7 @@ export type CreateExecutionSubmissionInput = {
 
 type ExecutionClient = Pick<
   PrismaClient,
-  'run' | 'executionAuthorization' | 'runOutbox' | 'runSendIntent' | '$transaction'
+  'run' | 'providerJob' | 'executionAuthorization' | 'runOutbox' | 'runSendIntent' | '$transaction'
 >;
 
 /**
@@ -389,10 +389,11 @@ export class PrismaExecutionService {
    * 将丢失队列消息的原任务重新列入待投递 outbox，不创建 Run、授权或发送身份。
    * @param runId 原 API/BullMQ 运行编号。
    * @param queueName 当前部署队列；禁止把其他部署的任务转移进来。
+   * @param retrieveOnly 只恢复已有视频平台任务，不创建新的 Provider 请求。
    * @returns 完成或取消的任务返回 false；其余任务复核成功后返回 true。
    * @throws {ExecutionError} 授权、快照或归属不一致，以及原请求发送结果尚不明确。
    */
-  async requestRecovery(runId: string, queueName: string): Promise<boolean> {
+  async requestRecovery(runId: string, queueName: string, retrieveOnly = false): Promise<boolean> {
     return this.prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${runId}, 0))`;
       const authorization = await transaction.executionAuthorization.findUnique({
@@ -437,8 +438,76 @@ export class PrismaExecutionService {
       }
       assertExecutionBindings(authorizedSnapshot.data);
       const cancelled = run.status === 'CANCEL_REQUESTED' || payload.data.cancelRequested;
-      // 取消只恢复本地收尾；其他任务发送不明时保留现场，由原请求证据核实。
-      if (!cancelled) {
+      if (retrieveOnly) {
+        if (cancelled) {
+          throw new ExecutionError('send_requires_review', '原任务已取消，无法只读获取资源');
+        }
+        const targetNodeId = authorizedSnapshot.data.targetNodeId;
+        const targetNode = authorizedSnapshot.data.nodes.find((node) => node.id === targetNodeId);
+        const targetBinding = authorizedSnapshot.data.executionBindings?.[targetNodeId];
+        if (
+          targetNode?.data.mediaType !== 'video' ||
+          targetBinding?.mediaType !== 'video' ||
+          payload.data.provider !== 'newapi'
+        ) {
+          throw new ExecutionError('send_requires_review', '只读获取仅支持已有平台任务的视频节点');
+        }
+        // ProviderJob.runId 关联数据库 Run.id，平台身份还必须属于目标节点和同一冻结合同。
+        const providerJobs = await transaction.providerJob.findMany({
+          where: { runId: authorization.databaseRunId },
+        });
+        const sending = await transaction.runSendIntent.findMany({
+          where: { runId, status: 'sending', platformJobId: null },
+          select: { nodeId: true },
+        });
+        // 创建回包可能已保存平台 ID、但未及时更新发送意图；可核对该身份时仍能只读查询。
+        if (
+          sending.some(
+            (intent) =>
+              !providerJobs.some((job) => {
+                const evidence = job.payload;
+                return (
+                  job.provider === payload.data.provider &&
+                  Boolean(job.platformJobId?.trim()) &&
+                  evidence !== null &&
+                  typeof evidence === 'object' &&
+                  !Array.isArray(evidence) &&
+                  evidence.workflowNodeId === intent.nodeId &&
+                  evidence.snapshotFingerprint === authorization.snapshotFingerprint &&
+                  evidence.contract ===
+                    authorizedSnapshot.data.executionBindings?.[intent.nodeId]?.contract
+                );
+              }),
+          )
+        ) {
+          throw new ExecutionError(
+            'send_requires_review',
+            '原任务仍有创建请求发送中，请稍后获取资源',
+          );
+        }
+        const hasTargetPlatformTask = providerJobs.some((job) => {
+          const evidence = job.payload;
+          return (
+            job.provider === payload.data.provider &&
+            typeof job.platformJobId === 'string' &&
+            job.platformJobId.trim().length > 0 &&
+            evidence !== null &&
+            typeof evidence === 'object' &&
+            !Array.isArray(evidence) &&
+            evidence.workflowNodeId === targetNodeId &&
+            evidence.snapshotFingerprint === authorization.snapshotFingerprint &&
+            evidence.contract === targetBinding.contract
+          );
+        });
+        if (!hasTargetPlatformTask) {
+          throw new ExecutionError(
+            'send_requires_review',
+            '原视频节点缺少匹配的平台任务身份，无法只读获取；请使用“重试生成”',
+          );
+        }
+      }
+      // 只读恢复已有平台任务无需重新发送；普通恢复仍须阻止发送状态不明的请求。
+      if (!cancelled && !retrieveOnly) {
         const uncertain = await transaction.runSendIntent.findFirst({
           where: { runId, status: { in: ['sending', 'unknown'] } },
           select: { id: true },
@@ -453,8 +522,16 @@ export class PrismaExecutionService {
           publishedAt: null,
           lastError: null,
           ...(cancelled
-            ? { payload: { ...payload.data, cancelRequested: true } as Prisma.InputJsonValue }
-            : {}),
+            ? {
+                payload: {
+                  ...payload.data,
+                  cancelRequested: true,
+                  ...(retrieveOnly ? { retrieveOnly: true } : {}),
+                } as Prisma.InputJsonValue,
+              }
+            : retrieveOnly
+              ? { payload: { ...payload.data, retrieveOnly: true } as Prisma.InputJsonValue }
+              : {}),
         },
       });
       return true;
@@ -504,6 +581,42 @@ export class PrismaExecutionService {
       if (!run || run.status === 'CANCEL_REQUESTED' || run.status === 'CANCELLED') {
         throw new ExecutionError('authorization_revoked', '任务已取消，禁止发送新请求');
       }
+      const outbox = await transaction.runOutbox.findUnique({ where: { runId: input.runId } });
+      const retrieveOnly = runJobDataSchema.safeParse(outbox?.payload);
+      if (retrieveOnly.success && retrieveOnly.data.retrieveOnly) {
+        if (!input.resumePlatformJobId) {
+          throw new ExecutionError('send_requires_review', '原任务已进入只读获取，禁止创建新请求');
+        }
+        const frozen = await this.requireFrozenNodeRequest(transaction, {
+          runId: input.runId,
+          nodeId: input.nodeId,
+          snapshot: authorization.snapshot,
+          userId: authorization.userId,
+        });
+        const jobs = await transaction.providerJob.findMany({
+          where: { runId: currentAuthorization.databaseRunId },
+        });
+        const binding = authorization.snapshot.executionBindings?.[input.nodeId];
+        const matches = jobs.some((job) => {
+          const evidence = job.payload;
+          return (
+            job.provider === 'newapi' &&
+            job.platformJobId === input.resumePlatformJobId &&
+            evidence !== null &&
+            typeof evidence === 'object' &&
+            !Array.isArray(evidence) &&
+            evidence.workflowNodeId === input.nodeId &&
+            evidence.snapshotFingerprint === authorization.snapshotFingerprint &&
+            evidence.contract === binding?.contract
+          );
+        });
+        if (input.attempt !== frozen.attempt || binding?.mediaType !== 'video' || !matches) {
+          throw new ExecutionError(
+            'send_requires_review',
+            '只读获取的平台任务与冻结节点身份不一致',
+          );
+        }
+      }
       const identity = {
         runId: input.runId,
         nodeId: input.nodeId,
@@ -521,6 +634,11 @@ export class PrismaExecutionService {
       const record = persistedSendIntent(existing);
       if (record.requestIdentity !== input.requestIdentity) {
         throw new ExecutionError('authorization_conflict', '节点发送身份与已持久记录不一致');
+      }
+      // 即使队列读取的是恢复前的数据，也由同一事务内的 outbox 栅栏禁止新建；
+      // 已核对的平台身份允许查询，旧 unknown 发送记录无需重新领取。
+      if (retrieveOnly.success && retrieveOnly.data.retrieveOnly) {
+        return { ...record, status: 'sent', platformJobId: input.resumePlatformJobId };
       }
       if (
         record.status === 'sent' &&

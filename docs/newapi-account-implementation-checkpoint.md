@@ -198,7 +198,7 @@ node .local-tests/newapi-account/local-docker/final-audit.mjs
 
 ## 上一代码批次补齐结果
 
-- `POST /v1/runs/:runId/recover` 已补齐：仅接受 `{}`，沿用原 Run/outbox/授权/发送身份；核对队列、用户、项目、attempt、retryOf、幂等键与三份快照指纹。成功或取消的任务不再投递，unknown/sending 拒绝，撤销拒绝，取消只恢复本地收尾。PostgreSQL/Redis 恢复集成 14/14，HTTP/运行/限流 82/82 通过。
+- `POST /v1/runs/:runId/recover` 当前要求 `{ "retrieveOnly": true }`，只查询已有视频平台任务；空对象不再受理。仍核对原 Run/outbox/授权、队列、用户、项目、attempt 与冻结证据；已知平台身份可继续查询，创建发送中的任务拒绝切换。PostgreSQL/Redis 恢复集成 14/14、HTTP/运行/限流 82/82 是旧版证据，本轮范围与验证见[手动获取检查点](video-manual-recovery-checkpoint.md)。
 - New API 人工改期不再被同步复活：普通 `Token.Update()` 在事务内锁管理关系和 Token，人工变更期限标记 `changed`，与配置一起提交或回滚；普通改名不终止管理，Canvas 内部续期不经此入口。过去时间、缩短期限、永久期限、撤销后改期、重新授权和失败回滚均覆盖；SQLite 3.50.4、MySQL 5.7.44、PostgreSQL 9.6.24 三库通过。
 - 持久化回读原来遗漏 `videoMode`，使缺尾帧场景误发请求；现按领域合同读取节点字段，保留视频模式、完成动作、批量和资源字段，同时仍排除内部与废弃字段。真实 PostgreSQL 往返和缺尾帧预检回归 22/22 通过。
 - Worker 的新请求发送意图移到最终请求持久化、资源复核后的发送边界。本地校验失败不再留下 unknown 发送记录；最终发送授权失效仍零 Provider POST。定向 69/69 通过。

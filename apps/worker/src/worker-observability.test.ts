@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const bullmqState = vi.hoisted(() => ({
   processor: undefined as ((job: unknown) => Promise<unknown>) | undefined,
+  activeJob: undefined as { id: string; data: unknown } | undefined,
 }));
 
 vi.mock('bullmq', () => {
@@ -16,8 +17,8 @@ vi.mock('bullmq', () => {
   }
 
   class Job {
-    static async fromId() {
-      return undefined;
+    static async fromId(_queue: unknown, id: string) {
+      return bullmqState.activeJob?.id === id ? bullmqState.activeJob : undefined;
     }
   }
 
@@ -43,6 +44,7 @@ function diagnosticText(error: unknown): string {
 
 beforeEach(() => {
   bullmqState.processor = undefined;
+  bullmqState.activeJob = undefined;
 });
 
 describe('Worker observability boundary', () => {
@@ -90,6 +92,7 @@ describe('Worker observability boundary', () => {
       },
       async updateProgress() {},
     };
+    bullmqState.activeJob = job;
 
     createRunWorker({
       connection: { host: '127.0.0.1', port: 6379 },

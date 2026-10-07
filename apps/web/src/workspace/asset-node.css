@@ -86,6 +86,30 @@
   overflow: hidden;
 }
 
+.flow-node-retry-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.flow-node-preview-recovery {
+  background: var(--mc-surface);
+  bottom: 0;
+  left: 0;
+  max-height: 60%;
+  overflow: auto;
+  position: absolute;
+  right: 0;
+  z-index: 2;
+}
+
+.flow-node-preview-recovery .flow-node-runtime-state {
+  min-height: 0;
+  padding: 8px;
+}
+
 /* 反向缩放保持屏幕尺寸；透明底部连通节点与悬浮栏，不参与节点尺寸计算。 */
 /* 不可见操作栏保留 DOM 与状态，但跳过子树排版和绘制；节点外框、端口不受影响。 */
 .flow-asset-node > .flow-node-header.flow-node-floating-controls {

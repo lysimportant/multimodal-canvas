@@ -62,6 +62,12 @@ export type RunCreateOptions = {
   userId?: string;
 };
 
+/** 原任务恢复选项；不接受新的生成参数。 */
+export type RunRecoveryOptions = {
+  /** 仅查询已有视频平台任务并归档资源，不创建新的 Provider 请求。 */
+  retrieveOnly?: boolean;
+};
+
 /**
  * Provider-neutral output that can be archived by the API's local asset
  * adapter. Provider implementations may return a richer output envelope;
@@ -159,8 +165,8 @@ export interface RunService {
   /** Apply an asynchronous provider callback when the service owns queue state. */
   applyProviderWebhook?(update: ProviderWebhookUpdate): Promise<RunRecord | undefined>;
   retry(runId: string, options?: RunCreateOptions): Promise<RunRecord>;
-  /** 重新投递丢失队列消息的原任务；不接受修改快照或发送身份。 */
-  recover?(runId: string): Promise<RunRecord>;
+  /** 重新投递原任务；只读模式也可恢复失败 Job，不接受修改快照或发送身份。 */
+  recover?(runId: string, options?: RunRecoveryOptions): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   close(): Promise<void>;
 }
@@ -1943,10 +1949,13 @@ export class BullMqRunService implements RunService {
   }
 
   /**
-   * 按原身份恢复丢失的队列消息；仍在队列中或已完成的任务保持原状。
+   * 按原身份恢复丢失的队列消息；只读恢复可重新入队已失败的原 Job。
+   * @param runId 原任务编号，不创建新的 Run 或 attempt。
+   * @param options 只读模式要求已验证的原视频平台任务身份。
+   * @returns 原任务当前状态；成功派发只读恢复后可进入 queued。
    * @throws {ExecutionError | RunServiceError} 原授权、归属、快照或发送状态不允许恢复。
    */
-  async recover(runId: string): Promise<RunRecord> {
+  async recover(runId: string, options: RunRecoveryOptions = {}): Promise<RunRecord> {
     runId = await this.resolveRunId(runId);
     if (!this.execution || !this.persistence?.getRun) {
       throw new RunServiceError('invalid_state', '当前执行后端不支持持久任务恢复');
@@ -1959,13 +1968,30 @@ export class BullMqRunService implements RunService {
       if (
         data.runId !== runId ||
         data.userId !== durable.userId ||
+        data.attempt !== durable.attempt ||
+        data.provider !== durable.provider ||
         snapshotFingerprint(data.snapshot) !== snapshotFingerprint(durable.snapshot)
       ) {
         throw new ExecutionError('authorization_conflict', '队列任务与持久运行记录不一致');
       }
-      return this.withDurableRunFields(await this.toRunRecord(existing), durable);
+      if (!options.retrieveOnly) {
+        return this.withDurableRunFields(await this.toRunRecord(existing), durable);
+      }
+      const state = await existing.getState();
+      if (state === 'completed') {
+        return this.withDurableRunFields(await this.toRunRecord(existing), durable);
+      }
+      if (state !== 'failed') {
+        throw new RunServiceError(
+          'invalid_state',
+          '原任务仍在队列或执行中，请等待状态更新后再获取资源',
+        );
+      }
     }
-    if (!(await this.execution.requestRecovery(runId, this.queue.name))) {
+    // 失败 Job 和丢失 Job 都先复核冻结授权与发送证据，不能通过队列中的旧数据绕过。
+    if (
+      !(await this.execution.requestRecovery(runId, this.queue.name, Boolean(options.retrieveOnly)))
+    ) {
       return { ...durable, id: runId };
     }
     await this.dispatchOutbox(runId);
@@ -1981,55 +2007,109 @@ export class BullMqRunService implements RunService {
       orderBy: { createdAt: 'asc' },
       take: 50,
     });
-    for (const entry of pending) {
-      const data = runJobDataSchema.parse(entry.payload);
+    for (const candidate of pending) {
       try {
-        const existing = await this.queue.getJob(entry.runId);
-        if (
-          existing &&
-          snapshotFingerprint(runJobDataSchema.parse(existing.data).snapshot) !==
-            snapshotFingerprint(data.snapshot)
-        )
-          throw new Error('outbox snapshot conflict');
-        const durable = await this.persistence?.getRun?.(entry.runId);
-        if (durable?.status === 'cancel_requested' || durable?.status === 'cancelled')
-          data.cancelRequested = true;
-        if (
-          existing &&
-          data.cancelRequested &&
-          !runJobDataSchema.parse(existing.data).cancelRequested
-        )
-          await existing.updateData({
-            ...runJobDataSchema.parse(existing.data),
-            cancelRequested: true,
+        await outboxStore.$transaction(async (transaction) => {
+          // 与恢复受理、发送意图共用 Run 锁；旧派发列表不能覆盖新的只读负载。
+          await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${candidate.runId}, 0))`;
+          const entry = await transaction.runOutbox.findUniqueOrThrow({
+            where: { id: candidate.id },
           });
-        if (!existing)
-          await this.queue.add('run', data, {
-            jobId: entry.runId,
-            // 使用同一运行恢复已归档结果与发送状态；Worker 的发送意图阻止重复生成。
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 2_000 },
-            removeOnComplete: false,
-            removeOnFail: false,
-          });
-        const latest = await outboxStore.runOutbox.findUniqueOrThrow({
-          where: { id: entry.id },
-        });
-        if (runJobDataSchema.parse(latest.payload).cancelRequested) {
-          const published = await this.queue.getJob(entry.runId);
-          if (published)
-            await published.updateData({
-              ...runJobDataSchema.parse(published.data),
-              cancelRequested: true,
+          if (entry.publishedAt || entry.queueName !== this.queue.name) return;
+          const data = runJobDataSchema.parse(entry.payload);
+          const existing = await this.queue.getJob(entry.runId);
+          let existingData = existing ? runJobDataSchema.parse(existing.data) : undefined;
+          if (
+            existingData &&
+            (existingData.runId !== data.runId ||
+              existingData.userId !== data.userId ||
+              existingData.attempt !== data.attempt ||
+              existingData.provider !== data.provider ||
+              existingData.retryOf !== data.retryOf ||
+              existingData.idempotencyKey !== data.idempotencyKey ||
+              snapshotFingerprint(existingData.snapshot) !== snapshotFingerprint(data.snapshot))
+          ) {
+            throw new ExecutionError('authorization_conflict', 'outbox 与队列任务身份或快照不一致');
+          }
+          const durable = await this.persistence?.getRun?.(entry.runId);
+          if (durable?.status === 'cancel_requested' || durable?.status === 'cancelled')
+            data.cancelRequested = true;
+          if (existing) {
+            const state = await existing.getState();
+            // 正在执行或待执行的 Job 可能已经被 Worker 读取，不在此时升级为只读。
+            // 保留 outbox 待它失败后再派发，避免恢复请求意外触发新的创建调用。
+            if (data.retrieveOnly && state !== 'failed' && state !== 'completed') return;
+            existingData ??= runJobDataSchema.parse(existing.data);
+            // outbox 中的恢复标志必须传给已经存在的 Job；否则恢复请求和
+            // 并发派发相撞时，Worker 仍会按普通生成路径再次 POST。
+            const mergedData = runJobDataSchema.parse({
+              ...existingData,
+              ...(data.cancelRequested ? { cancelRequested: true } : {}),
+              ...(data.retrieveOnly && state === 'failed' ? { retrieveOnly: true } : {}),
             });
-        }
-        await outboxStore.runOutbox.update({
-          where: { id: entry.id },
-          data: { publishedAt: new Date(), attempts: { increment: 1 }, lastError: null },
+            if (
+              mergedData.cancelRequested !== existingData.cancelRequested ||
+              mergedData.retrieveOnly !== existingData.retrieveOnly
+            ) {
+              await existing.updateData(mergedData);
+              existingData = mergedData;
+            }
+            // 已核验的只读恢复复用同一个 BullMQ ID；普通 outbox 不重试失败 Job。
+            if (data.retrieveOnly && state === 'failed') {
+              let retried = false;
+              try {
+                await existing.retry('failed');
+                retried = true;
+              } catch (error) {
+                // 并发派发可能已经先将同一个只读 Job 重新入队；其余失败仍保留 outbox。
+                const currentState = await existing.getState();
+                if (
+                  !['waiting', 'active', 'delayed', 'completed'].includes(currentState) ||
+                  !runJobDataSchema.parse(existing.data).retrieveOnly
+                ) {
+                  throw error;
+                }
+              }
+              if (retried) {
+                const resumedState = await existing.getState();
+                if (resumedState === 'waiting' || resumedState === 'delayed') {
+                  await existing.updateProgress({
+                    status: 'queued',
+                    progress: 0,
+                    updatedAt: new Date().toISOString(),
+                  });
+                }
+              }
+            }
+          } else {
+            await this.queue.add('run', data, {
+              jobId: entry.runId,
+              // 使用同一运行恢复已归档结果与发送状态；Worker 的发送意图阻止重复生成。
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2_000 },
+              removeOnComplete: false,
+              removeOnFail: false,
+            });
+          }
+          const latest = await transaction.runOutbox.findUniqueOrThrow({
+            where: { id: entry.id },
+          });
+          if (runJobDataSchema.parse(latest.payload).cancelRequested) {
+            const published = await this.queue.getJob(entry.runId);
+            if (published)
+              await published.updateData({
+                ...runJobDataSchema.parse(published.data),
+                cancelRequested: true,
+              });
+          }
+          await transaction.runOutbox.update({
+            where: { id: entry.id },
+            data: { publishedAt: new Date(), attempts: { increment: 1 }, lastError: null },
+          });
         });
       } catch (error) {
         await outboxStore.runOutbox.update({
-          where: { id: entry.id },
+          where: { id: candidate.id },
           data: { attempts: { increment: 1 }, lastError: 'queue_publish_failed' },
         });
         throw error;
@@ -2043,7 +2123,7 @@ export class BullMqRunService implements RunService {
   }
 
   /** RunOutbox 是通用运行设施，由中性执行服务提供可靠投递存储。 */
-  private outboxStore(): Pick<PrismaClient, 'runOutbox'> | undefined {
+  private outboxStore(): Pick<PrismaClient, 'runOutbox' | '$transaction'> | undefined {
     return this.execution?.prisma;
   }
 
@@ -2058,7 +2138,13 @@ export class BullMqRunService implements RunService {
     let result: RunRecord['result'];
     let error: string | undefined;
 
-    if (state === 'active') status = progressResult?.status ?? 'running';
+    // failed Job 重用同一 ID 后，Worker 首次写入前仍可能读到上一轮的 progress。
+    if (data.retrieveOnly && state !== 'failed' && progressResult?.status === 'failed') {
+      status = state === 'active' ? 'running' : 'queued';
+      progress = 0;
+    }
+
+    if (state === 'active' && status !== 'running') status = progressResult?.status ?? 'running';
     if (state === 'completed') {
       if (!completed?.success) {
         // A completed BullMQ job without a valid worker envelope is not a

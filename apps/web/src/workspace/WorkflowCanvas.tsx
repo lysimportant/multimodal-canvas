@@ -84,6 +84,7 @@ import {
   NodeVideoRecreationContext,
   NodeLabelChangeContext,
   NodeRetryContext,
+  NodeRecoverContext,
   NodeSelectionContext,
   CanvasSelectionModeContext,
   NodeQuickEditorIdContext,
@@ -247,6 +248,8 @@ export type WorkflowCanvasProps = {
   onResizeStart?: (nodeId: string) => void;
   onNodeEnabledChange: NodeEnabledHandler;
   onRetryNode: (nodeId: string) => void | Promise<void>;
+  /** 失败/超时后查询原上游任务，不重新创建生成请求。 */
+  onRecoverNode?: (nodeId: string) => void | Promise<void>;
   onPromptChange?: (value: string, nodeId?: string) => void;
   onPromptDocumentChange?: (document: PromptDocument, nodeId?: string) => void;
   /** 仅保存目标节点的连线资源别名，不修改源资源名称或提示词。 */
@@ -395,6 +398,7 @@ export function WorkflowCanvas({
   onResizeStart,
   onNodeEnabledChange,
   onRetryNode,
+  onRecoverNode,
   onPromptChange,
   onPromptDocumentChange,
   onConnectedResourceRename,
@@ -1390,115 +1394,119 @@ export function WorkflowCanvas({
                   <NodeLabelChangeContext.Provider value={onNodeLabelChange ?? null}>
                     <NodeEnabledContext.Provider value={onNodeEnabledChange}>
                       <NodeRetryContext.Provider value={onRetryNode}>
-                        <NodeDeleteContext.Provider value={onDeleteNode ? handleDeleteNode : null}>
-                          <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
-                            <NodeVideoRecreationContext.Provider value={onRecreateVideo ?? null}>
-                              <NodeImageEditContext.Provider value={onEditImage ?? null}>
-                                <NodePromptContext.Provider
-                                  value={onOpenRequestPrompt ? handleOpenRequestPrompt : null}
-                                >
-                                  <NodeQuickEditorIdContext.Provider
-                                    value={quickEditorNode?.id ?? null}
+                        <NodeRecoverContext.Provider value={onRecoverNode ?? null}>
+                          <NodeDeleteContext.Provider
+                            value={onDeleteNode ? handleDeleteNode : null}
+                          >
+                            <NodeContentContext.Provider value={nodeContentHandlers ?? null}>
+                              <NodeVideoRecreationContext.Provider value={onRecreateVideo ?? null}>
+                                <NodeImageEditContext.Provider value={onEditImage ?? null}>
+                                  <NodePromptContext.Provider
+                                    value={onOpenRequestPrompt ? handleOpenRequestPrompt : null}
                                   >
-                                    <CanvasPerformanceContext.Provider
-                                      value={nodes.length >= LARGE_CANVAS_NODE_COUNT}
+                                    <NodeQuickEditorIdContext.Provider
+                                      value={quickEditorNode?.id ?? null}
                                     >
-                                      <GenerationBatchViewContext.Provider value={batchContext}>
-                                        <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
-                                          {/* 组背景接受空白拖动，标题和外框在节点之上，正文仍保留节点与端口交互。 */}
-                                          <ViewportGroupLayer
-                                            groups={groups}
-                                            nodes={nodes}
-                                            {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
-                                            {...(selectedGroupId ? { selectedGroupId } : {})}
-                                            {...(onSelectGroup
-                                              ? { onSelectGroup: (id) => onSelectGroup(id) }
-                                              : {})}
-                                            {...(onRenameGroup ? { onRenameGroup } : {})}
-                                            {...(onDissolveGroup ? { onDissolveGroup } : {})}
-                                            {...(onTranslateGroup ? { onTranslateGroup } : {})}
-                                            {...(onResizeGroup ? { onResizeGroup } : {})}
-                                            {...(onGroupInteractionStart
-                                              ? { onGroupInteractionStart }
-                                              : {})}
-                                            {...(onGroupInteractionEnd
-                                              ? { onGroupInteractionEnd }
-                                              : {})}
-                                          />
-                                          <ReactFlow
-                                            nodes={batchProjection.nodes}
-                                            edges={batchProjection.edges}
-                                            nodeTypes={nodeTypes}
-                                            edgeTypes={canvasEdgeTypes}
-                                            connectionLineComponent={connectionLineComponent}
-                                            onNodesChange={handleNodesChange}
-                                            onEdgesChange={onEdgesChange}
-                                            // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
-                                            deleteKeyCode={null}
-                                            onConnect={handleFlowConnect}
-                                            onConnectStart={handleConnectStart}
-                                            onConnectEnd={handleConnectEnd}
-                                            onNodeDragStart={onNodeDragStart}
-                                            onNodeDrag={onNodeDrag}
-                                            onNodeDragStop={onNodeDragStop}
-                                            onMoveStart={handleViewportMoveStart}
-                                            onMove={handleViewportMove}
-                                            onMoveEnd={handleViewportMoveEnd}
-                                            onDrop={handleDrop}
-                                            onDragOver={handleDragOver}
-                                            onNodeClick={handleNodeClick}
-                                            onNodeContextMenu={handleNodeContextMenu}
-                                            onPaneContextMenu={handlePaneContextMenu}
-                                            onSelectionContextMenu={handlePaneContextMenu}
-                                            selectionKeyCode={null}
-                                            selectionOnDrag={tabSelectionActive}
-                                            nodesDraggable={!referenceTargetId}
-                                            nodesConnectable={!referenceTargetId}
-                                            elementsSelectable={!referenceTargetId}
-                                            panOnDrag={
-                                              tabSelectionActive
-                                                ? FLOW_SELECTION_PAN_ON_DRAG
-                                                : FLOW_PAN_ON_DRAG
-                                            }
-                                            onSelectionEnd={handleSelectionEnd}
-                                            multiSelectionKeyCode={FLOW_MULTI_SELECTION_KEYS}
-                                            onPaneClick={handlePaneClick}
-                                            fitView
-                                            zoomOnPinch
-                                            minZoom={FIT_VIEW_MIN_ZOOM}
-                                            fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
-                                            connectionLineStyle={FLOW_CONNECTION_LINE_STYLE}
-                                            defaultEdgeOptions={FLOW_DEFAULT_EDGE_OPTIONS}
-                                            proOptions={FLOW_PRO_OPTIONS}
-                                          >
-                                            {background !== 'blank' && (
-                                              <Background
-                                                color="#cbd5d0"
-                                                gap={background === 'lines' ? 28 : 24}
-                                                size={background === 'cross' ? 7 : 1.2}
-                                                variant={
-                                                  background === 'lines'
-                                                    ? BackgroundVariant.Lines
-                                                    : background === 'cross'
-                                                      ? BackgroundVariant.Cross
-                                                      : BackgroundVariant.Dots
-                                                }
-                                              />
-                                            )}
-                                            <Controls
-                                              showInteractive={false}
-                                              position="bottom-right"
+                                      <CanvasPerformanceContext.Provider
+                                        value={nodes.length >= LARGE_CANVAS_NODE_COUNT}
+                                      >
+                                        <GenerationBatchViewContext.Provider value={batchContext}>
+                                          <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
+                                            {/* 组背景接受空白拖动，标题和外框在节点之上，正文仍保留节点与端口交互。 */}
+                                            <ViewportGroupLayer
+                                              groups={groups}
+                                              nodes={nodes}
+                                              {...(dropTargetGroupId ? { dropTargetGroupId } : {})}
+                                              {...(selectedGroupId ? { selectedGroupId } : {})}
+                                              {...(onSelectGroup
+                                                ? { onSelectGroup: (id) => onSelectGroup(id) }
+                                                : {})}
+                                              {...(onRenameGroup ? { onRenameGroup } : {})}
+                                              {...(onDissolveGroup ? { onDissolveGroup } : {})}
+                                              {...(onTranslateGroup ? { onTranslateGroup } : {})}
+                                              {...(onResizeGroup ? { onResizeGroup } : {})}
+                                              {...(onGroupInteractionStart
+                                                ? { onGroupInteractionStart }
+                                                : {})}
+                                              {...(onGroupInteractionEnd
+                                                ? { onGroupInteractionEnd }
+                                                : {})}
                                             />
-                                          </ReactFlow>
-                                        </CanvasEdgeAppearanceProvider>
-                                      </GenerationBatchViewContext.Provider>
-                                    </CanvasPerformanceContext.Provider>
-                                  </NodeQuickEditorIdContext.Provider>
-                                </NodePromptContext.Provider>
-                              </NodeImageEditContext.Provider>
-                            </NodeVideoRecreationContext.Provider>
-                          </NodeContentContext.Provider>
-                        </NodeDeleteContext.Provider>
+                                            <ReactFlow
+                                              nodes={batchProjection.nodes}
+                                              edges={batchProjection.edges}
+                                              nodeTypes={nodeTypes}
+                                              edgeTypes={canvasEdgeTypes}
+                                              connectionLineComponent={connectionLineComponent}
+                                              onNodesChange={handleNodesChange}
+                                              onEdgesChange={onEdgesChange}
+                                              // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
+                                              deleteKeyCode={null}
+                                              onConnect={handleFlowConnect}
+                                              onConnectStart={handleConnectStart}
+                                              onConnectEnd={handleConnectEnd}
+                                              onNodeDragStart={onNodeDragStart}
+                                              onNodeDrag={onNodeDrag}
+                                              onNodeDragStop={onNodeDragStop}
+                                              onMoveStart={handleViewportMoveStart}
+                                              onMove={handleViewportMove}
+                                              onMoveEnd={handleViewportMoveEnd}
+                                              onDrop={handleDrop}
+                                              onDragOver={handleDragOver}
+                                              onNodeClick={handleNodeClick}
+                                              onNodeContextMenu={handleNodeContextMenu}
+                                              onPaneContextMenu={handlePaneContextMenu}
+                                              onSelectionContextMenu={handlePaneContextMenu}
+                                              selectionKeyCode={null}
+                                              selectionOnDrag={tabSelectionActive}
+                                              nodesDraggable={!referenceTargetId}
+                                              nodesConnectable={!referenceTargetId}
+                                              elementsSelectable={!referenceTargetId}
+                                              panOnDrag={
+                                                tabSelectionActive
+                                                  ? FLOW_SELECTION_PAN_ON_DRAG
+                                                  : FLOW_PAN_ON_DRAG
+                                              }
+                                              onSelectionEnd={handleSelectionEnd}
+                                              multiSelectionKeyCode={FLOW_MULTI_SELECTION_KEYS}
+                                              onPaneClick={handlePaneClick}
+                                              fitView
+                                              zoomOnPinch
+                                              minZoom={FIT_VIEW_MIN_ZOOM}
+                                              fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
+                                              connectionLineStyle={FLOW_CONNECTION_LINE_STYLE}
+                                              defaultEdgeOptions={FLOW_DEFAULT_EDGE_OPTIONS}
+                                              proOptions={FLOW_PRO_OPTIONS}
+                                            >
+                                              {background !== 'blank' && (
+                                                <Background
+                                                  color="#cbd5d0"
+                                                  gap={background === 'lines' ? 28 : 24}
+                                                  size={background === 'cross' ? 7 : 1.2}
+                                                  variant={
+                                                    background === 'lines'
+                                                      ? BackgroundVariant.Lines
+                                                      : background === 'cross'
+                                                        ? BackgroundVariant.Cross
+                                                        : BackgroundVariant.Dots
+                                                  }
+                                                />
+                                              )}
+                                              <Controls
+                                                showInteractive={false}
+                                                position="bottom-right"
+                                              />
+                                            </ReactFlow>
+                                          </CanvasEdgeAppearanceProvider>
+                                        </GenerationBatchViewContext.Provider>
+                                      </CanvasPerformanceContext.Provider>
+                                    </NodeQuickEditorIdContext.Provider>
+                                  </NodePromptContext.Provider>
+                                </NodeImageEditContext.Provider>
+                              </NodeVideoRecreationContext.Provider>
+                            </NodeContentContext.Provider>
+                          </NodeDeleteContext.Provider>
+                        </NodeRecoverContext.Provider>
                       </NodeRetryContext.Provider>
                     </NodeEnabledContext.Provider>
                   </NodeLabelChangeContext.Provider>

@@ -10,8 +10,10 @@ const state = vi.hoisted(() => ({
 
 vi.mock('bullmq', () => {
   class Queue {
+    name: string;
     constructor(...args: unknown[]) {
       state.queueConstructorArgs = args;
+      this.name = String(args[0]);
     }
     async getJob(...args: unknown[]) {
       return state.getJob ? state.getJob(...args) : state.job;
@@ -881,6 +883,330 @@ describe('BullMQ run result integrity', () => {
     expect(upsertProviderJob).toHaveBeenCalled();
     expect(updateRun).toHaveBeenCalledWith({ runId: durableRun.id, status: 'succeeded' });
     await service.close();
+  });
+
+  /** 用持久授权和 outbox 桩验证同一视频任务的队列恢复，不连接真实 Provider。 */
+  function createRecoveryFixture() {
+    const runId = 'run_recover_video';
+    const userId = '123e4567-e89b-42d3-a456-426614174001';
+    const snapshot = createRunSnapshot(
+      'project_recover',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'node_video',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            data: { label: 'Video', mediaType: 'video', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_video',
+    );
+    const payload = {
+      runId,
+      userId,
+      snapshot,
+      attempt: 1,
+      provider: 'newapi' as const,
+      cancelRequested: false,
+    };
+    const durable: RunRecord = {
+      id: runId,
+      userId,
+      projectId: snapshot.projectId,
+      targetNodeId: snapshot.targetNodeId,
+      status: 'failed',
+      progress: 80,
+      attempt: 1,
+      provider: 'newapi',
+      modelAlias: snapshot.modelAlias,
+      snapshot,
+      createdAt: '2026-10-07T00:00:00.000Z',
+      updatedAt: '2026-10-07T00:01:00.000Z',
+    };
+    const outbox = {
+      id: 'outbox_recover_video',
+      runId,
+      queueName: 'multimodal-canvas-runs',
+      payload: { ...payload } as typeof payload & { retrieveOnly?: boolean },
+      publishedAt: new Date() as Date | null,
+    };
+    let jobState = 'failed';
+    const job = {
+      id: runId,
+      data: { ...payload },
+      progress: { status: 'failed', progress: 80, updatedAt: durable.updatedAt },
+      returnvalue: undefined,
+      failedReason: '上游查询超时',
+      timestamp: Date.parse(durable.createdAt),
+      getState: vi.fn(async () => jobState),
+      updateData: vi.fn(async (data: typeof outbox.payload) => {
+        state.job.data = data;
+      }),
+      updateProgress: vi.fn(async (progress: typeof job.progress) => {
+        state.job.progress = progress;
+      }),
+      retry: vi.fn(async () => {
+        jobState = 'waiting';
+      }),
+    };
+    state.job = job;
+    state.getJob = vi.fn(async () => state.job);
+    state.add = vi.fn(async (_name: string, data: typeof outbox.payload) => {
+      state.job = {
+        ...job,
+        data,
+        progress: undefined,
+        getState: vi.fn(async () => 'waiting'),
+      };
+      return state.job;
+    });
+    const requestRecovery = vi.fn(async (_id: string, _queue: string, retrieveOnly: boolean) => {
+      outbox.payload = { ...payload, ...(retrieveOnly ? { retrieveOnly: true } : {}) };
+      outbox.publishedAt = null;
+      return true;
+    });
+    const update = vi.fn(async ({ data }: { data: { publishedAt?: Date | null } }) => {
+      if (data.publishedAt !== undefined) outbox.publishedAt = data.publishedAt;
+      return outbox;
+    });
+    let transactionTail: Promise<unknown> = Promise.resolve();
+    const prisma = {
+      runOutbox: {
+        findMany: vi.fn(async () => (outbox.publishedAt ? [] : [structuredClone(outbox)])),
+        findUniqueOrThrow: vi.fn(async () => outbox),
+        update,
+      },
+      $executeRaw: vi.fn(async () => 1),
+      $transaction: vi.fn((action: (transaction: unknown) => Promise<unknown>) => {
+        const result = transactionTail.then(() => action(prisma));
+        transactionTail = result.catch(() => undefined);
+        return result;
+      }),
+    };
+    const execution = {
+      resolveRunId: vi.fn(async (id: string) => id),
+      requestRecovery,
+      prisma,
+    };
+    const persistence = { getRun: vi.fn(async () => durable) };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      execution: execution as never,
+      persistence: persistence as never,
+    });
+    return {
+      runId,
+      job,
+      durable,
+      outbox,
+      requestRecovery,
+      prisma,
+      service,
+      setState: (value: string) => {
+        jobState = value;
+      },
+    };
+  }
+
+  it('失败视频任务只读恢复先复核授权，再用原 Job 重新排队并更新进度时间', async () => {
+    const { runId, job, durable, outbox, requestRecovery, service } = createRecoveryFixture();
+    try {
+      const recovered = await service.recover(runId, { retrieveOnly: true });
+      expect(recovered).toMatchObject({
+        id: runId,
+        attempt: 1,
+        status: 'queued',
+        progress: 0,
+      });
+      expect(Date.parse(recovered.updatedAt)).toBeGreaterThan(Date.parse(durable.updatedAt));
+      expect(requestRecovery).toHaveBeenCalledExactlyOnceWith(
+        runId,
+        'multimodal-canvas-runs',
+        true,
+      );
+      expect(job.updateData).toHaveBeenCalledWith({ ...job.data, retrieveOnly: true });
+      expect(requestRecovery.mock.invocationCallOrder[0]).toBeLessThan(
+        job.updateData.mock.invocationCallOrder[0]!,
+      );
+      expect(job.updateProgress).toHaveBeenCalledWith({
+        status: 'queued',
+        progress: 0,
+        updatedAt: recovered.updatedAt,
+      });
+      expect(job.retry.mock.invocationCallOrder[0]).toBeLessThan(
+        job.updateProgress.mock.invocationCallOrder[0]!,
+      );
+      expect(job.retry).toHaveBeenCalledExactlyOnceWith('failed');
+      expect(state.add).not.toHaveBeenCalled();
+      expect(outbox.publishedAt).toBeInstanceOf(Date);
+      await expect(service.recover(runId, { retrieveOnly: true })).rejects.toMatchObject({
+        code: 'invalid_state',
+      });
+      expect(requestRecovery).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it.each(['active', 'waiting', 'delayed'])(
+    '只读恢复不改写仍处于 %s 的 Job',
+    async (queueState) => {
+      const { runId, job, requestRecovery, service, setState } = createRecoveryFixture();
+      setState(queueState);
+      try {
+        await expect(service.recover(runId, { retrieveOnly: true })).rejects.toMatchObject({
+          code: 'invalid_state',
+        });
+        expect(requestRecovery).not.toHaveBeenCalled();
+        expect(job.updateData).not.toHaveBeenCalled();
+        expect(job.retry).not.toHaveBeenCalled();
+      } finally {
+        await service.close();
+      }
+    },
+  );
+
+  it('队列 Job 丢失时仍只投递带 retrieveOnly 的原 Run', async () => {
+    const { runId, job, requestRecovery, service } = createRecoveryFixture();
+    state.job = undefined;
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).resolves.toMatchObject({
+        id: runId,
+        attempt: 1,
+        status: 'queued',
+      });
+      expect(requestRecovery).toHaveBeenCalledExactlyOnceWith(
+        runId,
+        'multimodal-canvas-runs',
+        true,
+      );
+      expect(state.add).toHaveBeenCalledExactlyOnceWith(
+        'run',
+        expect.objectContaining({ runId, retrieveOnly: true }),
+        expect.objectContaining({ jobId: runId }),
+      );
+      expect(job.retry).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('普通 outbox 派发不重试失败 Job', async () => {
+    const { runId, job, outbox, service } = createRecoveryFixture();
+    outbox.publishedAt = null;
+    try {
+      await service.dispatchOutbox(runId);
+      expect(job.updateData).not.toHaveBeenCalled();
+      expect(job.retry).not.toHaveBeenCalled();
+      expect(outbox.publishedAt).toBeInstanceOf(Date);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('BullMQ retry 失败时不伪报 queued，保留原失败状态和待派发 outbox', async () => {
+    const { runId, job, outbox, service } = createRecoveryFixture();
+    job.retry.mockRejectedValueOnce(new Error('synthetic retry failure'));
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).rejects.toThrow(
+        'synthetic retry failure',
+      );
+      expect(job.updateProgress).not.toHaveBeenCalled();
+      expect(outbox.publishedAt).toBeNull();
+      await expect(service.get(runId)).resolves.toMatchObject({ status: 'failed' });
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('retry 成功后的进度写入失败保持可见，不假报 outbox 已发布', async () => {
+    const { runId, job, outbox, service } = createRecoveryFixture();
+    job.updateProgress.mockRejectedValueOnce(new Error('synthetic progress persistence failure'));
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).rejects.toThrow(
+        'synthetic progress persistence failure',
+      );
+      expect(job.retry).toHaveBeenCalledOnce();
+      expect(outbox.publishedAt).toBeNull();
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('队列身份不一致时拒绝只读恢复并保留 outbox 现场', async () => {
+    const { runId, job, outbox, requestRecovery, service } = createRecoveryFixture();
+    job.data.userId = '123e4567-e89b-42d3-a456-426614174002';
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).rejects.toMatchObject({
+        code: 'authorization_conflict',
+      });
+      expect(requestRecovery).not.toHaveBeenCalled();
+      expect(job.retry).not.toHaveBeenCalled();
+      expect(outbox.publishedAt).toBeInstanceOf(Date);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('outbox 请求身份与旧 Job 冲突时不重试旧 Job', async () => {
+    const { runId, job, outbox, requestRecovery, service } = createRecoveryFixture();
+    (job.data as typeof outbox.payload & { idempotencyKey?: string }).idempotencyKey =
+      'forged-request';
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).rejects.toMatchObject({
+        code: 'authorization_conflict',
+      });
+      expect(requestRecovery).toHaveBeenCalledOnce();
+      expect(job.updateData).not.toHaveBeenCalled();
+      expect(job.retry).not.toHaveBeenCalled();
+      expect(outbox.publishedAt).toBeNull();
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('并发派发同一只读 outbox 时串行核对最新记录，只重试一次原 Job', async () => {
+    const { runId, job, outbox, service } = createRecoveryFixture();
+    outbox.publishedAt = null;
+    outbox.payload.retrieveOnly = true;
+    try {
+      await expect(
+        Promise.all([service.dispatchOutbox(runId), service.dispatchOutbox(runId)]),
+      ).resolves.toEqual([undefined, undefined]);
+      expect(job.retry).toHaveBeenCalledTimes(1);
+      expect(job.updateProgress).toHaveBeenCalledTimes(1);
+      expect(state.add).not.toHaveBeenCalled();
+      expect(outbox.publishedAt).toBeInstanceOf(Date);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('派发列表先读取普通负载后发生恢复，持锁后读取最新只读负载再补建 Job', async () => {
+    const { runId, outbox, service, prisma } = createRecoveryFixture();
+    state.job = undefined;
+    outbox.publishedAt = null;
+    const stale = structuredClone(outbox);
+    prisma.runOutbox.findMany.mockImplementationOnce(async () => {
+      outbox.payload.retrieveOnly = true;
+      return [stale];
+    });
+    try {
+      await service.dispatchOutbox(runId);
+      expect(prisma.$executeRaw).toHaveBeenCalledOnce();
+      expect(state.add).toHaveBeenCalledWith(
+        'run',
+        expect.objectContaining({ runId, retrieveOnly: true }),
+        expect.anything(),
+      );
+      expect(outbox.publishedAt).toBeInstanceOf(Date);
+    } finally {
+      await service.close();
+    }
   });
 
   it('publishes only one BullMQ job for concurrent retries of the same run', async () => {

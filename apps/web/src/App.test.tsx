@@ -124,6 +124,23 @@ function imageNode(
   };
 }
 
+/** 构造视频生成节点，用于验证原任务的只读资源恢复。 */
+function videoNode(id: string, modelAlias: string): CanvasDocument['nodes'][number] {
+  return {
+    id,
+    type: 'video',
+    position: { x: 100, y: 100 },
+    data: {
+      label: '视频生成节点',
+      mode: 'generate',
+      mediaType: 'video',
+      modelAlias,
+      prompt: '生成视频',
+      parameters: { prompt: '生成视频' },
+    },
+  };
+}
+
 /** 构造图片节点重试使用的完整冻结快照，避免测试夹具绕过运行合同。 */
 function imageRunSnapshot(canvasRevision: number, modelAlias: string): RunSnapshot {
   return {
@@ -156,6 +173,20 @@ function runRecord(overrides: Partial<RunRecord>): RunRecord {
     error: '上游请求失败',
     ...overrides,
   };
+}
+/** 保持视频 Run 的目标节点与冻结快照一致。 */
+function videoRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
+  return runRecord({
+    id: 'run-video-failed',
+    targetNodeId: 'video-node',
+    modelAlias: 'video-old',
+    snapshot: {
+      ...imageRunSnapshot(1, 'video-old'),
+      targetNodeId: 'video-node',
+      nodes: [videoNode('video-node', 'video-old')],
+    },
+    ...overrides,
+  });
 }
 /** 返回 JSON 响应并保留 HTTP 状态，供 App 的真实错误处理消费。 */
 function json(body: unknown, status = 200) {
@@ -352,6 +383,7 @@ describe('App 资源抽屉集成', () => {
       onRecreateVideo: 0,
       onOpenSkillWorkbench: 0,
       onRetryNode: 0,
+      onRecoverNode: 0,
       onNodeLabelChange: 0,
       onNodeEnabledChange: 0,
       onPromptDocumentChange: 0,
@@ -1525,6 +1557,160 @@ describe('App 组件库迁移', () => {
     ).toBe(false);
     expect(view.canvas?.nodes.map((node) => node.id)).toEqual(['image-node']);
     expect(view.canvas?.nodes[0]?.data.runStatus).toBe('succeeded');
+  });
+
+  it('失败视频节点只通过原 Run 获取资源，轮询期间同节点不重复请求或创建新运行', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-new')], edges: [] };
+    const previousRun = videoRunRecord();
+    projectRuns = [previousRun];
+    const recover = pendingResponse();
+    const poll = pendingResponse();
+    const originalApi = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/runs/' + previousRun.id + '/recover' && init?.method === 'POST')
+        return recover.promise;
+      if (path === '/v1/runs/' + previousRun.id && (!init?.method || init.method === 'GET'))
+        return poll.promise;
+      return originalApi(input, init);
+    });
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    let recovery!: Promise<void>;
+    act(() => {
+      recovery = view.canvas!.onRecoverNode!('video-node') as Promise<void>;
+    });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            String(url).endsWith('/v1/runs/run-video-failed/recover') && init?.method === 'POST',
+        ),
+      ).toHaveLength(1),
+    );
+    await expect(view.canvas!.onRecoverNode!('video-node')).rejects.toThrow('该节点正在处理任务');
+    const recoverRequest = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith('/v1/runs/run-video-failed/recover'),
+    );
+    expect(JSON.parse(String(recoverRequest?.[1]?.body))).toEqual({ retrieveOnly: true });
+
+    const queuedRun = videoRunRecord({
+      status: 'queued',
+      progress: 0,
+      error: undefined,
+      updatedAt: '2026-09-25T00:02:00.000Z',
+    });
+    await act(async () => recover.resolve(json({ run: queuedRun }, 202)));
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('queued'));
+    expect(view.canvas?.busyNodeIds?.has('video-node')).toBe(true);
+
+    const assetResult = {
+      assetId: 'recovered-video',
+      version: 1,
+      contentUrl: 'https://example.test/recovered.mp4',
+      mimeType: 'video/mp4',
+    };
+    const succeededRun = videoRunRecord({
+      status: 'succeeded',
+      progress: 100,
+      error: undefined,
+      updatedAt: '2026-09-25T00:03:00.000Z',
+      result: {
+        provider: 'newapi',
+        summary: '原任务资源已归档',
+        targetNodeId: 'video-node',
+        mediaType: 'video',
+        inputCount: 0,
+        asset: assetResult,
+      },
+    });
+    await act(async () => poll.resolve(json({ run: succeededRun })));
+    await act(async () => await recovery);
+    expect(view.canvas?.nodes[0]?.data).toMatchObject({
+      runStatus: 'succeeded',
+      resultAsset: assetResult,
+    });
+    expect(view.canvas?.busyNodeIds?.has('video-node')).toBe(false);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          init?.method === 'POST' && String(url).includes('/v1/nodes/video-node/runs'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('无原 Run 时明确拒绝获取', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-new')], edges: [] };
+    await renderCanvas(0);
+    await expect(view.canvas!.onRecoverNode!('video-node')).rejects.toThrow(
+      '没有可获取资源的运行记录',
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/recover'))).toBe(false);
+  });
+
+  it.each([
+    ['图片失败', imageNode('image-node', 'image-new'), runRecord({})],
+    ['视频取消', videoNode('video-node', 'video-new'), videoRunRecord({ status: 'cancelled' })],
+    [
+      '视频成功但无产物',
+      videoNode('video-node', 'video-new'),
+      videoRunRecord({ status: 'succeeded' }),
+    ],
+  ])('%s时回调不发起只读获取', async (_label, node, run) => {
+    canvas = { revision: 1, nodes: [node], edges: [] };
+    projectRuns = [run];
+    await renderCanvas(node.data.mediaType === 'image' ? 1 : 0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe(run.status));
+    await expect(view.canvas!.onRecoverNode!(node.id)).rejects.toThrow(
+      '仅失败的视频任务可获取原资源',
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/recover'))).toBe(false);
+  });
+
+  it('轮询响应来自其他 Run 时不覆盖节点结果', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-new')], edges: [] };
+    const previousRun = videoRunRecord();
+    projectRuns = [previousRun];
+    const poll = pendingResponse();
+    const originalApi = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/runs/' + previousRun.id + '/recover' && init?.method === 'POST')
+        return Promise.resolve(
+          json(
+            {
+              run: videoRunRecord({
+                status: 'queued',
+                progress: 0,
+                updatedAt: '2026-09-25T00:02:00.000Z',
+              }),
+            },
+            202,
+          ),
+        );
+      if (path === '/v1/runs/' + previousRun.id && (!init?.method || init.method === 'GET'))
+        return poll.promise;
+      return originalApi(input, init);
+    });
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    let recovery!: Promise<void>;
+    act(() => {
+      recovery = view.canvas!.onRecoverNode!('video-node') as Promise<void>;
+    });
+    const outcome = recovery.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('queued'));
+    await act(async () =>
+      poll.resolve(json({ run: videoRunRecord({ id: 'other-run', status: 'succeeded' }) })),
+    );
+    await expect(outcome).resolves.toMatchObject({ message: '运行状态响应与原任务不一致' });
+    expect(view.canvas?.nodes[0]?.data.runStatus).toBe('queued');
+    expect(view.canvas?.nodes[0]?.data.resultAsset).toBeUndefined();
   });
 
   it('新建项目保留必填校验、取消和创建失败后的草稿', async () => {

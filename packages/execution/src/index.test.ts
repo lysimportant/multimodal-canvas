@@ -262,6 +262,7 @@ function fakeExecutionClient() {
     authorization: new Map<string, Record<string, unknown>>(),
     outbox: new Map<string, Record<string, unknown>>(),
     sendIntent: new Map<string, Record<string, unknown>>(),
+    providerJob: new Map<string, Record<string, unknown>>(),
   };
   const calls = { transactions: 0, runCreates: 0, locks: [] as string[], intentUpserts: 0 };
   const keyForIntent = (where: { runId: string; nodeId: string; attempt: number }) =>
@@ -361,10 +362,40 @@ function fakeExecutionClient() {
       },
     },
     runSendIntent: {
-      findMany: async ({ where }: { where: { runId: string; nodeId: string } }) =>
+      findMany: async ({
+        where,
+      }: {
+        where: { runId: string; nodeId?: string; status?: string; platformJobId?: null };
+      }) =>
         [...rows.sendIntent.values()].filter(
-          (value) => value.runId === where.runId && value.nodeId === where.nodeId,
+          (value) =>
+            value.runId === where.runId &&
+            (where.nodeId === undefined || value.nodeId === where.nodeId) &&
+            (where.status === undefined || value.status === where.status) &&
+            (where.platformJobId === undefined || value.platformJobId == null),
         ),
+      findFirst: async ({
+        where,
+      }: {
+        where: {
+          runId: string;
+          status: { in?: string[] } | string;
+          platformJobId?: { not?: string | null } | null;
+        };
+      }) =>
+        [...rows.sendIntent.values()].find(
+          (value) =>
+            value.runId === where.runId &&
+            (typeof where.status === 'string'
+              ? value.status === where.status
+              : where.status.in?.includes(String(value.status))) &&
+            (where.platformJobId === undefined ||
+              (where.platformJobId === null
+                ? value.platformJobId == null
+                : where.platformJobId.not === null
+                  ? value.platformJobId !== null
+                  : value.platformJobId !== where.platformJobId.not)),
+        ) ?? null,
       findUnique: async ({
         where,
       }: {
@@ -423,6 +454,10 @@ function fakeExecutionClient() {
         return updated;
       },
     },
+    providerJob: {
+      findMany: async ({ where }: { where: { runId: string } }) =>
+        [...rows.providerJob.values()].filter((value) => value.runId === where.runId),
+    },
     $executeRaw: async (_sql: TemplateStringsArray, runId: string) => {
       calls.locks.push(runId);
       return 1;
@@ -436,11 +471,13 @@ function fakeExecutionClient() {
 }
 
 /** 建立只含合成冻结证据的请求链；不连接数据库、队列或 Provider。 */
-function recoveryFixture() {
+function recoveryFixture(mediaType: 'text' | 'video' = 'text') {
   const { client, rows, calls } = fakeExecutionClient();
   const service = new PrismaExecutionService(client as never);
   const userId = '33333333-3333-4333-a333-333333333333';
   const frozen = snapshot();
+  frozen.nodes[0]!.data.mediaType = mediaType;
+  frozen.executionBindings!.target!.mediaType = mediaType;
   frozen.nodes.push({ ...structuredClone(frozen.nodes[0]!), id: 'upstream' });
   frozen.executionBindings!.upstream = structuredClone(frozen.executionBindings!.target!);
 
@@ -514,6 +551,156 @@ function recoveryFixture() {
 }
 
 describe('暂存回执与重试发送边界', () => {
+  it('只取回使用授权中的数据库 Run ID 查询 ProviderJob，而不是外部运行编号', async () => {
+    const f = recoveryFixture('video');
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'newapi',
+      platformJobId: 'platform-existing',
+      status: 'running',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: f.frozen.executionBindings!.target!.contract,
+      },
+    });
+
+    await expect(f.service.requestRecovery('run_receipt', 'synthetic-review', true)).resolves.toBe(
+      true,
+    );
+    expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ retrieveOnly: true });
+  });
+
+  it('只取回没有任何平台任务身份时拒绝，不改写 outbox', async () => {
+    const f = recoveryFixture('video');
+    const before = structuredClone(f.rows.outbox.get('run_receipt')?.payload);
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+    expect(f.rows.outbox.get('run_receipt')?.payload).toEqual(before);
+  });
+
+  it.each([
+    ['其他节点', { workflowNodeId: 'upstream' }],
+    ['其他快照', { snapshotFingerprint: 'f'.repeat(64) }],
+    ['其他合同', { contract: 'other-contract' }],
+  ])('只取回拒绝%s的平台任务身份', async (_label, changedPayload) => {
+    const f = recoveryFixture('video');
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'newapi',
+      platformJobId: 'platform-existing',
+      status: 'running',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: f.frozen.executionBindings!.target!.contract,
+        ...changedPayload,
+      },
+    });
+
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+    expect(f.rows.outbox.get('run_receipt')?.payload).not.toMatchObject({ retrieveOnly: true });
+  });
+
+  it.each(['unknown', 'sending'])(
+    '只读获取只查询已知平台任务，不被旧发送意图的 %s 状态拦截',
+    async (status) => {
+      const f = recoveryFixture('video');
+      f.intent(status);
+      f.rows.providerJob.set('provider-job-1', {
+        runId: f.original.run.id,
+        provider: 'newapi',
+        platformJobId: 'platform-existing',
+        payload: {
+          workflowNodeId: 'target',
+          snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+          contract: f.frozen.executionBindings!.target!.contract,
+        },
+      });
+
+      await expect(
+        f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+      ).resolves.toBe(true);
+      expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ retrieveOnly: true });
+      await expect(
+        f.service.beginSend({ ...f.input(), resumePlatformJobId: 'platform-existing' }),
+      ).resolves.toMatchObject({ status: 'sent', platformJobId: 'platform-existing' });
+      expect([...f.rows.sendIntent.values()][0]?.status).toBe(status);
+    },
+  );
+
+  it('旧队列数据丢失只读标志时，持久发送边界仍拒绝未发送节点创建', async () => {
+    const f = recoveryFixture('video');
+    f.original.outbox.payload.retrieveOnly = true;
+    await expect(f.service.beginSend(f.input('run_receipt', 'upstream'))).rejects.toMatchObject({
+      code: 'send_requires_review',
+    });
+    expect(f.rows.sendIntent.size).toBe(0);
+  });
+
+  it('只读发送边界拒绝伪造的平台任务身份', async () => {
+    const f = recoveryFixture('video');
+    f.original.outbox.payload.retrieveOnly = true;
+    await expect(
+      f.service.beginSend({ ...f.input(), resumePlatformJobId: 'unrelated-task' }),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+    expect(f.rows.sendIntent.size).toBe(0);
+  });
+
+  it('创建发送已先领取时不切换只读模式，避免在途 POST 被误称为恢复调用', async () => {
+    const f = recoveryFixture('video');
+    f.intent('sending');
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+    expect(f.rows.outbox.get('run_receipt')?.payload).not.toMatchObject({ retrieveOnly: true });
+  });
+
+  it('文本节点即使有平台任务身份也不能进入视频只读恢复', async () => {
+    const f = recoveryFixture();
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'newapi',
+      platformJobId: 'platform-existing',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: f.frozen.executionBindings!.target!.contract,
+      },
+    });
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+  });
+
+  it('其他 Provider 的平台任务身份不能授权只读获取', async () => {
+    const f = recoveryFixture('video');
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'mock',
+      platformJobId: 'platform-existing',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: f.frozen.executionBindings!.target!.contract,
+      },
+    });
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+  });
+
+  it('用户取消中的原任务不能被只读获取重新唤起', async () => {
+    const f = recoveryFixture('video');
+    f.original.run.status = 'CANCEL_REQUESTED';
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+  });
+
   it.each(['sending', 'unknown', 'sent'])('拒绝原 Run 任意 attempt 的 %s 证据', async (status) => {
     const f = recoveryFixture();
     f.intent(status, f.input('run_receipt', 'target', 7));

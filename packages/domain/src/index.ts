@@ -1615,6 +1615,8 @@ export const runJobDataSchema = z
     providerJob: providerJobSchema.optional(),
     workflowState: workflowStateSchema.optional(),
     cancelRequested: z.boolean().default(false),
+    /** 只查询已有上游任务，不允许创建新的 Provider 请求。 */
+    retrieveOnly: z.boolean().optional(),
   })
   .superRefine((job, context) => {
     if (job.snapshot.promptOptimization && (job.retryOf || job.attempt !== 1)) {

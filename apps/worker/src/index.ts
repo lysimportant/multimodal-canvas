@@ -523,6 +523,7 @@ export function createRunWorker(options: {
       // mutable lifecycle fields back into it on subsequent reads.
       const immutableData = structuredClone(initialData);
       const executionSnapshot = immutableData.snapshot;
+      let retrieveOnlyObserved = immutableData.retrieveOnly === true;
       const usesExecutionAuthorization =
         Object.keys(executionSnapshot.executionBindings ?? {}).length > 0;
       const runExecution = usesExecutionAuthorization ? options.execution : undefined;
@@ -550,7 +551,23 @@ export function createRunWorker(options: {
             typeof mutableData.cancelRequested === 'boolean'
               ? mutableData.cancelRequested
               : immutableData.cancelRequested,
+          retrieveOnly: retrieveOnlyObserved || mutableData.retrieveOnly === true,
         });
+      };
+      /**
+       * 从队列复核另一份 Job 实例写入的只读限制，观察后不允许退回可创建状态。
+       * @returns 当前任务是否只能获取原结果；队列身份丢失或错配时拒绝继续执行。
+       */
+      const refreshRetrieveOnly = async () => {
+        if (retrieveOnlyObserved || !job.id) return retrieveOnlyObserved;
+        const queuedJob = await Job.fromId<RunJobData>(queue, job.id);
+        if (!queuedJob) throw new Error('原队列任务身份丢失；禁止继续创建 Provider 请求');
+        const queuedData = runJobDataSchema.parse(queuedJob.data);
+        if (queuedData.runId !== initialData.runId) {
+          throw new Error('原队列任务身份不匹配；禁止继续创建 Provider 请求');
+        }
+        retrieveOnlyObserved = queuedData.retrieveOnly === true;
+        return retrieveOnlyObserved;
       };
       const snapshotFingerprints = {
         current: workflowSnapshotFingerprint(executionSnapshot),
@@ -1325,6 +1342,39 @@ export function createRunWorker(options: {
           throw error;
         }
       }
+      /**
+       * 任一节点缺少原结果或原视频任务时，整条 DAG 均不得调用 Provider。
+       * @param state 已合并队列、数据库和加密暂存证据的工作流状态。
+       * @throws 缺少只读恢复证据或冻结视频合同冲突时终止任务。
+       */
+      const assertRetrieveOnlyWorkflow = (state: WorkflowState) => {
+        for (const node of executionOrder) {
+          if (node.data.mode === 'source') continue;
+          const nodeState = workflowNodeState(state, node.id);
+          if (
+            nodeState?.status === 'succeeded' &&
+            isCompletedWorkflowResultForNode(nodeState.result, node, executionSnapshot)
+          )
+            continue;
+          if (stagedResults.has(node.id)) continue;
+          const providerJob = nodeState?.providerJob;
+          const retainedContract = providerJob?.payload?.contract;
+          const boundContract = executionSnapshot.executionBindings?.[node.id]?.contract;
+          const frozenContract = retainedContract ?? boundContract;
+          if (
+            initialData.provider === 'newapi' &&
+            node.data.mediaType === 'video' &&
+            canResumeProviderJob(providerJob) &&
+            isNewApiVideoContract(frozenContract) &&
+            (!retainedContract || !boundContract || retainedContract === boundContract) &&
+            !unrecoverableDeliveryNodes.has(node.id)
+          )
+            continue;
+          throw new UnrecoverableError(
+            `节点 ${node.id} 缺少可只读恢复的原结果或视频平台任务；请使用“重试生成”`,
+          );
+        }
+      };
       const targetWorkflowProviderJob =
         workflowNodeState(workflowState, executionSnapshot.targetNodeId)?.providerJob ??
         initialProviderJob;
@@ -1505,6 +1555,8 @@ export function createRunWorker(options: {
       let currentOverallProgress = 80;
       try {
         assertWorkflowModelAliases(executionSnapshot);
+        if (await refreshRetrieveOnly())
+          assertRetrieveOnlyWorkflow(readJobData().workflowState ?? workflowState);
         const executableNodes = workflowExecutionOrder(executionSnapshot).filter(
           (node) => node.data.mode !== 'source',
         );
@@ -1513,6 +1565,8 @@ export function createRunWorker(options: {
         for (let nodeIndex = 0; nodeIndex < executableNodes.length; nodeIndex += 1) {
           const node = executableNodes[nodeIndex];
           if (!node) continue;
+          if (await refreshRetrieveOnly())
+            assertRetrieveOnlyWorkflow(readJobData().workflowState ?? workflowState);
           const currentData = readJobData();
           let currentWorkflowState =
             currentData.workflowState ??
@@ -1587,6 +1641,7 @@ export function createRunWorker(options: {
             currentData.provider,
           );
           const existingNodeProviderJob = nodeState.providerJob;
+          const stagedResult = stagedResults.get(node.id);
           const executionContract = executionSnapshot.executionBindings?.[node.id]?.contract;
           const now = new Date().toISOString();
           const providerJob: ProviderJob = {
@@ -1611,7 +1666,6 @@ export function createRunWorker(options: {
           activeProviderJob = providerJob;
           activeArchiveFinalizationPending = false;
           activeArchivePhase = false;
-          const stagedResult = stagedResults.get(node.id);
           // 节点真正开始执行：开始时间只写一次，重放与轮询不会重置它；排队时间
           // 取自节点进入待执行状态的时刻。
           const queuedAt = queuedAtByNode.get(node.id);
@@ -1705,6 +1759,11 @@ export function createRunWorker(options: {
               : [];
           /** 在最终请求准备完成后领取发送身份；本地参数拒绝不得留下未知发送记录。 */
           const beginNodeSend = async () => {
+            if (await refreshRetrieveOnly()) {
+              assertRetrieveOnlyWorkflow(readJobData().workflowState ?? currentWorkflowState);
+              if (!resumeSubmittedVideo)
+                throw new UnrecoverableError('只读获取禁止创建新的 Provider 请求');
+            }
             if (!runExecution) return;
             if (!resumeSubmittedVideo && currentData.retryOf) {
               if (!runExecution.assertRetrySafe)
@@ -1806,6 +1865,9 @@ export function createRunWorker(options: {
             return markCancelled(currentOverallProgress, node.id, activeProviderJob);
           if (!stagedResult && (!captureRequestPrompt || resumeSubmittedVideo))
             await beginNodeSend();
+          const resumeOnly = !stagedResult && (await refreshRetrieveOnly());
+          if (resumeOnly)
+            assertRetrieveOnlyWorkflow(readJobData().workflowState ?? currentWorkflowState);
           const returned =
             stagedResult?.execution ??
             (await executeProviderWithCancellation(
@@ -1815,6 +1877,7 @@ export function createRunWorker(options: {
                 ...(resolvedMentions?.length ? { resolvedMentions } : {}),
                 providerJob: providerRequestJob,
                 signal: cancellationSignal,
+                ...(resumeOnly ? { resumeOnly: true } : {}),
                 ...(captureRequestPrompt
                   ? {
                       onRequestPrompt: captureRequestPrompt,

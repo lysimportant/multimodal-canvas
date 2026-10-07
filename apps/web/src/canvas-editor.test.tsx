@@ -535,6 +535,7 @@ function installApiMock() {
       });
       const run = {
         id: `run_${nodeId}_${runs.size}`,
+        projectId: project.id,
         targetNodeId: nodeId,
         status,
         progress: status === 'failed' ? 0 : 100,

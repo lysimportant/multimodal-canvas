@@ -3738,7 +3738,12 @@ function WorkspaceApp({
       };
       if (!isOperationCurrent(operation)) throw new Error('已离开画布，停止等待运行结果');
       if (!response.ok || !result.run) throw new Error(result.error ?? '运行状态加载失败');
-      if (result.run.targetNodeId !== nodeId) throw new Error('运行状态响应目标与节点不一致');
+      if (
+        result.run.id !== runId ||
+        result.run.targetNodeId !== nodeId ||
+        result.run.projectId !== operation.projectId
+      )
+        throw new Error('运行状态响应与原任务不一致');
       updateNodeRunState(nodeId, result.run);
       return result.run;
     },
@@ -4489,6 +4494,93 @@ function WorkspaceApp({
     [runNode],
   );
 
+  /** 只读查询失败视频节点的原上游任务；复用原 Run，锁住该节点直到查询结束。 */
+  const recoverNodeRun = useCallback(
+    async (nodeId: string) => {
+      const run = runRecordsRef.current[nodeId];
+      const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+      if (!run || !node) throw new Error('没有可获取资源的运行记录');
+      if (node.data.mode === 'source' || node.data.mediaType !== 'video' || run.status !== 'failed')
+        throw new Error('仅失败的视频任务可获取原资源');
+      if (run.targetNodeId !== nodeId || run.projectId !== projectIdRef.current)
+        throw new Error('原运行记录与当前节点不一致');
+      if (isNodeBusy(nodeId)) throw new Error('该节点正在处理任务，请稍后再试');
+      const operation: NodeRunOperation = {
+        id: crypto.randomUUID(),
+        sourceNodeId: nodeId,
+        nodeIds: new Set([nodeId]),
+        runs: new Map([[nodeId, run]]),
+        cancellingRunIds: new Set(),
+        stopRequested: false,
+        lifecycle: runPollingLifecycleRef.current,
+        authGeneration: getAuthSessionGeneration(),
+        projectId: run.projectId,
+      };
+      nodeRunLocksRef.current.add(nodeId);
+      nodeRunOperationByNodeRef.current.set(nodeId, operation);
+      syncNodeLocks();
+      try {
+        const response = await apiFetch(
+          `${API_BASE_URL}/v1/runs/${encodeURIComponent(run.id)}/recover`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ retrieveOnly: true }),
+          },
+          { expectedAuthGeneration: operation.authGeneration },
+        );
+        const result = (await response.json().catch(() => ({}))) as {
+          run?: RunRecord;
+          error?: string;
+        };
+        if (!isOperationCurrent(operation)) return;
+        if (!response.ok || !result.run) throw new Error(result.error ?? '获取原资源失败');
+        if (
+          result.run.id !== run.id ||
+          result.run.targetNodeId !== nodeId ||
+          result.run.projectId !== run.projectId
+        )
+          throw new Error('获取资源响应与原运行记录不一致');
+        updateNodeRunState(nodeId, result.run);
+        const completed = isActiveRunStatus(result.run.status)
+          ? await pollRun(run.id, nodeId, operation)
+          : result.run;
+        if (!isOperationCurrent(operation)) return;
+        if (completed.status !== 'succeeded' || !completed.result?.asset)
+          throw new Error(completed.error ?? '原任务暂未返回可用资源，请稍后再次尝试获取');
+        setNotice({ kind: 'success', message: '已获取原任务资源' });
+      } catch (error) {
+        if (!isOperationCurrent(operation)) return;
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '获取原资源失败',
+        });
+        throw error;
+      } finally {
+        if (nodeRunOperationByNodeRef.current.get(nodeId) === operation) {
+          nodeRunOperationByNodeRef.current.delete(nodeId);
+          nodeRunLocksRef.current.delete(nodeId);
+          const current = runRecordsRef.current[nodeId];
+          if (current && isActiveRunStatus(current.status))
+            nodeRunControlStore.set(nodeId, {
+              stoppable: true,
+              stopRequested: current.status === 'cancel_requested',
+            });
+          else nodeRunControlStore.clear(nodeId);
+          syncNodeLocks();
+        }
+      }
+    },
+    [
+      isNodeBusy,
+      isOperationCurrent,
+      nodeRunControlStore,
+      pollRun,
+      syncNodeLocks,
+      updateNodeRunState,
+    ],
+  );
+
   const retryNodeFromCanvas = useCallback(
     async (nodeId: string) => {
       try {
@@ -5159,6 +5251,7 @@ function WorkspaceApp({
             onNodeLabelChange={updateSelectedLabel}
             onNodeEnabledChange={updateNodeEnabled}
             onRetryNode={retryNodeFromCanvas}
+            onRecoverNode={recoverNodeRun}
             onPromptDocumentChange={updateSelectedPromptDocument}
             onConnectedResourceRename={renameConnectedResource}
             onAddNodeReference={handleAddNodeReference}

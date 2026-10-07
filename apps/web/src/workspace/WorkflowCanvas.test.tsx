@@ -10,6 +10,7 @@ import type { AssetFlowNode } from '../canvas-utils';
 import {
   NodeDeleteContext,
   NodePromptContext,
+  NodeRecoverContext,
   NodeSelectionContext,
   NodeVideoRecreationContext,
 } from './AssetNode';
@@ -1748,6 +1749,18 @@ const DragRenderProbe = memo(function DragRenderProbe({ node }: { node: AssetFlo
 /** 每次节点内容提交的计数器；测试不触发项目保存或真实生成。 */
 const dragNodeRender = vi.fn();
 const runControlProbeRender = vi.fn();
+const recoverProbeRender = vi.fn();
+
+/** 真实订阅恢复 Context，验证拖动帧不会把未变化节点重新广播。 */
+const RecoveryProbe = memo(function RecoveryProbe({ node }: { node: AssetFlowNode }) {
+  const recover = useContext(NodeRecoverContext);
+  recoverProbeRender(node.id, recover);
+  return (
+    <button type="button" onClick={() => void recover?.(node.id)}>
+      {'获取 ' + node.data.label}
+    </button>
+  );
+});
 
 /** 订阅单节点停止状态，验证外部存储更新不会广播到其它节点。 */
 const RunControlProbe = memo(function RunControlProbe({
@@ -1769,6 +1782,38 @@ const RunControlProbe = memo(function RunControlProbe({
 });
 
 describe('WorkflowCanvas 拖动性能', () => {
+  it('恢复 Context 由真实节点订阅，拖动只重渲染变化节点并传递节点 ID', () => {
+    reactFlowMock.nodeProbe = RecoveryProbe;
+    const onRecoverNode = vi.fn();
+    const props = createProps({
+      nodes: [generateNode, sourceNode],
+      onRecoverNode,
+    });
+    const view = render(<WorkflowCanvas {...props} />);
+    recoverProbeRender.mockClear();
+
+    for (let frame = 1; frame <= 10; frame += 1) {
+      view.rerender(
+        <WorkflowCanvas
+          {...props}
+          nodes={[
+            {
+              ...generateNode,
+              position: { x: frame * 10, y: frame * 5 },
+              dragging: true,
+            },
+            sourceNode,
+          ]}
+        />,
+      );
+    }
+
+    expect(recoverProbeRender.mock.calls.filter(([id]) => id === generateNode.id)).toHaveLength(10);
+    expect(recoverProbeRender.mock.calls.filter(([id]) => id === sourceNode.id)).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '获取 图片来源节点' }));
+    expect(onRecoverNode).toHaveBeenCalledExactlyOnceWith(sourceNode.id);
+  });
+
   it('坐标变化保持 onStopNode 和 nodeRunControlStore 引用稳定，状态只更新目标节点', () => {
     reactFlowMock.nodeProbe = RunControlProbe;
     const nodeRunControlStore = createNodeRunControlStore();

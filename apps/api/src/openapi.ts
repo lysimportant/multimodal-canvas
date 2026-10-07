@@ -2083,14 +2083,27 @@ export const openApiDocument = {
     '/v1/runs/{runId}/recover': {
       post: {
         tags: ['runs'],
-        summary: '恢复本人丢失队列消息的原任务',
+        summary: '只读获取本人原视频任务的结果',
         description:
-          '复用原 Run、冻结快照、执行授权和发送身份，不新建重试任务。已完成或取消的任务不再投递，已有队列任务保持原状。发送结果不明时返回 send_requires_review；已受理视频和归档结果由 Worker 按原身份恢复。尚未发送的 DAG 节点仍须通过当前分组权限校验。',
+          '必须提交 retrieveOnly: true；沿用原 Run、attempt、冻结快照和已验证的平台任务 ID 查询及归档，不创建新的 Provider 请求。执行中的任务不可升级为只读；原平台身份缺失、创建仍在途或冻结证据冲突时返回 409。',
         parameters: [{ $ref: '#/components/parameters/RunId' }],
         requestBody: {
-          required: false,
+          required: true,
           content: {
-            'application/json': { schema: { type: 'object', additionalProperties: false } },
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['retrieveOnly'],
+                properties: {
+                  retrieveOnly: {
+                    type: 'boolean',
+                    const: true,
+                    description: '按原视频平台任务身份只读取回资源。',
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
           },
         },
         responses: {

@@ -418,6 +418,7 @@ describe('worker workflow DAG execution', () => {
                 providerJob: createProviderJobRecord(retryId, 'newapi'),
               })
             : job;
+      nextJob.data = { ...nextJob.data, retrieveOnly: true };
       createRunWorker({
         ...options,
         resultStagingStore: staging.createStore(),
@@ -2406,6 +2407,7 @@ describe('worker workflow DAG execution', () => {
       provider: 'newapi',
       providerJob: createProviderJobRecord(runId, 'newapi'),
       cancelRequested: false,
+      retrieveOnly: true,
     });
     const standardProvider = { execute: vi.fn() };
     const assetResolve = vi.fn(async () => {
@@ -2455,6 +2457,7 @@ describe('worker workflow DAG execution', () => {
     expect(statusGets).toHaveBeenCalledWith('platform-video-existing');
     expect(videoRequests).toHaveLength(1);
     expect(videoRequests[0]).toMatchObject({
+      resumeOnly: true,
       providerJob: {
         id: `provider_job_${runId}`,
         platformJobId: 'platform-video-existing',
@@ -2474,6 +2477,102 @@ describe('worker workflow DAG execution', () => {
       status: 'succeeded',
     });
   });
+
+  it.each(['initial', 'active'] as const)(
+    '只读获取在 %s 阶段发现后续节点缺少原任务时不调用 Provider',
+    async (phase) => {
+      bullmqState.jobs.clear();
+      const runId = `123e4567-e89b-42d3-a456-42661417420${phase === 'initial' ? '1' : '2'}`;
+      const videoNode = snapshot.nodes.find((node) => node.id === 'node_video')!;
+      const firstNodeId = 'node_first_video';
+      const recoverySnapshot = withTestExecutionBindings({
+        ...snapshot,
+        nodes: [
+          { ...videoNode, id: firstNodeId, data: { ...videoNode.data, modelAlias: 'video-model' } },
+          videoNode,
+        ],
+        edges: [
+          {
+            id: 'edge_first_video',
+            sourceNodeId: firstNodeId,
+            sourceHandle: 'output:video',
+            targetNodeId: 'node_video',
+            targetHandle: 'input:content',
+            order: 0,
+          },
+        ],
+        inputs: [],
+        executionBindings: undefined,
+      });
+      const firstProviderJob: ProviderJob = {
+        ...createProviderJobRecord(runId, 'newapi', 'running', 85),
+        id: `provider_job_${runId}_${firstNodeId}`,
+        platformJobId: 'platform-first-video',
+        payload: {
+          workflowNodeId: firstNodeId,
+          contract: 'newapi-video-v1',
+          phase: 'polling',
+        },
+      };
+      const initialProviderJob = createProviderJobRecord(runId, 'newapi');
+      const workflowState = replaceWorkflowNodeState(
+        createInitialWorkflowState(recoverySnapshot, initialProviderJob),
+        { nodeId: firstNodeId, status: 'running', providerJob: firstProviderJob },
+      );
+      const job = createJob({
+        runId,
+        snapshot: recoverySnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        providerJob: initialProviderJob,
+        workflowState,
+        cancelRequested: false,
+        retrieveOnly: phase === 'initial',
+      });
+      if (phase === 'active') {
+        const updateData = job.updateData.bind(job);
+        job.updateData = async (data) => {
+          await updateData(data);
+          if (
+            workflowNodeState(data.workflowState as WorkflowState, firstNodeId)?.status !==
+            'succeeded'
+          )
+            return;
+          // API 使用另一份 Job 实例写入 Redis；当前 Worker 实例的数据仍是旧快照。
+          bullmqState.jobs.set(job.id, {
+            ...job,
+            data: { ...data, retrieveOnly: true },
+          });
+        };
+      }
+      const videoProvider = {
+        execute: vi.fn(async (request: WorkerProviderRequest) => createExecution(request.snapshot)),
+      };
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        providerName: 'newapi',
+        provider: { execute: vi.fn() },
+        videoProvider,
+        stepDelayMs: 0,
+        resultArchiver: async () => ({
+          assetId: 'asset_first_video',
+          version: 1,
+          mimeType: 'video/mp4',
+        }),
+      });
+
+      await expect(bullmqState.processor?.(job)).rejects.toThrow(
+        '节点 node_video 缺少可只读恢复的原结果或视频平台任务',
+      );
+      expect(videoProvider.execute).toHaveBeenCalledTimes(phase === 'initial' ? 0 : 1);
+      if (phase === 'active') {
+        expect(videoProvider.execute.mock.calls[0]?.[0].providerJob?.platformJobId).toBe(
+          'platform-first-video',
+        );
+        expect(job.data.retrieveOnly).toBe(true);
+      }
+    },
+  );
 
   it('retains upstream work and reported cost without replaying an intermediate cancelled response', async () => {
     bullmqState.jobs.clear();
