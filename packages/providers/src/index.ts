@@ -2770,7 +2770,9 @@ function providerResponseError(
   });
   const extra = isNoAvailableChannel(providerError.code, providerError.message)
     ? '当前分组没有可用渠道，请在网关中为该模型配置渠道或更换分组/密钥。'
-    : undefined;
+    : action === '视频创建' && isInvalidVideoReference(providerError)
+      ? '上游未接受参考素材地址。请检查本站素材链接是否可在不登录的情况下返回媒体内容，以及线上 Worker、API 与网关插件是否使用一致的版本和配置；本地检查通过也不代表供应商网络可访问。修正前不要重复提交生成。'
+      : undefined;
   return new NewApiProviderError(
     formatDetailedProviderError({
       action,
@@ -2789,6 +2791,22 @@ function providerResponseError(
       retryable: definite ? false : isRetryableStatus(response.status),
     },
   );
+}
+
+/** 识别原始或被网关封装进 message 的素材错误，保留外层错误码与原始诊断。 */
+function isInvalidVideoReference(error: { code?: string; message?: string }): boolean {
+  if (error.code === 'invalid_reference') return true;
+  if (error.code !== 'fail_to_fetch_task' || !error.message) return false;
+  try {
+    const nested: unknown = JSON.parse(error.message);
+    return (
+      isRecord(nested) &&
+      (nested.code === 'invalid_reference' ||
+        (isRecord(nested.error) && nested.error.code === 'invalid_reference'))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**

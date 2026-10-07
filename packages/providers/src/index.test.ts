@@ -6140,6 +6140,69 @@ describe('NewApiVideoProvider', () => {
     });
   });
 
+  it.each(['direct', 'gateway'] as const)(
+    '解释 %s 素材地址拒绝并保留原始错误身份，不自动重试',
+    async (kind) => {
+      const upstream = {
+        error: { code: 'invalid_reference', message: '参考素材必须是公网 HTTP(S) 直链' },
+      };
+      const payload =
+        kind === 'direct'
+          ? upstream
+          : { code: 'fail_to_fetch_task', message: JSON.stringify(upstream) };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(payload), {
+          status: 400,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-reference' },
+        }),
+      );
+      const snapshot = moonVideoSnapshot('sd2-930-fast', 'omni_reference', [
+        { role: 'referenceImage', mediaType: 'image' },
+      ]);
+      const error = await new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'synthetic-secret',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      })
+        .execute({ snapshot, onProviderJob: vi.fn() })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        status: 400,
+        code: kind === 'direct' ? 'invalid_reference' : 'fail_to_fetch_task',
+        requestId: 'req-reference',
+        retryable: false,
+        message: expect.stringContaining('上游未接受参考素材地址'),
+      });
+      expect((error as Error).message).toContain('参考素材必须是公网 HTTP(S) 直链');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('不会把其它网关错误或无法解析的说明误判成素材地址错误', async () => {
+    for (const message of ['invalid_reference is only an example', '{"error":']) {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code: 'fail_to_fetch_task', message }), { status: 400 }),
+        );
+      const error = await new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'synthetic-secret',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      })
+        .execute({
+          snapshot: moonVideoSnapshot('sd2-930-fast', 'text_to_video'),
+          onProviderJob: vi.fn(),
+        })
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'fail_to_fetch_task', retryable: false });
+      expect((error as Error).message).not.toContain('上游未接受参考素材地址');
+    }
+  });
+
   it('rejects Moon budget @imageN references before POST', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const snapshot = moonVideoSnapshot('sd2-930-fast', 'text_to_video');

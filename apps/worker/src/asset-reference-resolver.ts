@@ -18,6 +18,10 @@ import {
   createProviderAssetUrlSignerFromEnvironment,
   type ProviderAssetUrlSigner,
 } from './provider-asset-url.js';
+import {
+  createProviderAssetPreflight,
+  type ProviderAssetPreflight,
+} from './provider-asset-preflight.js';
 
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 const PROVIDER_ASSET_URL_EXPIRES_SECONDS = 60 * 60;
@@ -69,20 +73,27 @@ export interface AssetReferenceResolver {
 type ParsedAssetUrl = { assetId: string; version?: number };
 
 /**
- * Replaces durable asset references with provider-readable, in-memory data
- * URLs. The returned snapshot must never cross a queue or persistence boundary.
+ * 将冻结素材解析为 Provider 可读的临时签名 URL 或内存 data URL。
+ * 可注入签名链接预检；返回快照不得跨越队列或持久化边界。
  */
 export class StoredAssetReferenceResolver implements AssetReferenceResolver {
   private readonly maxBytes: number;
   private readonly providerAssetUrlSigner?: ProviderAssetUrlSigner;
+  /** 只检查本次可信签发的地址，不读取用户自带的外部 URL。 */
+  private readonly providerAssetPreflight?: ProviderAssetPreflight;
 
   constructor(
     private readonly repository: AssetReferenceRepository,
     private readonly blobStore: AssetReferenceBlobStore,
-    options: { maxBytes?: number; providerAssetUrlSigner?: ProviderAssetUrlSigner } = {},
+    options: {
+      maxBytes?: number;
+      providerAssetUrlSigner?: ProviderAssetUrlSigner;
+      providerAssetPreflight?: ProviderAssetPreflight;
+    } = {},
   ) {
     this.maxBytes = positiveByteLimit(options.maxBytes ?? DEFAULT_MAX_BYTES);
     this.providerAssetUrlSigner = options.providerAssetUrlSigner;
+    this.providerAssetPreflight = options.providerAssetPreflight;
   }
 
   async resolve(snapshot: RunSnapshot, context: { userId?: string } = {}): Promise<RunSnapshot> {
@@ -389,6 +400,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
   /**
    * 按模型和媒体类型选择短期 URL 或内存 data URL。preferred 仅在存储明确
    * 提供签名能力时使用 URL；required 缺少该能力时在 Provider 请求前失败。
+   * 注入预检后，同一冻结素材的可信签名 URL 只检查一次，失败不会进入 Provider。
    */
   private async providerContentUrl(
     snapshot: RunSnapshot,
@@ -403,14 +415,16 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     if (!signer && this.providerAssetUrlSigner) {
       const ownerId = resolved.ownerId;
       if (!ownerId) throw new Error('生成素材访问链接需要已确认的运行账号');
-      return cached(cache, `${resolved.assetId}:${resolved.version}`, async () =>
-        this.providerAssetUrlSigner!({
+      return cached(cache, `${resolved.assetId}:${resolved.version}`, async () => {
+        const url = this.providerAssetUrlSigner!({
           assetId: resolved.assetId,
           version: resolved.version,
           projectId: resolved.projectId,
           ownerId,
-        }),
-      );
+        });
+        await this.providerAssetPreflight?.(url, resolved.mediaType);
+        return url;
+      });
     }
     if (!signer) {
       if (policy === 'preferred') return resolved.dataUrl;
@@ -418,12 +432,14 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
         '参考素材需要公网 HTTPS 访问：部署后会自动使用网站域名；当前网站地址或签名密钥不可用。本机 localhost 无法被远端模型读取。',
       );
     }
-    return cached(cache, resolved.contentKey, () =>
-      signer.call(this.blobStore, resolved.contentKey, {
+    return cached(cache, resolved.contentKey, async () => {
+      const url = await signer.call(this.blobStore, resolved.contentKey, {
         expiresIn: PROVIDER_ASSET_URL_EXPIRES_SECONDS,
         contentType: resolved.mimeType,
-      }),
-    );
+      });
+      await this.providerAssetPreflight?.(url, resolved.mediaType);
+      return url;
+    });
   }
 
   private async loadAsset(
@@ -682,6 +698,7 @@ export class S3AssetReferenceBlobStore implements AssetReferenceBlobStore {
   }
 }
 
+/** 根据存储环境创建解析器；生产环境默认预检签名 URL，关闭时释放数据库与存储连接。 */
 export function createAssetReferenceResolverFromEnvironment(): {
   assetReferenceResolver?: AssetReferenceResolver;
   close?: () => Promise<void>;
@@ -704,7 +721,13 @@ export function createAssetReferenceResolverFromEnvironment(): {
   const resolver = new StoredAssetReferenceResolver(
     new PrismaAssetReferenceRepository(prisma),
     blobStore,
-    { maxBytes, providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment() },
+    {
+      maxBytes,
+      providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment(),
+      ...(process.env.NODE_ENV === 'production'
+        ? { providerAssetPreflight: createProviderAssetPreflight() }
+        : {}),
+    },
   );
 
   return {

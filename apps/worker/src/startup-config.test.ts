@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertWorkerStartupConfiguration,
+  normalizeProviderAssetEndpoint,
   resolveWorkerConcurrency,
   shouldStartWorkerProcess,
   StartupConfigurationError,
@@ -161,10 +162,24 @@ describe('Worker production startup configuration', () => {
     ).toEqual([]);
   });
 
+  it('接受合法公网主机的 DNS 尾点并保留 endpoint 原文', () => {
+    const endpoint = 'https://objects.example.com.:9443/bucket-prefix';
+    expect(
+      validateWorkerStartupConfiguration({
+        ...productionEnvironment,
+        S3_PROVIDER_ENDPOINT: endpoint,
+      }),
+    ).toEqual([]);
+    expect(normalizeProviderAssetEndpoint(endpoint)).toBe(endpoint);
+  });
+
   it.each([
     'http://objects.example.com',
     'https://localhost:9000',
+    'https://localhost.:9000',
     'https://minio:9000',
+    'https://minio.:9000',
+    'https://objects.local.',
     'https://10.0.0.8',
     'https://192.168.1.8',
     'https://192.0.2.1',

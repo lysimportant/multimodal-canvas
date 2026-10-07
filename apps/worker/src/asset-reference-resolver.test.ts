@@ -3,6 +3,7 @@ import type { MediaType, RunSnapshot } from '@multimodal-canvas/domain';
 import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
 import { verifyProviderAssetAccessToken } from '@multimodal-canvas/credential-crypto';
 import { createProviderAssetUrlSignerFromEnvironment } from './provider-asset-url';
+import { createProviderAssetPreflight } from './provider-asset-preflight';
 import type {
   AssetReferenceBlobStore,
   AssetReferenceRepository,
@@ -75,6 +76,160 @@ function createRunWorker(options: Parameters<typeof createAuthorizedTestRunWorke
 }
 
 describe('StoredAssetReferenceResolver', () => {
+  it.each(['site', 's3'] as const)(
+    '%s 签发的冻结 v2 在连线与重复提及之间只预检一次，签名不进入原快照',
+    async (source) => {
+      const content = Buffer.from('frozen image version two');
+      const snapshot = referenceSnapshot({
+        sourceMediaType: 'image',
+        targetMediaType: 'video',
+        role: 'referenceImage',
+        assetId: imageAssetId,
+        contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+        mimeType: 'image/png',
+        modelAlias: 'sd2-930-fast',
+      });
+      const mentions = promptMentionSnapshot({
+        assetId: imageAssetId,
+        assetVersion: 2,
+        label: '参考图片',
+        mediaType: 'image',
+        repeat: true,
+        modelAlias: 'sd2-930-fast',
+        targetMediaType: 'video',
+      });
+      snapshot.nodes[1]!.data.promptDocument = mentions.nodes[0]!.data.promptDocument;
+      snapshot.promptMentions = mentions.promptMentions;
+      snapshot.inputs[0]!.sourceAssetVersion = 2;
+      const original = structuredClone(snapshot);
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, 'image', 'image/png', content, projectId, userId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.length),
+            contentKey: 'objects/frozen-v2',
+          },
+        ],
+        blobs: { 'objects/frozen-v2': content },
+      });
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response('x', {
+          status: 206,
+          headers: { 'content-type': 'image/png', 'content-range': `bytes 0-0/${content.length}` },
+        }),
+      );
+      const checker = vi.fn(createProviderAssetPreflight(fetchImpl));
+      const siteSigner = vi.fn(
+        createProviderAssetUrlSignerFromEnvironment({
+          CANVAS_WEB_URL: 'https://canvas.example.com',
+          API_JWT_SECRET: 'synthetic-site-secret',
+        })!,
+      );
+      if (source === 's3')
+        blobStore.createProviderGetUrl = vi.fn(
+          async () => 'https://objects.example.com/frozen-v2?X-Amz-Signature=synthetic-secret',
+        );
+      const resolver = new StoredAssetReferenceResolver(repository, blobStore, {
+        providerAssetUrlSigner: siteSigner,
+        providerAssetPreflight: checker,
+      });
+
+      const hydrated = await resolver.resolve(snapshot, { userId });
+
+      const url = hydrated.inputs[0]!.snapshot.data.contentUrl!;
+      expect(checker).toHaveBeenCalledExactlyOnceWith(url, 'image');
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(repository.findVersion).toHaveBeenCalledExactlyOnceWith(imageAssetId, 2);
+      expect(blobStore.get).toHaveBeenCalledWith('objects/frozen-v2', content.length + 1);
+      expect(snapshot).toEqual(original);
+      expect(JSON.stringify(snapshot)).not.toMatch(/access_token|X-Amz-Signature/);
+      expect(siteSigner).toHaveBeenCalledTimes(source === 'site' ? 1 : 0);
+    },
+  );
+
+  it('不为节点自带的外部 URL 发起预检', async () => {
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      contentUrl: 'https://untrusted.example/image',
+      modelAlias: 'sd2-930-fast',
+    });
+    delete snapshot.inputs[0]!.sourceAssetId;
+    delete snapshot.inputs[0]!.snapshot.data.assetId;
+    const { repository, blobStore } = fixtures();
+    const checker = vi.fn(async () => undefined);
+    await new StoredAssetReferenceResolver(repository, blobStore, {
+      providerAssetPreflight: checker,
+    }).resolve(snapshot);
+    expect(checker).not.toHaveBeenCalled();
+    expect(repository.findAsset).not.toHaveBeenCalled();
+  });
+
+  it('本站签名读取失败时 Worker 不发送视频生成请求', async () => {
+    const content = Buffer.from('frozen image');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      mimeType: 'image/png',
+      modelAlias: 'sd2-930-fast',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId, userId)],
+      blobs: { 'objects/image-current': content },
+    });
+    const preflightFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('private response', { status: 401 }));
+    const providerFetch = vi.fn<typeof fetch>();
+    const job: StubJob = {
+      id: projectId,
+      data: {
+        runId: projectId,
+        userId,
+        snapshot,
+        attempt: 1,
+        provider: 'newapi',
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      stepDelayMs: 0,
+      providerName: 'newapi',
+      videoProvider: new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-test-key',
+        videoContract: 'newapi-video-v1',
+        fetchImpl: providerFetch,
+      }),
+      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore, {
+        providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment({
+          CANVAS_WEB_URL: 'https://canvas.example.com',
+          API_JWT_SECRET: 'synthetic-site-secret',
+        }),
+        providerAssetPreflight: createProviderAssetPreflight(preflightFetch),
+      }),
+    });
+
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('HTTP 401');
+    expect(preflightFetch).toHaveBeenCalledOnce();
+    expect(providerFetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(job.data)).not.toMatch(
+      /access_token|synthetic-site-secret|private response/,
+    );
+  });
+
   it.each(['image', 'video', 'audio'] as const)(
     '自动用本站 HTTPS 提供冻结的 %s 版本且不持久化签名',
     async (mediaType) => {

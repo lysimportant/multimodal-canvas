@@ -261,12 +261,16 @@ function isLoopbackHostname(hostname: string): boolean {
   );
 }
 
-/** 排除回环、私网、链路本地和保留测试域名；不做 DNS 查询或可达性推断。 */
+/**
+ * 忽略 DNS 尾点后排除回环、私网、链路本地和保留测试域名；不做 DNS 查询。
+ * 仅规范化校验副本，保留原 endpoint 主机，避免改变后续 S3 签名的 Host。
+ */
 function isObviouslyPrivateHostname(hostname: string): boolean {
   const normalized = hostname
     .trim()
     .toLowerCase()
-    .replace(/^\[|\]$/g, '');
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.+$/, '');
   if (
     ['localhost', '::', '::1'].includes(normalized) ||
     ['.localhost', '.local', '.internal', '.test', '.example', '.invalid'].some((suffix) =>
