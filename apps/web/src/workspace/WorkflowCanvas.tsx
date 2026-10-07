@@ -14,6 +14,8 @@ import {
   type Connection,
   type ConnectionLineComponentProps,
   type FinalConnectionState,
+  type InternalNode,
+  type IsValidConnection,
   type OnConnectStart,
   type OnConnectStartParams,
   type OnEdgesChange,
@@ -49,7 +51,7 @@ import type {
   VideoMode,
   VideoRecreationConfig,
 } from '@multimodal-canvas/domain';
-import { portRoles } from '@multimodal-canvas/domain';
+import { portRoles, videoImageRolesForMode } from '@multimodal-canvas/domain';
 import type { CanvasTheme } from '../state/workspace-preferences';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { getNewNodeDimensions } from '../canvas-utils';
@@ -102,7 +104,11 @@ import {
   type CanvasEdgeEffect,
   type CanvasEdgePathStyle,
 } from './canvas-edge-appearance';
-import { FlowingCanvasEdge, FlowingConnectionLine } from './FlowingCanvasEdge';
+import {
+  FlowingCanvasEdge,
+  FlowingConnectionLine,
+  getConnectionHandlePoint,
+} from './FlowingCanvasEdge';
 import {
   CanvasContextMenu,
   type CanvasContextMenuCloseReason,
@@ -123,6 +129,7 @@ import { getQuickEditorLayout, type QuickEditorPlacementState } from './quick-ed
 import {
   getConnectionDropCreateGroups,
   needsVideoImageRoleChoice,
+  validateResolvedCanvasConnection,
   type ConnectedGenerateNodeRequest,
 } from '../connection-utils';
 import {
@@ -648,6 +655,7 @@ export function WorkflowCanvas({
   /** 事件读取最近提交的节点和回调，位置变化不向所有节点广播选择上下文。 */
   const nodeActionsRef = useRef({
     nodes,
+    edges,
     onNodeSelect,
     onDeleteNode,
     onOpenRequestPrompt,
@@ -658,6 +666,7 @@ export function WorkflowCanvas({
   useLayoutEffect(() => {
     nodeActionsRef.current = {
       nodes,
+      edges,
       onNodeSelect,
       onDeleteNode,
       onOpenRequestPrompt,
@@ -667,6 +676,7 @@ export function WorkflowCanvas({
     };
   }, [
     nodes,
+    edges,
     onNodeSelect,
     onDeleteNode,
     onOpenRequestPrompt,
@@ -759,13 +769,129 @@ export function WorkflowCanvas({
     () => ({ pathStyle: edgePathStyle, effect: edgeEffect }),
     [edgePathStyle, edgeEffect],
   );
-  /** xyflow 的连接线组件无法读取自定义 Context，这里把当前外观注入预览组件。 */
+  /** 隐藏卡牌与禁用连接的节点不接受预览或松手投放。 */
+  const canConnectFlowNodes = useCallback((connection: Connection) => {
+    const { nodes, batchViews } = nodeActionsRef.current;
+    return [connection.source, connection.target].every((id) => {
+      const node = nodes.find((candidate) => candidate.id === id);
+      return node && !node.hidden && node.connectable !== false && !batchViews.get(id)?.hidden;
+    });
+  }, []);
+  /** 预览与松手都使用完整图校验，不把循环或重复输入显示为可吸附目标。 */
+  const resolveFlowConnection = useCallback(
+    (connection: Connection) => {
+      if (!canConnectFlowNodes(connection)) return undefined;
+      const { nodes, edges } = nodeActionsRef.current;
+      const validation = validateResolvedCanvasConnection(connection, nodes, edges);
+      return validation.ok ? validation.connection : undefined;
+    },
+    [canConnectFlowNodes],
+  );
+  /** 多角色主体暂按首个合法端口预览；松手仍须选择，预览不持久化该角色。 */
+  const resolvePreviewConnection = useCallback(
+    (connection: Connection) => {
+      const { nodes } = nodeActionsRef.current;
+      if (!needsVideoImageRoleChoice(connection, nodes)) return resolveFlowConnection(connection);
+      const target = nodes.find((node) => node.id === connection.target);
+      for (const role of videoImageRolesForMode(target?.data.videoMode)) {
+        const resolved = resolveFlowConnection({ ...connection, targetHandle: `input:${role}` });
+        if (resolved) return resolved;
+      }
+      return undefined;
+    },
+    [resolveFlowConnection],
+  );
+  /** 接受库传入的 Edge 或 Connection，保持缺省 handle 的主体投放语义。 */
+  const isValidFlowConnection = useCallback<IsValidConnection>(
+    (connection) => {
+      const normalized: Connection = {
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? null,
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? null,
+      };
+      return Boolean(resolvePreviewConnection(normalized));
+    },
+    [resolvePreviewConnection],
+  );
+  /** 预览拒绝图错误后仍复用 App 的通知；多角色只选一个错误候选，不创建连线。 */
+  const reportConnectionRejection = useCallback(
+    (connection: Connection) => {
+      if (!canConnectFlowNodes(connection)) return;
+      const { nodes, edges, onConnect } = nodeActionsRef.current;
+      const target = nodes.find((node) => node.id === connection.target);
+      const candidates = needsVideoImageRoleChoice(connection, nodes)
+        ? videoImageRolesForMode(target?.data.videoMode).map((role) => ({
+            ...connection,
+            targetHandle: `input:${role}`,
+          }))
+        : [connection];
+      for (const candidate of candidates) {
+        const validation = validateResolvedCanvasConnection(candidate, nodes, edges);
+        if (
+          !validation.ok &&
+          (validation.reason === 'cycle' || validation.reason === 'duplicate')
+        ) {
+          onConnect(candidate);
+          return;
+        }
+      }
+    },
+    [canConnectFlowNodes],
+  );
+  /** 只在库原有的预览渲染中读取 store；鼠标帧不更新节点或节点 Context。 */
   const connectionLineComponent = useMemo(
     () =>
       function CanvasConnectionLine(props: ConnectionLineComponentProps) {
-        return <FlowingConnectionLine {...props} pathStyle={edgePathStyle} effect={edgeEffect} />;
+        const { nodeLookup, transform } = flowStore.getState();
+        const pointer = {
+          x: (props.pointer.x - transform[0]) / transform[2],
+          y: (props.pointer.y - transform[1]) / transform[2],
+        };
+        const fromTarget = props.fromHandle.type === 'target';
+        const nodeId = props.toHandle
+          ? props.toHandle.nodeId
+          : findConnectionBodyNode(nodeLookup, pointer)?.id;
+        const connection = nodeId
+          ? fromTarget
+            ? {
+                source: nodeId,
+                sourceHandle: props.toHandle?.id ?? null,
+                target: props.fromNode.id,
+                targetHandle: props.fromHandle.id ?? null,
+              }
+            : {
+                source: props.fromNode.id,
+                sourceHandle: props.fromHandle.id ?? null,
+                target: nodeId,
+                targetHandle: props.toHandle?.id ?? null,
+              }
+          : undefined;
+        const resolved =
+          connection &&
+          (!props.toHandle ||
+            (props.toHandle.type !== props.fromHandle.type && props.connectionStatus !== 'invalid'))
+            ? resolvePreviewConnection(connection)
+            : undefined;
+        const snapped = resolved
+          ? getConnectionHandlePoint(
+              nodeLookup.get(nodeId!),
+              fromTarget ? 'source' : 'target',
+              fromTarget ? resolved.sourceHandle : resolved.targetHandle,
+            )
+          : undefined;
+        return (
+          <FlowingConnectionLine
+            {...props}
+            toX={snapped?.x ?? pointer.x}
+            toY={snapped?.y ?? pointer.y}
+            toPosition={snapped?.position ?? props.toPosition}
+            pathStyle={edgePathStyle}
+            effect={edgeEffect}
+          />
+        );
       },
-    [edgePathStyle, edgeEffect],
+    [edgePathStyle, edgeEffect, flowStore, resolvePreviewConnection],
   );
 
   /** 移动期间实时发布新建位置；使用事件倍率和已测边界，避免转换 API 内部再次读取 DOM。 */
@@ -1016,9 +1142,29 @@ export function WorkflowCanvas({
       const { nodes, onConnect } = nodeActionsRef.current;
       const start = connectionStartRef.current;
       connectionStartRef.current = null;
-      if (!start?.nodeId || state.toHandle) return;
+      if (!start?.nodeId) return;
       // Escape 取消连线时 React Flow 仍会触发 onConnectEnd，不能弹出创建菜单。
       if ('key' in event) return;
+
+      if (state.toHandle) {
+        if (state.isValid !== false || state.toHandle.type === start.handleType) return;
+        const connection: Connection =
+          start.handleType === 'target'
+            ? {
+                source: state.toHandle.nodeId,
+                sourceHandle: state.toHandle.id ?? null,
+                target: start.nodeId,
+                targetHandle: start.handleId,
+              }
+            : {
+                source: start.nodeId,
+                sourceHandle: start.handleId,
+                target: state.toHandle.nodeId,
+                targetHandle: state.toHandle.id ?? null,
+              };
+        reportConnectionRejection(connection);
+        return;
+      }
 
       const point =
         'changedTouches' in event
@@ -1034,6 +1180,10 @@ export function WorkflowCanvas({
         .find(Boolean);
       const targetNodeId =
         (typeof state.toNode?.id === 'string' ? state.toNode.id : undefined) ??
+        findConnectionBodyNode(
+          flowStore.getState().nodeLookup,
+          screenToFlowPosition({ x: point.clientX, y: point.clientY }, { snapToGrid: false }),
+        )?.id ??
         nodeElement?.dataset.id;
 
       if (targetNodeId && targetNodeId !== start.nodeId) {
@@ -1051,14 +1201,20 @@ export function WorkflowCanvas({
                 target: targetNodeId,
                 targetHandle: null,
               };
+        if (!canConnectFlowNodes(connection)) return;
         if (needsVideoImageRoleChoice(connection, nodes)) {
+          if (!isValidFlowConnection(connection)) {
+            reportConnectionRejection(connection);
+            return;
+          }
           setVideoImageRolePicker({
             connection,
             clientPosition: { x: point.clientX, y: point.clientY },
           });
           return;
         }
-        onConnect(connection);
+        const resolved = resolveFlowConnection(connection);
+        onConnect(resolved ?? connection);
         return;
       }
 
@@ -1090,7 +1246,14 @@ export function WorkflowCanvas({
         returnFocusTo: canvasAreaRef.current,
       });
     },
-    [screenToFlowPosition],
+    [
+      flowStore,
+      screenToFlowPosition,
+      canConnectFlowNodes,
+      isValidFlowConnection,
+      resolveFlowConnection,
+      reportConnectionRejection,
+    ],
   );
 
   const handleFlowConnect = useCallback((connection: Connection) => {
@@ -1112,13 +1275,15 @@ export function WorkflowCanvas({
   const handleVideoImageRoleSelect = useCallback(
     (role: PortRole) => {
       if (!videoImageRolePicker) return;
-      onConnect({
+      const connection = {
         ...videoImageRolePicker.connection,
         targetHandle: `input:${role}`,
-      });
+      };
+      if (canConnectFlowNodes(connection))
+        nodeActionsRef.current.onConnect(resolveFlowConnection(connection) ?? connection);
       setVideoImageRolePicker(null);
     },
-    [onConnect, videoImageRolePicker],
+    [canConnectFlowNodes, resolveFlowConnection, videoImageRolePicker],
   );
 
   /** 位置变化只移动 portal 外壳，引用、参数和目录不变时复用完整表单。 */
@@ -1443,6 +1608,7 @@ export function WorkflowCanvas({
                                               // 删除统一走 App 的控件边界、历史记录及保存，避免库默认 Backspace 穿透菜单。
                                               deleteKeyCode={null}
                                               onConnect={handleFlowConnect}
+                                              isValidConnection={isValidFlowConnection}
                                               onConnectStart={handleConnectStart}
                                               onConnectEnd={handleConnectEnd}
                                               onNodeDragStart={onNodeDragStart}
@@ -1864,6 +2030,36 @@ function QuickEditorOverlay({
     </div>,
     portalHost,
   );
+}
+
+/**
+ * 按已测量的节点矩形寻找最上层主体；预览与松手共用，不在鼠标帧查询 DOM 布局。
+ * @param nodeLookup React Flow 当前内部节点，包含绝对坐标、测量尺寸和显示层级。
+ * @param point 未经网格取整的画布坐标，单位为画布像素。
+ * @returns 指针所在的可连接节点；隐藏、未测量或矩形外的节点不参与。
+ */
+function findConnectionBodyNode(
+  nodeLookup: ReadonlyMap<string, InternalNode>,
+  point: { x: number; y: number },
+): InternalNode | undefined {
+  let hit: InternalNode | undefined;
+  for (const node of nodeLookup.values()) {
+    if (node.hidden || node.connectable === false) continue;
+    const width = node.measured.width ?? node.width ?? 0;
+    const height = node.measured.height ?? node.height ?? 0;
+    const { x, y } = node.internals.positionAbsolute;
+    if (
+      width <= 0 ||
+      height <= 0 ||
+      point.x < x ||
+      point.x > x + width ||
+      point.y < y ||
+      point.y > y + height
+    )
+      continue;
+    if (!hit || node.internals.z >= hit.internals.z) hit = node;
+  }
+  return hit;
 }
 
 /**

@@ -246,6 +246,34 @@ afterEach(() => {
 });
 
 describe('AssetNode result presentation', () => {
+  it('选中节点不渲染四角缩放控件，保留原节点和连接端口', () => {
+    const node = makeNode();
+    const onResizeStart = vi.fn();
+    const scene = (selected: boolean) => (
+      <NodeResizeStartContext.Provider value={onResizeStart}>
+        <div className="react-flow__node" style={{ width: 400, height: 266 }}>
+          <AssetNode
+            {...({ id: node.id, data: node.data, selected } as NodeProps<AssetFlowNode>)}
+          />
+        </div>
+      </NodeResizeStartContext.Provider>
+    );
+    const view = render(scene(false));
+    const shell = view.container.querySelector('.flow-asset-node');
+    const handles = Array.from(view.container.querySelectorAll('.react-flow__handle'));
+
+    view.rerender(scene(true));
+    expect(view.container.querySelector('.flow-asset-node')).toBe(shell);
+    expect(shell).toHaveClass('is-selected');
+    expect(Array.from(view.container.querySelectorAll('.react-flow__handle'))).toEqual(handles);
+    expect(screen.queryByRole('button', { name: '开始调整尺寸' })).not.toBeInTheDocument();
+    expect(view.container.querySelector('.react-flow__node')).toHaveStyle({
+      width: '400px',
+      height: '266px',
+    });
+    expect(onResizeStart).not.toHaveBeenCalled();
+  });
+
   it('复刻节点未选中且未悬浮时保留独立标识与下一步提示，普通视频不显示', () => {
     const node = makeNode({
       mediaType: 'video',

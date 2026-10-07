@@ -4,10 +4,14 @@
   width: 100%;
 }
 
-.node-quick-editor .node-quick-editor-prompt textarea {
-  height: 136px;
-  max-height: 136px;
-  min-height: 136px;
+.node-quick-editor .node-quick-editor-prompt-group {
+  flex: 0 0 auto;
+}
+
+.node-quick-editor .node-quick-editor-prompt :is(textarea, .resource-mention-input) {
+  height: 300px;
+  max-height: 300px;
+  min-height: 300px;
   overflow-y: auto;
   resize: none;
 }
@@ -84,7 +88,7 @@
     width: min(100%, calc(100vw - 24px));
   }
 
-  .node-quick-editor .node-quick-editor-prompt textarea {
+  .node-quick-editor .node-quick-editor-prompt :is(textarea, .resource-mention-input) {
     height: 120px;
     max-height: 120px;
     min-height: 120px;

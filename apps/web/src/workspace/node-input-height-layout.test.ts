@@ -92,26 +92,27 @@ describe('桌面节点输入区高度', () => {
     );
   });
 
-  it('仅为桌面浮层的提示词输入区增加固定初始高度，并保留内部滚动', () => {
-    expect(indexCss).toMatch(
-      /@media \(min-width: 901px\) \{ \.quick-editor-overlay \.node-quick-editor \.node-quick-editor-prompt textarea \{ height: 180px; min-height: 180px; max-height: 240px; overflow-y: auto; \} \}/,
+  it('快速编辑的纯文本和资源引用固定为 300px，父面板受限时不压缩提示词组', () => {
+    expect(layoutCss).toMatch(
+      /\.node-quick-editor \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\) \{ height: 300px; max-height: 300px; min-height: 300px; overflow-y: auto; resize: none; \}/,
     );
+    expect(layoutCss).toMatch(
+      /\.node-quick-editor \.node-quick-editor-prompt-group \{ flex: 0 0 auto; \}/,
+    );
+    expect(indexCss).not.toMatch(/\.node-quick-editor-prompt textarea \{/);
   });
 
-  it('保留其它视口的共用最小高度与放大弹窗的视口高度限制', () => {
+  it('放大输入区固定为 60dvh，并为标题、资源和操作栏保留安全空间', () => {
     expect(editorCss).toMatch(
-      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-field textarea \{[^}]*min-height: 145px;/,
+      /\.node-quick-editor-dialog \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\) \{ height: min\(60dvh, calc\(100dvh - 280px\)\); min-height: min\(60dvh, calc\(100dvh - 280px\)\); max-height: min\(60dvh, calc\(100dvh - 280px\)\); overflow-y: auto; resize: none;/,
     );
-    expect(editorCss).toMatch(
-      /\.node-quick-editor-dialog \.node-quick-editor-prompt textarea \{ min-height: min\(360px, 45dvh\); max-height: 55dvh;/,
-    );
-    expect(indexCss).toMatch(
-      /\.node-quick-editor-prompt textarea \{ max-height: 180px; min-height: 102px; \}/,
-    );
+    expect(editorCss).not.toMatch(/\.node-quick-editor-field textarea \{[^}]*min-height:/);
   });
 
-  it('保留输入框的显式纵向拖拽，而非根据内容自动增长', () => {
-    expect(indexCss).toMatch(/\.node-quick-editor-field textarea \{[^}]*resize: vertical;/);
+  it('纯文本与资源引用输入在鼠标或键盘聚焦时保持无边框和阴影', () => {
+    expect(editorCss).toMatch(
+      /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\), :is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\):is\(:focus, :focus-visible\) \{ border: 0 solid transparent; outline: none; box-shadow: none; \}/,
+    );
   });
 
   it('保留节点外框和预览隔离，长内容不得撑大用户设定的节点尺寸', () => {

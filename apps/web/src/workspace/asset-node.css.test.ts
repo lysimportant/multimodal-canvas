@@ -6,6 +6,19 @@ const assetNodeCss = readFileSync(resolve(process.cwd(), 'src/workspace/asset-no
 const normalizedCss = assetNodeCss.replace(/\s+/g, ' ');
 
 describe('asset node floating controls CSS contracts', () => {
+  it('节点普通、悬停和选中状态均不显示外框，不改变节点内容区域', () => {
+    for (const selector of [
+      '.react-flow__node .flow-asset-node',
+      '.react-flow__node .flow-asset-node:hover',
+      '.react-flow__node .flow-asset-node.is-selected, .react-flow__node .flow-asset-node.is-selected:hover',
+    ]) {
+      expect(normalizedCss.slice(normalizedCss.indexOf(selector + ' {')).split('}')[0]).toContain(
+        'border: 0;',
+      );
+    }
+    expect(normalizedCss).not.toContain('border-width: 3px;');
+  });
+
   it('悬浮卡片随图标和文字收缩，不左右分栏且始终显示功能简述', () => {
     expect(normalizedCss).toMatch(
       /\.flow-asset-node > \.flow-node-header\.flow-node-floating-controls \{[^}]*width: max-content;/,

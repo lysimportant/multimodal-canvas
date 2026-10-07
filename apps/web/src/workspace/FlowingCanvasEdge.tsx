@@ -4,6 +4,7 @@ import {
   Position,
   type ConnectionLineComponentProps,
   type EdgeProps,
+  type InternalNode,
 } from '@xyflow/react';
 
 import {
@@ -14,14 +15,36 @@ import {
 } from './canvas-edge-appearance';
 import { CanvasEdgeEffectOverlay } from './CanvasEdgeEffectOverlay';
 
-/** 与节点锚点 CSS 直径保持一致，用于把落定连线从外沿收到圆心。 */
+/** 与透明端口 CSS 命中区域直径保持一致，用于把落定连线从外沿收到圆心。 */
 export const FLOW_HANDLE_SIZE = 18;
 
 /**
- * 把 React Flow 给出的锚点外沿坐标收到可见圆点的圆心。
+ * 读取 React Flow 已测量的端口圆心，主体吸附与落定连线使用相同的语义端口。
+ * @param node 端口所属的内部节点，位置与尺寸单位均为画布像素。
+ * @param type 输入或输出端口类型。
+ * @param handleId 已解析的语义端口 ID。
+ * @returns 圆心与端口所在边；节点隐藏、不可连接或端口尚未测量时返回 undefined。
+ */
+export function getConnectionHandlePoint(
+  node: InternalNode | undefined,
+  type: 'source' | 'target',
+  handleId: string | null,
+) {
+  if (!node || node.hidden || node.connectable === false || !handleId) return undefined;
+  const handle = node.internals.handleBounds?.[type]?.find((item) => item.id === handleId);
+  if (!handle) return undefined;
+  return {
+    x: node.internals.positionAbsolute.x + handle.x + handle.width / 2,
+    y: node.internals.positionAbsolute.y + handle.y + handle.height / 2,
+    position: handle.position,
+  };
+}
+
+/**
+ * 把 React Flow 给出的端口外沿坐标收到透明命中区域的圆心。
  *
  * xyflow 的 `getHandlePosition(..., center = false)` 对上/右/下/左分别取外沿，
- * 18px 锚点会让线停在圆点外侧 9px。四类媒体节点共用同一套锚点尺寸和居中样式，
+ * 18px 端口会让线停在命中区域外侧 9px。四类媒体节点共用同一套端口尺寸和居中样式，
  * 因此同一套内收对 text/image/audio/video 都成立。
  *
  * @param x 当前端点 X，单位为画布坐标。

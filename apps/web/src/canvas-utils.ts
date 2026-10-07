@@ -54,7 +54,7 @@ export const DEFAULT_FLOW_NODE_HEIGHT = 216;
 export function getNewNodeDimensions(mediaType: MediaType): { width: number; height: number } {
   return mediaType === 'image' || mediaType === 'video'
     ? { width: 400, height: 266 }
-    : { width: 270, height: 246 };
+    : { width: 320, height: 200 };
 }
 
 /** 回显内容适配时的最大宽度，单位为画布像素。 */

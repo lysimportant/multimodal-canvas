@@ -29,7 +29,6 @@
   color: var(--mc-text);
   font-size: 13px;
   line-height: 1.7;
-  min-height: 145px;
   padding: 8px 4px;
 }
 
@@ -48,8 +47,14 @@
   padding: 8px 4px;
 }
 
-:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-field textarea:focus-visible {
-  border-color: transparent;
+/* 普通文本与资源引用共用输入边界，鼠标和键盘聚焦均保持无边框。 */
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-prompt
+  :is(textarea, .resource-mention-input),
+:is(.node-quick-editor, .node-quick-editor-dialog)
+  .node-quick-editor-prompt
+  :is(textarea, .resource-mention-input):is(:focus, :focus-visible) {
+  border: 0 solid transparent;
   outline: none;
   box-shadow: none;
 }
@@ -726,11 +731,15 @@
   display: grid;
   gap: 16px;
   margin-top: 14px;
+  padding-bottom: 16px;
 }
 
-.node-quick-editor-dialog .node-quick-editor-prompt textarea {
-  min-height: min(360px, 45dvh);
-  max-height: 55dvh;
+.node-quick-editor-dialog .node-quick-editor-prompt :is(textarea, .resource-mention-input) {
+  height: min(60dvh, calc(100dvh - 280px));
+  min-height: min(60dvh, calc(100dvh - 280px));
+  max-height: min(60dvh, calc(100dvh - 280px));
+  overflow-y: auto;
+  resize: none;
   font-size: 15px;
 }
 

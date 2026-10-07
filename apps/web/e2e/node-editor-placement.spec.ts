@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import {
   canvasDocumentSchema,
   renderPromptDocument,
@@ -30,7 +30,7 @@ async function json(route: Route, body: unknown) {
 
 /**
  * 安装现有资源提及 E2E 使用的登录、模型、资源及内存画布合同。
- * longPrompt 为 true 时提供多行提示词和结构化图片引用，制造真实 textarea 溢出。
+ * longPrompt 为 true 时提供多行提示词和结构化图片引用，制造真实编辑区溢出。
  * height 是合成节点的画布高度；较高节点用于产生真实的父面板滚动区域。
  * @returns 页面错误及 API 请求记录；所有未知网络请求均阻断并记录。
  */
@@ -238,7 +238,7 @@ async function samplePanel(page: Page, frames = 1) {
   return page.locator('.quick-editor-overlay').evaluate(async (element, count) => {
     const overlay = element as HTMLElement;
     const editor = overlay.querySelector<HTMLElement>('.node-quick-editor')!;
-    const textarea = editor.querySelector<HTMLTextAreaElement>('textarea')!;
+    const textarea = editor.querySelector<HTMLElement>('.resource-mention-input')!;
     const rect = (target: HTMLElement) => {
       const { x, y, width, height } = target.getBoundingClientRect();
       return { x, y, width, height };
@@ -286,14 +286,18 @@ function expectStationary(
 }
 
 /**
- * 取真实高亮文本第 offset 个字符内靠左的可见点击点，不创建可能影响滚动的镜像。
+ * 取真实可编辑正文首行第 offset 个字符的可见点击点，不创建可能影响滚动的镜像。
  * 命中校验同时排除父面板裁剪、资源浮层遮挡和画布外坐标；不可见时直接失败。
  */
 async function visibleCharacterPoint(textarea: Locator, offset: number) {
   return textarea.evaluate((element, index) => {
-    const input = element as HTMLTextAreaElement;
-    const highlight = input.parentElement!.querySelector('.resource-mention-highlight')!;
-    const walker = document.createTreeWalker(highlight, NodeFilter.SHOW_TEXT);
+    const input = element as HTMLElement;
+    const walker = document.createTreeWalker(input, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) =>
+        node.parentElement?.closest('[data-inline-reference], [data-inline-tail]')
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
     let remaining = index;
     let text = walker.nextNode();
     while (text && remaining >= (text.textContent?.length ?? 0)) {
@@ -310,6 +314,23 @@ async function visibleCharacterPoint(textarea: Locator, offset: number) {
       throw new Error(`字符 ${index} 不在输入框实际可点击区域：${JSON.stringify(point)}`);
     return point;
   }, offset);
+}
+
+/** 读取用户实际建立的原生选区；本文件只比较首行普通文字，引用预览不参与索引。 */
+async function inputSelection(input: Locator) {
+  return input.evaluate((element) => {
+    if (element instanceof HTMLTextAreaElement)
+      return [element.selectionStart, element.selectionEnd];
+    const selection = document.getSelection();
+    if (!selection?.rangeCount || !element.contains(selection.anchorNode))
+      throw new Error('提示词原生选区已丢失');
+    const selected = selection.getRangeAt(0);
+    const prefix = document.createRange();
+    prefix.selectNodeContents(element);
+    prefix.setEnd(selected.startContainer, selected.startOffset);
+    const start = prefix.toString().length;
+    return [start, start + selected.toString().length];
+  });
 }
 
 /**
@@ -363,6 +384,139 @@ function expectIsolated(fixture: Awaited<ReturnType<typeof installFixture>>) {
   expect(
     fixture.requests.filter(({ method, path }) => method === 'POST' && /\/runs$/.test(path)),
   ).toEqual([]);
+}
+
+/** 读取输入区实际尺寸与焦点样式，兼容普通 textarea 和带引用的可编辑正文。 */
+async function promptGeometry(input: Locator) {
+  return input.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      height: Number.parseFloat(style.height),
+      screenHeight: element.getBoundingClientRect().height,
+      scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+      overflowY: style.overflowY,
+      borderWidth: style.borderWidth,
+      outlineStyle: style.outlineStyle,
+      boxShadow: style.boxShadow,
+    };
+  });
+}
+
+for (const viewport of [
+  { width: 1600, height: 1000 },
+  { width: 1280, height: 600 },
+]) {
+  for (const referenced of [false, true]) {
+    test(`PC 提示词固定高度与无焦点边框 ${viewport.width}x${viewport.height} ${referenced ? '资源引用' : '纯文本'}`, async ({
+      page,
+      baseURL,
+    }, testInfo) => {
+      await page.setViewportSize(viewport);
+      const fixture = await installFixture(page, baseURL, { longPrompt: referenced });
+      const node = page.locator(nodeSelector);
+      const nodeBefore = await node.boundingBox();
+      await node.click({ position: { x: 90, y: 70 } });
+      const quickEditor = page.locator('.quick-editor-overlay .node-quick-editor');
+      const input = quickEditor.getByRole('textbox', { name: '提示词', exact: true });
+      await expect(input).toBeVisible();
+      await expect(node).toHaveClass(/selected/);
+      await expect(node.locator('.flow-asset-node')).toHaveCSS('border-width', '0px');
+      await expect(node.locator('.react-flow__resize-control')).toHaveCount(0);
+      const handles = node.locator('.react-flow__handle');
+      expect(await handles.count()).toBeGreaterThan(0);
+      for (const handle of await handles.all()) await expect(handle).toHaveCSS('opacity', '0');
+      await expect.poll(async () => (await promptGeometry(input)).height).toBe(300);
+      if (!referenced) {
+        await input.fill(
+          Array.from({ length: 80 }, (_, index) => `Line ${index + 1}: preserve the scene.`).join(
+            '\n',
+          ),
+        );
+      }
+      await input.click({ position: { x: 30, y: 15 } });
+      await expect(input).toBeFocused();
+      const focused = await promptGeometry(input);
+      expect(focused.height).toBe(300);
+      expect(focused.overflowY).toBe('auto');
+      expect(focused.scrollHeight).toBeGreaterThan(focused.clientHeight * 2);
+      expect(focused.borderWidth).toBe('0px');
+      expect(focused.outlineStyle).toBe('none');
+      expect(focused.boxShadow).toBe('none');
+      const editorScrollTop = await quickEditor.evaluate((element) => element.scrollTop);
+      await input.hover({ position: { x: 30, y: 15 } });
+      await page.mouse.wheel(0, 180);
+      await expect.poll(async () => (await promptGeometry(input)).scrollTop).toBeGreaterThan(20);
+      expect(await quickEditor.evaluate((element) => element.scrollTop)).toBe(editorScrollTop);
+      expect(await promptGeometry(input)).toMatchObject({ height: 300 });
+      const nodeAfter = (await node.boundingBox())!;
+      expect(nodeAfter.width).toBe(nodeBefore!.width);
+      expect(nodeAfter.height).toBe(nodeBefore!.height);
+      await page.screenshot({ path: testInfo.outputPath('prompt-quick-fixed-height.png') });
+
+      await quickEditor.getByRole('button', { name: '打开完整编辑器', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: '输入面板验收节点 · 编辑设置', exact: true });
+      await expect(dialog).toBeVisible();
+      const expandedInput = dialog.getByRole('textbox', { name: '提示词', exact: true });
+      const dialogHeight = Math.min(viewport.height * 0.6, viewport.height - 280);
+      await expect
+        .poll(async () => (await promptGeometry(expandedInput)).height)
+        .toBe(dialogHeight);
+      await expandedInput.click({ position: { x: 30, y: 15 } });
+      await expect(expandedInput).toBeFocused();
+      expect(await promptGeometry(expandedInput)).toMatchObject({
+        height: dialogHeight,
+        overflowY: 'auto',
+        borderWidth: '0px',
+        outlineStyle: 'none',
+        boxShadow: 'none',
+      });
+      await expect(
+        dialog.getByRole('button', { name: '关闭编辑器', exact: true }),
+      ).toBeInViewport();
+      await expect(dialog.getByRole('button', { name: '生成', exact: true })).toBeInViewport();
+      const dialogBounds = (await dialog.boundingBox())!;
+      const controlsBounds = (await dialog
+        .locator('.node-quick-editor-controls:not(.node-quick-editor-topbar)')
+        .boundingBox())!;
+      expect(
+        dialogBounds.y + dialogBounds.height - controlsBounds.y - controlsBounds.height,
+      ).toBeGreaterThanOrEqual(12);
+      expect(dialogBounds.y).toBeGreaterThanOrEqual(19);
+      expect(dialogBounds.y + dialogBounds.height).toBeLessThanOrEqual(viewport.height - 19);
+      const geometryPath = testInfo.outputPath('prompt-layout-geometry.json');
+      writeFileSync(
+        geometryPath,
+        JSON.stringify(
+          {
+            viewport,
+            referenced,
+            nodeBefore,
+            nodeAfter,
+            quickInput: focused,
+            dialogInput: await promptGeometry(expandedInput),
+            dialogBounds,
+            controlsBounds,
+            requests: fixture.requests,
+            errors: fixture.errors,
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+      await testInfo.attach('prompt-layout-geometry', {
+        path: geometryPath,
+        contentType: 'application/json',
+      });
+      await page.screenshot({ path: testInfo.outputPath('prompt-dialog-fixed-height.png') });
+      await dialog.getByRole('button', { name: '关闭编辑器', exact: true }).click();
+      await expect(input).toBeVisible();
+      expect(await promptGeometry(input)).toMatchObject({ height: 300 });
+      expectIsolated(fixture);
+    });
+  }
 }
 
 test('PC 左右边缘和上下空间不足时只使用 above/below', async ({ page, baseURL }) => {
@@ -540,9 +694,7 @@ test('1.5 倍长提示词和引用资源：真实可见点击聚焦前后几何�
   expect(before.textareaScrollHeight).toBeGreaterThan(before.textareaClientHeight * 5);
   await page.mouse.click(point.x, point.y);
   await expect(textarea).toBeFocused();
-  expect(
-    await textarea.evaluate((input: HTMLTextAreaElement) => input.selectionStart),
-  ).toBeGreaterThan(0);
+  expect((await inputSelection(textarea))[0]).toBeGreaterThan(0);
   // 连续采样超过短时滚动补偿窗口，不能只断言 click 同一轮的 inline style。
   const samples = await samplePanel(page, 40);
   await test.info().attach('focus-geometry.json', {
@@ -561,11 +713,7 @@ test('1.5 倍首次鼠标点击按可见字符放置光标，拖选保持原生�
   const point = await visibleCharacterPoint(textarea, 8);
   await page.mouse.click(point.x, point.y);
   await expect(textarea).toBeFocused();
-  await expect
-    .poll(() =>
-      textarea.evaluate((input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd]),
-    )
-    .toEqual([8, 8]);
+  await expect.poll(() => inputSelection(textarea)).toEqual([8, 8]);
   const start = await visibleCharacterPoint(textarea, 2);
   const end = await visibleCharacterPoint(textarea, 9);
   await page.mouse.move(start.x, start.y);
@@ -573,11 +721,7 @@ test('1.5 倍首次鼠标点击按可见字符放置光标，拖选保持原生�
   await page.mouse.move(end.x, end.y, { steps: 8 });
   await page.mouse.up();
   await expect
-    .poll(() =>
-      textarea.evaluate((input: HTMLTextAreaElement) =>
-        input.value.slice(input.selectionStart, input.selectionEnd),
-      ),
-    )
+    .poll(() => textarea.evaluate(() => document.getSelection()?.toString()))
     .toBe('2345678');
   await expect(textarea).toBeFocused();
   expectIsolated(fixture);
@@ -596,7 +740,11 @@ test('1.5 倍保持输入焦点时仍可手动滚动父面板和提示词', asyn
   expect(
     await editor.evaluate((element, at) => {
       const hit = document.elementFromPoint(at.x, at.y);
-      return hit !== null && element.contains(hit) && !hit.closest('textarea,button,input');
+      return (
+        hit !== null &&
+        element.contains(hit) &&
+        !hit.closest('.resource-mention-input,button,input')
+      );
     }, gutter),
   ).toBe(true);
   await page.mouse.move(gutter.x, gutter.y);
@@ -618,68 +766,36 @@ test('1.5 倍保持输入焦点时仍可手动滚动父面板和提示词', asyn
   expectIsolated(fixture);
 });
 
-test('1.5 倍长提示词失焦后拖小节点，面板不产生横向溢出', async ({ page, baseURL }) => {
+test('1.5 倍长提示词与资源引用保持节点尺寸，选中后不提供缩放控件', async ({
+  page,
+  baseURL,
+}, testInfo) => {
   const fixture = await installFixture(page, baseURL, { longPrompt: true, height: 240 });
   await zoomCanvas(page, 1.5);
-  const { overlay, editor, textarea } = await openEditor(page);
-  const point = await visibleCharacterPoint(textarea, 8);
-  await page.mouse.click(point.x, point.y);
-  await expect(textarea).toBeFocused();
-  const before = (await samplePanel(page, 3)).at(-1)!;
   const node = page.locator(nodeSelector);
   const nodeBefore = (await node.boundingBox())!;
-
-  // 点击节点本体使提示词失焦但保留面板，缩小过程中不能靠重新聚焦刷新镜像宽度。
-  await page.mouse.click(nodeBefore.x + nodeBefore.width / 2, nodeBefore.y + nodeBefore.height / 2);
-  await expect(textarea).not.toBeFocused();
-  await expect(overlay).toBeVisible();
-  const handle = node.locator('.react-flow__resize-control.bottom.right');
-  await expect(handle).toBeVisible();
-  const grip = (await handle.boundingBox())!;
-  const anchor = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+  await node.click({ position: { x: 90, y: 70 } });
+  const editor = page.locator('.quick-editor-overlay .node-quick-editor');
+  const input = editor.getByRole('textbox', { name: '提示词', exact: true });
+  await expect(input).toBeVisible();
+  await input.click({ position: { x: 30, y: 15 } });
+  await expect(input).toBeFocused();
+  await input.hover({ position: { x: 30, y: 15 } });
+  await page.mouse.wheel(0, 180);
+  await expect.poll(async () => (await promptGeometry(input)).scrollTop).toBeGreaterThan(20);
+  await expect(node.locator('.react-flow__resize-control')).toHaveCount(0);
+  await expect(node.locator('.flow-asset-node')).toHaveCSS('border-width', '0px');
+  const nodeAfter = (await node.boundingBox())!;
+  expect(nodeAfter.width).toBe(nodeBefore.width);
+  expect(nodeAfter.height).toBe(nodeBefore.height);
   expect(
-    await handle.evaluate((element, at) => {
-      const hit = document.elementFromPoint(at.x, at.y);
-      return hit !== null && element.contains(hit);
-    }, anchor),
-  ).toBe(true);
-  await page.mouse.move(anchor.x, anchor.y);
-  await page.mouse.down();
-  try {
-    await page.mouse.move(anchor.x - 90, anchor.y, { steps: 12 });
-  } finally {
-    await page.mouse.up();
-  }
-  await expect
-    .poll(async () => (await node.boundingBox())!.width)
-    .toBeLessThan(nodeBefore.width - 60);
-  await expect
-    .poll(async () => (await overlay.boundingBox())!.width)
-    .toBeLessThan(before.overlay.width - 100);
-  await expect(textarea).not.toBeFocused();
-
-  const samples = await samplePanel(page, 25);
-  const mirror = await editor.evaluate((element) => {
-    const mirror = element.querySelector<HTMLElement>('.resource-mention-caret-mirror');
-    return (
-      mirror && {
-        hidden: mirror.hidden,
-        display: getComputedStyle(mirror).display,
-        width: mirror.style.width,
-        height: mirror.style.height,
-      }
-    );
-  });
-  await test.info().attach('blur-resize-geometry.json', {
-    body: JSON.stringify(
-      { before, nodeBefore, nodeAfter: await node.boundingBox(), mirror, samples },
-      null,
-      2,
-    ),
+    await editor.evaluate((element) => element.scrollWidth - element.clientWidth),
+  ).toBeLessThanOrEqual(1);
+  await testInfo.attach('fixed-node-geometry.json', {
+    body: JSON.stringify({ nodeBefore, nodeAfter, input: await promptGeometry(input) }, null, 2),
     contentType: 'application/json',
   });
-  for (const state of samples)
-    expect(state.editorScrollWidth - state.editorClientWidth).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: testInfo.outputPath('fixed-node-after-prompt-scroll.png') });
   expectIsolated(fixture);
 });
 

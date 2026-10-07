@@ -2,11 +2,22 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { OnMove } from '@xyflow/react';
+import {
+  ConnectionLineType,
+  Position,
+  type ConnectionLineComponentProps,
+  type Handle,
+  type InternalNode,
+  type IsValidConnection,
+  type OnMove,
+} from '@xyflow/react';
 import { memo, useContext } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AssetFlowNode } from '../canvas-utils';
+import { getNodeHandleLayout } from '../NodeHandles';
+import { FlowingCanvasEdge } from './FlowingCanvasEdge';
+import { CanvasEdgeAppearanceProvider } from './canvas-edge-appearance';
 import {
   NodeDeleteContext,
   NodePromptContext,
@@ -48,6 +59,10 @@ const reactFlowMock = vi.hoisted(() => ({
   nodeProbe: undefined as React.ElementType | undefined,
   edges: [] as WorkflowCanvasProps['edges'],
   nodes: [] as AssetFlowNode[],
+  nodeLookup: new Map<string, InternalNode<AssetFlowNode>>(),
+  connectionLineComponent: undefined as
+    React.ComponentType<ConnectionLineComponentProps> | undefined,
+  isValidConnection: undefined as IsValidConnection | undefined,
   setState: vi.fn(),
   storeProps: {} as Record<string, unknown>,
   onNodesChange: undefined as WorkflowCanvasProps['onNodesChange'] | undefined,
@@ -59,11 +74,19 @@ const reactFlowMock = vi.hoisted(() => ({
   onConnectStart: undefined as
     ((event: MouseEvent, params: Record<string, unknown>) => void) | undefined,
   onConnectEnd: undefined as
-    | ((event: MouseEvent, state: { toHandle?: unknown; toNode?: { id?: string } | null }) => void)
+    | ((
+        event: MouseEvent,
+        state: {
+          toHandle?: Pick<Handle, 'nodeId' | 'id' | 'type'> | null;
+          toNode?: { id?: string } | null;
+          isValid?: boolean | null;
+        },
+      ) => void)
     | undefined,
 }));
 
-vi.mock('@xyflow/react', async () => {
+vi.mock('@xyflow/react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@xyflow/react')>();
   const React = await import('react');
   const storeApi = {
     setState: reactFlowMock.setState,
@@ -73,6 +96,7 @@ vi.mock('@xyflow/react', async () => {
       snapToGrid: reactFlowMock.snapToGrid,
       snapGrid: reactFlowMock.snapGrid,
       nodes: reactFlowMock.nodes,
+      nodeLookup: reactFlowMock.nodeLookup,
     }),
   };
 
@@ -101,6 +125,8 @@ vi.mock('@xyflow/react', async () => {
     multiSelectionKeyCode,
     onConnectStart,
     onConnectEnd,
+    connectionLineComponent,
+    isValidConnection,
     defaultEdgeOptions,
     edgeTypes,
     minZoom,
@@ -135,8 +161,14 @@ vi.mock('@xyflow/react', async () => {
     onConnectStart?: (event: MouseEvent, params: Record<string, unknown>) => void;
     onConnectEnd?: (
       event: MouseEvent,
-      state: { toHandle?: unknown; toNode?: { id?: string } | null },
+      state: {
+        toHandle?: Pick<Handle, 'nodeId' | 'id' | 'type'> | null;
+        toNode?: { id?: string } | null;
+        isValid?: boolean | null;
+      },
     ) => void;
+    connectionLineComponent?: React.ComponentType<ConnectionLineComponentProps>;
+    isValidConnection?: IsValidConnection;
     minZoom?: number;
     fitViewOptions?: { minZoom?: number };
     deleteKeyCode?: string | null;
@@ -156,6 +188,8 @@ vi.mock('@xyflow/react', async () => {
       onSelectionEnd,
       panOnDrag,
       multiSelectionKeyCode,
+      connectionLineComponent,
+      isValidConnection,
     };
     reactFlowMock.nodes = nodes;
     reactFlowMock.edges = edges;
@@ -165,6 +199,8 @@ vi.mock('@xyflow/react', async () => {
     reactFlowMock.onNodesChange = onNodesChange;
     reactFlowMock.onConnectStart = onConnectStart;
     reactFlowMock.onConnectEnd = onConnectEnd;
+    reactFlowMock.connectionLineComponent = connectionLineComponent;
+    reactFlowMock.isValidConnection = isValidConnection;
     return (
       <div
         ref={(element) => {
@@ -221,6 +257,7 @@ vi.mock('@xyflow/react', async () => {
   }
 
   return {
+    ...actual,
     Background: () => null,
     BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
     Controls: () => null,
@@ -229,7 +266,7 @@ vi.mock('@xyflow/react', async () => {
     NodeToolbar: ({ children }: { children?: React.ReactNode }) => (
       <div className="react-flow__node-toolbar">{children}</div>
     ),
-    Position: { Top: 'top', Bottom: 'bottom' },
+    Position: actual.Position,
     ReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: reactFlowMock.viewportZoom }),
     useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
@@ -350,6 +387,9 @@ afterEach(() => {
   reactFlowMock.nodeProbe = undefined;
   reactFlowMock.edges = [];
   reactFlowMock.nodes = [];
+  reactFlowMock.nodeLookup.clear();
+  reactFlowMock.connectionLineComponent = undefined;
+  reactFlowMock.isValidConnection = undefined;
   reactFlowMock.setState.mockClear();
   reactFlowMock.onNodesChange = undefined;
   reactFlowMock.setCenter.mockClear();
@@ -1613,6 +1653,524 @@ describe('WorkflowCanvas context menu', () => {
       minZoom: 0.25,
       duration: 220,
     });
+  });
+});
+
+describe('WorkflowCanvas 主体磁吸连接', () => {
+  const source: AssetFlowNode = {
+    ...sourceNode,
+    id: 'magnet-source',
+    position: { x: 0, y: 0 },
+    width: 220,
+    height: 160,
+  };
+  const target: AssetFlowNode = {
+    ...generateNode,
+    id: 'magnet-target',
+    position: { x: 400, y: 100 },
+    width: 220,
+    height: 160,
+    selected: false,
+  };
+
+  /** 采用实际 NodeHandles 的语义布局，替身只补 jsdom 无法测量的几何。 */
+  function measuredNode(node: AssetFlowNode, z = 0): InternalNode<AssetFlowNode> {
+    const width = node.width ?? 220;
+    const height = node.height ?? 160;
+    const layout = getNodeHandleLayout(node.data.mediaType, node.data.mode, {
+      videoMode: node.data.videoMode,
+      modelAlias: node.data.modelAlias,
+    });
+    const positions = {
+      top: { x: width / 2 - 9, y: -9, position: Position.Top },
+      right: { x: width - 9, y: height / 2 - 9, position: Position.Right },
+      bottom: { x: width / 2 - 9, y: height - 9, position: Position.Bottom },
+      left: { x: -9, y: height / 2 - 9, position: Position.Left },
+    };
+    const handles: Handle[] = [
+      ...layout.visible.map((handle) => ({
+        ...positions[handle.side],
+        id: handle.id,
+        type: handle.type,
+        nodeId: node.id,
+        width: 18,
+        height: 18,
+      })),
+      ...layout.semanticInputRoles.map((role) => ({
+        ...positions.left,
+        id: `input:${role}`,
+        type: 'target' as const,
+        nodeId: node.id,
+        width: 18,
+        height: 18,
+      })),
+    ];
+    const internal = {
+      ...node,
+      measured: { width, height },
+      internals: {
+        userNode: node,
+        z,
+        positionAbsolute: node.position,
+        handleBounds: {
+          source: handles.filter((handle) => handle.type === 'source'),
+          target: handles.filter((handle) => handle.type === 'target'),
+        },
+      },
+    };
+    reactFlowMock.nodeLookup.set(node.id, internal);
+    return internal;
+  }
+
+  /** 指针来自容器坐标；起点与预览路径来自画布坐标，不依赖网格吸附。 */
+  function previewProps(
+    fromNode: InternalNode<AssetFlowNode>,
+    pointer = { x: 510, y: 180 },
+    handleType: 'source' | 'target' = 'source',
+    handleId?: string,
+  ): ConnectionLineComponentProps {
+    const fromHandle = fromNode.internals.handleBounds![handleType]!.find(
+      (handle) => handle.id === (handleId ?? `output:${fromNode.data.mediaType}`),
+    )!;
+    return {
+      connectionLineType: ConnectionLineType.Bezier,
+      fromNode,
+      fromHandle,
+      fromX: fromNode.position.x + fromHandle.x + 9,
+      fromY: fromNode.position.y + fromHandle.y + 9,
+      fromPosition: fromHandle.position,
+      toX: pointer.x,
+      toY: pointer.y,
+      toPosition: handleType === 'source' ? Position.Left : Position.Right,
+      toNode: null,
+      toHandle: null,
+      connectionStatus: null,
+      pointer: {
+        x: pointer.x * reactFlowMock.viewportZoom + reactFlowMock.viewportX,
+        y: pointer.y * reactFlowMock.viewportZoom + reactFlowMock.viewportY,
+      },
+    };
+  }
+
+  /** 直接渲染传给 React Flow 的真实预览组件，未插桩生产函数或修改节点状态。 */
+  function renderPreview(props: ConnectionLineComponentProps) {
+    const Preview = reactFlowMock.connectionLineComponent!;
+    return render(
+      <svg>
+        <Preview {...props} />
+      </svg>,
+    );
+  }
+
+  /** 释放坐标与 screenToFlowPosition 替身的容器偏移一致。 */
+  function releaseOnBody(
+    node: AssetFlowNode,
+    pointer: { x: number; y: number },
+    handleType: 'source' | 'target' = 'source',
+    handleId = `output:${node.data.mediaType}`,
+  ) {
+    const event = new MouseEvent('mouseup', {
+      clientX: pointer.x + 100,
+      clientY: pointer.y + 50,
+    });
+    act(() => {
+      reactFlowMock.onConnectStart?.(event, { nodeId: node.id, handleType, handleId });
+      reactFlowMock.onConnectEnd?.(event, { toNode: null, toHandle: null });
+    });
+  }
+
+  it('鼠标位于主体内即可吸附隐藏输入的边侧圆心，松手与落定边几何一致', () => {
+    const props = createProps({
+      nodes: [source, target],
+      edgePathStyle: 'straight',
+      edgeEffect: 'none',
+    });
+    render(<WorkflowCanvas {...props} />);
+    const from = measuredNode(source);
+    measuredNode(target);
+    const preview = renderPreview(previewProps(from));
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 400,180',
+    );
+    releaseOnBody(source, { x: 510, y: 180 });
+    expect(props.onConnect).toHaveBeenCalledWith({
+      source: source.id,
+      sourceHandle: 'output:image',
+      target: target.id,
+      targetHandle: 'input:content',
+    });
+    const settled = render(
+      <CanvasEdgeAppearanceProvider appearance={{ pathStyle: 'straight', effect: 'none' }}>
+        <svg>
+          <FlowingCanvasEdge
+            id="settled-magnet"
+            source={source.id}
+            target={target.id}
+            sourceX={229}
+            sourceY={80}
+            targetX={391}
+            targetY={180}
+            sourcePosition={Position.Right}
+            targetPosition={Position.Left}
+          />
+        </svg>
+      </CanvasEdgeAppearanceProvider>,
+    );
+    expect(settled.container.querySelector('.react-flow__edge-path')?.getAttribute('d')).toBe(
+      preview.container.querySelector('.canvas-flow-edge-path')?.getAttribute('d'),
+    );
+  });
+
+  it('缩放和平移后用未取整指针命中主体，移出后预览立即回到鼠标', () => {
+    reactFlowMock.viewportX = 70;
+    reactFlowMock.viewportY = -30;
+    reactFlowMock.viewportZoom = 0.8;
+    render(
+      <WorkflowCanvas {...createProps({ nodes: [source, target], edgePathStyle: 'straight' })} />,
+    );
+    const from = measuredNode(source);
+    measuredNode(target);
+    const Preview = reactFlowMock.connectionLineComponent!;
+    const preview = renderPreview(previewProps(from));
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 400,180',
+    );
+    preview.rerender(
+      <svg>
+        <Preview {...previewProps(from, { x: 650.25, y: 180.5 })} />
+      </svg>,
+    );
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 650.25,180.5',
+    );
+  });
+
+  it('从输入反向拖线吸附来源输出圆心，松手仍保存原来的源到目标方向', () => {
+    const props = createProps({ nodes: [source, target], edgePathStyle: 'straight' });
+    render(<WorkflowCanvas {...props} />);
+    measuredNode(source);
+    const from = measuredNode(target);
+    const preview = renderPreview(previewProps(from, { x: 100, y: 80 }, 'target', 'input:content'));
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 400,180',
+    );
+    releaseOnBody(target, { x: 100, y: 80 }, 'target', 'input:content');
+    expect(props.onConnect).toHaveBeenCalledWith({
+      source: source.id,
+      sourceHandle: 'output:image',
+      target: target.id,
+      targetHandle: 'input:content',
+    });
+  });
+
+  it.each(['hidden', 'non-connectable', 'source-only', 'self', 'cycle', 'duplicate'] as const)(
+    '%s 不吸附且预览随指针，图错误仍交回 App 校验',
+    (reason) => {
+      const candidate: AssetFlowNode =
+        reason === 'self'
+          ? source
+          : {
+              ...target,
+              hidden: reason === 'hidden',
+              connectable: reason !== 'non-connectable',
+              data: { ...target.data, mode: reason === 'source-only' ? 'source' : 'generate' },
+            };
+      const edges =
+        reason === 'cycle'
+          ? [{ id: 'reverse', source: target.id, target: source.id }]
+          : reason === 'duplicate'
+            ? [
+                {
+                  id: 'duplicate',
+                  source: source.id,
+                  target: target.id,
+                  targetHandle: 'input:content',
+                },
+              ]
+            : [];
+      const props = createProps({
+        nodes: reason === 'self' ? [source] : [source, candidate],
+        edges,
+        edgePathStyle: 'straight',
+      });
+      render(<WorkflowCanvas {...props} />);
+      const from = measuredNode(source);
+      measuredNode(candidate);
+      const pointer = reason === 'self' ? { x: 100, y: 80 } : { x: 510, y: 180 };
+      const preview = renderPreview(previewProps(from, pointer));
+      expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+        'd',
+        `M 220,80L ${pointer.x},${pointer.y}`,
+      );
+      expect(
+        reactFlowMock.isValidConnection?.({
+          source: source.id,
+          sourceHandle: 'output:image',
+          target: candidate.id,
+          targetHandle: null,
+        }),
+      ).toBe(false);
+      releaseOnBody(source, pointer);
+      if (reason === 'cycle' || reason === 'duplicate' || reason === 'source-only')
+        expect(props.onConnect).toHaveBeenCalledTimes(1);
+      else expect(props.onConnect).not.toHaveBeenCalled();
+    },
+  );
+
+  it('直接命中不兼容的语义端口时不会偷换角色或吸附', () => {
+    render(
+      <WorkflowCanvas {...createProps({ nodes: [source, target], edgePathStyle: 'straight' })} />,
+    );
+    const from = measuredNode(source);
+    const destination = measuredNode(target);
+    const toHandle = destination.internals.handleBounds!.target!.find(
+      (handle) => handle.id === 'input:prompt',
+    )!;
+    const preview = renderPreview({
+      ...previewProps(from),
+      toNode: destination,
+      toHandle,
+      toX: 510,
+      toY: 100,
+    });
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 510,180',
+    );
+    expect(
+      reactFlowMock.isValidConnection?.({
+        source: source.id,
+        sourceHandle: 'output:image',
+        target: target.id,
+        targetHandle: 'input:prompt',
+      }),
+    ).toBe(false);
+  });
+
+  it.each([undefined, 'first_last_frame'] as const)(
+    '%s 多角色视频预览合法首个端口，松手仍先选择角色',
+    async (videoMode) => {
+      const user = userEvent.setup();
+      const video: AssetFlowNode = {
+        ...target,
+        type: 'video',
+        data: { ...target.data, mediaType: 'video', videoMode },
+      };
+      const props = createProps({ nodes: [source, video], edgePathStyle: 'straight' });
+      render(<WorkflowCanvas {...props} />);
+      const from = measuredNode(source);
+      measuredNode(video);
+      const preview = renderPreview(previewProps(from));
+      expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+        'd',
+        'M 220,80L 400,180',
+      );
+      releaseOnBody(source, { x: 510, y: 180 });
+      expect(props.onConnect).not.toHaveBeenCalled();
+      await user.click(await screen.findByRole('menuitem', { name: /^尾帧/ }));
+      expect(props.onConnect).toHaveBeenCalledWith({
+        source: source.id,
+        sourceHandle: 'output:image',
+        target: target.id,
+        targetHandle: 'input:lastFrame',
+      });
+    },
+  );
+
+  it('库判无效的禁用透明端口不吸附，松手不能转换为其它语义角色', () => {
+    const text: AssetFlowNode = {
+      ...source,
+      type: 'text',
+      data: { ...source.data, mediaType: 'text' },
+    };
+    const video: AssetFlowNode = {
+      ...target,
+      type: 'video',
+      data: { ...target.data, mediaType: 'video', videoMode: 'text_to_video' },
+    };
+    const props = createProps({ nodes: [text, video], edgePathStyle: 'straight' });
+    render(<WorkflowCanvas {...props} />);
+    const from = measuredNode(text);
+    const destination = measuredNode(video);
+    const toHandle = destination.internals.handleBounds!.target!.find(
+      (handle) => handle.id === 'visual:left',
+    )!;
+    const preview = renderPreview({
+      ...previewProps(from, { x: 410, y: 180 }),
+      toNode: destination,
+      toHandle,
+      connectionStatus: 'invalid',
+      toX: 400,
+      toY: 180,
+    });
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 410,180',
+    );
+    const event = new MouseEvent('mouseup');
+    act(() => {
+      reactFlowMock.onConnectStart?.(event, {
+        nodeId: text.id,
+        handleId: 'output:text',
+        handleType: 'source',
+      });
+      reactFlowMock.onConnectEnd?.(event, {
+        isValid: false,
+        toNode: destination,
+        toHandle: { id: 'visual:left', nodeId: video.id, type: 'target' },
+      });
+    });
+    expect(props.onConnect).not.toHaveBeenCalled();
+  });
+
+  it('首帧已有重复连线时预览改用合法尾帧，仍保留显式角色选择', () => {
+    const video: AssetFlowNode = {
+      ...target,
+      type: 'video',
+      data: { ...target.data, mediaType: 'video', videoMode: 'first_last_frame' },
+    };
+    render(
+      <WorkflowCanvas
+        {...createProps({
+          nodes: [source, video],
+          edges: [
+            { id: 'first', source: source.id, target: video.id, targetHandle: 'input:firstFrame' },
+          ],
+          edgePathStyle: 'straight',
+        })}
+      />,
+    );
+    const from = measuredNode(source);
+    measuredNode(video);
+    const preview = renderPreview(previewProps(from));
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 510,260',
+    );
+  });
+
+  it('handle循环被库拒绝时，松手仍调用原校验以保留通知', () => {
+    const props = createProps({
+      nodes: [source, target],
+      edges: [{ id: 'reverse', source: target.id, target: source.id }],
+    });
+    render(<WorkflowCanvas {...props} />);
+    const event = new MouseEvent('mouseup');
+    act(() => {
+      reactFlowMock.onConnectStart?.(event, {
+        nodeId: source.id,
+        handleType: 'source',
+        handleId: 'output:image',
+      });
+      reactFlowMock.onConnectEnd?.(event, {
+        isValid: false,
+        toHandle: { nodeId: target.id, id: 'input:content', type: 'target' },
+      });
+    });
+    expect(props.onConnect).toHaveBeenCalledWith({
+      source: source.id,
+      sourceHandle: 'output:image',
+      target: target.id,
+      targetHandle: 'input:content',
+    });
+  });
+
+  it('多角色视频的所有角色均循环时不吸附，松手仍将具体错误交回 App', () => {
+    const video: AssetFlowNode = {
+      ...target,
+      type: 'video',
+      data: { ...target.data, mediaType: 'video', videoMode: 'first_last_frame' },
+    };
+    const props = createProps({
+      nodes: [source, video],
+      edges: [{ id: 'reverse', source: video.id, target: source.id }],
+      edgePathStyle: 'straight',
+    });
+    render(<WorkflowCanvas {...props} />);
+    const from = measuredNode(source);
+    measuredNode(video);
+    const preview = renderPreview(previewProps(from));
+    expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
+      'd',
+      'M 220,80L 510,180',
+    );
+    releaseOnBody(source, { x: 510, y: 180 });
+    expect(props.onConnect).toHaveBeenCalledWith({
+      source: source.id,
+      sourceHandle: 'output:image',
+      target: video.id,
+      targetHandle: 'input:firstFrame',
+    });
+    expect(screen.queryByRole('menu', { name: '选择图片在视频中的用途' })).not.toBeInTheDocument();
+  });
+
+  it.each(['hidden', 'non-connectable'] as const)(
+    '角色菜单打开后目标变为 %s，迟到选择不创建连线',
+    async (reason) => {
+      const user = userEvent.setup();
+      const video: AssetFlowNode = {
+        ...target,
+        type: 'video',
+        data: {
+          ...target.data,
+          mediaType: 'video',
+          videoMode: 'first_last_frame',
+        },
+      };
+      const props = createProps({ nodes: [source, video] });
+      const canvas = render(<WorkflowCanvas {...props} />);
+      measuredNode(source);
+      measuredNode(video);
+      releaseOnBody(source, { x: 510, y: 180 });
+      await screen.findByRole('menuitem', { name: /^尾帧/ });
+      canvas.rerender(
+        <WorkflowCanvas
+          {...props}
+          nodes={[
+            source,
+            {
+              ...video,
+              hidden: reason === 'hidden',
+              connectable: reason !== 'non-connectable',
+            },
+          ]}
+        />,
+      );
+      await user.click(await screen.findByRole('menuitem', { name: /^尾帧/ }));
+      expect(props.onConnect).not.toHaveBeenCalled();
+    },
+  );
+
+  it('连接预览20帧不更新节点或store，父级位置更新保持预览和校验回调身份', () => {
+    reactFlowMock.nodeProbe = DragRenderProbe;
+    const props = createProps({ nodes: [source, target], edgePathStyle: 'straight' });
+    const canvas = render(<WorkflowCanvas {...props} />);
+    const from = measuredNode(source);
+    measuredNode(target);
+    const Preview = reactFlowMock.connectionLineComponent!;
+    const isValid = reactFlowMock.isValidConnection;
+    const preview = renderPreview(previewProps(from));
+    dragNodeRender.mockClear();
+    reactFlowMock.setState.mockClear();
+    for (let index = 0; index < 20; index++) {
+      preview.rerender(
+        <svg>
+          <Preview {...previewProps(from, { x: 430 + index, y: 180 })} />
+        </svg>,
+      );
+    }
+    expect(dragNodeRender).not.toHaveBeenCalled();
+    expect(reactFlowMock.setState).not.toHaveBeenCalled();
+    expect(props.onNodesChange).not.toHaveBeenCalled();
+    canvas.rerender(
+      <WorkflowCanvas {...props} nodes={[{ ...source, position: { x: 1, y: 0 } }, target]} />,
+    );
+    expect(reactFlowMock.connectionLineComponent).toBe(Preview);
+    expect(reactFlowMock.isValidConnection).toBe(isValid);
   });
 });
 

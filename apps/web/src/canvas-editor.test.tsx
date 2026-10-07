@@ -76,6 +76,7 @@ vi.mock('@xyflow/react', async (importOriginal) => {
       domNode: document.querySelector<HTMLElement>('[data-testid="rf__wrapper"]'),
       snapToGrid: false,
       snapGrid: [15, 15] as const,
+      nodeLookup: new Map(),
     }),
   };
 

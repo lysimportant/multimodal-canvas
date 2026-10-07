@@ -52,11 +52,11 @@
   }
 }
 
-/* 来源与生成节点共用轻量外壳；尺寸仅由显式拖拽维护。 */
+/* 来源与生成节点共用轻量外壳；内容不参与节点外框的宽高计算。 */
 .react-flow__node .flow-asset-node {
   background: var(--mc-surface);
   position: relative;
-  border: 1px solid var(--mc-border);
+  border: 0;
   border-radius: 8px;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   min-height: 0;
@@ -64,14 +64,13 @@
 }
 
 .react-flow__node .flow-asset-node:hover {
-  border-color: var(--mc-border-strong);
+  border: 0;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .react-flow__node .flow-asset-node.is-selected,
 .react-flow__node .flow-asset-node.is-selected:hover {
-  border-color: var(--mc-accent);
-  border-width: 3px;
+  border: 0;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 

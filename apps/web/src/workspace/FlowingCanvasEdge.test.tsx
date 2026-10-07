@@ -5,7 +5,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getBezierPath, getSmoothStepPath, getStraightPath, Position } from '@xyflow/react';
+import {
+  getBezierPath,
+  getSmoothStepPath,
+  getStraightPath,
+  Position,
+  type InternalNode,
+} from '@xyflow/react';
 
 import {
   CanvasEdgeAppearanceProvider,
@@ -23,6 +29,7 @@ import {
   FlowingCanvasEdge,
   FlowingConnectionLine,
   centerHandlePoint,
+  getConnectionHandlePoint,
 } from './FlowingCanvasEdge';
 
 /** 五种路径形态，顺序与外观面板一致。 */
@@ -334,6 +341,84 @@ describe('连接线路径与特效的独立性', () => {
     expect(reducedMotion).toMatch(/\.canvas-edge-effect-breathe \{[^}]*opacity: 0\.4;/);
     expect(css).not.toContain('.edge-style-pulse');
     expect(css).not.toContain('.edge-style-minimal');
+  });
+});
+
+describe('主体吸附端点', () => {
+  /** 已测量坐标与矩形中心故意不同，验证吸附读取真实端口而非猜测节点边。 */
+  const node: InternalNode = {
+    id: 'measured-node',
+    data: {},
+    position: { x: 10, y: 20 },
+    measured: { width: 220, height: 180 },
+    internals: {
+      positionAbsolute: { x: 300, y: 400 },
+      z: 0,
+      userNode: { id: 'measured-node', data: {}, position: { x: 10, y: 20 } },
+      handleBounds: {
+        source: [
+          {
+            id: 'output:image',
+            nodeId: 'measured-node',
+            type: 'source',
+            position: Position.Right,
+            x: 211,
+            y: 81,
+            width: 18,
+            height: 18,
+          },
+        ],
+        target: [
+          {
+            id: 'input:content',
+            nodeId: 'measured-node',
+            type: 'target',
+            position: Position.Left,
+            x: -9,
+            y: 81,
+            width: 18,
+            height: 18,
+          },
+          {
+            id: 'input:lastFrame',
+            nodeId: 'measured-node',
+            type: 'target',
+            position: Position.Bottom,
+            x: 101,
+            y: 171,
+            width: 18,
+            height: 18,
+          },
+        ],
+      },
+    },
+  };
+
+  it.each([
+    ['source', 'output:image', { x: 520, y: 490, position: Position.Right }],
+    ['target', 'input:content', { x: 300, y: 490, position: Position.Left }],
+    ['target', 'input:lastFrame', { x: 410, y: 580, position: Position.Bottom }],
+  ] as const)('%s 的 %s 与落定边共用端口圆心', (type, id, expected) => {
+    expect(getConnectionHandlePoint(node, type, id)).toEqual(expected);
+  });
+
+  it('隐藏、不可连接、未测量和不存在的端口不提供吸附点', () => {
+    expect(getConnectionHandlePoint(undefined, 'target', 'input:content')).toBeUndefined();
+    expect(
+      getConnectionHandlePoint({ ...node, hidden: true }, 'target', 'input:content'),
+    ).toBeUndefined();
+    expect(
+      getConnectionHandlePoint({ ...node, connectable: false }, 'target', 'input:content'),
+    ).toBeUndefined();
+    expect(getConnectionHandlePoint(node, 'target', 'input:missing')).toBeUndefined();
+    expect(getConnectionHandlePoint(node, 'target', null)).toBeUndefined();
+    expect(
+      getConnectionHandlePoint(
+        { ...node, internals: { ...node.internals, handleBounds: undefined } },
+        'target',
+        'input:content',
+      ),
+    ).toBeUndefined();
   });
 });
 

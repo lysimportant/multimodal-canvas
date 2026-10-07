@@ -21,10 +21,10 @@ const sidePositions: Record<NodeHandleSide, Position> = {
 };
 
 const centeredSideStyles: Record<NodeHandleSide, CSSProperties> = {
-  top: { top: 0, left: '50%', transform: 'translate(-50%, -50%)' },
-  right: { top: '50%', right: 0, transform: 'translate(50%, -50%)' },
-  bottom: { bottom: 0, left: '50%', transform: 'translate(-50%, 50%)' },
-  left: { top: '50%', left: 0, transform: 'translate(-50%, -50%)' },
+  top: { top: 0, left: '50%', transform: 'translate(-50%, -50%)', opacity: 0 },
+  right: { top: '50%', right: 0, transform: 'translate(50%, -50%)', opacity: 0 },
+  bottom: { bottom: 0, left: '50%', transform: 'translate(-50%, 50%)', opacity: 0 },
+  left: { top: '50%', left: 0, transform: 'translate(-50%, -50%)', opacity: 0 },
 };
 
 const preferredInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = {
@@ -228,9 +228,9 @@ function nodeHandleDescription(
 }
 
 /**
- * 渲染四边居中可见锚点。额外语义输入叠在左侧可见锚点圆心，
- * 保证任意角色的连线都吸附到同一个可见圆点，而不是沿边框错位。
- * 首尾帧把尾帧放在下侧，形成两个可见槽位。
+ * 保留四边居中的透明命中区域；不使用 display 或 visibility，React Flow 仍可测量端口。
+ * 额外语义输入与左侧区域共用圆心，保留已有连线角色与位置。
+ * 首尾帧模式把尾帧保留在下侧，形成两个独立输入位置。
  */
 export function NodeHandles({ mediaType, mode, videoMode, modelAlias }: NodeHandlesProps) {
   const layout = getNodeHandleLayout(mediaType, mode, { videoMode, modelAlias });

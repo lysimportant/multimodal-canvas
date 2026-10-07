@@ -1,4 +1,4 @@
-/** 输入层与可见正文的真实排版回归；复用内存后端，禁止真实生成与用户项目写入。 */
+/** 原生正文与资源引用的真实排版回归；复用内存后端，禁止真实生成与用户项目写入。 */
 import { expect, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { renderPromptDocument, type PromptDocument } from '@multimodal-canvas/domain';
@@ -30,8 +30,12 @@ const promptDocument: PromptDocument = {
     { type: 'text' as const, text: '面向灶门。案上碗碟在灶台前方。\n\n' },
   ]).flat(),
 };
-/** 输入值由领域渲染器生成，索引沿用原生 textarea 的 UTF-16 单位。 */
+/** 保存正文使用领域渲染器；旧引用名称保留为普通文字，原子在编辑模型中占一个位置。 */
 const prompt = renderPromptDocument(promptDocument);
+/** 可编辑 DOM 的内部文本；只用于几何和选区断言，不发送给 API。 */
+const editablePrompt = promptDocument.blocks
+  .map((block) => (block.type === 'text' ? block.text : block.label + '\uFFFC'))
+  .join('');
 
 test.use({
   viewport: { width: 1800, height: 1200 },
@@ -46,7 +50,10 @@ async function openLongPrompt(
   scenario: ConnectedScenario,
   zoom: number,
   dialog: boolean,
+  baseURL: string | undefined,
 ) {
+  if (!baseURL) throw new Error('缺少隔离的 Playwright baseURL');
+  const webOrigin = new URL(baseURL).origin;
   const canvas = structuredClone(scenario.initial);
   const node = canvas.nodes.find((item) => item.id === connectedIds.target)!;
   node.data.prompt = prompt;
@@ -70,6 +77,12 @@ async function openLongPrompt(
       });
     },
   );
+  // 现有品牌图仅从本地 Web 读取，其余网络白名单仍由隔离夹具控制。
+  await page.route(/\/brand\/(?:lovetv-mascot\.webp|lovetv-icon-192\.png)$/, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin !== webOrigin) return route.fallback();
+    await route.continue();
+  });
   await page.goto('/projects/' + connectedIds.project);
   const target = page.locator('.react-flow__node[data-id="' + connectedIds.target + '"]');
   await expect(target).toBeVisible({ timeout: 30_000 });
@@ -114,23 +127,62 @@ async function openLongPrompt(
     });
   }
   const input = editor.getByRole('textbox', { name: '提示词', exact: true });
-  await expect(input).toHaveValue(prompt);
+  await expect.poll(async () => (await nativePromptState(input)).value).toBe(editablePrompt);
   await input.click({ trial: true });
   await expect(editor.locator('.resource-mention-token')).toHaveCount(24);
   return { editor, input, target };
 }
 
-/** 取高亮层第 offset 个字符的左侧命中点；偏移必须由浏览器原生点击决定。 */
+/** 读取真实正文与原生选区，引用缩略图作为一个原子计数，内部预览不参与文字索引。 */
+async function nativePromptState(input: Locator) {
+  return input.evaluate((element) => {
+    const read = (node: Node): string => {
+      if (node instanceof HTMLElement && node.hasAttribute('data-inline-tail')) return '';
+      if (node instanceof HTMLElement && node.hasAttribute('data-inline-reference'))
+        return '\uFFFC';
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
+      if (node instanceof HTMLBRElement) return '\n';
+      return Array.from(node.childNodes).map(read).join('');
+    };
+    const selection = document.getSelection();
+    const selected =
+      selection?.rangeCount && element.contains(selection.anchorNode)
+        ? selection.getRangeAt(0)
+        : undefined;
+    let start: number | null = null;
+    let end: number | null = null;
+    if (selected) {
+      const prefix = document.createRange();
+      prefix.selectNodeContents(element);
+      prefix.setEnd(selected.startContainer, selected.startOffset);
+      start = read(prefix.cloneContents()).length;
+      end = start + read(selected.cloneContents()).length;
+    }
+    const caret = selected?.getBoundingClientRect();
+    return {
+      value: read(element),
+      selection: [start, end],
+      caret: caret && { x: caret.x, y: caret.y, height: caret.height },
+    };
+  });
+}
+
+/** 取原生正文第 offset 个字符的左侧命中点；偏移必须由浏览器原生点击决定。 */
 async function characterPoint(input: Locator, offset: number) {
   return input.evaluate((element, offset) => {
-    const highlight = element.parentElement!.querySelector('.resource-mention-highlight')!;
-    const walker = document.createTreeWalker(highlight, NodeFilter.SHOW_TEXT);
-    let text = walker.nextNode();
     let remaining = offset;
-    while (text && remaining >= (text.textContent?.length ?? 0)) {
-      remaining -= text.textContent?.length ?? 0;
-      text = walker.nextNode();
-    }
+    let text: Node | undefined;
+    const visit = (node: Node) => {
+      if (text) return;
+      if (node instanceof HTMLElement && node.hasAttribute('data-inline-tail')) return;
+      if (node instanceof HTMLElement && node.hasAttribute('data-inline-reference')) remaining -= 1;
+      else if (node.nodeType === Node.TEXT_NODE) {
+        const length = node.textContent?.length ?? 0;
+        if (remaining < length) text = node;
+        else remaining -= length;
+      } else Array.from(node.childNodes).forEach(visit);
+    };
+    Array.from(element.childNodes).forEach(visit);
     if (!text) throw new Error('没有找到字符：' + offset);
     const range = document.createRange();
     range.setStart(text, remaining);
@@ -143,35 +195,27 @@ async function characterPoint(input: Locator, offset: number) {
   }, offset);
 }
 
-/** 两层正文区宽度及可滚动范围一致，高亮层只能接受程序化滚动。 */
+/** 正文只保留一个原生滚动层，固定高度不随长中文或内联缩略图变化。 */
 async function expectAligned(input: Locator) {
   const geometry = await input.evaluate((element) => {
-    const highlight = element.parentElement!.querySelector<HTMLElement>(
-      '.resource-mention-highlight',
-    )!;
+    const style = getComputedStyle(element);
     return {
-      overflowX: getComputedStyle(highlight).overflowX,
-      overflowY: getComputedStyle(highlight).overflowY,
-      inputWidth: element.clientWidth,
-      inputTextRendering: getComputedStyle(element).textRendering,
-      highlightTextRendering: getComputedStyle(highlight).textRendering,
-      highlightWidth: highlight.clientWidth,
+      overflowY: style.overflowY,
+      height: Number.parseFloat(style.height),
+      dialog: Boolean(element.closest('.node-quick-editor-dialog')),
+      viewportHeight: window.innerHeight,
       inputHeight: element.clientHeight,
-      highlightHeight: highlight.clientHeight,
       inputScrollHeight: element.scrollHeight,
-      highlightScrollHeight: highlight.scrollHeight,
-      scrollDifference: Math.abs(element.scrollTop - highlight.scrollTop),
+      inputOverflowWidth: element.scrollWidth - element.clientWidth,
+      highlightCount: element.parentElement!.querySelectorAll('.resource-mention-highlight').length,
     };
   });
-  expect(geometry.overflowX).toBe('hidden');
-  expect(geometry.overflowY).toBe('hidden');
-  expect(geometry.highlightWidth).toBe(geometry.inputWidth);
-  expect(geometry.highlightTextRendering).toBe(geometry.inputTextRendering);
-  expect(geometry.highlightHeight).toBe(geometry.inputHeight);
-  expect(Math.abs(geometry.highlightScrollHeight - geometry.inputScrollHeight)).toBeLessThanOrEqual(
-    1,
+  expect(geometry.overflowY).toBe('auto');
+  expect(geometry.highlightCount).toBe(0);
+  expect(geometry.inputOverflowWidth).toBeLessThanOrEqual(1);
+  expect(geometry.height).toBe(
+    geometry.dialog ? Math.min(geometry.viewportHeight * 0.6, geometry.viewportHeight - 280) : 300,
   );
-  expect(geometry.scrollDifference).toBeLessThanOrEqual(1);
   expect(geometry.inputScrollHeight).toBeGreaterThan(geometry.inputHeight * 2);
   return geometry;
 }
@@ -228,12 +272,12 @@ async function scrollToBottom(page: Page, input: Locator) {
 for (const zoom of [0.75, 1, 1.5, 2]) {
   test(
     '画布 ' + zoom + ' 倍长中文引用连续拖选、滚到底及行尾点击对齐',
-    async ({ page, scenario }) => {
-      const { editor, input, target } = await openLongPrompt(page, scenario, zoom, false);
+    async ({ page, scenario, baseURL }) => {
+      const { editor, input, target } = await openLongPrompt(page, scenario, zoom, false, baseURL);
       const initialBox = (await target.boundingBox())!;
       scenario.observations.layout = await expectAligned(input);
       await expectRightAligned(editor);
-      const end = prompt.indexOf('方。');
+      const end = editablePrompt.indexOf('方。');
       for (let index = 0; index < 5; index += 1) {
         const start = 2 + index;
         // 每轮先清除前次选区，真实拖动跨过长引用与换行，禁止 setSelectionRange 掩盖命中错误。
@@ -245,23 +289,13 @@ for (const zoom of [0.75, 1, 1.5, 2]) {
         await page.mouse.move(to.x, to.y, { steps: 10 });
         await page.mouse.up();
         await expect
-          .poll(() =>
-            input.evaluate((element: HTMLTextAreaElement) => [
-              element.selectionStart,
-              element.selectionEnd,
-            ]),
-          )
+          .poll(async () => (await nativePromptState(input)).selection)
           .toEqual([start, end]);
         await page.mouse.click(to.x, to.y);
         await expect
-          .poll(() =>
-            input.evaluate((element: HTMLTextAreaElement) => [
-              element.selectionStart,
-              element.selectionEnd,
-            ]),
-          )
+          .poll(async () => (await nativePromptState(input)).selection)
           .toEqual([end, end]);
-        await expect(input).toHaveValue(prompt);
+        await expect.poll(async () => (await nativePromptState(input)).value).toBe(editablePrompt);
       }
       await scrollToBottom(page, input);
       await expect
@@ -272,21 +306,18 @@ for (const zoom of [0.75, 1, 1.5, 2]) {
         )
         .toBeLessThanOrEqual(1);
       scenario.observations.layout = await expectAligned(input);
-      const lastOffset = prompt.lastIndexOf('方。');
+      const lastOffset = editablePrompt.lastIndexOf('方。');
       const last = await characterPoint(input, lastOffset);
       await page.mouse.click(last.x, last.y);
-      await expect
-        .poll(() => input.evaluate((element: HTMLTextAreaElement) => element.selectionStart))
-        .toBe(lastOffset);
-      await expect(editor.locator('.resource-mention-caret')).toBeVisible();
-      const caret = (await editor.locator('.resource-mention-caret').boundingBox())!;
-      expect(caret.width).toBeCloseTo(2, 1);
+      await expect.poll(async () => (await nativePromptState(input)).selection[0]).toBe(lastOffset);
+      const caret = (await nativePromptState(input)).caret!;
+      expect(caret.height).toBeGreaterThan(0);
       expect(Math.abs(caret.x - last.left)).toBeLessThan(1);
       expect(Math.abs(caret.y - last.top)).toBeLessThan(1);
       await page.keyboard.insertText('验收');
-      await expect(input).toHaveValue(
-        prompt.slice(0, lastOffset) + '验收' + prompt.slice(lastOffset),
-      );
+      await expect
+        .poll(async () => (await nativePromptState(input)).value)
+        .toBe(editablePrompt.slice(0, lastOffset) + '验收' + editablePrompt.slice(lastOffset));
       expect((await target.boundingBox())!.width).toBeCloseTo(initialBox.width, 1);
       expect((await target.boundingBox())!.height).toBeCloseTo(initialBox.height, 1);
       expect(scenario.submissions).toEqual([]);
@@ -294,16 +325,18 @@ for (const zoom of [0.75, 1, 1.5, 2]) {
   );
 }
 
-test('完整 Dialog 使用相同单滚动层与底部右对齐，末尾空行可达', async ({ page, scenario }) => {
-  const { editor, input } = await openLongPrompt(page, scenario, 1.5, true);
+test('完整 Dialog 使用相同单滚动层与底部右对齐，末尾空行可达', async ({
+  page,
+  scenario,
+  baseURL,
+}) => {
+  const { editor, input } = await openLongPrompt(page, scenario, 1.5, true, baseURL);
   await expectAligned(input);
   await expectRightAligned(editor);
-  const end = prompt.indexOf('方。');
+  const end = editablePrompt.indexOf('方。');
   const point = await characterPoint(input, end);
   await page.mouse.click(point.x, point.y);
-  await expect
-    .poll(() => input.evaluate((element: HTMLTextAreaElement) => element.selectionStart))
-    .toBe(end);
+  await expect.poll(async () => (await nativePromptState(input)).selection[0]).toBe(end);
   await scrollToBottom(page, input);
   await expectAligned(input);
   await expect
@@ -311,6 +344,13 @@ test('完整 Dialog 使用相同单滚动层与底部右对齐，末尾空行可
       input.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
     )
     .toBeLessThanOrEqual(1);
-  await expect(editor.locator('.resource-mention-caret')).toBeVisible();
+  await expect
+    .poll(async () => (await nativePromptState(input)).selection)
+    .toEqual([editablePrompt.length, editablePrompt.length]);
+  await page.keyboard.insertText('末尾验收');
+  await expect
+    .poll(async () => (await nativePromptState(input)).value)
+    .toBe(editablePrompt + '末尾验收');
+  expect((await nativePromptState(input)).caret?.height).toBeGreaterThan(0);
   expect(scenario.submissions).toEqual([]);
 });

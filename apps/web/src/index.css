@@ -1563,7 +1563,7 @@ h2 {
 
 .flow-asset-node {
   background: var(--mc-surface);
-  border: 1px solid var(--mc-border);
+  border: 0;
   border-radius: 8px;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
@@ -1578,8 +1578,6 @@ h2 {
 }
 
 .flow-asset-node.is-selected {
-  border-color: var(--mc-accent);
-  border-width: 3px;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
@@ -2013,21 +2011,6 @@ h2 {
   min-height: 72px;
   padding: 8px 9px;
   resize: vertical;
-}
-
-.node-quick-editor-prompt textarea {
-  max-height: 180px;
-  min-height: 102px;
-}
-
-/* 桌面浮层增加约两行可视输入空间，内容在框内滚动，不改变节点外框。 */
-@media (min-width: 901px) {
-  .quick-editor-overlay .node-quick-editor .node-quick-editor-prompt textarea {
-    height: 180px;
-    min-height: 180px;
-    max-height: 240px;
-    overflow-y: auto;
-  }
 }
 
 .node-quick-editor-prompt .resource-mention-highlight,
@@ -4531,8 +4514,6 @@ h2 {
 }
 
 .flow-asset-node.is-selected {
-  border-color: var(--mc-accent);
-  border-width: 3px;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
@@ -5293,16 +5274,6 @@ textarea:focus-visible {
 .node-quick-editor-field select:focus-visible,
 .topbar-resource-filter select:focus-visible {
   outline: 0;
-}
-
-/* 提示词编辑区聚焦时保持无边框，避免快速编辑与放大编辑出现额外轮廓。 */
-:is(.node-quick-editor, .node-quick-editor-dialog) .node-quick-editor-prompt textarea,
-:is(.node-quick-editor, .node-quick-editor-dialog)
-  .node-quick-editor-prompt
-  textarea:is(:focus, :focus-visible) {
-  border: 0 solid transparent;
-  outline: none;
-  box-shadow: none;
 }
 
 .search-field input,

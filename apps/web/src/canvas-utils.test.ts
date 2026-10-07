@@ -50,8 +50,8 @@ describe('stale propagation', () => {
   it('新建媒体尺寸与旧画布恢复分离，手动资源引用可保存和粘贴', () => {
     expect(getNewNodeDimensions('image')).toEqual({ width: 400, height: 266 });
     expect(getNewNodeDimensions('video')).toEqual({ width: 400, height: 266 });
-    expect(getNewNodeDimensions('text')).toEqual({ width: 270, height: 246 });
-    expect(getNewNodeDimensions('audio')).toEqual({ width: 270, height: 246 });
+    expect(getNewNodeDimensions('text')).toEqual({ width: 320, height: 200 });
+    expect(getNewNodeDimensions('audio')).toEqual({ width: 320, height: 200 });
     expect(fitNodeSizeToContent(1920, 1080)).toEqual({ width: 520, height: 293 });
     expect(fitNodeSizeToContent(100, 80).width).toBeGreaterThanOrEqual(180);
     const legacy = flowNode('legacy', 'image');

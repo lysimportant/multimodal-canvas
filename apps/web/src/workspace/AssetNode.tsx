@@ -22,7 +22,6 @@ import {
 } from 'lucide-react';
 import { Tooltip } from 'antd';
 import {
-  NodeResizer,
   useNodeConnections,
   useUpdateNodeInternals,
   useStore,
@@ -240,8 +239,6 @@ export function AssetNode({
   const selectNode = useContext(NodeSelectionContext);
   const quickEditorNodeId = useContext(NodeQuickEditorIdContext);
   const changeLabel = useContext(NodeLabelChangeContext);
-  const resizeNode = useContext(NodeResizeContext);
-  const resizeStart = useContext(NodeResizeStartContext);
   const retryNode = useContext(NodeRetryContext);
   const recoverNode = useContext(NodeRecoverContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
@@ -383,7 +380,6 @@ export function AssetNode({
   const infoTitleId = useId();
   const isVideoRecreation = data.mediaType === 'video' && Boolean(data.videoRecreation);
   const Icon = isVideoRecreation ? Clapperboard : mediaIcons[data.mediaType];
-  const Resizer = NodeResizer;
   const enabled = data.enabled !== false;
   /** 全部节点共用悬浮操作栏，保持内容区域固定尺寸。 */
   const floatingControls = true;
@@ -741,24 +737,6 @@ export function AssetNode({
             <ArrowUpRight size={18} aria-hidden="true" />
           )}
         </Button>
-      ) : null}
-      {Resizer ? (
-        <Resizer
-          isVisible={Boolean(selected)}
-          minWidth={180}
-          minHeight={140}
-          color="#18794e"
-          handleStyle={{ width: 18, height: 18, borderRadius: 4 }}
-          lineStyle={{ borderWidth: 2 }}
-          onResizeStart={() => {
-            if (resizeStart && id) resizeStart(id);
-          }}
-          onResizeEnd={(_, params) => {
-            if (resizeNode && id && params.width > 0 && params.height > 0) {
-              resizeNode(id, params.width, params.height);
-            }
-          }}
-        />
       ) : null}
       <NodeHandles
         mediaType={data.mediaType}

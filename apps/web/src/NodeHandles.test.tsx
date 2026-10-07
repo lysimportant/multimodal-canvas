@@ -55,6 +55,20 @@ describe('NodeHandles', () => {
     ]);
   });
 
+  it('连接点视觉透明但保留原尺寸测量和连接命中区域', () => {
+    const { container } = render(<NodeHandles mediaType="video" mode="generate" />);
+    const handles = Array.from(container.querySelectorAll('[data-handleid]')) as HTMLElement[];
+
+    expect(handles.length).toBeGreaterThan(4);
+    for (const handle of handles) {
+      expect(handle.style.opacity).toBe('0');
+      expect(handle.style.display).toBe('');
+      expect(handle.style.visibility).toBe('');
+      expect(handle.style.pointerEvents).toBe('');
+      expect(handle).toHaveAttribute('data-connectable', 'true');
+    }
+  });
+
   it('keeps every target role available through the hidden hit layer', () => {
     const { container } = render(<NodeHandles mediaType="video" mode="generate" />);
     const handles = Array.from(container.querySelectorAll('[data-handleid]'));
