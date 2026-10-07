@@ -24,6 +24,25 @@
 - `pnpm exec turbo run lint typecheck build --env-mode=loose --concurrency=3`：27/27 任务成功（其中 6 项未变化依赖使用缓存）；Web 有既有大 chunk 提示。`pnpm test:runtime`：8/8 通过。
 - 全仓测试：Web 134 个测试文件、2463 个测试全部通过；运行产物测试 8/8 通过。日志与冒烟脚本保存在忽略目录 `.local-tests/video-reference-preflight/`，不含真实账号凭据。
 
+## Canvas / Moon 本地桥接补验
+
+2026-10-07，P1，基线 `main @ 7c7c1f1`；Node 24.12.0、pnpm 11.19.0，复用既有依赖。此阶段读取 Canvas 生产链，在忽略目录 `.local-tests/moon-reference-bridge/` 保存合成夹具，与独立本地 New API/Moon Mock 联调；不修改 Canvas Provider 源码、现有 8080 环境、Compose 或用户数据。真实授权测试单列于下一节。
+
+- 合成普通 PNG 以 v1 写入内存素材存储，再写入内容不同的 v2。`StoredAssetReferenceResolver` 仍冻结读取 v1，使用正式签名器生成 `/v1/provider-assets/:assetId/versions/1/content?access_token=...`，原始快照保持不变。
+- 两次正式发送前预检均使用 `GET` 和 `Range: bytes=0-0`，未携带 `Authorization`，返回 206；测试映射完整保留 pathname 与 query。对同一签名 URL 的无登录完整 GET 返回 200、`image/png`，字节数与 SHA-256 均和合成 v1 一致。
+- `NewApiVideoProvider` 的唯一创建请求为 `POST /v1/videos`。`sd2-930-fast` 普通参考图在 `metadata.content` 中保持 `{ type: "image_url", role: "reference_image", image_url: { url } }`；首帧负例保持 `role: "first_frame"`。两条夹具复用同一个有效签名 URL，未将首帧静默改成普通参考图。
+- Canvas 与 Moon 上游格式不同：Canvas 的 `metadata.content` 需要保留媒体类型和角色；Moon 底价上游的普通 `images` 元素要求 URL 字符串。本地 New API Moon 插件 1.6.1 的修复边界是仅在最终提交时按原顺序把普通图片对象转换为 URL 字符串，并在上游 POST 前拒绝 `first_frame`/`last_frame`，避免把无法表达的帧角色静默降级。该说明来自本地插件代码与合成夹具，不表示插件已部署到用户或生产环境，也不表示真实 Moon 上游已经接受请求。
+- 独立于上述 Canvas 夹具自检，隔离 HTTP 联调使用 18335 的真实本地 New API 网关和 18336 的 Moon Mock：普通参考图只产生一次上游 POST，最终 `images` 元素为保留 query 的原签名 URL 字符串；Mock 以该 URL 无登录读取冻结 v1 PNG。任务查询达到 `completed`，内容接口返回的字节与 Mock 成片一致；9 秒、1 张参考图按本地测试定价扣除 55000 quota。首帧负例返回 400，上游 POST 数与扣费均未增加，证明 1.6.1 在本地网关边界拒绝而未静默降级。该层级仍是合成素材与 Mock，不替代真实供应商或生产验收。
+- 合成 HTTPS 来源只在测试适配器中精确映射到 `http://127.0.0.1:18337`。它验证签名、查询参数、匿名读取和请求体桥接，不验证公网 DNS、受信任 TLS、供应商出口网络或目标生产环境。线上 `invalid_reference` 是否消失仍需部署对应 Canvas API/Worker 和 New API 插件后，以一次受控真实请求独立确认。
+
+## Moon 普通参考图真实补验
+
+2026-10-07，用户授权使用临时视频 Key 只创建一次 `sd2-930-fast`、720p、5 秒视频。修复后的本地 Moon 1.6.1 插件将 Canvas 格式转为 `images: ["https://love.lolicon.beer/demo/field-study-poster.jpg"]`，通过现有线上 New API 转发；生产插件与渠道配置未改动。该公开演示图匿名 GET 返回 200、`image/jpeg`，与仓库原图逐字一致。
+
+北京时间 14:18:49 创建受理，任务 `task_LQtrgo1g9LAsKjD6qcRHuYzzeFeQj9Og`；后续仅查询原任务，最终 `completed / 100%`，创建至完成约 193 秒。内容接口返回 1,053,895 字节 MP4；独立 Chromium 实际播放成功，1280×720、容器时长约 5.167 秒、无媒体或页面错误。最终查询网关日志记录本次费用 750,000 quota，按当前计价为 1.5 美元。完整非敏感请求、时间、费用和制品校验见 New API 仓库已有 `verification/moon-video.md`；真实 Key 未进入源码、日志或文档。
+
+本次通过的是公开图片的真实上游链，以及签名素材路由的本地跨项目链；尚未证明原失败项目的签名 URL 可被供应商出口读取。实际修复交付在 New API Moon 插件 1.6.1，Canvas 本次仅补文档。用户已确认生产 API/Worker 为 `7c7c1f1`，环境中的 `CANVAS_WEB_URL` 正确；无需为此补验改 `.env`、切换对象存储或重新部署无代码变化的 Canvas。部署 New API 后检查实际生效插件版本，注意自定义覆盖版可能优先于内置版，再对原项目完成验收。
+
 ## 部署后核对
 
 1. 按现有部署方式拉取本次代码并重建 **Worker 和 API**，不要只更新 Web。记录更新前提交与镜像，保留原项目名、环境文件、密钥及数据卷；本次没有数据库迁移。沿用[服务器更新流程](docker-server.md#重启数据与更新)，不要切换原先未使用的 Compose profile。
