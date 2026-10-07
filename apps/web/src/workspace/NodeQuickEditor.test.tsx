@@ -218,6 +218,144 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video', 'Seedance2.0 0.9r'])(
+    'Image2Pro %s 使用 5 秒默认值，目录旧清晰度不能写入新节点',
+    (modelAlias) => {
+      const result = applyNodeGenerationDefaults(
+        { ...videoNode.data, modelAlias },
+        {
+          id: modelAlias,
+          name: modelAlias,
+          mediaTypes: ['video'],
+          capabilities: {
+            resolution: ['720p'],
+            duration: [5, 10],
+            aspectRatio: ['16:9'],
+            reasoning_effort: ['high'],
+          },
+        },
+      );
+      expect(result.parameters).toEqual({ duration: 5, aspectRatio: '16:9' });
+      expect(result.inferenceStrength).toBeUndefined();
+    },
+  );
+
+  it('Image2Pro 切换模型保留旧参数，用户明确移除后才允许生成', async () => {
+    const user = userEvent.setup();
+    const modelAlias = '无限制-Flash-中配-Video';
+    const model = { id: modelAlias, name: modelAlias, mediaTypes: ['video'] as const };
+    const data = applyNodeGenerationDefaults(
+      {
+        ...videoNode.data,
+        modelAlias,
+        videoMode: 'text_to_video',
+        parameters: { duration: 5.5, aspectRatio: '16:9', resolution: '720p', seed: 17 },
+      },
+      { ...model, mediaTypes: ['video'] },
+    );
+    expect(data.parameters).toEqual({
+      duration: 5.5,
+      aspectRatio: '16:9',
+      resolution: '720p',
+      seed: 17,
+    });
+    const props = makeProps({
+      node: { ...videoNode, data },
+      onParametersChange: vi.fn(),
+    });
+    const view = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('resolution、seed');
+    expect(screen.getByRole('region', { name: '生成参数' })).toHaveTextContent('720p');
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '移除不支持的参数' }));
+    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      duration: 5.5,
+      aspectRatio: '16:9',
+    });
+    view.rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...props.node,
+          data: { ...data, parameters: { duration: 5.5, aspectRatio: '16:9' } },
+        }}
+      />,
+    );
+    expect(screen.queryByText('视频清晰度')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).toHaveBeenCalledOnce();
+  });
+
+  it('Image2Pro 不静默替换旧自动时长，允许用户输入合同内小数秒', () => {
+    const modelAlias = 'Seedance2.0 0.9r';
+    const data = applyNodeGenerationDefaults(
+      { ...videoNode.data, modelAlias, videoMode: 'text_to_video', parameters: { duration: -1 } },
+      { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
+    );
+    expect(data.parameters?.duration).toBe(-1);
+    const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    const duration = screen.getByRole('spinbutton', { name: '时长（秒）' });
+    fireEvent.change(duration, { target: { value: '7.25' } });
+    expect(props.onParametersChange).toHaveBeenCalledWith({ duration: 7.25 });
+  });
+
+  it('Image2Pro 将旧推理强度纳入明确移除动作，兼容秒数与比例别名', async () => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: '无限制-Flash-MAX-Video',
+          videoMode: 'text_to_video',
+          inferenceStrength: 'high',
+          parameters: { seconds: 6.25, ratio: '4:3' },
+        },
+      },
+      onParametersChange: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('spinbutton', { name: '时长（秒）' })).toHaveValue(6.25);
+    expect(screen.getByRole('textbox', { name: '视频比例' })).toHaveValue('4:3');
+    expect(screen.queryByText('推理强度')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('inferenceStrength');
+    await userEvent.setup().click(screen.getByRole('button', { name: '移除不支持的参数' }));
+    expect(props.onInferenceStrengthChange).toHaveBeenCalledExactlyOnceWith('');
+    expect(props.onParametersChange).toHaveBeenCalledWith({ seconds: 6.25, ratio: '4:3' });
+    fireEvent.change(screen.getByRole('spinbutton', { name: '时长（秒）' }), {
+      target: { value: '7.5' },
+    });
+    expect(props.onParametersChange).toHaveBeenLastCalledWith({ duration: 7.5, ratio: '4:3' });
+  });
+
+  it.each([
+    {},
+    { duration: 0 },
+    { duration: 3600.01 },
+    { duration: 5, aspectRatio: '  ' },
+    { duration: 5, seconds: 8 },
+  ])('Image2Pro 非法参数 %j 在提交前明确阻止', (parameters) => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'Seedance2.0 0.9r',
+          videoMode: 'text_to_video',
+          parameters,
+        },
+      },
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Image2Pro');
+    expect(props.onRun).not.toHaveBeenCalled();
+  });
+
   it.each(['快捷', '完整'] as const)(
     '%s编辑器在节点生成中提供可点击停止，并在停止意图提交后禁用',
     async (presentation) => {

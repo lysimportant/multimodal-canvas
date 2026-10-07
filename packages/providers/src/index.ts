@@ -25,7 +25,10 @@ import {
   videoInputRoleForPromptMention,
   videoFamilyForModel,
   videoModeForPromptMentions,
+  image2proVideoContractForModel,
+  resolveImage2proVideoParameters,
   moonVideoContractForModel,
+  type Image2proVideoModelContract,
   type MoonVideoModelContract,
 } from '@multimodal-canvas/domain';
 
@@ -1007,6 +1010,7 @@ export class NewApiVideoProvider {
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
     const unified = contract === 'newapi-unified-v1';
     const openaiVideo = contract === 'newapi-video-v1';
+    const image2pro = Boolean(image2proVideoContractForModel(snapshot.modelAlias));
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
     const requestIds: NewApiRequestIds = {
@@ -1063,14 +1067,14 @@ export class NewApiVideoProvider {
         'seedance-2.5',
       ].includes(family);
       const moonContract = moonVideoContractForModel(snapshot.modelAlias);
-      if ((official || moonContract) && !openaiVideo) {
+      if ((official || moonContract || image2pro) && !openaiVideo) {
         throw new NewApiProviderError(
           '该视频模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
           { code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false },
         );
       }
       if (unified) validateUnifiedVideoParameters(snapshot.parameters);
-      else
+      else if (!image2pro)
         validateMediaParameters(
           snapshot.parameters,
           'video',
@@ -1190,7 +1194,7 @@ export class NewApiVideoProvider {
         }
         throw error;
       }
-      platformJobId = videoPlatformId(submission.payload, contract);
+      platformJobId = videoPlatformId(submission.payload, contract, snapshot.modelAlias);
       requestIds.requestId = submission.requestId;
       requestIds.newApiRequestId = submission.newApiRequestId;
       if (!platformJobId) {
@@ -1305,8 +1309,8 @@ export class NewApiVideoProvider {
         requestIds.pollRequestId = statusResponse.requestId ?? requestIds.pollRequestId;
         requestIds.pollNewApiRequestId =
           statusResponse.newApiRequestId ?? requestIds.pollNewApiRequestId;
-        const polledId = videoPlatformId(statusResponse.payload, contract);
-        if (unified && polledId !== platformJobId) {
+        const polledId = videoPlatformId(statusResponse.payload, contract, snapshot.modelAlias);
+        if ((unified || (openaiVideo && image2pro)) && polledId !== platformJobId) {
           throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
             code: 'VIDEO_TASK_ID_MISMATCH',
             retryable: false,
@@ -1594,7 +1598,9 @@ export class NewApiVideoProvider {
         const payload = await readResponsePayload(response, this.maxResponseBytes, requestSignal);
         throwIfProviderSignalAborted(
           externalSignal,
-          method === 'POST' && isRecord(payload) ? videoPlatformId(payload, contract) : undefined,
+          method === 'POST' && isRecord(payload)
+            ? videoPlatformId(payload, contract, normalizeErrorField(body?.model))
+            : undefined,
         );
         if (!response.ok)
           throw providerResponseError(
@@ -1913,13 +1919,18 @@ function videoCreatePath(contract: FrozenVideoContract): string {
   return newApiVideoCreatePath;
 }
 
-/** 按合同读取平台任务 ID；OpenAI 视频优先 id，统一协议只要顶层 task_id。 */
+/** 按合同读取平台任务 ID；Image2Pro 只认宿主顶层 id，不误用上游任务或关联请求身份。 */
 function videoPlatformId(
   payload: Record<string, unknown>,
   contract: FrozenVideoContract,
+  modelAlias?: string,
 ): string | undefined {
   if (contract === 'newapi-unified-v1') return normalizeErrorField(payload.task_id);
-  if (contract === 'newapi-video-v1') return extractOpenAiVideoId(payload);
+  if (contract === 'newapi-video-v1') {
+    return image2proVideoContractForModel(modelAlias)
+      ? normalizeErrorField(payload.id)
+      : extractOpenAiVideoId(payload);
+  }
   return extractVideoRequestId(payload);
 }
 
@@ -2119,6 +2130,17 @@ function openaiVideoPayload(
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
+  const image2proContract = image2proVideoContractForModel(snapshot.modelAlias);
+  if (image2proContract) {
+    return image2proVideoPayload(
+      snapshot,
+      label,
+      nodePrompt,
+      inputs,
+      nodePromptDocument,
+      image2proContract,
+    );
+  }
   const moonContract = moonVideoContractForModel(snapshot.modelAlias);
   if (moonContract) {
     return moonVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument, moonContract);
@@ -2138,6 +2160,66 @@ function openaiVideoPayload(
   }
   if (isRecord(payload.last_frame) && nonEmptyString(payload.last_frame.url)) {
     payload.last_frame = payload.last_frame.url.trim();
+  }
+  return payload;
+}
+
+/**
+ * 将 Image2Pro 文本和普通参考图映射为插件白名单字段；不透传画布的分辨率或未确认媒体参数。
+ * @param snapshot 已冻结的精确模型与参数，duration/seconds/durationSeconds 必须显式给出。
+ * @param label 目标节点名称，仅用于现有提示词解析。
+ * @param nodePrompt 节点保存的提示词，和文档或提示词连线按既有规则互斥。
+ * @param inputs 通过 Domain 预检并应用资源顺序的输入。
+ * @param nodePromptDocument 保留资源提及正文的冻结文档。
+ * @param contract 精确模型对应的已确认参数与图片边界。
+ * @returns New API /v1/videos 的 JSON 创建体；参考图按已排序输入发送。
+ * @throws 未适配字段、冲突别名、非法时长/比例或过长提示词在发送前失败。
+ */
+function image2proVideoPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  inputs: VideoInputMapping,
+  nodePromptDocument: PromptDocument | undefined,
+  contract: Image2proVideoModelContract,
+): Record<string, unknown> {
+  const { seconds, aspectRatio } = resolveImage2proVideoParameters(snapshot.parameters);
+  const prompt = resolveRequiredVideoPrompt(
+    snapshot,
+    label,
+    nodePrompt,
+    inputs.prompt,
+    nodePromptDocument,
+  );
+  if (prompt.length > contract.maxPromptLength) {
+    throw invalidProviderParameter(
+      'video',
+      'prompt',
+      `长度不能超过 ${contract.maxPromptLength} 个字符`,
+    );
+  }
+  const payload: Record<string, unknown> = {
+    model: snapshot.modelAlias,
+    prompt,
+    duration: seconds,
+  };
+  if (aspectRatio !== undefined) payload.ratio = aspectRatio;
+  if (inputs.referenceImages.length) {
+    payload.images = inputs.referenceImages.map((input) => {
+      const url = inputImageUrl(input, 'video');
+      const mimeTypes = [
+        normalizedMimeType(input.snapshot.data.mimeType),
+        parseDataUrl(url)?.mimeType,
+      ].filter((mimeType): mimeType is string => Boolean(mimeType));
+      if (
+        mimeTypes.some(
+          (mimeType) => !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mimeType),
+        )
+      ) {
+        throw invalidProviderParameter('video', 'images', '仅支持 PNG、JPEG、WebP 或 GIF 参考图');
+      }
+      return url;
+    });
   }
   return payload;
 }
@@ -4050,7 +4132,10 @@ function videoPromptResources(
   }
   if (body.image !== undefined) add(inputs.firstFrame);
   if (body.last_frame !== undefined) add(inputs.lastFrame);
-  if (Array.isArray(body.reference_images) && body.reference_images.length > 0) {
+  if (
+    (Array.isArray(body.reference_images) && body.reference_images.length > 0) ||
+    (Array.isArray(body.images) && body.images.length > 0)
+  ) {
     for (const input of inputs.referenceImages) add(input);
   }
   return resources;

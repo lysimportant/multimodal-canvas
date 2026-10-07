@@ -25,6 +25,23 @@ describe('Provider 超时合同', () => {
 });
 
 describe('New API 模型目录规范化', () => {
+  it('无媒体声明时按 Image2Pro 精确合同识别，不开放相近 Seedance 名称', () => {
+    const models = normalizeModelsPayload({
+      data: [
+        { id: '无限制-Flash-中配-Video' },
+        { id: '无限制-Flash-MAX-Video' },
+        { id: 'Seedance2.0 0.9r' },
+        { id: 'Seedance2.0 0.9r-other' },
+      ],
+    });
+    expect(models.map((model) => model.mediaTypes)).toEqual([
+      ['video'],
+      ['video'],
+      ['video'],
+      ['text'],
+    ]);
+  });
+
   it('合并同名模型的媒体类型、能力、限制和价格', () => {
     const models = normalizeModelsPayload({
       data: [

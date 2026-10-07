@@ -1,4 +1,4 @@
-import type { MediaType } from '@multimodal-canvas/domain';
+import { image2proVideoContractForModel, type MediaType } from '@multimodal-canvas/domain';
 import type { ResolvedMention } from '@multimodal-canvas/providers';
 
 import type { AssetScope, AssetStore } from './assets';
@@ -9,7 +9,7 @@ import type { RunExecutor, RunExecutorRequest } from './runs';
 const imageSourceRoles = new Set(['imageEdit', 'content', 'referenceImage']);
 
 /**
- * 为 API 内存运行读取各媒体节点的文字输入、聊天多模态输入和图片编辑原图。
+ * 为 API 内存运行读取文字、聊天多模态、图片编辑和 Image2Pro 普通参考图。
  * @param executor 已配置的真实 Provider 执行器，不在此重试或下载外部 URL。
  * @param assetStore 已套用项目归属策略的资产存储。
  * @param projectStore 项目存储，执行前重新确认项目未归档且用户仍有访问权。
@@ -28,18 +28,27 @@ export function withLocalResourceReferences(
     if (!target || target.data.mode !== 'generate') {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
+    const image2proVideo =
+      target.data.mediaType === 'video' &&
+      Boolean(image2proVideoContractForModel(request.snapshot.modelAlias));
+    // 已有公共任务只查询结果，不能因原图后来失效阻断恢复。
+    if (image2proVideo && request.providerJob?.platformJobId) {
+      return typeof executor === 'function' ? executor(request) : executor.execute(request);
+    }
     const resourceInputs = request.snapshot.inputs.filter((input) =>
       input.snapshot.data.mediaType === 'text'
         ? ['prompt', 'content', 'transcript', 'negativePrompt'].includes(input.role)
         : input.snapshot.data.mediaType === 'image' &&
           ((target.data.mediaType === 'text' && input.role === 'content') ||
-            (target.data.mediaType === 'image' && imageSourceRoles.has(input.role))),
+            (target.data.mediaType === 'image' && imageSourceRoles.has(input.role)) ||
+            (image2proVideo &&
+              ['referenceImage', 'character', 'style', 'content'].includes(input.role))),
     );
     const frozenMentions = (request.snapshot.promptMentions ?? []).filter(
       (mention) =>
         (mention.nodeId ?? request.snapshot.targetNodeId) === target.id &&
         (target.data.mediaType === 'text' ||
-          (target.data.mediaType === 'image' && mention.mediaType === 'image')),
+          ((target.data.mediaType === 'image' || image2proVideo) && mention.mediaType === 'image')),
     );
     if (resourceInputs.length === 0 && frozenMentions.length === 0) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);

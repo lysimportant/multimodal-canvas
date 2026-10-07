@@ -76,6 +76,103 @@ function createRunWorker(options: Parameters<typeof createAuthorizedTestRunWorke
 }
 
 describe('StoredAssetReferenceResolver', () => {
+  it('Image2Pro 读取冻结图片后通过公共任务 ID 轮询并交给结果归档器', async () => {
+    const frozen = Buffer.from('image2pro frozen reference v2');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      mimeType: 'image/png',
+      modelAlias: '无限制-Flash-MAX-Video',
+      contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+    });
+    snapshot.parameters = { duration: 5.5, aspectRatio: '9:16' };
+    snapshot.nodes[1]!.data.prompt = 'Animate this reference with a slow camera movement.';
+    snapshot.inputs[0]!.sourceAssetVersion = 2;
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', frozen, projectId, userId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(frozen.length),
+          contentKey: 'objects/image2pro-v2',
+        },
+      ],
+      blobs: { 'objects/image2pro-v2': frozen },
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({ id: 'task_image2pro_public', object: 'video', status: 'queued' }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          id: 'task_image2pro_public',
+          object: 'video',
+          status: 'completed',
+          url: 'https://cdn.example.com/image2pro.mp4',
+        }),
+      );
+    const resultArchiver = vi.fn<
+      NonNullable<Parameters<typeof createRunWorker>[0]['resultArchiver']>
+    >(async () => ({
+      assetId: videoAssetId,
+      version: 1,
+      mimeType: 'video/mp4',
+    }));
+    const job: StubJob = {
+      id: projectId,
+      data: {
+        runId: projectId,
+        userId,
+        snapshot,
+        attempt: 1,
+        provider: 'newapi',
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    bullmqState.job = job;
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      stepDelayMs: 0,
+      providerName: 'newapi',
+      videoProvider: new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-image2pro-key',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      }),
+      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+      resultArchiver,
+    });
+    await bullmqState.processor?.(job);
+    expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'https://newapi.example.test/v1/videos',
+      'https://newapi.example.test/v1/videos/task_image2pro_public',
+    ]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
+      model: '无限制-Flash-MAX-Video',
+      duration: 5.5,
+      ratio: '9:16',
+      images: [`data:image/png;base64,${frozen.toString('base64')}`],
+    });
+    expect(resultArchiver).toHaveBeenCalledOnce();
+    expect(resultArchiver.mock.calls[0]![0]).toMatchObject({
+      result: { mediaType: 'video', targetNodeId: 'node_target' },
+      output: { kind: 'url', url: 'https://cdn.example.com/image2pro.mp4', mimeType: 'video/mp4' },
+    });
+    expect(JSON.stringify(job.data)).not.toContain(frozen.toString('base64'));
+  });
+
   it.each(['site', 's3'] as const)(
     '%s 签发的冻结 v2 在连线与重复提及之间只预检一次，签名不进入原快照',
     async (source) => {

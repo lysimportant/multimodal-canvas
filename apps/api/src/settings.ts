@@ -1,4 +1,8 @@
-import { type MediaType, type ModelSelection } from '@multimodal-canvas/domain';
+import {
+  image2proVideoContractForModel,
+  type MediaType,
+  type ModelSelection,
+} from '@multimodal-canvas/domain';
 
 /** 当前用户的模型偏好与 Provider 请求超时。 */
 export type AiSettings = {
@@ -300,6 +304,7 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
 }
 
 function inferMediaTypes(modelAlias: string): MediaType[] {
+  if (image2proVideoContractForModel(modelAlias)) return ['video'];
   const normalized = modelAlias.trim().toLowerCase();
   if (/^(gpt-image|dall[-_]?e|imagen|flux|sdxl|stable[-_]?diffusion|midjourney)/.test(normalized)) {
     return ['image'];

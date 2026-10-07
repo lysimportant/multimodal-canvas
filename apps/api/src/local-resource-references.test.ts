@@ -1,5 +1,5 @@
 import type { RunSnapshot } from '@multimodal-canvas/domain';
-import { NewApiProvider } from '@multimodal-canvas/providers';
+import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
 import { describe, expect, it, vi } from 'vitest';
 
 import { withAssetOwnershipPolicy } from './asset-ownership';
@@ -8,9 +8,90 @@ import { withLocalResourceReferences } from './local-resource-references';
 import { MemoryProjectStore } from './projects';
 
 describe('本地资源发送前的授权复查', () => {
-  it.each(['during-next-read', 'during-prompt', 'project-during-prompt'] as const)(
-    '%s 撤销后不发送 Provider 请求，也不重复读取文件',
-    async (stage) => {
+  it('Image2Pro 已有公共任务恢复时不重新读取已失效的原图', async () => {
+    const snapshot: RunSnapshot = {
+      projectId: 'resume-project',
+      canvasRevision: 1,
+      targetNodeId: 'video',
+      modelAlias: '无限制-Flash-MAX-Video',
+      parameters: { resolution: 'legacy-value' },
+      submittedAt: '2026-10-07T00:00:00.000Z',
+      nodes: [
+        {
+          id: 'video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: {
+            label: '恢复视频',
+            mediaType: 'video',
+            mode: 'generate',
+            videoMode: 'omni_reference',
+          },
+        },
+      ],
+      edges: [],
+      inputs: [],
+      promptMentions: [
+        {
+          nodeId: 'video',
+          mentionId: 'old-image',
+          assetId: 'deleted-image',
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '旧原图',
+          blockOrder: 0,
+        },
+      ],
+    };
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const readAsset = vi.spyOn(assetStore, 'get');
+    const readProject = vi.spyOn(projectStore, 'get');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        id: 'task_image2pro_existing',
+        status: 'completed',
+        url: 'https://cdn.example.test/resumed.mp4',
+      }),
+    );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.test/v1',
+      apiKey: 'synthetic-resume-key',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+    });
+    const executor = withLocalResourceReferences(
+      (request) => provider.execute(request),
+      assetStore,
+      projectStore,
+      1024,
+    );
+    const request = {
+      snapshot,
+      providerJob: {
+        provider: 'newapi',
+        platformJobId: 'task_image2pro_existing',
+        payload: { contract: 'newapi-video-v1' },
+      },
+    };
+    await (typeof executor === 'function' ? executor(request) : executor.execute(request));
+    expect(readAsset).not.toHaveBeenCalled();
+    expect(readProject).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]![0]).toBe(
+      'https://newapi.example.test/v1/videos/task_image2pro_existing',
+    );
+    expect(fetchImpl.mock.calls[0]![1]!.method).toBe('GET');
+  });
+
+  it.each(
+    ['during-next-read', 'during-prompt', 'project-during-prompt'].flatMap((stage) =>
+      (['text', 'video'] as const).map((mediaType) => ({ stage, mediaType })),
+    ),
+  )(
+    '$mediaType $stage 撤销后不发送 Provider 请求，也不重复读取文件',
+    async ({ stage, mediaType }) => {
       const ownerId = 'resource-race-owner';
       const projectStore = new MemoryProjectStore();
       const project = await projectStore.create({ name: '资源授权复查' }, { ownerId });
@@ -42,18 +123,19 @@ describe('本地资源发送前的授权复查', () => {
         projectId: project.id,
         canvasRevision: 0,
         targetNodeId: 'text-target',
-        modelAlias: 'text-multimodal-test',
-        parameters: {},
+        modelAlias: mediaType === 'video' ? '无限制-Flash-MAX-Video' : 'text-multimodal-test',
+        parameters: mediaType === 'video' ? { duration: 5 } : {},
         submittedAt: new Date().toISOString(),
         nodes: [
           {
             id: 'text-target',
-            type: 'text',
+            type: mediaType,
             position: { x: 0, y: 0 },
             data: {
               label: '比较图片',
-              mediaType: 'text',
+              mediaType,
               mode: 'generate',
+              ...(mediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
               promptDocument: {
                 version: 1,
                 blocks: assets.map((asset, index) => ({
@@ -83,11 +165,15 @@ describe('本地资源发送前的授权复查', () => {
       const fetchImpl = vi
         .fn<typeof fetch>()
         .mockResolvedValue(Response.json({ choices: [{ message: { content: 'ACCEPTANCE_OK' } }] }));
-      const provider = new NewApiProvider({
+      const providerOptions = {
         baseUrl: 'https://newapi.example.test/v1',
         apiKey: 'synthetic-resource-race-key',
         fetchImpl,
-      });
+      };
+      const provider =
+        mediaType === 'video'
+          ? new NewApiVideoProvider({ ...providerOptions, videoContract: 'newapi-video-v1' })
+          : new NewApiProvider(providerOptions);
       const executor = withLocalResourceReferences(
         (request) => provider.execute(request),
         withAssetOwnershipPolicy(assetStore, projectStore),

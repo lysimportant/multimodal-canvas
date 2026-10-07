@@ -45,4 +45,4 @@
 
 截图的 `无限制-Flash-MAX-Video` 在 Canvas 未登记对应全能参考映射；`videoModeCapability()` 返回 `livePost: false`。New API 的 Image2Pro 插件已列出该精确 ID，并接受图片参考；插件同时声明音频/视频参考需要上游支持。因此不能仅移除前端门禁或从插件别名推导 Canvas 已支持。
 
-Image2Pro 配套字段、精确模型 ID、模式、参考媒体组合及轮询/归档仍按 `TODO-CONSOLIDATED.md` 的 P1-02 另行实施和验证。本轮两仓库指南更新不代表已解除这一生成限制。
+此问题随后已完成 Canvas 的精确模型、文本/图片参考、参数、公共任务轮询及 API/Worker 配套修复，见 [Image2Pro 适配检查点](image2pro-canvas-checkpoint.md)。本篇保留原界面任务的验收边界；后续代码及隔离测试不代表目标部署或真实供应商成片已经验收。

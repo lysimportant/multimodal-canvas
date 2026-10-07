@@ -754,3 +754,31 @@
   overflow: auto;
   transform: none;
 }
+
+.node-quick-editor-unsupported-parameters {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.node-quick-editor-unsupported-parameters :is(p, dl, dd) {
+  margin: 0;
+}
+
+.node-quick-editor-unsupported-parameters dl {
+  display: grid;
+  gap: 4px;
+  max-height: 96px;
+  overflow: auto;
+}
+
+.node-quick-editor-unsupported-parameters dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}

@@ -1,6 +1,6 @@
 # 待完成任务汇总
 
-更新时间：2026-10-03（补节点交互扩展 E2E 存量失败）
+更新时间：2026-10-07（补 Image2Pro 配套适配与真实验收边界）
 整理基线：`main @ 43c69b6`
 来源：[视频节点任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-VIDEO-NODE.md)、[本地任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-LOCAL.md)。
 
@@ -28,12 +28,12 @@
 - 按 Provider、模型、合同整理 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图与其它扩展输入的字段、适用范围和样例响应。
 - MiniMax-H3、Wan3.0 与 Seedance 2.0/2.5 的官方首尾帧及多媒体参考已完成插件字段映射；Moon Wan3、当前 Seedance 三模型与精确小写 `minimax-h3` 的配套修复见 `next.md` 第 16 节。Wan3/Seedance 编辑、延长按已确认版本开放。仍需补齐其它拟接入模型的正式字段取证，以及各模型真实上游验收，不能把本地映射测试视为供应商验收。
 - Moon 新 `sd2*`、PT、`seedance-2-5-official`、ArtsDance 与 `grok-v1.5-video` 的 Canvas 配套状态见[型号映射检查点](docs/moon-video-models-checkpoint.md)。新系列参考输入仍需验证部署网站的素材地址可被供应商读取，并核对目标 New API 的实际 Moon 插件版本；不要求第三方 OSS。离线插件校验不替代公网读取或真实生成验收。
-- Image2Pro 插件的 `无限制-Flash-中配-Video`、`无限制-Flash-MAX-Video`、`Seedance2.0 0.9r` 尚需 Canvas 配套合同映射；插件已登记模型和图片参考不代表画布已开放全能参考。实施前双边核对精确 ID、模式、时长/比例与参考媒体字段、轮询归档及旧数据兼容；音频/视频参考继续按插件声明取得上游支持证据。截图门禁原因及本轮界面验收范围见[极简编辑器检查点](docs/canvas-minimal-editor-checkpoint.md)。
+- Image2Pro 三个精确模型的文本/普通图片参考、参数、公共任务轮询已完成 Canvas 映射与隔离回归；仍需目标环境更新和真实供应商成片验收。音频/视频参考继续等待上游支持证据，不开放首尾帧语义。历史不支持参数须显式移除，详见[Image2Pro 检查点](docs/image2pro-canvas-checkpoint.md)。
 - 视频参考默认通过网站域名提供短期签名素材接口，无需单独配置 `MC_S3_PROVIDER_ENDPOINT`，见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。仍需验收目标部署的外部 GET/HEAD/Range；Moon 所有参考素材均要求可访问 URL，Wan 视频还要求冻结版本时长。线上网关需更新对应 Moon 插件及支持 H3 精确大小写共存的宿主；官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
 - `sd2-930-fast` 的线上 `invalid_reference` 仍需部署后验收。发送前可读性检查与排查步骤见[参考素材预检检查点](docs/video-reference-preflight-checkpoint.md)；本机读取通过不能代替供应商出口读取，实际外发链接与线上插件一致性仍待核对。
 - 共享 Wan 模型 ID 尚不能在 Canvas 区分百炼与 Moon 的全部参数差异；Moon 的总引用数量、参考视频合计时长及不支持负向提示/自动时长等限制由网关插件在预扣与供应商 POST 前明确拒绝。后续按渠道身份细分预检，不以 Moon 限制收窄百炼合同。
 - 对已确认字段补齐序列化、响应解析、数量/组合边界和未知字段拒绝测试。现有 Grok 1.5 尾帧与参考图映射不重复列为待实现项。
-- 将视频参数的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；目前已有 Web 提示和 Provider 创建 POST 前拦截，不等同于所有入口都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。
+- 将其余视频模型的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；Image2Pro 已在 API 受理前校验，不能据此视为所有模型都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。
 - 明确各模型重复端口上限，取产品、模型、供应商限制的最小值；来源文档中的示例配额不能当成确认值。
 
 完成条件：拟开放组合均有字段证据与测试，未确认角色、超限输入和不支持的组合在供应商创建 POST 前明确失败，不静默丢弃或降级；共享模型 ID 的渠道差异需另行完成 Canvas 预检。

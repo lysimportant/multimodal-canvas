@@ -3247,7 +3247,7 @@ function WorkspaceApp({
     [rememberHistory, updateNodeDataAndMarkDownstreamStale],
   );
 
-  /** 更新指定或选中节点的推理强度，并标记下游结果过期。 */
+  /** 更新指定或选中节点的推理强度；空值明确移除配置，并标记下游结果过期。 */
   const updateSelectedInferenceStrength = useCallback(
     (inferenceStrength: InferenceStrength, nodeId?: string) => {
       const targetNodeId = nodeId ?? effectiveSelectedNodeId;
@@ -3256,7 +3256,7 @@ function WorkspaceApp({
       canvasDirtyRef.current = true;
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
-        inferenceStrength,
+        inferenceStrength: inferenceStrength || undefined,
       }));
     },
     [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],

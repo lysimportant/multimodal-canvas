@@ -1,8 +1,14 @@
 import { z } from 'zod';
 import { videoRecreationConfigSchema, parseVideoRecreationTemplate } from './video-recreation.js';
 import { moonVideoContractForModel } from './moon-video-contract.js';
+import {
+  image2proVideoContractForModel,
+  Image2proVideoParameterError,
+  resolveImage2proVideoParameters,
+} from './image2pro-video-contract.js';
 export * from './video-recreation.js';
 export * from './moon-video-contract.js';
+export * from './image2pro-video-contract.js';
 
 export * from './prompt-skills.js';
 export * from './newapi-contracts.js';
@@ -1745,6 +1751,7 @@ export type VideoModelFamily =
   | 'moon-seedance-2'
   | 'moon-seedance-2.5-official'
   | 'moon-grok-v1.5-video'
+  | 'image2pro'
   | 'minimax-h3'
   | 'wan3'
   | 'seedance-2'
@@ -1759,6 +1766,7 @@ export type VideoModelFamily =
 export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
   const exactId = (modelAlias ?? '').trim();
   if (!exactId) return 'unknown';
+  if (image2proVideoContractForModel(exactId)) return 'image2pro';
   if (exactId === 'minimax-h3') return 'moon-minimax-h3';
   if (exactId === 'MiniMax-H3') return 'minimax-h3';
   const id = exactId.toLowerCase();
@@ -1877,6 +1885,20 @@ function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
+  const image2proContract = image2proVideoContractForModel(modelAlias);
+  if (image2proContract) {
+    if (!image2proContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
+    if (mode === 'text_to_video') {
+      return { selectable: true, livePost: true, roles: textToVideoRoles };
+    }
+    return {
+      selectable: true,
+      livePost: true,
+      roles: image2proContract.confirmedInputRoles,
+      repeatableRoles: ['referenceImage', 'character', 'style'],
+      roleMediaTypes: referenceRoleMediaTypes,
+    };
+  }
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract) {
     if (!moonContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
@@ -2292,6 +2314,8 @@ export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
  * @param modelAlias 运行快照中的模型 ID。
  */
 export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly PortRole[] {
+  const image2proContract = image2proVideoContractForModel(modelAlias);
+  if (image2proContract) return image2proContract.confirmedInputRoles;
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract) return moonContract.confirmedInputRoles;
   const family = videoFamilyForModel(modelAlias);
@@ -2359,6 +2383,8 @@ export type VideoGenerationIssue = {
     | 'UNSUPPORTED_INPUT_ROLE'
     | 'INPUT_ROLE_CARDINALITY_UNSUPPORTED'
     | 'VIDEO_PROMPT_REQUIRED'
+    | 'UNSUPPORTED_PROVIDER_PARAMETER'
+    | 'INVALID_PROVIDER_PARAMETER'
     | 'UNSUPPORTED_INPUT_COMBINATION';
   role?: PortRole;
   message: string;
@@ -2602,6 +2628,19 @@ function applyReferenceFamilyLimits(
   mode: VideoMode | undefined,
   issues: VideoGenerationIssue[],
 ) {
+  const image2proContract = image2proVideoContractForModel(modelAlias);
+  if (image2proContract) {
+    const imageCount =
+      inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
+    if (imageCount > image2proContract.referenceLimits.images) {
+      issues.push({
+        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+        role: 'referenceImage',
+        message: `Image2Pro 参考图数量超过模型上限 ${image2proContract.referenceLimits.images}`,
+      });
+    }
+    return;
+  }
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract) {
     const referenceImageCount =
@@ -2731,7 +2770,11 @@ export function precheckVideoGenerationInputs(
     videoMode?: VideoMode;
   } = {},
 ): VideoGenerationPrecheck {
-  const { inputSet, issues } = collectVideoInputSet(inputs, options.videoMode);
+  const image2proContract = image2proVideoContractForModel(options.modelAlias);
+  // Image2Pro 的旧 content 图片也是普通参考图，不能因缺少 videoMode 被解释成首帧。
+  const collectionMode =
+    image2proContract && !options.videoMode ? 'omni_reference' : options.videoMode;
+  const { inputSet, issues } = collectVideoInputSet(inputs, collectionMode);
   const mode = options.videoMode;
   const family = videoFamilyForModel(options.modelAlias);
 
@@ -2813,6 +2856,26 @@ export function precheckVideoGenerationInputs(
 
   if (family === 'grok-imagine-video-1.5') {
     applyGrokImagineVideo15Limits(inputSet, options.parameters, issues);
+  }
+  if (image2proContract) {
+    // 无显式模式的历史输入也要验证媒体类型，避免 referenceImage 角色承载音视频。
+    if (!mode) {
+      for (const role of ['referenceImage', 'character', 'style'] as const) {
+        for (const input of inputSet[role]) {
+          if (input.snapshot.data.mediaType !== 'image') {
+            issues.push(videoCombinationIssue(`Image2Pro 的 ${role} 只支持图片参考`, role));
+          }
+        }
+      }
+    }
+    if (options.parameters) {
+      try {
+        resolveImage2proVideoParameters(options.parameters);
+      } catch (error) {
+        if (!(error instanceof Image2proVideoParameterError)) throw error;
+        issues.push({ code: error.code, message: error.message });
+      }
+    }
   }
   applyReferenceFamilyLimits(family, options.modelAlias, inputSet, mode, issues);
 
