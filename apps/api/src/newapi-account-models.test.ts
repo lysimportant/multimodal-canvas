@@ -4,7 +4,7 @@ import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-setti
 
 describe('New API 本人缓存模型目录', () => {
   it.each([undefined, 'video'] as const)(
-    '实际设置入口过滤缓存 Flash，不改写 Seedance 输入声明：%s',
+    '实际设置入口过滤中配缓存，保留精确 MAX 与 Seedance 声明：%s',
     async (mediaType) => {
       const cachedFlash = ['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'].map((id) => ({
         id,
@@ -58,6 +58,12 @@ describe('New API 本人缓存模型目录', () => {
         },
       });
       expect(models).toEqual([
+        expect.objectContaining({
+          id: '无限制-Flash-MAX-Video',
+          contract: 'newapi-video-v1',
+          available: true,
+          mediaTypes: ['video'],
+        }),
         expect.objectContaining({
           id: 'Seedance2.0 0.9r',
           credentialId: 'credential-seedance',

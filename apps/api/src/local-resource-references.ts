@@ -32,9 +32,11 @@ export function withLocalResourceReferences(
     if (!target || target.data.mode !== 'generate') {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
-    const image2proVideo =
-      target.data.mediaType === 'video' &&
-      Boolean(image2proVideoContractForModel(request.snapshot.modelAlias));
+    const image2proContract =
+      target.data.mediaType === 'video'
+        ? image2proVideoContractForModel(request.snapshot.modelAlias)
+        : undefined;
+    const image2proVideo = Boolean(image2proContract);
     // 已有公共任务只查询结果，不能因原图后来失效阻断恢复。
     if (
       target.data.mediaType === 'video' &&
@@ -135,13 +137,16 @@ export function withLocalResourceReferences(
         (candidate) => candidate.version === version,
       );
       if (!selected) throw new Error(`资源 ${assetId} 的冻结版本 ${version} 已不可用`);
-      if (selected.sizeBytes <= 0 || selected.sizeBytes > maxBytes)
+      const modelMaxBytes =
+        mediaType !== 'text' ? image2proContract?.mediaMaxBytes?.[mediaType] : undefined;
+      const readLimitBytes = Math.min(maxBytes, modelMaxBytes ?? maxBytes);
+      if (selected.sizeBytes <= 0 || selected.sizeBytes > readLimitBytes)
         throw new Error(`资源 ${assetId} 的冻结版本超出大小限制`);
       const content = await assetStore.getVersionContent(assetId, version, scope);
       if (!content) throw new Error(`资源 ${assetId} 的冻结版本 ${version} 内容不可用`);
       if (
         content.byteLength === 0 ||
-        content.byteLength > maxBytes ||
+        content.byteLength > readLimitBytes ||
         content.byteLength !== selected.sizeBytes
       ) {
         throw new Error(`资源 ${assetId} 的冻结版本内容大小不符合记录`);

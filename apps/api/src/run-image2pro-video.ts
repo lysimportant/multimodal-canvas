@@ -29,7 +29,7 @@ export class RunImage2proVideoError extends Error {
 }
 
 /**
- * 按已冻结版本预检实际执行的 Image2Pro 节点；退役 Flash 拒绝新运行，其他模型沿用既有校验。
+ * 按已冻结版本预检实际执行的 Image2Pro 节点；退役 Flash 中配拒绝新运行，其他模型沿用既有校验。
  * @param snapshot 已完成资产归属、版本、模型和凭据冻结的快照；不修改其内容。
  * @returns 合同通过时无返回值；不读取素材字节，不创建或恢复任务。
  * @throws RunImage2proVideoError 参数、模式、媒体类型或参考数量不符合已确认合同。
@@ -51,7 +51,8 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
         { code: 'UNSUPPORTED_INPUT_COMBINATION', message: retiredImage2proVideoModelReason },
       ]);
     }
-    if (!image2proVideoContractForModel(modelAlias)) continue;
+    const contract = image2proVideoContractForModel(modelAlias);
+    if (!contract) continue;
     const inputs: RunInputSnapshot[] =
       node.id === snapshot.targetNodeId
         ? [...snapshot.inputs]
@@ -131,19 +132,41 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
         input.snapshot.data.mediaType === 'text' &&
         (input.role === 'prompt' || input.role === 'content'),
     );
-    const nodePrompt =
-      parameters.prompt ??
-      (node.data.promptDocument
-        ? renderPromptDocument(node.data.promptDocument)
-        : node.data.prompt);
+    const parameterPrompt =
+      typeof parameters.prompt === 'string' && parameters.prompt.trim()
+        ? parameters.prompt.trim()
+        : undefined;
+    const documentPrompt = node.data.promptDocument
+      ? renderPromptDocument(node.data.promptDocument)
+      : undefined;
+    const h3NodePrompt = node.data.promptDocument
+      ? documentPrompt
+      : (parameterPrompt ?? node.data.prompt);
+    const nodePrompt = contract.requiresPrompt
+      ? h3NodePrompt?.trim()
+        ? h3NodePrompt
+        : undefined
+      : (parameters.prompt ?? documentPrompt ?? node.data.prompt);
+    if (contract.requiresPrompt && nodePrompt !== undefined && textInput?.role === 'prompt') {
+      throw new RunImage2proVideoError(node.id, [
+        {
+          code: 'INPUT_ROLE_CONFLICT',
+          role: 'prompt',
+          message: 'New API video 不支持该输入角色与节点提示词同时传入：prompt',
+        },
+      ]);
+    }
     const prompt =
       textInput?.role === 'content'
         ? textInput.snapshot.data.prompt
         : (nodePrompt ?? textInput?.snapshot.data.prompt);
     const result = precheckVideoGenerationInputs([...inputs, ...mentionInputs], {
       modelAlias,
-      parameters: { ...parameters, ...(prompt !== undefined ? { prompt } : {}) },
+      parameters: contract.requiresPrompt
+        ? { ...parameters, prompt }
+        : { ...parameters, ...(prompt !== undefined ? { prompt } : {}) },
       videoMode: videoModeForPromptMentions(node.data.videoMode, mentionInputs.length > 0),
+      allowUnresolvedFrozenTextInput: true,
     });
     if (result.issues.length) throw new RunImage2proVideoError(node.id, result.issues);
   }

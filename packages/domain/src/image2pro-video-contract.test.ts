@@ -6,6 +6,7 @@ import {
   image2proVideoModelAliases,
   Image2proVideoParameterError,
   isRetiredImage2proVideoModel,
+  retiredImage2proVideoModelReason,
   precheckVideoGenerationInputs,
   resolveImage2proVideoParameters,
   videoFamilyForModel,
@@ -43,7 +44,7 @@ function reference(
 
 describe('Image2Pro video contract', () => {
   it('只识别已确认的精确模型 ID，不借用官方 Seedance 或相似名称的能力', () => {
-    expect(image2proVideoModelAliases).toEqual(['Seedance2.0 0.9r']);
+    expect(image2proVideoModelAliases).toEqual(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video']);
     for (const modelAlias of image2proVideoModelAliases) {
       expect(image2proVideoContractForModel(modelAlias)).toMatchObject({
         modelAlias,
@@ -65,7 +66,7 @@ describe('Image2Pro video contract', () => {
     expect(videoFamilyForModel('doubao-seedance-2-0-260128')).toBe('seedance-2');
   });
 
-  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+  it.each(['无限制-Flash-中配-Video'])(
     '%s 停止新生成，旧参数和未写模式的画布也不借用通用能力',
     (modelAlias) => {
       expect(isRetiredImage2proVideoModel(` ${modelAlias} `)).toBe(true);
@@ -91,7 +92,7 @@ describe('Image2Pro video contract', () => {
             .issues,
         ).toContainEqual({
           code: 'UNSUPPORTED_INPUT_COMBINATION',
-          message: 'Image2Pro Flash 视频模型已停止适配，请选择 Seedance2.0 0.9r',
+          message: retiredImage2proVideoModelReason,
         });
       }
     },
@@ -271,6 +272,174 @@ describe('Image2Pro video contract', () => {
       message: 'Image2Pro 视频参数 quality 尚不支持，请明确移除后重试',
     });
     expect(parameters).toEqual({ duration: 5, resolution: '720p', quality: 'high' });
+  });
+});
+
+describe('Image2Pro Flash-MAX H3 合同', () => {
+  const modelAlias = '无限制-Flash-MAX-Video';
+  const options = {
+    modelAlias,
+    videoMode: 'omni_reference' as const,
+    parameters: { duration: 5, prompt: 'Follow the reference sound.', ratio: 'adaptive' },
+  };
+
+  it('网关分辨率和输出时长独立于 native H3 与 Seedance，不改写模型或旧参数', () => {
+    expect(isRetiredImage2proVideoModel(modelAlias)).toBe(false);
+    const contract = image2proVideoContractForModel(modelAlias)!;
+    expect(contract).toMatchObject({
+      duration: { min: 4, max: 12, default: 5 },
+      resolutions: ['720p'],
+      maxPromptLength: 7000,
+      requiresPrompt: true,
+      allowsAudioOnlyReference: true,
+      requiresAdaptiveFrameRatio: true,
+      supportsVideoDataUrl: true,
+    });
+    expect(contract.parameterKeys).not.toEqual(
+      expect.arrayContaining(['generate_audio', 'watermark', 'return_last_frame']),
+    );
+    for (let duration = 4; duration <= 12; duration += 1) {
+      const parameters = Object.freeze({ duration, resolution: '720P' });
+      expect(resolveImage2proVideoParameters(parameters, modelAlias)).toEqual({
+        seconds: duration,
+        resolution: '720p',
+      });
+      expect(parameters.resolution).toBe('720P');
+    }
+    expect(() => resolveImage2proVideoParameters({ duration: 5 }, '未知-Flash-MAX')).toThrow(
+      '尚不支持此精确型号',
+    );
+  });
+
+  it('H3 提示词按普通文字保留，不套用 Seedance 的 inline 参数语法', () => {
+    expect(
+      resolveImage2proVideoParameters(
+        { duration: 5, prompt: 'Write --duration 15 on the sign.' },
+        modelAlias,
+      ),
+    ).toMatchObject({ seconds: 5 });
+  });
+
+  it('只有受授权的明确冻结文字来源可延后正文校验，缺少身份或版本不能冒用例外', () => {
+    const text = reference('text', 'prompt', 'text');
+    text.sourceAssetId = 'asset-text';
+    text.sourceAssetVersion = 1;
+    text.snapshot.data.assetId = 'asset-text';
+    text.snapshot.data.contentUrl = '/v1/assets/asset-text/versions/1/content';
+    const checkOptions = {
+      modelAlias,
+      videoMode: 'text_to_video' as const,
+      parameters: { duration: 5 },
+    };
+    expect(precheckVideoGenerationInputs([text], checkOptions).issues).toContainEqual(
+      expect.objectContaining({ code: 'INVALID_PROVIDER_PARAMETER' }),
+    );
+    expect(
+      precheckVideoGenerationInputs([text], {
+        ...checkOptions,
+        allowUnresolvedFrozenTextInput: true,
+      }).issues,
+    ).toEqual([]);
+    for (const changed of [
+      { ...text, sourceAssetId: undefined },
+      { ...text, sourceAssetVersion: undefined },
+      { ...text, sourceAssetVersion: 2 },
+      {
+        ...text,
+        snapshot: { ...text.snapshot, data: { ...text.snapshot.data, assetId: 'other' } },
+      },
+      {
+        ...text,
+        snapshot: {
+          ...text.snapshot,
+          data: { ...text.snapshot.data, contentUrl: 'https://assets.example/untrusted.txt' },
+        },
+      },
+    ]) {
+      expect(
+        precheckVideoGenerationInputs([changed], {
+          ...checkOptions,
+          allowUnresolvedFrozenTextInput: true,
+        }).issues,
+      ).toContainEqual(expect.objectContaining({ code: 'INVALID_PROVIDER_PARAMETER' }));
+    }
+  });
+
+  it.each([
+    { duration: 3 },
+    { duration: 13 },
+    { duration: 15 },
+    { duration: 5.5 },
+    { duration: 5, resolution: '768p' },
+    { duration: 5, resolution: '1080p' },
+    { duration: 5, resolution: '4k' },
+    { duration: 5, generate_audio: false },
+    { duration: 5, watermark: false },
+    { duration: 5, return_last_frame: false },
+    { duration: 5, unknown: true },
+    { duration: 5, prompt: 'x'.repeat(7001) },
+  ])('拒绝型号独立边界与不支持参数 %#', (parameters) => {
+    expect(() => resolveImage2proVideoParameters(parameters, modelAlias)).toThrow(
+      Image2proVideoParameterError,
+    );
+  });
+
+  it('纯音频参考及其 adaptive 比例有效，按类别检查冻结时长和数量', () => {
+    const audio = reference('audio', 'audioTrack', 'audio');
+    expect(precheckVideoGenerationInputs([audio], options).issues).toEqual([]);
+    expect(
+      precheckVideoGenerationInputs([{ ...audio, sourceDurationSeconds: 15 }], options).issues,
+    ).toEqual([]);
+    for (const durations of [[1.9], [15.1], [8, 8]]) {
+      expect(
+        precheckVideoGenerationInputs(
+          durations.map((sourceDurationSeconds, index) => ({
+            ...reference(`audio-${index}`, 'audioTrack', 'audio', index),
+            sourceDurationSeconds,
+          })),
+          options,
+        ).issues,
+      ).toContainEqual(expect.objectContaining({ role: 'audioTrack' }));
+    }
+    expect(
+      precheckVideoGenerationInputs(
+        Array.from({ length: 4 }, (_, index) =>
+          reference(`audio-${index}`, 'audioTrack', 'audio', index),
+        ),
+        options,
+      ).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED' }));
+  });
+
+  it('文生不能 adaptive，帧只允许 adaptive，所有模式必须提供非空提示词', () => {
+    const first = reference('first', 'firstFrame');
+    for (const ratio of [undefined, 'adaptive']) {
+      expect(
+        precheckVideoGenerationInputs([first], {
+          ...options,
+          videoMode: 'first_frame',
+          parameters: { duration: 5, prompt: 'Animate this frame.', ratio },
+        }).issues,
+      ).toEqual([]);
+    }
+    expect(
+      precheckVideoGenerationInputs([first], {
+        ...options,
+        videoMode: 'first_frame',
+        parameters: { duration: 5, prompt: 'Animate this frame.', ratio: '16:9' },
+      }).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'INVALID_PROVIDER_PARAMETER' }));
+    expect(
+      precheckVideoGenerationInputs([], { ...options, videoMode: 'text_to_video' }).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'INVALID_PROVIDER_PARAMETER' }));
+    for (const prompt of [undefined, '', '   ']) {
+      expect(
+        precheckVideoGenerationInputs([reference('image')], {
+          ...options,
+          parameters: { duration: 5, prompt },
+        }).issues,
+      ).toContainEqual(expect.objectContaining({ code: 'INVALID_PROVIDER_PARAMETER' }));
+    }
   });
 });
 

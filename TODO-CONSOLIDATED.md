@@ -1,6 +1,6 @@
 # 待完成任务汇总
 
-更新时间：2026-10-08（Image2Pro 仅 Seedance，采用官方参数并撤回两个 Flash）
+更新时间：2026-10-08（Image2Pro 保留 Seedance，恢复 Flash-MAX 的 H3 别名适配）
 整理基线：`main @ 43c69b6`
 来源：[视频节点任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-VIDEO-NODE.md)、[本地任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-LOCAL.md)。
 
@@ -28,7 +28,8 @@
 - 按 Provider、模型、合同整理 `negativePrompt`、`lastFrame`、`audioTrack`、`style`、`character`、`mask`、多参考图与其它扩展输入的字段、适用范围和样例响应。
 - MiniMax-H3、Wan3.0 与 Seedance 2.0/2.5 的官方首尾帧及多媒体参考已完成插件字段映射；Moon Wan3、当前 Seedance 三模型与精确小写 `minimax-h3` 的配套修复见 `next.md` 第 16 节。Wan3/Seedance 编辑、延长按已确认版本开放。仍需补齐其它拟接入模型的正式字段取证，以及各模型真实上游验收，不能把本地映射测试视为供应商验收。
 - Moon 新 `sd2*`、PT、`seedance-2-5-official`、ArtsDance 与 `grok-v1.5-video` 的 Canvas 配套状态见[型号映射检查点](docs/moon-video-models-checkpoint.md)。新系列参考输入仍需验证部署网站的素材地址可被供应商读取，并核对目标 New API 的实际 Moon 插件版本；不要求第三方 OSS。离线插件校验不替代公网读取或真实生成验收。
-- Image2Pro 当前只适配 `Seedance2.0 0.9r`；两个含 Flash 的型号按用户要求撤回，不再作为待接入模型。按用户确认采用 Image2Pro URL 与官方 Seedance `content` 参数，开放首尾帧与全模态引用；目标环境须同步更新 Canvas 与有效插件，数据库 override 也须核对。真实成片及图/音/视频受理仍待独立验收；自动时长缺少网关实际秒数合同，暂不开放。历史不支持参数或非法小数秒须显式修正，详见[Image2Pro 检查点](docs/image2pro-canvas-checkpoint.md)。
+- Image2Pro 保留 `Seedance2.0 0.9r` 官方参数，并按用户确认恢复 `无限制-Flash-MAX-Video` 的 H3 别名适配；MAX 只允许 `720p`、4–12 整秒，使用 H3 `content`，不继承 Seedance 布尔字段。`无限制-Flash-中配-Video` 继续停用。URL 仍用 Image2Pro 文档路径；目标环境须同步更新 Canvas 与有效插件 2.1.0，并核对数据库 override。真实成片及图/音/视频受理仍待独立验收；自动时长缺少网关实际秒数合同，暂不开放。历史非法参数须显式修正，详见[Image2Pro 检查点](docs/image2pro-canvas-checkpoint.md)。
+- 原始文字 `source` 节点同时保留资产与旧 `prompt` 时，Run 前预检和执行时水合的文字优先级仍可能不同；需单独确认存量数据兼容语义并收敛。Image2Pro 本轮已覆盖已完成文字结果的正常固定选版路径，未扩展此原始来源边界，详见同一检查点。
 - New API 公开估价桥接尚未发布 Image2Pro 完整媒体能力，也未支持官方顶层 `content` 的多媒体估价；当前 Canvas 生成链不调用该接口，后续启用估价时须双边适配并回归，不从当前本地生成验证推断其已支持。
 - 视频参考默认通过网站域名提供短期签名素材接口，无需单独配置 `MC_S3_PROVIDER_ENDPOINT`，见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。仍需验收目标部署的外部 GET/HEAD/Range；Moon 所有参考素材均要求可访问 URL，Wan 视频还要求冻结版本时长。线上网关需更新对应 Moon 插件及支持 H3 精确大小写共存的宿主；官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
 - `sd2-930-fast` 的线上 `invalid_reference` 仍需部署后验收。发送前可读性检查与排查步骤见[参考素材预检检查点](docs/video-reference-preflight-checkpoint.md)；本机读取通过不能代替供应商出口读取，实际外发链接与线上插件一致性仍待核对。

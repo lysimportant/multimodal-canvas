@@ -76,110 +76,231 @@ function createRunWorker(options: Parameters<typeof createAuthorizedTestRunWorke
 }
 
 describe('StoredAssetReferenceResolver', () => {
-  it('Image2Pro 读取冻结图片后通过公共任务 ID 轮询并交给结果归档器', async () => {
-    const frozen = Buffer.from('image2pro frozen reference v2');
+  it.each([
+    { label: '合法原文', prompt: 'Write --duration 15 on the sign.', valid: true },
+    { label: '空白正文', prompt: ' ', valid: false },
+    { label: '超过 H3 字符上限', prompt: 'x'.repeat(7001), valid: false },
+  ])('H3 使用冻结 txt v1 的 $label，合法新版本不能代替旧版本', async ({ prompt, valid }) => {
+    const content = Buffer.from(prompt);
+    const newer = Buffer.from(valid ? 'x'.repeat(7001) : 'A valid newer prompt.');
     const snapshot = referenceSnapshot({
-      sourceMediaType: 'image',
+      sourceMediaType: 'text',
       targetMediaType: 'video',
-      role: 'referenceImage',
-      assetId: imageAssetId,
-      mimeType: 'image/png',
-      modelAlias: 'Seedance2.0 0.9r',
-      contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+      role: 'prompt',
+      assetId: textAssetId,
+      mimeType: 'text/plain',
+      modelAlias: '无限制-Flash-MAX-Video',
+      prompt: 'An old source generation instruction is not the frozen result.',
     });
-    snapshot.parameters = { duration: 5, resolution: '1080p', aspectRatio: '9:16' };
-    snapshot.nodes[1]!.data.prompt = 'Animate this reference with a slow camera movement.';
-    snapshot.inputs[0]!.sourceAssetVersion = 2;
+    snapshot.inputs[0]!.sourceAssetVersion = 1;
+    snapshot.nodes[1]!.data.prompt = '';
+    snapshot.nodes[1]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: ' ' }] };
+    snapshot.nodes[1]!.data.videoMode = 'text_to_video';
+    snapshot.parameters = { duration: 5, resolution: '720p', ratio: '16:9' };
     const { repository, blobStore } = fixtures({
-      assets: [asset(imageAssetId, 'image', 'image/png', frozen, projectId, userId)],
+      assets: [asset(textAssetId, 'text', 'text/plain', newer, projectId, userId)],
       versions: [
         {
-          assetId: imageAssetId,
+          assetId: textAssetId,
+          version: 1,
+          sizeBytes: BigInt(content.byteLength),
+          contentKey: 'h3-text-v1',
+        },
+        {
+          assetId: textAssetId,
           version: 2,
-          sizeBytes: BigInt(frozen.length),
-          contentKey: 'objects/image2pro-v2',
+          sizeBytes: BigInt(newer.byteLength),
+          contentKey: 'h3-text-v2',
         },
       ],
-      blobs: { 'objects/image2pro-v2': frozen },
+      blobs: { 'h3-text-v1': content, 'h3-text-v2': newer },
     });
+    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+      snapshot,
+      { userId },
+    );
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        Response.json({ id: 'task_image2pro_public', object: 'video', status: 'queued' }),
-      )
+      .mockResolvedValueOnce(Response.json({ id: 'task-h3-text', status: 'queued' }))
       .mockResolvedValueOnce(
         Response.json({
-          id: 'task_image2pro_public',
-          object: 'video',
+          id: 'task-h3-text',
           status: 'completed',
-          url: 'https://cdn.example.com/image2pro.mp4',
+          url: 'https://cdn.example/h3.mp4',
         }),
       );
-    const resultArchiver = vi.fn<
-      NonNullable<Parameters<typeof createRunWorker>[0]['resultArchiver']>
-    >(async () => ({
-      assetId: videoAssetId,
-      version: 1,
-      mimeType: 'video/mp4',
-    }));
-    const job: StubJob = {
-      id: projectId,
-      data: {
-        runId: projectId,
-        userId,
-        snapshot,
-        attempt: 1,
-        provider: 'newapi',
-        cancelRequested: false,
-      },
-      async updateData(data) {
-        this.data = data;
-      },
-      async updateProgress() {},
-    };
-    bullmqState.job = job;
-    createRunWorker({
-      connection: { host: '127.0.0.1', port: 6379 },
-      stepDelayMs: 0,
-      providerName: 'newapi',
-      videoProvider: new NewApiVideoProvider({
-        baseUrl: 'https://newapi.example.test/v1',
-        apiKey: 'synthetic-image2pro-key',
-        videoContract: 'newapi-video-v1',
-        fetchImpl,
-        pollIntervalMs: 0,
-        maxPollAttempts: 1,
-      }),
-      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
-      resultArchiver,
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example/v1',
+      apiKey: 'synthetic-h3-text-key',
+      videoContract: 'newapi-video-v1',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
     });
-    await bullmqState.processor?.(job);
-    expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
-    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
-      'https://newapi.example.test/v1/videos',
-      'https://newapi.example.test/v1/videos/task_image2pro_public',
-    ]);
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
-      model: 'Seedance2.0 0.9r',
-      duration: 5,
-      resolution: '1080p',
-      ratio: '9:16',
-      content: [
-        { type: 'text', text: 'Animate this reference with a slow camera movement.' },
-        {
-          type: 'image_url',
-          image_url: { url: `data:image/png;base64,${frozen.toString('base64')}` },
-          role: 'reference_image',
-        },
-      ],
-    });
-    expect(resultArchiver).toHaveBeenCalledOnce();
-    expect(resultArchiver.mock.calls[0]![0]).toMatchObject({
-      result: { mediaType: 'video', targetNodeId: 'node_target' },
-      output: { kind: 'url', url: 'https://cdn.example.com/image2pro.mp4', mimeType: 'video/mp4' },
-    });
-    expect(JSON.stringify(job.data)).not.toContain(frozen.toString('base64'));
+    if (valid) {
+      await provider.execute({ snapshot: hydrated, onProviderJob: vi.fn() });
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).content).toEqual([
+        { type: 'text', text: prompt },
+      ]);
+    } else {
+      await expect(
+        provider.execute({ snapshot: hydrated, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({ retryable: false });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+    expect(repository.findVersion).toHaveBeenCalledExactlyOnceWith(textAssetId, 1);
+    expect(blobStore.get).toHaveBeenCalledExactlyOnceWith('h3-text-v1', content.byteLength + 1);
+    expect(JSON.stringify(snapshot)).not.toContain(';base64,');
   });
+
+  it.each(['image', 'audio'] as const)(
+    'H3 冻结 %s 超过模型文件上限时不签发素材 URL',
+    async (mediaType) => {
+      const content = Buffer.alloc((mediaType === 'image' ? 30 : 15) * 1024 * 1024 + 1);
+      const mimeType = mediaType === 'image' ? 'image/png' : 'audio/wav';
+      const snapshot = referenceSnapshot({
+        sourceMediaType: mediaType,
+        targetMediaType: 'video',
+        role: mediaType === 'image' ? 'referenceImage' : 'audioTrack',
+        assetId: imageAssetId,
+        mimeType,
+        modelAlias: '无限制-Flash-MAX-Video',
+        contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+      });
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId, userId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(content.byteLength),
+            contentKey: 'h3-oversized-v2',
+          },
+        ],
+        blobs: { 'h3-oversized-v2': content },
+      });
+      const signer = vi.fn(async () => 'https://assets.example/frozen');
+      blobStore.createProviderGetUrl = signer;
+      await expect(
+        new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot, { userId }),
+      ).rejects.toThrow('单文件大小上限');
+      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+      expect(signer).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'])(
+    'Image2Pro %s 冻结图片经公共任务归档',
+    async (modelAlias) => {
+      const frozen = Buffer.from('image2pro frozen reference v2');
+      const snapshot = referenceSnapshot({
+        sourceMediaType: 'image',
+        targetMediaType: 'video',
+        role: 'referenceImage',
+        assetId: imageAssetId,
+        mimeType: 'image/png',
+        modelAlias,
+        contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+      });
+      const resolution = modelAlias === 'Seedance2.0 0.9r' ? '1080p' : '720p';
+      snapshot.parameters = { duration: 5, resolution, aspectRatio: '9:16' };
+      snapshot.nodes[1]!.data.prompt = 'Animate this reference with a slow camera movement.';
+      snapshot.inputs[0]!.sourceAssetVersion = 2;
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, 'image', 'image/png', frozen, projectId, userId)],
+        versions: [
+          {
+            assetId: imageAssetId,
+            version: 2,
+            sizeBytes: BigInt(frozen.length),
+            contentKey: 'objects/image2pro-v2',
+          },
+        ],
+        blobs: { 'objects/image2pro-v2': frozen },
+      });
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          Response.json({ id: 'task_image2pro_public', object: 'video', status: 'queued' }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            id: 'task_image2pro_public',
+            object: 'video',
+            status: 'completed',
+            url: 'https://cdn.example.com/image2pro.mp4',
+          }),
+        );
+      const resultArchiver = vi.fn<
+        NonNullable<Parameters<typeof createRunWorker>[0]['resultArchiver']>
+      >(async () => ({
+        assetId: videoAssetId,
+        version: 1,
+        mimeType: 'video/mp4',
+      }));
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          userId,
+          snapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        providerName: 'newapi',
+        videoProvider: new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: 'synthetic-image2pro-key',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+          pollIntervalMs: 0,
+          maxPollAttempts: 1,
+        }),
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
+        resultArchiver,
+      });
+      await bullmqState.processor?.(job);
+      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
+      expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+        'https://newapi.example.test/v1/videos',
+        'https://newapi.example.test/v1/videos/task_image2pro_public',
+      ]);
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
+        model: modelAlias,
+        duration: 5,
+        resolution,
+        ratio: '9:16',
+        content: [
+          { type: 'text', text: 'Animate this reference with a slow camera movement.' },
+          {
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${frozen.toString('base64')}` },
+            role: 'reference_image',
+          },
+        ],
+      });
+      expect(resultArchiver).toHaveBeenCalledOnce();
+      expect(resultArchiver.mock.calls[0]![0]).toMatchObject({
+        result: { mediaType: 'video', targetNodeId: 'node_target' },
+        output: {
+          kind: 'url',
+          url: 'https://cdn.example.com/image2pro.mp4',
+          mimeType: 'video/mp4',
+        },
+      });
+      expect(JSON.stringify(job.data)).not.toContain(frozen.toString('base64'));
+    },
+  );
 
   it.each(['site', 's3'] as const)(
     '%s 签发的冻结 v2 在连线与重复提及之间只预检一次，签名不进入原快照',
@@ -534,6 +655,17 @@ describe('StoredAssetReferenceResolver', () => {
     },
     { modelAlias: 'Seedance2.0 0.9r', mediaType: 'video' as const, role: 'content' as const },
     { modelAlias: 'Seedance2.0 0.9r', mediaType: 'audio' as const, role: 'audioTrack' as const },
+    {
+      modelAlias: '无限制-Flash-MAX-Video',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
+    { modelAlias: '无限制-Flash-MAX-Video', mediaType: 'video' as const, role: 'content' as const },
+    {
+      modelAlias: '无限制-Flash-MAX-Video',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
     { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
     {
       modelAlias: 'seedance2.0-9-3-3-PT',

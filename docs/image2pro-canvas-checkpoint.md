@@ -1,6 +1,30 @@
 # Image2Pro 画布调用适配检查点
 
-## 目标与基线
+## 2026-10-08：Flash-MAX H3 别名恢复（本地验收完成）
+
+- P1：用户确认 `无限制-Flash-MAX-Video` 为 `MiniMax-H3` 别名，名称中的 MAX 不表示官方 `MiniMax-H3-Max`。重新开放该精确 ID，输出只允许 `720p` 和 4–12 整秒；`无限制-Flash-中配-Video` 继续停用，Seedance 官方合同保持独立。
+- 恢复基线：Canvas `main @ beb3bfa93`、上游 `origin/main`；New API `main @ deeba7e94`、上游 `fork/main`。两仓工作区干净，Node 24.12.0、pnpm 11.19.0、Go 1.26.0，沿用已安装依赖及锁文件。
+- 实施前双边核对两仓规则、插件 API v1 与 schema/类型、官方 H3 v2 `content` 合同以及 Canvas 创建、冻结、目录和恢复入口。H3 参数不能套用 Seedance 的布尔字段或输出范围；Image2Pro 创建/查询 URL 继续使用 `/v1/videos`。
+- 影响为精确模型白名单和请求校验的扩展，不修改数据库、价格、凭据或用户数据。回滚两仓本轮提交并重建即可撤回新建能力；已有公共任务保留原 ID 只读恢复，不补发创建请求。
+- 分工：子代理分别独占 New API 插件及合同测试、Canvas Domain/Provider/API/Worker、Web 参数控件和浏览器冒烟；主代理负责文档、隔离 HTTP、最终验证和交付。两侧代码已冻结，独立交叉审计和最终完整逐包回归均通过。
+- 最后成功点：最终专项 Domain 69、Provider 83、API 78、Worker 98 项通过；New API 完整 44 个 Go 测试包、vet/build 和插件专项通过。日志统一位于两仓 `.local-tests/flash-h3-20261008/`，不用上一轮通过记录替代本轮结果。
+- 官方依据：本轮只读获取 <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> 与 <https://image2pro.top/api-docs>。H3 需非空提示词、最多 7000 字符；支持四种既有模式，首尾帧与参考互斥，纯音频加文字可作为参考，图/视频/音频上限分别 9/3/3。
+- H3 参考音视频各单段 2–15 秒、各类别累计不超过 15 秒；图片 JPEG/PNG/WEBP/HEIC/HEIF，音频 MP3/WAV，视频 MP4/MOV。允许各媒体 Data URL，内联视频仅 MP4；multipart 由插件转换为 JSON Data URL，不表示上游支持 multipart。供应商文件 ID 不借 MiniMax 官方依据开放。
+- 比例合同：文生默认 `16:9`，不允许 `adaptive`；首帧和首尾帧仅 `adaptive`，显式固定比例报错，避免上游忽略却误以为生效；参考可使用 `adaptive` 或六个固定比例。官方独立尾帧段落与角色说明冲突，本轮继续要求尾帧伴随首帧。
+- H3 单文件大小按仓库字节单位限制为图 31457280、视频 52428800、音频 15728640；插件对最终 UTF-8 JSON 正文限制 67108864 bytes（64 MiB），包含 Base64 膨胀及宿主 JSON 转义。远程未知尺寸、编码、帧率和大小仍由上游验证，不能把 MIME 校验视为已解码媒体。
+- H3 提示词中的 `--dur` 等文字按字面保留，本地不将其解释成参数；只有已确认存在行内覆盖语义的 Seedance 执行原标记拒绝。H3 的 JSON `seed` 及三个 Seedance 布尔字段仍不开放。
+- 提示词校验以实际正文为准：空白文档不遮盖文字连线，文档或 `content` 连线替代旧 `parameters.prompt` 时不校验已被替代的文字；非空明确正文与 `prompt` 连线冲突在创建 Run 前返回 `INPUT_ROLE_CONFLICT`。API 仅对已验证归属、资产身份、正整数版本和完全匹配本站冻结内容路径的文字输入延后正文检查；Provider 不启用该例外，水合后为空或超过 7000 字符时零 POST 拒绝。固定选版 HTTP 夹具使用已完成文字 Run 的选定结果版本，不改变原始 source 节点冻结 latest 的通用策略。
+- 已知既有边界：原始 `mode=source` 节点同时携带文字资产和旧 `prompt` 时，API 尚未读取资产正文，仍可能按旧文字预检；Worker/本地水合后以实际冻结文本为准。本轮修复覆盖已完成文字结果的正常选版路径，没有扩展原始 source 的提示词优先级语义，也不把此情况记为已修复。
+- 先前 PC 浏览器 11 项通过，覆盖 Seedance 原四场景、MAX 四模式、纯音频参考、切型号后旧字段修正、中配停用及推理参数清理；节点外框、刷新后参数和 Mock 提交均有断言，控制台错误为 0，截图已检查。日志和截图在 `.local-tests/flash-h3-web-20261008/`。Web 单位专项 31 项通过，235 项未选中不记通过。
+- 最终复核发现并修复旧无 `videoMode` 画布的文字→`content` 连线被 H3 必填提示词 UI 误拦：WorkflowCanvas 按源节点媒体类型派生布尔值，不将视频 `content` 参考当作文字，没有新增回调、Context 或持久字段。红测 1 项复现按钮误禁用，修复后专项 38 项通过（358 项未选中），包含真实订阅拖动和暂隐连线回归。最终 PC 12 场景全部通过，固定 v3 合成 txt 预览和文字连线在刷新前后保持，旧 `videoMode` 不补写；只有一次 Mock POST，所有场景 `errors=[]`。日志 `pc12-legacy-txt.log` 与截图位于 `.local-tests/flash-h3-web-20261008/`，主代理已复核最终旧画布截图，5198 服务已停止。
+- 完整测试通过 runtime 8、Domain 477、Provider 874、API 1290、Worker 877、凭据 13、执行授权 56、观测 21、UI 16、Web 2618 项（137 个文件）；API 108、Worker 28 个设施/真实请求等用例跳过，不能记为通过。Web 首轮在修复前主动中断，没有失败结果；最终整套 Web 用时 1012.34 秒，退出码 0，参数编辑器 270 项全部通过。最后代码的无缓存 build/typecheck/lint 各 9 包通过，保留原有大 chunk 提示；两仓完整任务差异与新增内容凭据/debug 扫描通过。
+- 最终命令：`pnpm build -- --force --concurrency=2`、`pnpm typecheck -- --force --only --concurrency=2`、`pnpm lint -- --force --concurrency=2`；`pnpm test:runtime` 后逐包执行 `pnpm --filter @multimodal-canvas/<包名> exec vitest run --passWithNoTests --maxWorkers=1 --no-file-parallelism`，覆盖全部九包，不使用测试缓存。正式构建的 `VITE_API_BASE_URL` 为空；测试为 `http://localhost:3000`、`WEB_PORT=5173`，专属 TEMP/TMP 并清除真实设施环境。日志在 `.local-tests/flash-h3-20261008/` 的 `*-delivery.log`、`*-full.log`、`web-full-final.log` 与 `full-test-results.json`。Web 单测启动后只有独立 E2E 夹具修改，四个 Web 源码/单测文件的 SHA256 保持不变。
+- 新版隔离网关 HTTP 验证通过：31 个非法请求零上游 POST/零扣费，11 个合法任务冻结共 76 秒、按合成单价结算 380000 quota；未知 503 仅一次 POST。运行插件与当前源码逐字一致，创建/查询路径、H3 各模式、Data URL/上传、Seedance 布尔 false、目录排除中配与 GET/HEAD 内容代理均有证据。两回环服务已停止，报告在 New API `.local-tests/flash-h3-20261008/run-1791435764284-6550eb/http-report.json`。
+- 首次 HTTP 验证因并行构建的宿主 CPU 97.3% 被测试实例默认 90% 阈值拒绝，零上游 POST；仅在新的 fresh SQLite 夹具关闭 CPU 阈值后完整复跑。没有修改生产配置、内存/磁盘保护或应用源码来绕过保护。
+- 本轮不调用真实收费上游，不更新运行容器或生产站点。验收要求为型号独立校验、四种既有生成模式、非法请求零 POST、历史任务恢复和 PC 参数交互；真实供应商受理与成片仍另行验收。
+- 本轮双仓使用中文附注 Tag `v2026.10.08-image2pro-flashmax-h3`；交付目标为 Canvas `origin/main` 和 New API `fork/main`。部署时须同步更新两侧并确认有效插件 2.1.0、数据库 override 和渠道模型选择，不能将本地构建或源码推送视为线上已生效。
+
+## 历史初轮目标与基线
 
 2026-10-07，P1：修复 Image2Pro 已接入 New API 插件而画布仍阻断生成的问题，贯通精确模型识别、模式、参数、图片参考、公共任务轮询和结果归档。
 
@@ -10,9 +34,9 @@
 - 已在实现前双边核对两仓 AGENTS、New API `plugins/tasks/image2pro/plugin.js`、插件合同测试、Canvas 领域/Provider/API/Worker/Web 入口。新增适配不改变数据库及已有 Run 的冻结合同；回滚本次代码并重建即可，已经提交的公共任务 ID 仍按原路径恢复。
 - 保留此前节点、连线及固定输入高度修复，不部署、不迁移用户数据、不调用收费上游。
 
-## 合同边界
+## 上一阶段 Seedance 收敛合同
 
-- 当前只识别 `Seedance2.0 0.9r`。`无限制-Flash-中配-Video`、`无限制-Flash-MAX-Video` 按用户 2026-10-08 最新范围退出新建适配；旧画布值与已受理任务保留，不按名称相似度扩大能力。
+- 上一阶段只识别 `Seedance2.0 0.9r`。当时 `无限制-Flash-中配-Video`、`无限制-Flash-MAX-Video` 均退出新建适配；最新 MAX 恢复范围见本文件开头，旧画布值与已受理任务保留。
 - 复用 `newapi-video-v1`：`POST /v1/videos`，`GET /v1/videos/{公共任务ID}`；不得保存插件上游的私有任务 ID 代替公共 ID。
 - 用户最终确认：URL 使用 Image2Pro 文档，参数按官方 Seedance 2.0 传送。新请求直接使用 `model/content/duration/resolution/ratio`，`content` 内保留文本和图片、视频、音频角色；不再使用通用 `prompt/images` 作为 Canvas 外发格式。
 - 支持文生、首帧、首尾帧与全能参考；最多 9 图、3 视频、3 音频、合计 15，首尾帧与普通参考互斥，尾帧必须伴随首帧，音频不能单独参考。图片、音频可用 Data URL；视频须为可访问 URL，Worker 复用本站签名素材接口。

@@ -36,7 +36,6 @@ import {
   implementedVideoModes,
   image2proVideoContractForModel,
   isRetiredImage2proVideoModel,
-  image2proVideoParameterKeys,
   Image2proVideoParameterError,
   isValidGenerationCount,
   moonVideoContractForModel,
@@ -161,6 +160,11 @@ export type NodeQuickEditorProps = {
   onRunNewNode?: () => void;
   /** 当前节点是否有可供转换/生成的连线输入。 */
   hasConnectedInput?: boolean;
+  /**
+   * 来源为文字且连接 prompt/content 的输入，用于 H3 必填正文校验。
+   * content 文字角色保留旧无 videoMode 画布的语义，不将视频或音频参考当作提示词。
+   */
+  hasConnectedTextPromptInput?: boolean;
   /** 显式连接到当前节点的输入文件，供完整编辑器展示。 */
   connectedAssets?: readonly ConnectedPromptAsset[];
   /** 保存当前节点的连线资源别名，不重命名源资源。 */
@@ -310,6 +314,10 @@ function requiresAdaptiveVideoAspectRatio(
   mode?: VideoMode,
   modelAlias?: string,
 ): boolean {
+  const image2proContract = image2proVideoContractForModel(modelAlias);
+  if (image2proContract?.requiresAdaptiveFrameRatio) {
+    return mode === 'first_frame' || mode === 'first_last_frame';
+  }
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract?.family === 'moon-seedance-2.5-official') {
     return ['first_frame', 'first_last_frame', 'video_edit', 'video_extend'].includes(mode ?? '');
@@ -340,12 +348,22 @@ const videoDurationContracts: Partial<
   image2pro: { min: 4, max: 15, presets: [4, 8, 12, 15], default: 5 },
 };
 
-/** 按新 Moon 合同及当前输出分辨率解析时长范围；其它模型沿用既有家族合同。 */
+/** 精确 Image2Pro 合同优先；Moon 再按输出分辨率收窄时长，其它模型沿用家族合同。 */
 function videoDurationContractForModel(
   modelAlias: string | undefined,
   family: VideoModelFamily,
   resolution?: unknown,
 ) {
+  const image2proContract = image2proVideoContractForModel(modelAlias);
+  if (image2proContract) {
+    const { min, max, default: defaultDuration } = image2proContract.duration;
+    return {
+      min,
+      max,
+      default: defaultDuration,
+      presets: Array.from({ length: max - min + 1 }, (_, index) => min + index),
+    };
+  }
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract) {
     const resolutionKey = normalizeCurrentOptionValue(resolution).toLowerCase();
@@ -478,6 +496,7 @@ export function NodeQuickEditor({
   onStop,
   onRunNewNode,
   hasConnectedInput = false,
+  hasConnectedTextPromptInput = false,
   connectedAssets = [],
   onConnectedResourceRename,
   onParametersChange,
@@ -558,11 +577,17 @@ export function NodeQuickEditor({
     ? Object.entries({
         ...parameters,
         ...(node.data.inferenceStrength ? { inferenceStrength: node.data.inferenceStrength } : {}),
-      }).filter(([key, value]) => value !== undefined && !image2proVideoParameterKeys.includes(key))
+      }).filter(
+        ([key, value]) =>
+          value !== undefined && !image2proVideoContract.parameterKeys.includes(key),
+      )
     : [];
   const storedDuration = image2proVideoContract
     ? (parameters.duration ?? parameters.seconds ?? parameters.durationSeconds)
     : parameters.duration;
+  const storedAspectRatio = image2proVideoContract
+    ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
+    : parameters.aspectRatio;
   const currentVideoMode =
     node.data.mediaType === 'video' ? displayVideoMode(node.data, connectedInputRoles) : undefined;
   const allowMoonH3SuperResolution = Boolean(
@@ -570,7 +595,9 @@ export function NodeQuickEditor({
     ['first_frame', 'first_last_frame', 'omni_reference'].includes(currentVideoMode),
   );
   const supportsAutomaticDuration = supportsAutomaticVideoDuration(videoFamily, currentModel);
-  const supportsAdaptiveAspectRatio = supportsAdaptiveVideoAspectRatio(videoFamily, currentModel);
+  const supportsAdaptiveAspectRatio =
+    supportsAdaptiveVideoAspectRatio(videoFamily, currentModel) &&
+    !(image2proVideoContract?.requiresPrompt && currentVideoMode === 'text_to_video');
   /** 数量选择即时显示；切换节点同步已存值，非法历史值仍阻止运行。 */
   const [generationCountDraft, setGenerationCountDraft] = useState(
     String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT),
@@ -655,6 +682,7 @@ export function NodeQuickEditor({
     true,
     currentModel,
     allowMoonH3SuperResolution,
+    currentVideoMode,
   );
   const requiresAdaptiveAspectRatio = requiresAdaptiveVideoAspectRatio(
     videoFamily,
@@ -666,9 +694,9 @@ export function NodeQuickEditor({
       ? 'Moon MiniMax H3 必须选择固定视频比例'
       : node.data.mediaType === 'video' &&
           catalogMediaOptions.aspectRatio.some(
-            (option) => option.value === parameters.aspectRatio && option.disabled,
+            (option) => option.value === storedAspectRatio && option.disabled,
           )
-        ? `当前模型不支持视频比例 ${parameters.aspectRatio}`
+        ? `当前模型不支持视频比例 ${storedAspectRatio}`
         : undefined;
   const videoModeIssue =
     node.data.mediaType === 'video' && currentVideoMode && currentModel
@@ -711,9 +739,11 @@ export function NodeQuickEditor({
       ? 'Seedance 视频编辑需要自动时长和原视频比例'
       : node.data.mediaType === 'video' &&
           requiresAdaptiveAspectRatio &&
-          parameters.aspectRatio !== 'adaptive'
+          storedAspectRatio !== 'adaptive'
         ? node.data.videoMode === 'first_frame' || node.data.videoMode === 'first_last_frame'
-          ? 'Seedance 2.5 首帧和首尾帧需要沿用原图比例'
+          ? image2proVideoContract?.requiresAdaptiveFrameRatio
+            ? 'Flash-MAX 首帧和首尾帧需要沿用原图比例'
+            : 'Seedance 2.5 首帧和首尾帧需要沿用原图比例'
           : '视频编辑或延长需要沿用原视频比例'
         : undefined;
   const inferenceOptions = getInferenceStrengthOptions(
@@ -726,13 +756,22 @@ export function NodeQuickEditor({
   const effectivePrompt = node.data.promptDocument
     ? renderPromptDocument(node.data.promptDocument)
     : (node.data.prompt ?? '');
+  const hasConnectedPrompt =
+    hasConnectedTextPromptInput || (hasConnectedInput && connectedInputRoles.includes('prompt'));
   let image2proParameterIssue: string | undefined;
   if (image2proVideoContract) {
     if (unsupportedImage2proParameters.length) {
       image2proParameterIssue = `Image2Pro 不支持已保存参数 ${unsupportedImage2proParameters.map(([key]) => key).join('、')}，请明确移除后生成`;
     } else {
       try {
-        resolveImage2proVideoParameters({ ...parameters, prompt: effectivePrompt });
+        resolveImage2proVideoParameters({ ...parameters, prompt: effectivePrompt }, currentModel);
+        if (
+          image2proVideoContract.requiresPrompt &&
+          !effectivePrompt.trim() &&
+          !hasConnectedPrompt
+        ) {
+          image2proParameterIssue = 'Flash-MAX 必须填写提示词或连接文字输入';
+        }
       } catch (error) {
         if (!(error instanceof Image2proVideoParameterError)) throw error;
         image2proParameterIssue = error.message;
@@ -744,7 +783,9 @@ export function NodeQuickEditor({
   const imageEditPromptRequired = Boolean(imageEditSource);
   const hasRunnableParameters = imageEditPromptRequired
     ? hasPrompt
-    : hasPrompt || hasConnectedInput;
+    : image2proVideoContract?.requiresPrompt
+      ? hasPrompt || hasConnectedPrompt
+      : hasPrompt || hasConnectedInput;
   const invalidVideoDimensions = (['width', 'height'] as const).filter((field) => {
     const value = parameters[field];
     return (
@@ -969,7 +1010,26 @@ export function NodeQuickEditor({
       moonVideoContract?.supportsAutomaticDuration &&
       nextMode === 'video_edit' &&
       moonVideoContract.supportsVideoEdit;
-    if (
+    if (image2proVideoContract?.requiresAdaptiveFrameRatio) {
+      const currentRatio =
+        nextParameters.aspectRatio ?? nextParameters.aspect_ratio ?? nextParameters.ratio;
+      const nextRatio =
+        nextMode === 'text_to_video'
+          ? typeof currentRatio === 'string' && currentRatio && currentRatio !== 'adaptive'
+            ? currentRatio
+            : '16:9'
+          : 'adaptive';
+      if (
+        nextParameters.aspectRatio !== nextRatio ||
+        nextParameters.aspect_ratio !== undefined ||
+        nextParameters.ratio !== undefined
+      ) {
+        delete nextParameters.aspect_ratio;
+        delete nextParameters.ratio;
+        nextParameters.aspectRatio = nextRatio;
+        parametersChanged = true;
+      }
+    } else if (
       moonAutomaticDurationMode ||
       (!moonVideoContract &&
         nextMode === 'video_edit' &&
@@ -2014,7 +2074,7 @@ function nodePopupContainer(trigger: HTMLElement): HTMLElement {
 }
 
 /**
- * 视频固定秒数在 5–30 的整数范围内拖动；模型限制由父层校验并阻止生成。
+ * 视频秒数按精确模型滑轨合同拖动，未提供时使用 5–30 秒；父层校验生成边界。
  * value 为实际保存值，历史空值、范围外值和自动 -1 不因打开浮卡而改写。
  * hover 不抢焦点；键盘进入后聚焦滑块，Escape 只关闭本层并归还焦点。
  */
@@ -2534,7 +2594,7 @@ export function applyNodeGenerationDefaults(
     }
   }
   if (!model?.mediaTypes.includes(mediaType)) return { ...data, parameters };
-  const options = getMediaOptions(model, mediaType, {}, false, data.modelAlias);
+  const options = getMediaOptions(model, mediaType, {}, false, model.id, false, data.videoMode);
   if (mediaType === 'image') {
     const hasStoredImageOutput =
       imageSizeParameterAliases.some((alias) => parameters[alias] !== undefined) ||
@@ -2560,7 +2620,11 @@ export function applyNodeGenerationDefaults(
       const value = image2proContract
         ? field === 'resolution'
           ? image2proContract.defaultResolution
-          : '16:9'
+          : image2proContract.requiresAdaptiveFrameRatio &&
+              data.videoMode &&
+              data.videoMode !== 'text_to_video'
+            ? 'adaptive'
+            : '16:9'
         : firstAvailableOption(options[field]);
       if (value !== undefined) parameters[field] = value;
     }
@@ -2636,6 +2700,7 @@ function getMediaOptions(
   allowLegacyFallback = true,
   modelAlias?: string,
   allowMoonH3SuperResolution = false,
+  videoMode?: VideoMode,
 ) {
   const roots = getCapabilityRoots(model, mediaType);
   const resolvedModelAlias = modelAlias ?? model?.id;
@@ -2755,7 +2820,12 @@ function getMediaOptions(
     mediaType !== 'video'
       ? undefined
       : image2proContract
-        ? image2proContract.aspectRatios
+        ? image2proContract.requiresAdaptiveFrameRatio &&
+          (videoMode === 'first_frame' || videoMode === 'first_last_frame')
+          ? ['adaptive']
+          : image2proContract.requiresPrompt && videoMode === 'text_to_video'
+            ? image2proContract.aspectRatios.filter((value) => value !== 'adaptive')
+            : image2proContract.aspectRatios
         : moonContract
           ? moonContract.aspectRatios
           : family === 'moon-minimax-h3'
@@ -2776,7 +2846,7 @@ function getMediaOptions(
     declaredImageAspectRatios ?? (allowLegacyFallback ? aspectRatioOptions : []);
   const supportedAspectRatios =
     image2proContract || moonContract
-      ? (image2proContract ?? moonContract)!.aspectRatios.map(
+      ? (image2proContract ? ratioContract! : moonContract!.aspectRatios).map(
           (value) =>
             declaredAspectRatios.find((option) => option.value === value) ??
             aspectRatioOptions.find((option) => option.value === value) ?? { value, label: value },

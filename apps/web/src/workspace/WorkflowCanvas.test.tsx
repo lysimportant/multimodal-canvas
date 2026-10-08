@@ -863,6 +863,117 @@ describe('WorkflowCanvas context menu', () => {
     },
   );
 
+  it('Flash-MAX 历史画布的文字 content 连线允许生成，保留缺失 videoMode', () => {
+    const source: AssetFlowNode = {
+      ...sourceNode,
+      type: 'text',
+      data: { ...sourceNode.data, mediaType: 'text', prompt: 'A boat crosses a quiet lake.' },
+    };
+    const target: AssetFlowNode = {
+      ...generateNode,
+      type: 'video',
+      data: {
+        ...generateNode.data,
+        mediaType: 'video',
+        modelAlias: '无限制-Flash-MAX-Video',
+        credentialId: 'credential',
+        parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+      },
+    };
+    const props = createProps({
+      nodes: [source, target],
+      selectedNode: target,
+      edges: [
+        {
+          id: 'legacy-text-content',
+          source: source.id,
+          sourceHandle: 'output:text',
+          target: target.id,
+          targetHandle: 'input:content',
+        },
+      ],
+      models: [
+        {
+          id: '无限制-Flash-MAX-Video',
+          name: 'Flash-MAX',
+          mediaTypes: ['video'],
+          credentialId: 'credential',
+          group: '测试分组',
+        },
+      ],
+    });
+    render(<WorkflowCanvas {...props} />);
+
+    const run = screen.getByRole('button', { name: '生成' });
+    expect(run).toBeEnabled();
+    const editor = quickEditorRender.mock
+      .lastCall![0] as import('./NodeQuickEditor').NodeQuickEditorProps;
+    expect(editor.hasConnectedTextPromptInput).toBe(true);
+    expect(editor.connectedInputRoles).toEqual(['content']);
+    fireEvent.click(run);
+    expect(props.onRunNode).toHaveBeenCalledExactlyOnceWith(target, 'sameNode');
+    expect(target.data).not.toHaveProperty('videoMode');
+  });
+
+  it.each([
+    ['无限制-Flash-MAX-Video', 'text', 'prompt', true, true],
+    ['无限制-Flash-MAX-Video', 'video', 'content', false, false],
+    ['无限制-Flash-MAX-Video', 'audio', 'audioTrack', false, false],
+    ['无限制-Flash-MAX-Video', 'text', 'audioTrack', false, false],
+    ['Seedance2.0 0.9r', 'video', 'content', false, true],
+  ] as const)(
+    '%s 的 %s→%s 连线按来源媒体派生文字输入 %s，生成许可 %s',
+    (modelAlias, mediaType, role, hasConnectedTextPromptInput, canRun) => {
+      const source: AssetFlowNode = {
+        ...sourceNode,
+        type: mediaType,
+        data: { ...sourceNode.data, mediaType, prompt: 'A boat crosses a quiet lake.' },
+      };
+      const target: AssetFlowNode = {
+        ...generateNode,
+        type: 'video',
+        data: {
+          ...generateNode.data,
+          mediaType: 'video',
+          modelAlias,
+          credentialId: 'credential',
+          parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+        },
+      };
+      const props = createProps({
+        nodes: [source, target],
+        selectedNode: target,
+        edges: [
+          {
+            id: 'connected-input',
+            source: source.id,
+            sourceHandle: `output:${mediaType}`,
+            target: target.id,
+            targetHandle: `input:${role}`,
+          },
+        ],
+        models: [
+          {
+            id: modelAlias,
+            name: modelAlias,
+            mediaTypes: ['video'],
+            credentialId: 'credential',
+            group: '测试分组',
+          },
+        ],
+      });
+      render(<WorkflowCanvas {...props} />);
+
+      const editor = quickEditorRender.mock
+        .lastCall![0] as import('./NodeQuickEditor').NodeQuickEditorProps;
+      expect(editor.hasConnectedTextPromptInput).toBe(hasConnectedTextPromptInput);
+      const run = screen.getByRole('button', { name: '生成' });
+      if (canRun) expect(run).toBeEnabled();
+      else expect(run).toBeDisabled();
+      expect(props.onRunNode).not.toHaveBeenCalled();
+    },
+  );
+
   it('连线资源命名带上实际编辑节点 ID，不调用提示词或视频模式回调', async () => {
     const source: AssetFlowNode = {
       ...sourceNode,

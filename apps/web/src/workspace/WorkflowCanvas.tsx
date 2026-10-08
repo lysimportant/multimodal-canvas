@@ -1420,6 +1420,14 @@ export function WorkflowCanvas({
         onModelChange={(value) => onModelChange(value, editorNode.id)}
         onInferenceStrengthChange={(value) => onInferenceStrengthChange(value, editorNode.id)}
         hasConnectedInput={edges.some((edge) => edge.target === editorNode.id)}
+        hasConnectedTextPromptInput={edges.some(
+          (edge) =>
+            edge.target === editorNode.id &&
+            (edge.targetHandle === 'input:prompt' || edge.targetHandle === 'input:content') &&
+            editorNodes.some(
+              (source) => source.id === edge.source && source.data.mediaType === 'text',
+            ),
+        )}
         onRun={() => {
           const current = nodeActionsRef.current.nodes.find(
             (candidate) => candidate.id === editorNode.id,

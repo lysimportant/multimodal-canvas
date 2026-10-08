@@ -5,6 +5,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaClient } from '@prisma/client';
 import {
   imageEditSourceSchema,
+  image2proVideoContractForModel,
   moonVideoContractForModel,
   runSnapshotSchema,
   videoFamilyForModel,
@@ -408,6 +409,16 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     resolved: ResolvedAsset,
     cache: Map<string, Promise<string>>,
   ): Promise<string> {
+    const consumer = snapshot.nodes.find((node) => node.id === consumerNodeId);
+    const modelAlias =
+      consumerNodeId === snapshot.targetNodeId ? snapshot.modelAlias : consumer?.data.modelAlias;
+    const maxBytes =
+      consumer?.data.mediaType === 'video' && resolved.mediaType !== 'text'
+        ? image2proVideoContractForModel(modelAlias)?.mediaMaxBytes?.[resolved.mediaType]
+        : undefined;
+    if (maxBytes !== undefined && resolved.sizeBytes > maxBytes) {
+      throw new Error('Image2Pro 冻结参考素材超过模型的单文件大小上限');
+    }
     const policy = providerAssetUrlPolicy(snapshot, consumerNodeId, resolved.mediaType);
     if (policy === 'data') return resolved.dataUrl;
     const signer = this.blobStore.createProviderGetUrl;
@@ -484,6 +495,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       mediaType: asset.mediaType,
       mimeType,
       contentKey: selected.contentKey,
+      sizeBytes: Number(expectedSize),
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
       ...((asset.mediaType === 'video' || asset.mediaType === 'audio') &&
       selected.durationSeconds !== undefined
@@ -521,6 +533,8 @@ type ResolvedAsset = {
   mediaType: MediaType;
   mimeType: string;
   contentKey: string;
+  /** 当前选中不可变版本的实际字节数，仅用于进程内模型限制复查。 */
+  sizeBytes: number;
   dataUrl: string;
   durationSeconds?: number;
   providerContentUrl?: string;

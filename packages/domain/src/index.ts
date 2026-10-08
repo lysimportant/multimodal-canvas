@@ -2408,6 +2408,7 @@ export type VideoGenerationIssue = {
   code:
     | 'UNSUPPORTED_INPUT_ROLE'
     | 'INPUT_ROLE_CARDINALITY_UNSUPPORTED'
+    | 'INPUT_ROLE_CONFLICT'
     | 'VIDEO_PROMPT_REQUIRED'
     | 'UNSUPPORTED_PROVIDER_PARAMETER'
     | 'INVALID_PROVIDER_PARAMETER'
@@ -2692,6 +2693,14 @@ function applyReferenceFamilyLimits(
       issues.push(videoCombinationIssue('首帧或尾帧不能与其它参考素材混用'));
     }
     if (
+      image2proContract.requiresAdaptiveFrameRatio &&
+      inputSet.lastFrame &&
+      !inputSet.firstFrame
+    ) {
+      issues.push(videoCombinationIssue('H3 尾帧需要同时提供首帧', 'lastFrame'));
+    }
+    if (
+      !image2proContract.allowsAudioOnlyReference &&
       inputSet.audioTrack.length &&
       !imageCount &&
       !inputSet.content.length &&
@@ -2862,6 +2871,8 @@ export function precheckVideoGenerationInputs(
     modelAlias?: string;
     parameters?: Record<string, unknown>;
     videoMode?: VideoMode;
+    /** API 已验证资产归属与固定版本时，可延后读取文字正文；Provider 水合后不得启用。 */
+    allowUnresolvedFrozenTextInput?: boolean;
   } = {},
 ): VideoGenerationPrecheck {
   const image2proContract = image2proVideoContractForModel(options.modelAlias);
@@ -2985,7 +2996,47 @@ export function precheckVideoGenerationInputs(
     }
     if (options.parameters) {
       try {
-        resolveImage2proVideoParameters(options.parameters);
+        const textInput = inputSet.prompt?.snapshot.data.prompt;
+        const prompt =
+          inputSet.prompt?.role === 'content' && textInput !== undefined
+            ? textInput
+            : (options.parameters.prompt ?? textInput);
+        const parameters = resolveImage2proVideoParameters(
+          image2proContract.requiresPrompt ? { ...options.parameters, prompt } : options.parameters,
+          options.modelAlias,
+        );
+        if (image2proContract.requiresPrompt) {
+          const frozenText = inputSet.prompt;
+          const pendingFrozenText =
+            options.allowUnresolvedFrozenTextInput === true &&
+            frozenText?.snapshot.data.mode === 'source' &&
+            frozenText.sourceAssetId !== undefined &&
+            frozenText.sourceAssetVersion !== undefined &&
+            Number.isSafeInteger(frozenText.sourceAssetVersion) &&
+            frozenText.sourceAssetVersion > 0 &&
+            frozenText.snapshot.data.assetId === frozenText.sourceAssetId &&
+            frozenText.snapshot.data.contentUrl ===
+              `/v1/assets/${encodeURIComponent(frozenText.sourceAssetId)}/versions/${frozenText.sourceAssetVersion}/content`;
+          if ((typeof prompt !== 'string' || !prompt.trim()) && !pendingFrozenText) {
+            throw new Image2proVideoParameterError('prompt', '必须提供非空文本');
+          }
+          const hasFrame = Boolean(inputSet.firstFrame || inputSet.lastFrame);
+          if (
+            image2proContract.requiresAdaptiveFrameRatio &&
+            hasFrame &&
+            parameters.aspectRatio !== undefined &&
+            parameters.aspectRatio !== 'adaptive'
+          ) {
+            throw new Image2proVideoParameterError('ratio', '首尾帧模式仅支持 adaptive');
+          }
+          if (
+            !hasFrame &&
+            omniReferenceCount(inputSet) === 0 &&
+            parameters.aspectRatio === 'adaptive'
+          ) {
+            throw new Image2proVideoParameterError('ratio', '文生视频不能使用 adaptive');
+          }
+        }
       } catch (error) {
         if (!(error instanceof Image2proVideoParameterError)) throw error;
         issues.push({ code: error.code, message: error.message });

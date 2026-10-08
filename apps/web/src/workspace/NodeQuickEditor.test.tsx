@@ -218,24 +218,27 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
-  it.each(['Seedance2.0 0.9r'])('Image2Pro %s 使用官方 5 秒和 720p 默认值', (modelAlias) => {
-    const result = applyNodeGenerationDefaults(
-      { ...videoNode.data, modelAlias },
-      {
-        id: modelAlias,
-        name: modelAlias,
-        mediaTypes: ['video'],
-        capabilities: {
-          resolution: ['720p'],
-          duration: [5, 10],
-          aspectRatio: ['16:9'],
-          reasoning_effort: ['high'],
+  it.each(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'])(
+    'Image2Pro %s 使用官方 5 秒和 720p 默认值',
+    (modelAlias) => {
+      const result = applyNodeGenerationDefaults(
+        { ...videoNode.data, modelAlias },
+        {
+          id: modelAlias,
+          name: modelAlias,
+          mediaTypes: ['video'],
+          capabilities: {
+            resolution: ['720p'],
+            duration: [5, 10],
+            aspectRatio: ['16:9'],
+            reasoning_effort: ['high'],
+          },
         },
-      },
-    );
-    expect(result.parameters).toEqual({ duration: 5, resolution: '720p', aspectRatio: '16:9' });
-    expect(result.inferenceStrength).toBeUndefined();
-  });
+      );
+      expect(result.parameters).toEqual({ duration: 5, resolution: '720p', aspectRatio: '16:9' });
+      expect(result.inferenceStrength).toBeUndefined();
+    },
+  );
 
   it('Image2Pro 切换模型保留旧参数，用户明确移除后才允许生成', async () => {
     const user = userEvent.setup();
@@ -346,7 +349,7 @@ describe('NodeQuickEditor', () => {
     expect(props.onParametersChange).toHaveBeenLastCalledWith({ duration: 8, ratio: '4:3' });
   });
 
-  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+  it.each(['无限制-Flash-中配-Video'])(
     '%s 旧节点保留参数，目录能力不能重新开放生成',
     async (modelAlias) => {
       const parameters = { duration: 5, aspectRatio: '16:9', resolution: '720p' };
@@ -366,9 +369,268 @@ describe('NodeQuickEditor', () => {
       });
       render(<NodeQuickEditor {...props} />);
       await waitFor(() =>
-        expect(screen.getByRole('status')).toHaveTextContent('Flash 视频模型已停止适配'),
+        expect(screen.getByRole('status')).toHaveTextContent('Flash 中配视频模型已停止适配'),
       );
       expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(props.onParametersChange).not.toHaveBeenCalled();
+      expect(props.onRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['text_to_video', 'first_frame', 'first_last_frame', 'omni_reference'] as const)(
+    'Flash-MAX %s 新建使用独立比例默认值，旧目录不能扩大合同',
+    async (videoMode) => {
+      const modelAlias = '无限制-Flash-MAX-Video';
+      const model = {
+        id: modelAlias,
+        name: modelAlias,
+        mediaTypes: ['video'] as NodeQuickEditorProps['models'][number]['mediaTypes'],
+        capabilities: {
+          resolution: ['2k', '1080p'],
+          duration: [15, 30],
+          aspectRatio: ['16:9'],
+        },
+      };
+      const data = applyNodeGenerationDefaults({ ...videoNode.data, modelAlias, videoMode }, model);
+      expect(data.parameters).toEqual({
+        duration: 5,
+        resolution: '720p',
+        aspectRatio: videoMode === 'text_to_video' ? '16:9' : 'adaptive',
+      });
+      render(<NodeQuickEditor {...makeProps({ node: { ...videoNode, data }, models: [model] })} />);
+      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+      await userEvent.setup().click(screen.getByRole('button', { name: /^时长（秒）：/ }));
+      const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
+      expect(slider).toHaveAttribute('min', '4');
+      expect(slider).toHaveAttribute('max', '12');
+      expect(slider).toHaveAttribute('step', '1');
+    },
+  );
+
+  it('Flash-MAX 保留 Seedance 布尔参数直到明确移除，切回 Seedance 时仍可使用', async () => {
+    const modelAlias = '无限制-Flash-MAX-Video';
+    const parameters = {
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      generate_audio: false,
+      watermark: false,
+      return_last_frame: false,
+    };
+    const data = applyNodeGenerationDefaults(
+      { ...videoNode.data, modelAlias, videoMode: 'text_to_video', parameters },
+      { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
+    );
+    expect(data.parameters).toEqual(parameters);
+    const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
+    const view = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'generate_audio、watermark、return_last_frame',
+    );
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    const seedanceData = { ...data, modelAlias: 'Seedance2.0 0.9r' };
+    view.rerender(
+      <NodeQuickEditor {...makeProps({ node: { ...videoNode, data: seedanceData } })} />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '移除不支持的参数' })).not.toBeInTheDocument();
+    view.rerender(<NodeQuickEditor {...props} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: '移除不支持的参数' }));
+    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+    });
+  });
+
+  it.each(['first_frame', 'first_last_frame'] as const)(
+    'Flash-MAX %s 保留旧固定比例，菜单只允许明确改为原图比例',
+    async (videoMode) => {
+      const modelAlias = '无限制-Flash-MAX-Video';
+      const data = applyNodeGenerationDefaults(
+        {
+          ...videoNode.data,
+          modelAlias,
+          videoMode,
+          parameters: { duration: 5, resolution: '720p', ratio: '16:9' },
+        },
+        { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
+      );
+      expect(data.parameters).toEqual({ duration: 5, resolution: '720p', ratio: '16:9' });
+      const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
+      render(<NodeQuickEditor {...props} />);
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(props.onParametersChange).not.toHaveBeenCalled();
+      await userEvent.setup().click(screen.getByRole('combobox', { name: /^视频比例：/ }));
+      expect(screen.getByRole('option', { name: /16:9.*当前模型不支持/ })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+      await userEvent.setup().click(screen.getByRole('option', { name: /原图比例/ }));
+      expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
+        duration: 5,
+        resolution: '720p',
+        aspectRatio: 'adaptive',
+      });
+    },
+  );
+
+  it.each(['first_frame', 'first_last_frame', 'omni_reference'] as const)(
+    'Flash-MAX 显式切换到 %s 时收敛比例别名为 adaptive',
+    async (videoMode) => {
+      const props = makeProps({
+        node: {
+          ...videoNode,
+          data: {
+            ...videoNode.data,
+            modelAlias: '无限制-Flash-MAX-Video',
+            videoMode: 'text_to_video',
+            parameters: { duration: 5, resolution: '720p', ratio: '16:9' },
+          },
+        },
+        onParametersChange: vi.fn(),
+        onVideoModeChange: vi.fn(),
+      });
+      render(<NodeQuickEditor {...props} />);
+      await userEvent.setup().click(screen.getByRole('combobox', { name: /^生成模式：/ }));
+      await userEvent.setup().click(
+        screen.getByRole('option', {
+          name: new RegExp('^' + videoModeLabels[videoMode] + '(?: |$)'),
+        }),
+      );
+      expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
+        duration: 5,
+        resolution: '720p',
+        aspectRatio: 'adaptive',
+      });
+      expect(props.onVideoModeChange).toHaveBeenCalledExactlyOnceWith(videoMode);
+    },
+  );
+
+  it('Flash-MAX 从参考切回文生时明确使用 16:9，旧 adaptive 文生参数仍阻断', async () => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: '无限制-Flash-MAX-Video',
+          videoMode: 'omni_reference',
+          parameters: { duration: 5, resolution: '720p', aspectRatio: 'adaptive' },
+        },
+      },
+      onParametersChange: vi.fn(),
+      onVideoModeChange: vi.fn(),
+    });
+    const view = render(<NodeQuickEditor {...props} />);
+    await userEvent.setup().click(screen.getByRole('combobox', { name: /^生成模式：/ }));
+    await userEvent.setup().click(screen.getByRole('option', { name: /文生视频/ }));
+    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+    });
+    view.rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{ ...props.node, data: { ...props.node.data, videoMode: 'text_to_video' } }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('adaptive');
+  });
+
+  it.each(['', 'x'.repeat(7001)])('Flash-MAX 有连线也必须提供非空且不超限提示词', (prompt) => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: '无限制-Flash-MAX-Video',
+          videoMode: 'omni_reference',
+          prompt,
+          parameters: { duration: 5, resolution: '720p', aspectRatio: 'adaptive' },
+        },
+      },
+      hasConnectedInput: true,
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent(/prompt|提示词/);
+    expect(props.onRun).not.toHaveBeenCalled();
+  });
+
+  it('Flash-MAX 保留文字连线作为提示词来源，媒体连线不能代替提示词', () => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: '无限制-Flash-MAX-Video',
+          videoMode: 'omni_reference',
+          prompt: '',
+          parameters: { duration: 5, resolution: '720p', aspectRatio: 'adaptive' },
+        },
+      },
+      hasConnectedInput: true,
+      connectedInputRoles: ['prompt'],
+    });
+    const view = render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    view.rerender(<NodeQuickEditor {...props} connectedInputRoles={['audioTrack']} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('提示词');
+  });
+
+  it.each([
+    ['无限制-Flash-MAX-Video', true, true, true],
+    ['无限制-Flash-MAX-Video', true, false, false],
+    ['Seedance2.0 0.9r', true, false, true],
+    ['Seedance2.0 0.9r', false, true, false],
+  ] as const)(
+    '%s 历史 content 输入只在 H3 使用文字来源标记（连线 %s、文字 %s）',
+    (modelAlias, hasConnectedInput, hasConnectedTextPromptInput, canRun) => {
+      const props = makeProps({
+        node: {
+          ...videoNode,
+          data: {
+            ...videoNode.data,
+            modelAlias,
+            prompt: '',
+            parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+          },
+        },
+        hasConnectedInput,
+        hasConnectedTextPromptInput,
+        connectedInputRoles: ['content'],
+      });
+      render(<NodeQuickEditor {...props} />);
+      const run = screen.getByRole('button', { name: '生成' });
+      if (canRun) expect(run).toBeEnabled();
+      else expect(run).toBeDisabled();
+      expect(props.node.data).not.toHaveProperty('videoMode');
+      expect(props.onRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([{ duration: 13 }, { duration: 6.25 }, { duration: 5, resolution: '2k' }])(
+    'Flash-MAX 旧参数 %j 保留并阻断，不沿用 Seedance 上限',
+    (parameters) => {
+      const props = makeProps({
+        node: {
+          ...videoNode,
+          data: {
+            ...videoNode.data,
+            modelAlias: '无限制-Flash-MAX-Video',
+            videoMode: 'text_to_video',
+            parameters,
+          },
+        },
+        onParametersChange: vi.fn(),
+      });
+      render(<NodeQuickEditor {...props} />);
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(screen.getByRole('status')).toHaveTextContent('Image2Pro');
       expect(props.onParametersChange).not.toHaveBeenCalled();
       expect(props.onRun).not.toHaveBeenCalled();
     },

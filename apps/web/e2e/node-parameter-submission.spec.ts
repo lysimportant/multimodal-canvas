@@ -26,8 +26,11 @@ type ParameterScenario = {
   emptyCanvas?: boolean;
   capabilities?: Record<string, unknown>;
   videoMode?: VideoMode;
-  /** 仅 Image2Pro 合同冒烟附带一张固定版本的合成本地图片。 */
+  /** 保留旧无 videoMode 画布的文字 content 连线，目标节点不填写正文。 */
+  legacyTextContent?: boolean;
+  /** 仅 Image2Pro 合同冒烟附带固定版本的合成本地素材。 */
   referenceImage?: boolean;
+  referenceAudio?: boolean;
   additionalModels?: {
     id: string;
     name: string;
@@ -68,7 +71,11 @@ async function installFixture(
       : scenario.videoMode === 'first_last_frame'
         ? ['firstFrame', 'lastFrame']
         : [];
-  const hasReferenceAsset = Boolean(scenario.referenceImage || frameRoles.length);
+  const hasReferenceAsset = Boolean(
+    scenario.referenceImage || scenario.referenceAudio || frameRoles.length,
+  );
+  const referenceType = scenario.referenceAudio ? 'audio' : 'image';
+  const referenceId = `fixture-${referenceType}`;
   const user = {
     id: 'parameter-user',
     email: 'parameter@example.test',
@@ -97,15 +104,15 @@ async function installFixture(
               enabled: true,
               modelAlias,
               credentialId,
-              prompt: 'Create a scene with soft light.',
+              prompt: scenario.legacyTextContent ? '' : 'Create a scene with soft light.',
               parameters: scenario.parameters,
               ...(scenario.inferenceStrength
                 ? { inferenceStrength: scenario.inferenceStrength }
                 : {}),
-              ...(mediaType === 'video'
+              ...(mediaType === 'video' && !scenario.legacyTextContent
                 ? { videoMode: scenario.videoMode ?? 'text_to_video' }
                 : {}),
-              ...(scenario.referenceImage
+              ...(scenario.referenceImage || scenario.referenceAudio
                 ? {
                     promptDocument: {
                       version: 1,
@@ -114,10 +121,10 @@ async function installFixture(
                         {
                           type: 'mention',
                           mentionId: 'fixture-reference',
-                          assetId: 'fixture-image',
+                          assetId: referenceId,
                           assetVersion: 3,
-                          label: '参考图',
-                          mediaType: 'image',
+                          label: scenario.referenceAudio ? '参考音频' : '参考图',
+                          mediaType: referenceType,
                           inline: true,
                         },
                       ],
@@ -142,31 +149,83 @@ async function installFixture(
               contentUrl: '/v1/assets/fixture-image/versions/3/content',
             },
           })),
+          ...(scenario.legacyTextContent
+            ? [
+                {
+                  id: 'fixture-text-content',
+                  type: 'text',
+                  position: { x: 20, y: 220 },
+                  width: 240,
+                  height: 180,
+                  data: {
+                    label: '历史文字来源',
+                    mediaType: 'text',
+                    mode: 'source',
+                    enabled: true,
+                    assetId: 'fixture-text',
+                    mimeType: 'text/plain',
+                    contentUrl: '/v1/assets/fixture-text/versions/3/content',
+                  },
+                },
+              ]
+            : []),
         ],
-    edges: frameRoles.map((role, order) => ({
-      id: `fixture-edge-${role}`,
-      sourceNodeId: `fixture-${role}`,
-      sourceHandle: 'output:image',
-      targetNodeId: 'parameter-node',
-      targetHandle: `input:${role}`,
-      order,
-    })),
+    edges: [
+      ...frameRoles.map((role, order) => ({
+        id: `fixture-edge-${role}`,
+        sourceNodeId: `fixture-${role}`,
+        sourceHandle: 'output:image',
+        targetNodeId: 'parameter-node',
+        targetHandle: `input:${role}`,
+        order,
+      })),
+      ...(scenario.legacyTextContent
+        ? [
+            {
+              id: 'fixture-edge-text-content',
+              sourceNodeId: 'fixture-text-content',
+              sourceHandle: 'output:text',
+              targetNodeId: 'parameter-node',
+              targetHandle: 'input:content',
+              order: 0,
+            },
+          ]
+        : []),
+    ],
   });
-  const referenceAssets = hasReferenceAsset
-    ? [
-        {
-          id: 'fixture-image',
-          name: '参考图',
-          mediaType: 'image',
-          mimeType: 'image/jpeg',
-          latestVersion: 3,
-          sizeBytes: 1,
-          status: 'ready',
-          tags: [],
-          contentUrl: '/v1/assets/fixture-image/versions/3/content',
-        },
-      ]
-    : [];
+  const referenceAssets = [
+    ...(hasReferenceAsset
+      ? [
+          {
+            id: referenceId,
+            name: scenario.referenceAudio ? '参考音频' : '参考图',
+            mediaType: referenceType,
+            mimeType: scenario.referenceAudio ? 'audio/wav' : 'image/jpeg',
+            latestVersion: 3,
+            sizeBytes: 1,
+            status: 'ready',
+            tags: [],
+            contentUrl: `/v1/assets/${referenceId}/versions/3/content`,
+            ...(scenario.referenceAudio ? { metadata: { durationSeconds: 3 } } : {}),
+          },
+        ]
+      : []),
+    ...(scenario.legacyTextContent
+      ? [
+          {
+            id: 'fixture-text',
+            name: '历史文字来源',
+            mediaType: 'text',
+            mimeType: 'text/plain',
+            latestVersion: 3,
+            sizeBytes: 28,
+            status: 'ready',
+            tags: [],
+            contentUrl: '/v1/assets/fixture-text/versions/3/content',
+          },
+        ]
+      : []),
+  ];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -227,17 +286,37 @@ async function installFixture(
       return json(route, { settings: { defaultModels: {} } });
     if (method === 'GET' && path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (method === 'GET' && path === '/v1/assets') return json(route, { assets: referenceAssets });
-    if (hasReferenceAsset && method === 'POST' && path === '/v1/assets/fixture-image/access-url')
-      return json(route, { url: origin + '/v1/assets/fixture-image/versions/3/content' });
+    if (
+      scenario.legacyTextContent &&
+      method === 'POST' &&
+      path === '/v1/assets/fixture-text/access-url'
+    )
+      return json(route, { url: origin + '/v1/assets/fixture-text/versions/3/content' });
+    if (
+      scenario.legacyTextContent &&
+      method === 'GET' &&
+      path === '/v1/assets/fixture-text/versions/3/content'
+    )
+      return route.fulfill({
+        contentType: 'text/plain',
+        body: 'A boat crosses a quiet lake.',
+      });
+    if (hasReferenceAsset && method === 'POST' && path === `/v1/assets/${referenceId}/access-url`)
+      return json(route, { url: origin + `/v1/assets/${referenceId}/versions/3/content` });
     if (
       hasReferenceAsset &&
       method === 'GET' &&
-      (path === '/v1/assets/fixture-image/versions/3/content' ||
-        path === '/v1/assets/fixture-image/versions/3/derivatives/thumbnail')
+      (path === `/v1/assets/${referenceId}/versions/3/content` ||
+        path === `/v1/assets/${referenceId}/versions/3/derivatives/thumbnail`)
     )
       return route.fulfill({
-        contentType: 'image/jpeg',
-        body: readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url)),
+        contentType: scenario.referenceAudio ? 'audio/wav' : 'image/jpeg',
+        body: scenario.referenceAudio
+          ? Buffer.from(
+              'RIFF$\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\0\0\0\0',
+              'binary',
+            )
+          : readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url)),
       });
     if (method === 'GET' && path === '/v1/models')
       return json(route, {
@@ -543,7 +622,7 @@ test.describe('Image2Pro 参数与调用', () => {
     });
   }
 
-  for (const modelAlias of ['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video']) {
+  for (const modelAlias of ['无限制-Flash-中配-Video']) {
     test(`${modelAlias} 历史节点保留参数并明确停止生成`, async ({ page, baseURL }) => {
       const fixture = await installFixture(page, baseURL, {
         mediaType: 'video',
@@ -557,7 +636,7 @@ test.describe('Image2Pro 参数与调用', () => {
       await openParameters(page);
       const generate = page.getByRole('button', { name: '生成', exact: true });
       await expect(
-        page.getByRole('status').filter({ hasText: 'Flash 视频模型已停止适配' }),
+        page.getByRole('status').filter({ hasText: 'Flash 中配视频模型已停止适配' }),
       ).toBeVisible();
       await expect(generate).toBeDisabled();
       const invalidBounds = (await node.boundingBox())!;
@@ -572,6 +651,236 @@ test.describe('Image2Pro 参数与调用', () => {
       expect(fixture.errors).toEqual([]);
     });
   }
+
+  for (const videoMode of [
+    'text_to_video',
+    'first_frame',
+    'first_last_frame',
+    'omni_reference',
+  ] as const) {
+    test(`Flash-MAX ${videoMode} 仅使用 H3 参数并保留刷新后的冻结角色`, async ({
+      page,
+      baseURL,
+    }, testInfo) => {
+      const modelAlias = '无限制-Flash-MAX-Video';
+      const fixture = await installFixture(page, baseURL, {
+        mediaType: 'video',
+        modelAlias,
+        videoMode,
+        referenceAudio: videoMode === 'omni_reference',
+        parameters: {
+          duration: 5,
+          resolution: '720p',
+          aspectRatio: videoMode === 'text_to_video' ? 'adaptive' : '16:9',
+        },
+        capabilities: {
+          resolution: ['2k', '1080p'],
+          duration: [15, 30],
+          mentionMediaTypes: ['image', 'video', 'audio'],
+        },
+      });
+      const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+      const originalBounds = (await node.boundingBox())!;
+      await openParameters(page);
+      if (videoMode !== 'omni_reference') {
+        await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+        expect(fixture.patches).toHaveLength(0);
+      }
+      const { trigger, slider } = await openDuration(page, { min: 4, max: 12 });
+      await slider.focus();
+      await slider.press('End');
+      await expect(slider).toHaveValue('12');
+      await trigger.click();
+      await page.getByRole('combobox', { name: /^视频清晰度：/ }).click();
+      await expect(page.getByRole('option', { name: /720p/i })).toBeVisible();
+      await expect(page.getByRole('option', { name: /2k|1080p/i })).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await choose(
+        page,
+        '视频比例',
+        videoMode === 'text_to_video'
+          ? /16:9/
+          : videoMode === 'omni_reference'
+            ? /自动比例/
+            : /原图比例/,
+      );
+      const aspectRatio = videoMode === 'text_to_video' ? '16:9' : 'adaptive';
+      await expect
+        .poll(() => fixture.canvas().nodes[0]!.data.parameters)
+        .toEqual({ duration: 12, resolution: '720p', aspectRatio });
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+      const bounds = (await node.boundingBox())!;
+      expect(bounds.width).toBeCloseTo(originalBounds.width, 2);
+      expect(bounds.height).toBeCloseTo(originalBounds.height, 2);
+      await page.screenshot({
+        path: testInfo.outputPath('flash-max-h3-parameters.png'),
+        animations: 'disabled',
+      });
+      await page.reload();
+      await selectNode(page);
+      await openParameters(page);
+      await expect(page.getByRole('button', { name: /^时长（秒）：12/ })).toBeVisible();
+      await expect(page.getByRole('combobox', { name: /^视频比例：/ })).toHaveAccessibleName(
+        '视频比例：' +
+          (videoMode === 'text_to_video'
+            ? '16:9'
+            : videoMode === 'omni_reference'
+              ? '自动比例'
+              : '原图比例'),
+      );
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+      expect(fixture.submissions).toHaveLength(0);
+      await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+      await page.getByRole('button', { name: '生成', exact: true }).click();
+      await expect.poll(() => fixture.submissions.length).toBe(1);
+      expect(fixture.submissions[0]).toMatchObject({
+        modelAlias,
+        parameters: { duration: 12, resolution: '720p', aspectRatio },
+      });
+      expect(fixture.canvas().nodes[0]!.data.videoMode).toBe(videoMode);
+      expect(fixture.canvas().edges.map((edge) => edge.targetHandle)).toEqual(
+        videoMode === 'first_frame'
+          ? ['input:firstFrame']
+          : videoMode === 'first_last_frame'
+            ? ['input:firstFrame', 'input:lastFrame']
+            : [],
+      );
+      if (videoMode === 'omni_reference') {
+        expect(fixture.submissions[0]!.promptDocument).toMatchObject({
+          blocks: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'mention',
+              assetId: 'fixture-audio',
+              assetVersion: 3,
+              mediaType: 'audio',
+            }),
+          ]),
+        });
+      }
+      expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  test('Flash-MAX 历史文字 content 连线刷新后仍可生成，不补 videoMode', async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    const modelAlias = '无限制-Flash-MAX-Video';
+    const fixture = await installFixture(page, baseURL, {
+      mediaType: 'video',
+      modelAlias,
+      legacyTextContent: true,
+      parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+    });
+    const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+    const originalBounds = (await node.boundingBox())!;
+    const source = page.locator('.react-flow__node[data-id="fixture-text-content"]');
+    await expect(source).toContainText('A boat crosses a quiet lake.');
+    await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toBeEmpty();
+    await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+    expect(fixture.canvas().nodes[0]!.data).not.toHaveProperty('videoMode');
+    expect(fixture.canvas().edges).toEqual([
+      {
+        id: 'fixture-edge-text-content',
+        sourceNodeId: 'fixture-text-content',
+        sourceHandle: 'output:text',
+        targetNodeId: 'parameter-node',
+        targetHandle: 'input:content',
+        order: 0,
+      },
+    ]);
+    expect(fixture.patches).toHaveLength(0);
+    await page.screenshot({
+      path: testInfo.outputPath('flash-max-h3-legacy-text-content.png'),
+      animations: 'disabled',
+    });
+
+    await page.reload();
+    await selectNode(page);
+    await expect(source).toContainText('A boat crosses a quiet lake.');
+    await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toBeEmpty();
+    await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+    const bounds = (await node.boundingBox())!;
+    expect(bounds.width).toBeCloseTo(originalBounds.width, 2);
+    expect(bounds.height).toBeCloseTo(originalBounds.height, 2);
+    expect(fixture.submissions).toHaveLength(0);
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+    await expect.poll(() => fixture.submissions.length).toBe(1);
+    expect(fixture.submissions[0]).toMatchObject({
+      modelAlias,
+      parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
+    });
+    expect(fixture.canvas().nodes[0]!.data).not.toHaveProperty('videoMode');
+    expect(fixture.canvas().nodes[0]!.data.prompt).toBe('');
+    expect(fixture.canvas().edges[0]!.targetHandle).toBe('input:content');
+    expect(fixture.errors).toEqual([]);
+  });
+
+  test('Seedance 切换 Flash-MAX 后保留旧高档参数，明确修正才提交', async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    const modelAlias = '无限制-Flash-MAX-Video';
+    const fixture = await installFixture(page, baseURL, {
+      mediaType: 'video',
+      modelAlias: 'Seedance2.0 0.9r',
+      parameters: {
+        resolution: '4k',
+        duration: 15,
+        aspectRatio: '16:9',
+        generate_audio: false,
+        watermark: false,
+        return_last_frame: false,
+      },
+      additionalModels: [
+        { id: modelAlias, name: modelAlias, capabilities: { resolution: ['2k'], duration: [15] } },
+      ],
+    });
+    await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+    await choose(page, '模型', /无限制-Flash-MAX-Video/);
+    await expect.poll(() => fixture.canvas().nodes[0]!.data.modelAlias).toBe(modelAlias);
+    expect(fixture.canvas().nodes[0]!.data.parameters).toEqual({
+      resolution: '4k',
+      duration: 15,
+      aspectRatio: '16:9',
+      generate_audio: false,
+      watermark: false,
+      return_last_frame: false,
+    });
+    await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+    await openParameters(page);
+    await expect(page.getByRole('region', { name: '生成参数' })).toContainText('generate_audio');
+    await page.screenshot({
+      path: testInfo.outputPath('flash-max-seedance-legacy.png'),
+      animations: 'disabled',
+    });
+    await page.getByRole('button', { name: '移除不支持的参数', exact: true }).click();
+    await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+    const { trigger, slider } = await openDuration(page, { min: 4, max: 12 });
+    await slider.focus();
+    await slider.press('End');
+    await trigger.click();
+    await choose(page, '视频清晰度', /720p/i);
+    await expect
+      .poll(() => fixture.canvas().nodes[0]!.data.parameters)
+      .toEqual({ resolution: '720p', duration: 12, aspectRatio: '16:9' });
+    await page.reload();
+    await selectNode(page);
+    await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+    await expect.poll(() => fixture.submissions.length).toBe(1);
+    expect(fixture.submissions[0]).toMatchObject({
+      modelAlias,
+      parameters: {
+        resolution: '720p',
+        duration: 12,
+        aspectRatio: '16:9',
+        prompt: 'Create a scene with soft light.',
+      },
+    });
+    expect(fixture.submissions[0]!.parameters).not.toHaveProperty('generate_audio');
+    expect(fixture.errors).toEqual([]);
+  });
 
   test('切换到 Image2Pro 保留官方清晰度并明确移除旧推理强度', async ({ page, baseURL }) => {
     const modelAlias = 'Seedance2.0 0.9r';

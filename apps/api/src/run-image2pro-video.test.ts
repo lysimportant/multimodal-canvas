@@ -73,20 +73,144 @@ function mention(index: number, assetVersion = 1): FrozenPromptMention {
 }
 
 describe('Image2Pro Run 提交预检', () => {
+  it.each([false, true])('H3 空白节点或文档不遮盖合法 prompt 文字连线：document=%s', (document) => {
+    const frozen = snapshot();
+    frozen.modelAlias = '无限制-Flash-MAX-Video';
+    frozen.nodes[0]!.data.videoMode = 'text_to_video';
+    frozen.nodes[0]!.data.prompt = '';
+    if (document)
+      frozen.nodes[0]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: ' ' }] };
+    const input = imageInput(0);
+    input.role = 'prompt';
+    input.snapshot.type = 'text';
+    input.snapshot.data.mediaType = 'text';
+    input.snapshot.data.prompt = 'Use the connected text.';
+    frozen.inputs = [input];
+    expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
+  });
+  it('H3 精确 MAX 允许纯音频参考，不把 Seedance 参数和文本限制套用', () => {
+    const frozen = snapshot();
+    frozen.modelAlias = '无限制-Flash-MAX-Video';
+    frozen.nodes[0]!.data.modelAlias = frozen.modelAlias;
+    frozen.nodes[0]!.data.prompt = 'Create a scene following this audio.';
+    frozen.parameters = { duration: 12, resolution: '720p', ratio: 'adaptive' };
+    frozen.promptMentions = [{ ...mention(0), mediaType: 'audio', durationSeconds: 15 }];
+    const before = structuredClone(frozen);
+    expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
+    expect(frozen).toEqual(before);
+    frozen.parameters.watermark = false;
+    expect(() => validateRunImage2proVideo(frozen)).toThrow('watermark');
+  });
+
+  it.each(['node', 'document', 'connected'] as const)(
+    'H3 最终 %s 提示词超过 7000 字符时在 Run 前拒绝',
+    (source) => {
+      const frozen = snapshot();
+      frozen.modelAlias = '无限制-Flash-MAX-Video';
+      frozen.nodes[0]!.data.modelAlias = frozen.modelAlias;
+      frozen.nodes[0]!.data.videoMode = 'text_to_video';
+      const prompt = 'x'.repeat(7001);
+      if (source === 'node') frozen.nodes[0]!.data.prompt = prompt;
+      if (source === 'document')
+        frozen.nodes[0]!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: prompt }],
+        };
+      if (source === 'connected') {
+        const input = imageInput(0);
+        input.role = 'content';
+        input.snapshot.type = 'text';
+        input.snapshot.data.mediaType = 'text';
+        input.snapshot.data.prompt = prompt;
+        frozen.nodes[0]!.data.prompt = 'An older shorter prompt.';
+        frozen.inputs = [input];
+      }
+      expect(() => validateRunImage2proVideo(frozen)).toThrow('7000');
+    },
+  );
+
+  it('H3 明确文档与 content 文字替代旧长参数后，API 使用实际正文校验', () => {
+    for (const source of ['document', 'connected'] as const) {
+      const frozen = snapshot();
+      frozen.modelAlias = '无限制-Flash-MAX-Video';
+      frozen.nodes[0]!.data.modelAlias = frozen.modelAlias;
+      frozen.nodes[0]!.data.videoMode = 'text_to_video';
+      frozen.parameters = { duration: 5, prompt: 'old'.repeat(3000) };
+      const prompt = 'Write --duration 15 on the sign.';
+      if (source === 'document')
+        frozen.nodes[0]!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: prompt }],
+        };
+      else {
+        const input = imageInput(0);
+        input.role = 'content';
+        input.snapshot.type = 'text';
+        input.snapshot.data.mediaType = 'text';
+        input.snapshot.data.prompt = prompt;
+        frozen.inputs = [input];
+      }
+      expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
+      expect(frozen.parameters.prompt).toBe('old'.repeat(3000));
+    }
+  });
+
+  it('H3 空白文档引用待水合冻结正文时不校验被替代的旧长参数', () => {
+    const frozen = snapshot();
+    frozen.modelAlias = '无限制-Flash-MAX-Video';
+    frozen.parameters = { duration: 5, prompt: 'x'.repeat(7001) };
+    frozen.nodes[0]!.data.videoMode = 'text_to_video';
+    frozen.nodes[0]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: ' ' }] };
+    const input = imageInput(0);
+    input.role = 'prompt';
+    input.snapshot.type = 'text';
+    input.snapshot.data.mediaType = 'text';
+    frozen.inputs = [input];
+    const before = structuredClone(frozen);
+    expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
+    expect(frozen).toEqual(before);
+  });
+
+  it.each(['node', 'document'] as const)(
+    'H3 非空 %s 正文与 prompt 连线在 Run 前按 Provider 冲突拒绝',
+    (source) => {
+      const frozen = snapshot();
+      frozen.modelAlias = '无限制-Flash-MAX-Video';
+      frozen.nodes[0]!.data.videoMode = 'text_to_video';
+      frozen.nodes[0]!.data.prompt = 'The explicit node prompt.';
+      if (source === 'document')
+        frozen.nodes[0]!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: 'The explicit document prompt.' }],
+        };
+      const input = imageInput(0);
+      input.role = 'prompt';
+      input.snapshot.type = 'text';
+      input.snapshot.data.mediaType = 'text';
+      input.snapshot.data.prompt = 'The connected prompt.';
+      frozen.inputs = [input];
+      const before = structuredClone(frozen);
+      expect(() => validateRunImage2proVideo(frozen)).toThrow(
+        expect.objectContaining({ code: 'INPUT_ROLE_CONFLICT' }),
+      );
+      expect(frozen).toEqual(before);
+    },
+  );
+
   it('节点正文中的参数覆盖标记在保存 Run 前拒绝', () => {
     const frozen = snapshot();
     frozen.nodes[0]!.data.videoMode = 'text_to_video';
     frozen.nodes[0]!.data.prompt = 'A scene --resolution 4k';
     expect(() => validateRunImage2proVideo(frozen)).toThrow('不能包含覆盖生成参数');
   });
-  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+  it.each(['无限制-Flash-中配-Video'])(
     '%s 在保存 Run 前拒绝，未写视频模式也不回落到通用路径',
     (modelAlias) => {
       const frozen = snapshot();
       frozen.modelAlias = modelAlias;
       delete frozen.nodes[0]!.data.videoMode;
       const before = structuredClone(frozen);
-      expect(() => validateRunImage2proVideo(frozen)).toThrow('Flash 视频模型已停止适配');
+      expect(() => validateRunImage2proVideo(frozen)).toThrow('Flash 中配视频模型已停止适配');
       expect(frozen).toEqual(before);
     },
   );

@@ -2176,7 +2176,7 @@ function openaiVideoPayload(
 }
 
 /**
- * 将 Image2Pro Seedance 的官方参数及冻结素材写入顶层 content；地址沿用 /v1/videos。
+ * 将 Image2Pro 已确认的官方参数及冻结素材写入顶层 content；地址沿用 /v1/videos。
  * @param snapshot 已冻结的精确模型与参数，duration/seconds/durationSeconds 必须显式给出。
  * @param label 目标节点名称，仅用于现有提示词解析。
  * @param nodePrompt 节点保存的提示词，和文档或提示词连线按既有规则互斥。
@@ -2194,25 +2194,31 @@ function image2proVideoPayload(
   nodePromptDocument: PromptDocument | undefined,
   contract: Image2proVideoModelContract,
 ): Record<string, unknown> {
-  const { seconds, aspectRatio, resolution, ...flags } = resolveImage2proVideoParameters(
-    snapshot.parameters,
-  );
-  const source = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
+  if (!contract.requiresPrompt) {
+    resolveImage2proVideoParameters(snapshot.parameters, snapshot.modelAlias);
+  }
+  let source = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
+  if (contract.requiresPrompt && !source.value.trim()) source = { value: '', explicit: false };
   const prompt =
     source.explicit || inputs.prompt
       ? resolveMappedPromptInput(source, inputs.prompt, 'video')
       : '';
+  let parameters: ReturnType<typeof resolveImage2proVideoParameters>;
   try {
-    resolveImage2proVideoParameters({ ...snapshot.parameters, prompt });
+    parameters = resolveImage2proVideoParameters(
+      { ...snapshot.parameters, prompt },
+      snapshot.modelAlias,
+    );
   } catch (error) {
     if (!(error instanceof Image2proVideoParameterError)) throw error;
     throw invalidProviderParameter('video', error.parameter, error.message);
   }
+  const { seconds, aspectRatio, resolution, ...flags } = parameters;
   const visual = Boolean(
     inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length,
   );
-  if (!prompt.trim() && !visual) {
-    throw new NewApiProviderError('Seedance 文生视频需要提示词或视觉参考素材', {
+  if (!prompt.trim() && (contract.requiresPrompt || !visual)) {
+    throw new NewApiProviderError('Image2Pro 视频需要提示词或支持的视觉参考素材', {
       code: 'VIDEO_PROMPT_REQUIRED',
       retryable: false,
     });
@@ -2226,46 +2232,45 @@ function image2proVideoPayload(
   }
   const media = orderedVideoMedia(snapshot, inputs).map((input) => {
     const mediaType = input.snapshot.data.mediaType;
-    const url = officialVideoReferenceUrl(input, 'seedance-2', snapshot.modelAlias);
-    const mimeTypes = [
-      normalizedMimeType(input.snapshot.data.mimeType),
-      parseDataUrl(url)?.mimeType,
-    ].filter((mimeType): mimeType is string => Boolean(mimeType));
+    const url = officialVideoReferenceUrl(
+      input,
+      contract.supportsVideoDataUrl ? 'image2pro' : 'seedance-2',
+      snapshot.modelAlias,
+    );
+    const parsed = parseDataUrl(url);
+    const maxBytes = mediaType !== 'text' ? contract.mediaMaxBytes?.[mediaType] : undefined;
+    if (parsed && maxBytes !== undefined && Buffer.byteLength(parsed.base64, 'base64') > maxBytes) {
+      throw invalidProviderParameter('video', 'content', '参考素材超过模型的单文件大小上限');
+    }
+    const mimeTypes = [normalizedMimeType(input.snapshot.data.mimeType), parsed?.mimeType].filter(
+      (mimeType): mimeType is string => Boolean(mimeType),
+    );
     if (
       mediaType === 'image' &&
-      mimeTypes.some(
-        (mimeType) =>
-          ![
-            'image/png',
-            'image/jpeg',
-            'image/webp',
-            'image/bmp',
-            'image/tiff',
-            'image/gif',
-            'image/heic',
-            'image/heif',
-          ].includes(mimeType),
-      )
+      mimeTypes.some((mimeType) => !contract.mediaMimeTypes.image.includes(mimeType))
     ) {
       throw invalidProviderParameter(
         'video',
         'content',
-        '参考图仅支持 JPEG、PNG、WebP、BMP、TIFF、GIF、HEIC 或 HEIF',
+        `参考图仅支持 ${contract.mediaMimeTypes.image.join('、')}`,
       );
     }
     if (
       mediaType === 'audio' &&
-      mimeTypes.some(
-        (mimeType) => !['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'].includes(mimeType),
-      )
+      mimeTypes.some((mimeType) => !contract.mediaMimeTypes.audio.includes(mimeType))
     ) {
       throw invalidProviderParameter('video', 'content', '参考音频仅支持 MP3 或 WAV');
     }
     if (
       mediaType === 'video' &&
-      mimeTypes.some((mimeType) => !['video/mp4', 'video/quicktime'].includes(mimeType))
+      (mimeTypes.some((mimeType) => !contract.mediaMimeTypes.video.includes(mimeType)) ||
+        (parsed && parsed.mimeType !== 'video/mp4'))
     ) {
-      throw invalidProviderParameter('video', 'content', '参考视频仅支持 MP4 或 QuickTime');
+      throw invalidProviderParameter(
+        'video',
+        'content',
+        '参考视频仅支持 MP4 或 QuickTime，内联视频仅支持 MP4',
+      );
     }
     return {
       type: `${mediaType}_url`,
@@ -2283,7 +2288,11 @@ function image2proVideoPayload(
     content: [...(prompt.trim() ? [{ type: 'text', text: prompt }] : []), ...media],
     duration: seconds,
     resolution,
-    ratio: aspectRatio ?? (visual ? 'adaptive' : '16:9'),
+    ratio:
+      aspectRatio ??
+      (visual || (contract.allowsAudioOnlyReference && inputs.referenceAudios.length)
+        ? 'adaptive'
+        : '16:9'),
     ...flags,
   };
 }
@@ -5502,12 +5511,32 @@ function mapVideoInputs(
   extraInputs: readonly RunInputSnapshot[] = [],
 ): VideoInputMapping {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const contract = image2proVideoContractForModel(snapshot.modelAlias);
+  let parameters = snapshot.parameters;
+  if (contract?.requiresPrompt) {
+    let source = resolvePromptSource(
+      snapshot,
+      target?.data.label ?? '',
+      target?.data.prompt,
+      'video',
+      target?.data.promptDocument,
+    );
+    if (!source.value.trim()) source = { value: '', explicit: false };
+    const textInput = [...snapshot.inputs, ...extraInputs].find(
+      (input) =>
+        input.snapshot.data.mediaType === 'text' &&
+        (input.role === 'prompt' || input.role === 'content'),
+    );
+    const prompt =
+      source.explicit || textInput ? resolveMappedPromptInput(source, textInput, 'video') : '';
+    parameters = { ...parameters, prompt };
+  }
   const absorbedOmni = extraInputs.some((input) =>
     ['referenceImage', 'character', 'style', 'content', 'audioTrack'].includes(input.role),
   );
   const precheck = precheckVideoGenerationInputs([...snapshot.inputs, ...extraInputs], {
     modelAlias: snapshot.modelAlias,
-    parameters: snapshot.parameters,
+    parameters,
     videoMode: videoModeForPromptMentions(target?.data.videoMode, absorbedOmni),
   });
   const issue = precheck.issues[0];

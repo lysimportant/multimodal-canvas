@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 /** Image2Pro 插件已登记的精确 ID；近似名称不能沿用它们的参考图合同。 */
-const models = ['Seedance2.0 0.9r'];
+const models = ['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'];
 
 /** 创建不含用户数据的冻结快照；测试仅通过注入 fetch 捕获请求。 */
 function snapshotFor(modelAlias = models[0]!): RunSnapshot {
@@ -132,7 +132,7 @@ function completedFetch() {
 }
 
 describe('Image2Pro 视频插件合同', () => {
-  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+  it.each(['无限制-Flash-中配-Video'])(
     '%s 不因合同或缺少模式回落到通用创建路径',
     async (modelAlias) => {
       for (const contract of ['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const) {
@@ -200,8 +200,8 @@ describe('Image2Pro 视频插件合同', () => {
     },
   );
 
-  it('角色图片、冻结提及和请求记录按同一资源顺序发送，重复同版本提及只发送一次', async () => {
-    const snapshot = snapshotFor();
+  it.each(models)('%s 冻结提及与请求记录保持同一资源顺序和版本', async (modelAlias) => {
+    const snapshot = snapshotFor(modelAlias);
     const target = snapshot.nodes[0]!.data;
     target.videoMode = 'omni_reference';
     snapshot.inputs = [inputFor('style', 'style', 2), inputFor('person', 'character', 1)];
@@ -257,7 +257,7 @@ describe('Image2Pro 视频插件合同', () => {
     });
     const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
     expect(body).toEqual({
-      model: models[0],
+      model: modelAlias,
       content: [
         { type: 'text', text: 'Use scene@1 / scene@2 / scene@2 / ' },
         ...[
@@ -698,7 +698,7 @@ describe('Image2Pro 视频插件合同', () => {
     },
   );
 
-  it('创建缺少宿主公共 id 时保留未知提交状态，不把 request_id 或上游 task_id 用于查询', async () => {
+  it.each(models)('%s 创建缺少公共 id 时保留未知提交状态，不误用私有身份', async (modelAlias) => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse({
         task_id: '0123456789abcdef',
@@ -707,7 +707,7 @@ describe('Image2Pro 视频插件合同', () => {
       }),
     );
     const provider = providerFor(fetchImpl);
-    const snapshot = snapshotFor();
+    const snapshot = snapshotFor(modelAlias);
     let frozenJob: ProviderJobUpdate | undefined;
     const onProviderJob = (job: ProviderJobUpdate) => {
       frozenJob = job;
@@ -790,8 +790,8 @@ describe('Image2Pro 视频插件合同', () => {
     });
   });
 
-  it('创建响应丢失保留 submitting 状态，再执行也不得第二次 POST', async () => {
-    const snapshot = snapshotFor();
+  it.each(models)('%s 创建响应丢失保留 submitting 状态，不重复 POST', async (modelAlias) => {
+    const snapshot = snapshotFor(modelAlias);
     const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('response lost'));
     let frozenJob: ProviderJobUpdate | undefined;
     const onProviderJob = (job: ProviderJobUpdate) => {
@@ -809,5 +809,258 @@ describe('Image2Pro 视频插件合同', () => {
       provider.execute({ snapshot, onProviderJob, providerJob: frozenJob }),
     ).rejects.toMatchObject({ code: 'VIDEO_SUBMISSION_UNKNOWN', retryable: false });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Image2Pro Flash-MAX H3 序列化', () => {
+  const modelAlias = '无限制-Flash-MAX-Video';
+
+  it.each([false, true])(
+    'H3 空白节点或文档由已水合 prompt 连线提供正文：document=%s',
+    async (document) => {
+      const snapshot = snapshotFor(modelAlias);
+      snapshot.nodes[0]!.data.prompt = '';
+      if (document)
+        snapshot.nodes[0]!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: ' ' }],
+        };
+      const prompt = 'Use the frozen connected text.';
+      const input = inputFor('text', 'prompt', 0, 'text', 1);
+      input.snapshot.data.mimeType = 'text/plain';
+      input.snapshot.data.contentUrl = `data:text/plain;base64,${Buffer.from(prompt).toString('base64')}`;
+      snapshot.inputs = [input];
+      const fetchImpl = completedFetch();
+      await providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() });
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).content).toEqual([
+        { type: 'text', text: prompt },
+      ]);
+    },
+  );
+
+  it.each([' ', 'x'.repeat(7001)])('H3 水合后的非法文字正文在 POST 前拒绝 %#', async (prompt) => {
+    const snapshot = snapshotFor(modelAlias);
+    snapshot.nodes[0]!.data.prompt = '';
+    snapshot.nodes[0]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: '' }] };
+    const input = inputFor('text', 'prompt', 0, 'text', 1);
+    input.snapshot.data.mimeType = 'text/plain';
+    input.snapshot.data.contentUrl = `data:text/plain;base64,${Buffer.from(prompt).toString('base64')}`;
+    snapshot.inputs = [input];
+    const fetchImpl = vi.fn<typeof fetch>();
+    const onProviderJob = vi.fn();
+    await expect(providerFor(fetchImpl).execute({ snapshot, onProviderJob })).rejects.toMatchObject(
+      { retryable: false },
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onProviderJob).not.toHaveBeenCalled();
+  });
+
+  it.each(['document', 'connected'] as const)(
+    'H3 %s 实际文字覆盖旧参数后发送原文，不误用节点标签或 Seedance 命令语法',
+    async (source) => {
+      const snapshot = snapshotFor(modelAlias);
+      const prompt = 'Write --duration 15 on the sign.';
+      snapshot.parameters = { duration: 5, prompt: 'old'.repeat(3000) };
+      if (source === 'document')
+        snapshot.nodes[0]!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: prompt }],
+        };
+      else {
+        const text = inputFor('text', 'content', 0, 'text', 2);
+        text.snapshot.data.mimeType = 'text/plain';
+        text.snapshot.data.contentUrl = `data:text/plain;base64,${Buffer.from(prompt).toString('base64')}`;
+        snapshot.inputs = [text];
+      }
+      const fetchImpl = completedFetch();
+      await providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() });
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).content).toEqual([
+        { type: 'text', text: prompt },
+      ]);
+      expect(snapshot.parameters.prompt).toBe('old'.repeat(3000));
+    },
+  );
+
+  it.each(['first_frame', 'first_last_frame', 'omni_reference'] as const)(
+    '%s 使用 H3 角色与默认 adaptive，保留冻结素材次序和版本',
+    async (videoMode) => {
+      const snapshot = snapshotFor(modelAlias);
+      snapshot.parameters = { duration: 12, resolution: '720p' };
+      snapshot.nodes[0]!.data.videoMode = videoMode;
+      snapshot.inputs =
+        videoMode === 'first_frame'
+          ? [inputFor('first', 'firstFrame', 0, 'image', 2)]
+          : videoMode === 'first_last_frame'
+            ? [
+                inputFor('first', 'firstFrame', 0, 'image', 2),
+                inputFor('last', 'lastFrame', 1, 'image', 3),
+              ]
+            : [
+                { ...inputFor('audio', 'audioTrack', 3, 'audio', 2), sourceDurationSeconds: 15 },
+                inputFor('image', 'style', 1, 'image', 3),
+                { ...inputFor('video', 'content', 2, 'video', 4), sourceDurationSeconds: 15 },
+              ];
+      const before = structuredClone(snapshot);
+      const fetchImpl = completedFetch();
+      const records: RequestPromptRecord[] = [];
+      await providerFor(fetchImpl).execute({
+        snapshot,
+        runId: `flash-h3-${videoMode}`,
+        onProviderJob: vi.fn(),
+        onRequestPrompt: (record) => {
+          records.push(record);
+        },
+      });
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+      expect(body).toMatchObject({
+        model: modelAlias,
+        duration: 12,
+        resolution: '720p',
+        ratio: 'adaptive',
+      });
+      expect(Object.keys(body).sort()).toEqual(
+        ['model', 'content', 'duration', 'resolution', 'ratio'].sort(),
+      );
+      const ordered = [...snapshot.inputs].sort((left, right) => left.sortOrder - right.sortOrder);
+      expect(body.content.slice(1)).toEqual(
+        ordered.map((input) => {
+          const mediaType = input.snapshot.data.mediaType;
+          return {
+            type: `${mediaType}_url`,
+            [`${mediaType}_url`]: { url: input.snapshot.data.contentUrl },
+            role:
+              input.role === 'firstFrame'
+                ? 'first_frame'
+                : input.role === 'lastFrame'
+                  ? 'last_frame'
+                  : `reference_${mediaType}`,
+          };
+        }),
+      );
+      expect(
+        records[0]!.resources.map(({ assetId, assetVersion }) => [assetId, assetVersion]),
+      ).toEqual(ordered.map((input) => [input.sourceAssetId, input.sourceAssetVersion]));
+      expect(snapshot).toEqual(before);
+    },
+  );
+
+  it.each(['audio', 'video'] as const)(
+    '支持 H3 纯 %s 参考的内联数据，不借用 Seedance 限制',
+    async (mediaType) => {
+      const snapshot = snapshotFor(modelAlias);
+      snapshot.parameters = { duration: 4 };
+      snapshot.nodes[0]!.data.videoMode = 'omni_reference';
+      const media = inputFor(
+        'inline',
+        mediaType === 'audio' ? 'audioTrack' : 'content',
+        0,
+        mediaType,
+        2,
+      );
+      media.snapshot.data.contentUrl = `data:${media.snapshot.data.mimeType};base64,AQID`;
+      media.sourceDurationSeconds = 2;
+      snapshot.inputs = [media];
+      const fetchImpl = completedFetch();
+      await providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() });
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
+        model: modelAlias,
+        duration: 4,
+        resolution: '720p',
+        ratio: 'adaptive',
+        content: [{ type: 'text' }, { type: `${mediaType}_url`, role: `reference_${mediaType}` }],
+      });
+    },
+  );
+
+  it.each([
+    { duration: 13 },
+    { duration: 5.5 },
+    { duration: 5, resolution: '768p' },
+    { duration: 5, resolution: '1080p' },
+    { duration: 5, generate_audio: false },
+    { duration: 5, watermark: false },
+    { duration: 5, return_last_frame: false },
+    { duration: 5, unknown: false },
+    { duration: 5, prompt: 'x'.repeat(7001) },
+    { duration: 5, ratio: 'adaptive' },
+  ])('不支持参数 %# 在请求记录与 POST 之前拒绝', async (parameters) => {
+    const snapshot = snapshotFor(modelAlias);
+    snapshot.parameters = parameters;
+    const fetchImpl = vi.fn<typeof fetch>();
+    const onProviderJob = vi.fn();
+    await expect(providerFor(fetchImpl).execute({ snapshot, onProviderJob })).rejects.toMatchObject(
+      { retryable: false },
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onProviderJob).not.toHaveBeenCalled();
+  });
+
+  it('帧模式固定比例与缺少提示词明确失败，不静默改写', async () => {
+    for (const parameters of [
+      { duration: 5, ratio: '16:9' },
+      { duration: 5, ratio: 'adaptive', prompt: '' },
+    ]) {
+      const snapshot = snapshotFor(modelAlias);
+      snapshot.parameters = parameters;
+      snapshot.nodes[0]!.data.videoMode = 'first_frame';
+      if (parameters.prompt === '') snapshot.nodes[0]!.data.prompt = '';
+      snapshot.inputs = [inputFor('first', 'firstFrame')];
+      const before = structuredClone(snapshot);
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(snapshot).toEqual(before);
+    }
+  });
+
+  it.each([
+    'image/gif',
+    'image/bmp',
+    'image/tiff',
+    'image/svg+xml',
+    'audio/ogg',
+    'video/webm',
+    'video/quicktime',
+  ])('H3 内联引用拒绝 %s，公网 MOV 单独允许', async (mimeType) => {
+    const snapshot = snapshotFor(modelAlias);
+    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
+    const mediaType = mimeType.split('/')[0] as 'image' | 'audio' | 'video';
+    const media = inputFor(
+      'unsupported',
+      mediaType === 'audio' ? 'audioTrack' : mediaType === 'video' ? 'content' : 'referenceImage',
+      0,
+      mediaType,
+    );
+    media.snapshot.data.mimeType = mimeType;
+    media.snapshot.data.contentUrl = `data:${mimeType};base64,AQID`;
+    snapshot.inputs = [media];
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    if (mimeType === 'video/quicktime') {
+      media.snapshot.data.contentUrl = 'https://assets.invalid/frozen-v2.mov';
+      const accepted = completedFetch();
+      await providerFor(accepted).execute({ snapshot, onProviderJob: vi.fn() });
+      expect(JSON.parse(String(accepted.mock.calls[0]![1]!.body)).content[1].video_url.url).toBe(
+        media.snapshot.data.contentUrl,
+      );
+    }
+  });
+
+  it('直接调用 Provider 也拒绝超过 15 MiB 的内联音频', async () => {
+    const snapshot = snapshotFor(modelAlias);
+    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
+    const audio = inputFor('large', 'audioTrack', 0, 'audio');
+    audio.snapshot.data.contentUrl = `data:audio/mpeg;base64,${Buffer.alloc(15 * 1024 * 1024 + 1).toString('base64')}`;
+    snapshot.inputs = [audio];
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
