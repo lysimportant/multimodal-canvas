@@ -795,14 +795,18 @@ function providerAssetUrlPolicy(
   const family = videoFamilyForModel(modelAlias);
   if (family === 'moon-minimax-h3') return 'required';
   if (family === 'wan3' && (mediaType === 'video' || mediaType === 'audio')) return 'required';
-  if ((family === 'seedance-2' || family === 'seedance-2.5') && mediaType === 'video') {
+  if (
+    (family === 'seedance-2' || family === 'seedance-2.5' || family === 'image2pro') &&
+    mediaType === 'video'
+  ) {
     return 'required';
   }
   if (
     family === 'minimax-h3' ||
     family === 'wan3' ||
     family === 'seedance-2' ||
-    family === 'seedance-2.5'
+    family === 'seedance-2.5' ||
+    family === 'image2pro'
   ) {
     return 'preferred';
   }

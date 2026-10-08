@@ -8,82 +8,85 @@ import { withLocalResourceReferences } from './local-resource-references';
 import { MemoryProjectStore } from './projects';
 
 describe('本地资源发送前的授权复查', () => {
-  it('Image2Pro 已有公共任务恢复时不重新读取已失效的原图', async () => {
-    const snapshot: RunSnapshot = {
-      projectId: 'resume-project',
-      canvasRevision: 1,
-      targetNodeId: 'video',
-      modelAlias: '无限制-Flash-MAX-Video',
-      parameters: { resolution: 'legacy-value' },
-      submittedAt: '2026-10-07T00:00:00.000Z',
-      nodes: [
-        {
-          id: 'video',
-          type: 'video',
-          position: { x: 0, y: 0 },
-          data: {
-            label: '恢复视频',
-            mediaType: 'video',
-            mode: 'generate',
-            videoMode: 'omni_reference',
+  it.each(['Seedance2.0 0.9r', '无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+    '%s 已有公共任务恢复时不重新读取已失效的原图',
+    async (modelAlias) => {
+      const snapshot: RunSnapshot = {
+        projectId: 'resume-project',
+        canvasRevision: 1,
+        targetNodeId: 'video',
+        modelAlias,
+        parameters: { resolution: 'legacy-value' },
+        submittedAt: '2026-10-07T00:00:00.000Z',
+        nodes: [
+          {
+            id: 'video',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            data: {
+              label: '恢复视频',
+              mediaType: 'video',
+              mode: 'generate',
+              videoMode: 'omni_reference',
+            },
           },
+        ],
+        edges: [],
+        inputs: [],
+        promptMentions: [
+          {
+            nodeId: 'video',
+            mentionId: 'old-image',
+            assetId: 'deleted-image',
+            assetVersion: 1,
+            mediaType: 'image',
+            label: '旧原图',
+            blockOrder: 0,
+          },
+        ],
+      };
+      const assetStore = new MemoryAssetStore();
+      const projectStore = new MemoryProjectStore();
+      const readAsset = vi.spyOn(assetStore, 'get');
+      const readProject = vi.spyOn(projectStore, 'get');
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          id: 'task_image2pro_existing',
+          status: 'completed',
+          url: 'https://cdn.example.test/resumed.mp4',
+        }),
+      );
+      const provider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-resume-key',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      });
+      const executor = withLocalResourceReferences(
+        (request) => provider.execute(request),
+        assetStore,
+        projectStore,
+        1024,
+      );
+      const request = {
+        snapshot,
+        providerJob: {
+          provider: 'newapi',
+          platformJobId: 'task_image2pro_existing',
+          payload: { contract: 'newapi-video-v1' },
         },
-      ],
-      edges: [],
-      inputs: [],
-      promptMentions: [
-        {
-          nodeId: 'video',
-          mentionId: 'old-image',
-          assetId: 'deleted-image',
-          assetVersion: 1,
-          mediaType: 'image',
-          label: '旧原图',
-          blockOrder: 0,
-        },
-      ],
-    };
-    const assetStore = new MemoryAssetStore();
-    const projectStore = new MemoryProjectStore();
-    const readAsset = vi.spyOn(assetStore, 'get');
-    const readProject = vi.spyOn(projectStore, 'get');
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({
-        id: 'task_image2pro_existing',
-        status: 'completed',
-        url: 'https://cdn.example.test/resumed.mp4',
-      }),
-    );
-    const provider = new NewApiVideoProvider({
-      baseUrl: 'https://newapi.example.test/v1',
-      apiKey: 'synthetic-resume-key',
-      fetchImpl,
-      pollIntervalMs: 0,
-      maxPollAttempts: 1,
-    });
-    const executor = withLocalResourceReferences(
-      (request) => provider.execute(request),
-      assetStore,
-      projectStore,
-      1024,
-    );
-    const request = {
-      snapshot,
-      providerJob: {
-        provider: 'newapi',
-        platformJobId: 'task_image2pro_existing',
-        payload: { contract: 'newapi-video-v1' },
-      },
-    };
-    await (typeof executor === 'function' ? executor(request) : executor.execute(request));
-    expect(readAsset).not.toHaveBeenCalled();
-    expect(readProject).not.toHaveBeenCalled();
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(fetchImpl.mock.calls[0]![0]).toBe(
-      'https://newapi.example.test/v1/videos/task_image2pro_existing',
-    );
-    expect(fetchImpl.mock.calls[0]![1]!.method).toBe('GET');
-  });
+      };
+      await (typeof executor === 'function' ? executor(request) : executor.execute(request));
+      expect(readAsset).not.toHaveBeenCalled();
+      expect(readProject).not.toHaveBeenCalled();
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0]![0]).toBe(
+        'https://newapi.example.test/v1/videos/task_image2pro_existing',
+      );
+      expect(fetchImpl.mock.calls[0]![1]!.method).toBe('GET');
+    },
+  );
 
   it.each(
     ['during-next-read', 'during-prompt', 'project-during-prompt'].flatMap((stage) =>
@@ -123,7 +126,7 @@ describe('本地资源发送前的授权复查', () => {
         projectId: project.id,
         canvasRevision: 0,
         targetNodeId: 'text-target',
-        modelAlias: mediaType === 'video' ? '无限制-Flash-MAX-Video' : 'text-multimodal-test',
+        modelAlias: mediaType === 'video' ? 'Seedance2.0 0.9r' : 'text-multimodal-test',
         parameters: mediaType === 'video' ? { duration: 5 } : {},
         submittedAt: new Date().toISOString(),
         nodes: [

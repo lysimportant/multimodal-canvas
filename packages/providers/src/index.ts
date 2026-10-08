@@ -16,6 +16,7 @@ import type {
 } from '@multimodal-canvas/domain';
 import {
   ImageOutputParameterError,
+  Image2proVideoParameterError,
   imageEditSourceSchema,
   normalizeImageOutputParameters,
   precheckVideoGenerationInputs,
@@ -26,6 +27,8 @@ import {
   videoFamilyForModel,
   videoModeForPromptMentions,
   image2proVideoContractForModel,
+  isRetiredImage2proVideoModel,
+  retiredImage2proVideoModelReason,
   resolveImage2proVideoParameters,
   moonVideoContractForModel,
   type Image2proVideoModelContract,
@@ -1010,7 +1013,9 @@ export class NewApiVideoProvider {
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
     const unified = contract === 'newapi-unified-v1';
     const openaiVideo = contract === 'newapi-video-v1';
-    const image2pro = Boolean(image2proVideoContractForModel(snapshot.modelAlias));
+    const image2pro =
+      Boolean(image2proVideoContractForModel(snapshot.modelAlias)) ||
+      isRetiredImage2proVideoModel(snapshot.modelAlias);
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
     const requestIds: NewApiRequestIds = {
@@ -1044,6 +1049,12 @@ export class NewApiVideoProvider {
             undefined,
             requestIds,
           ),
+          retryable: false,
+        });
+      }
+      if (isRetiredImage2proVideoModel(snapshot.modelAlias)) {
+        throw new NewApiProviderError(retiredImage2proVideoModelReason, {
+          code: 'UNSUPPORTED_INPUT_COMBINATION',
           retryable: false,
         });
       }
@@ -1927,7 +1938,7 @@ function videoPlatformId(
 ): string | undefined {
   if (contract === 'newapi-unified-v1') return normalizeErrorField(payload.task_id);
   if (contract === 'newapi-video-v1') {
-    return image2proVideoContractForModel(modelAlias)
+    return image2proVideoContractForModel(modelAlias) || isRetiredImage2proVideoModel(modelAlias)
       ? normalizeErrorField(payload.id)
       : extractOpenAiVideoId(payload);
   }
@@ -2165,14 +2176,14 @@ function openaiVideoPayload(
 }
 
 /**
- * 将 Image2Pro 文本和普通参考图映射为插件白名单字段；不透传画布的分辨率或未确认媒体参数。
+ * 将 Image2Pro Seedance 的官方参数及冻结素材写入顶层 content；地址沿用 /v1/videos。
  * @param snapshot 已冻结的精确模型与参数，duration/seconds/durationSeconds 必须显式给出。
  * @param label 目标节点名称，仅用于现有提示词解析。
  * @param nodePrompt 节点保存的提示词，和文档或提示词连线按既有规则互斥。
  * @param inputs 通过 Domain 预检并应用资源顺序的输入。
  * @param nodePromptDocument 保留资源提及正文的冻结文档。
- * @param contract 精确模型对应的已确认参数与图片边界。
- * @returns New API /v1/videos 的 JSON 创建体；参考图按已排序输入发送。
+ * @param contract 精确模型对应的已确认参数与媒体边界。
+ * @returns New API /v1/videos 的 JSON 创建体；保留素材顺序、首尾帧角色及显式 false。
  * @throws 未适配字段、冲突别名、非法时长/比例或过长提示词在发送前失败。
  */
 function image2proVideoPayload(
@@ -2183,14 +2194,29 @@ function image2proVideoPayload(
   nodePromptDocument: PromptDocument | undefined,
   contract: Image2proVideoModelContract,
 ): Record<string, unknown> {
-  const { seconds, aspectRatio } = resolveImage2proVideoParameters(snapshot.parameters);
-  const prompt = resolveRequiredVideoPrompt(
-    snapshot,
-    label,
-    nodePrompt,
-    inputs.prompt,
-    nodePromptDocument,
+  const { seconds, aspectRatio, resolution, ...flags } = resolveImage2proVideoParameters(
+    snapshot.parameters,
   );
+  const source = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
+  const prompt =
+    source.explicit || inputs.prompt
+      ? resolveMappedPromptInput(source, inputs.prompt, 'video')
+      : '';
+  try {
+    resolveImage2proVideoParameters({ ...snapshot.parameters, prompt });
+  } catch (error) {
+    if (!(error instanceof Image2proVideoParameterError)) throw error;
+    throw invalidProviderParameter('video', error.parameter, error.message);
+  }
+  const visual = Boolean(
+    inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length,
+  );
+  if (!prompt.trim() && !visual) {
+    throw new NewApiProviderError('Seedance 文生视频需要提示词或视觉参考素材', {
+      code: 'VIDEO_PROMPT_REQUIRED',
+      retryable: false,
+    });
+  }
   if (prompt.length > contract.maxPromptLength) {
     throw invalidProviderParameter(
       'video',
@@ -2198,30 +2224,68 @@ function image2proVideoPayload(
       `长度不能超过 ${contract.maxPromptLength} 个字符`,
     );
   }
-  const payload: Record<string, unknown> = {
+  const media = orderedVideoMedia(snapshot, inputs).map((input) => {
+    const mediaType = input.snapshot.data.mediaType;
+    const url = officialVideoReferenceUrl(input, 'seedance-2', snapshot.modelAlias);
+    const mimeTypes = [
+      normalizedMimeType(input.snapshot.data.mimeType),
+      parseDataUrl(url)?.mimeType,
+    ].filter((mimeType): mimeType is string => Boolean(mimeType));
+    if (
+      mediaType === 'image' &&
+      mimeTypes.some(
+        (mimeType) =>
+          ![
+            'image/png',
+            'image/jpeg',
+            'image/webp',
+            'image/bmp',
+            'image/tiff',
+            'image/gif',
+            'image/heic',
+            'image/heif',
+          ].includes(mimeType),
+      )
+    ) {
+      throw invalidProviderParameter(
+        'video',
+        'content',
+        '参考图仅支持 JPEG、PNG、WebP、BMP、TIFF、GIF、HEIC 或 HEIF',
+      );
+    }
+    if (
+      mediaType === 'audio' &&
+      mimeTypes.some(
+        (mimeType) => !['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'].includes(mimeType),
+      )
+    ) {
+      throw invalidProviderParameter('video', 'content', '参考音频仅支持 MP3 或 WAV');
+    }
+    if (
+      mediaType === 'video' &&
+      mimeTypes.some((mimeType) => !['video/mp4', 'video/quicktime'].includes(mimeType))
+    ) {
+      throw invalidProviderParameter('video', 'content', '参考视频仅支持 MP4 或 QuickTime');
+    }
+    return {
+      type: `${mediaType}_url`,
+      [`${mediaType}_url`]: { url },
+      role:
+        input.role === 'firstFrame'
+          ? 'first_frame'
+          : input.role === 'lastFrame'
+            ? 'last_frame'
+            : `reference_${mediaType}`,
+    };
+  });
+  return {
     model: snapshot.modelAlias,
-    prompt,
+    content: [...(prompt.trim() ? [{ type: 'text', text: prompt }] : []), ...media],
     duration: seconds,
+    resolution,
+    ratio: aspectRatio ?? (visual ? 'adaptive' : '16:9'),
+    ...flags,
   };
-  if (aspectRatio !== undefined) payload.ratio = aspectRatio;
-  if (inputs.referenceImages.length) {
-    payload.images = inputs.referenceImages.map((input) => {
-      const url = inputImageUrl(input, 'video');
-      const mimeTypes = [
-        normalizedMimeType(input.snapshot.data.mimeType),
-        parseDataUrl(url)?.mimeType,
-      ].filter((mimeType): mimeType is string => Boolean(mimeType));
-      if (
-        mimeTypes.some(
-          (mimeType) => !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mimeType),
-        )
-      ) {
-        throw invalidProviderParameter('video', 'images', '仅支持 PNG、JPEG、WebP 或 GIF 参考图');
-      }
-      return url;
-    });
-  }
-  return payload;
 }
 
 /** 将新增 Moon 型号桥接成插件 decodeRequest 能消费的 metadata.content。 */
@@ -3983,10 +4047,16 @@ async function readResponseBytes(
 /**
  * 读取即将发送的请求体里的主提示词字段。
  *
- * Provider 自己组装的请求体一定包含该字段；缺失说明组装与记录逻辑不一致，
- * 必须在发送前明确失败，而不是记录一个推测值。
+ * 兼容顶层 prompt 与 Seedance content 文本块；纯视觉参考记录空文本。
+ * 缺失已知结构时明确失败，不用节点标签推测实际请求。
  */
 function sentPromptText(body: Record<string, unknown> | FormData): string {
+  if (!(body instanceof FormData) && Array.isArray(body.content)) {
+    return body.content
+      .filter((part) => isRecord(part) && part.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text as string)
+      .join('\n');
+  }
   const value = body instanceof FormData ? body.get('prompt') : body.prompt;
   if (typeof value !== 'string') throw new TypeError('New API 请求体缺少可记录的提示词字段');
   return value;
@@ -4123,9 +4193,10 @@ function videoPromptResources(
     });
   };
   if (
-    isRecord(body.metadata) &&
-    (Array.isArray(body.metadata.content) ||
-      (isRecord(body.metadata.input) && Array.isArray(body.metadata.input.media)))
+    Array.isArray(body.content) ||
+    (isRecord(body.metadata) &&
+      (Array.isArray(body.metadata.content) ||
+        (isRecord(body.metadata.input) && Array.isArray(body.metadata.input.media))))
   ) {
     for (const input of orderedVideoMedia(snapshot, inputs)) add(input);
     return resources;

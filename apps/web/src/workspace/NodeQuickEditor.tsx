@@ -35,6 +35,7 @@ import {
   resolveImageOutputParameters,
   implementedVideoModes,
   image2proVideoContractForModel,
+  isRetiredImage2proVideoModel,
   image2proVideoParameterKeys,
   Image2proVideoParameterError,
   isValidGenerationCount,
@@ -283,6 +284,7 @@ function supportsAutomaticVideoDuration(family: VideoModelFamily, modelAlias?: s
 
 /** Wan3 与 Seedance 2.x 可显式选择 adaptive 比例。 */
 function supportsAdaptiveVideoAspectRatio(family: VideoModelFamily, modelAlias?: string): boolean {
+  if (image2proVideoContractForModel(modelAlias)) return true;
   const moonContract = moonVideoContractForModel(modelAlias);
   return (
     moonContract?.aspectRatios.includes('adaptive') ??
@@ -335,6 +337,7 @@ const videoDurationContracts: Partial<
   wan3: { min: 2, max: 30, presets: [2, 4, 8, 12, 15, 20, 30] },
   'seedance-2': { min: 4, max: 15, presets: [4, 8, 12, 15] },
   'seedance-2.5': { min: 4, max: 30, presets: [4, 8, 12, 15, 20, 30] },
+  image2pro: { min: 4, max: 15, presets: [4, 8, 12, 15], default: 5 },
 };
 
 /** 按新 Moon 合同及当前输出分辨率解析时长范围；其它模型沿用既有家族合同。 */
@@ -391,6 +394,8 @@ function videoResolutionContractForModel(
   modelAlias?: string,
   allowMoonH3SuperResolution = false,
 ): readonly string[] | undefined {
+  const image2proContract = image2proVideoContractForModel(modelAlias);
+  if (image2proContract) return image2proContract.resolutions;
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract) return Object.keys(moonContract.resolutions);
   const family = videoFamilyForModel(modelAlias);
@@ -598,9 +603,8 @@ export function NodeQuickEditor({
       )?.filter((option) => !option.disabled);
   const durationValue = Number(durationDraft);
   const automaticDuration = supportsAutomaticDuration && durationValue === -1;
-  const durationIssue = image2proVideoContract
-    ? undefined
-    : node.data.mediaType === 'video' && videoFamily === 'moon-minimax-h3' && durationDraft === ''
+  const durationIssue =
+    node.data.mediaType === 'video' && videoFamily === 'moon-minimax-h3' && durationDraft === ''
       ? 'Moon MiniMax H3 必须选择 4 至 15 秒的视频时长'
       : node.data.mediaType === 'video' &&
           durationDraft !== '' &&
@@ -790,13 +794,18 @@ export function NodeQuickEditor({
   };
 
   /** Image2Pro 显式修改秒数或比例时收敛同义字段，保留其它参数供用户单独处理。 */
-  const updateImage2proParameter = (key: 'duration' | 'aspectRatio', value: unknown) => {
+  const updateImage2proParameter = (
+    key: 'duration' | 'aspectRatio' | 'resolution',
+    value: unknown,
+  ) => {
     if (!onParametersChange) return;
     const next: Record<string, unknown> = { ...parameters };
     const aliases =
       key === 'duration'
         ? ['duration', 'seconds', 'durationSeconds']
-        : ['aspectRatio', 'aspect_ratio', 'ratio'];
+        : key === 'resolution'
+          ? ['resolution', 'video_resolution', 'videoResolution']
+          : ['aspectRatio', 'aspect_ratio', 'ratio'];
     for (const alias of aliases) delete next[alias];
     if (value !== undefined && value !== '') next[key] = value;
     onParametersChange(next);
@@ -1099,89 +1108,63 @@ export function NodeQuickEditor({
             role="group"
             aria-label="媒体参数"
           >
-            {!image2proVideoContract && (
-              <NodeParameterSelect
-                label="视频清晰度"
-                value={normalizeCurrentOptionValue(parameters.resolution)}
-                options={mediaOptions.resolution}
-                onChange={(value) => updateParameter('resolution', value)}
-                className="node-quick-editor-select-group"
-                optionLayout="grid"
-              />
-            )}
-            {image2proVideoContract ? (
-              <label className="compact-select node-quick-editor-select-group">
-                <span className="compact-select-label">视频比例</span>
-                <Input
-                  className="compact-select-trigger"
-                  style={{ cursor: 'text' }}
-                  type="text"
-                  value={normalizeCurrentOptionValue(
-                    parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio,
-                  )}
-                  placeholder="例如 16:9（可选）"
-                  maxLength={image2proVideoContract.aspectRatio.maxLength}
-                  disabled={!onParametersChange}
-                  onChange={(event) =>
-                    updateImage2proParameter('aspectRatio', event.currentTarget.value)
-                  }
-                />
-              </label>
-            ) : (
-              <QuickOptionMenu
-                label="视频比例"
-                value={parameters.aspectRatio}
-                options={mediaOptions.aspectRatio}
-                aspectOptions
-                onChange={(value) => updateParameter('aspectRatio', value)}
-              />
-            )}
-            {image2proVideoContract ? (
-              <label className="compact-select node-quick-editor-select-group">
-                <span className="compact-select-label">时长（秒）</span>
-                <Input
-                  className="compact-select-trigger"
-                  style={{ cursor: 'text' }}
-                  type="number"
-                  inputMode="decimal"
-                  min={image2proVideoContract.duration.min}
-                  max={image2proVideoContract.duration.max}
-                  step="any"
-                  value={durationDraft}
-                  placeholder="请输入秒数"
-                  title="必须大于 0 秒，允许小数；3600 秒为网关安全上限，实际时长支持以供应商为准"
-                  disabled={!onParametersChange}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setDurationDraft(value);
-                    updateImage2proParameter(
-                      'duration',
-                      value === '' ? undefined : event.currentTarget.valueAsNumber,
-                    );
-                  }}
-                />
-              </label>
-            ) : (
-              <VideoDurationControl
-                value={durationDraft}
-                issue={durationIssue}
-                contract={durationContract}
-                sliderContract={moonVideoContract ? durationContract : undefined}
-                declaredDurations={declaredDurations}
-                supportsAutomaticDuration={supportsAutomaticDuration}
-                inputDisabled={!onParametersChange}
-                onChange={(value) => {
-                  setDurationDraft(value);
-                  if (value === '') updateParameter('duration', undefined);
-                  else if (
-                    Number.isSafeInteger(Number(value)) &&
-                    (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
-                  ) {
-                    updateParameter('duration', Number(value));
-                  }
-                }}
-              />
-            )}
+            <NodeParameterSelect
+              label="视频清晰度"
+              value={normalizeCurrentOptionValue(
+                image2proVideoContract
+                  ? (parameters.resolution ??
+                      parameters.video_resolution ??
+                      parameters.videoResolution)
+                  : parameters.resolution,
+              )}
+              options={mediaOptions.resolution}
+              onChange={(value) =>
+                image2proVideoContract
+                  ? updateImage2proParameter('resolution', value)
+                  : updateParameter('resolution', value)
+              }
+              className="node-quick-editor-select-group"
+              optionLayout="grid"
+            />
+            <QuickOptionMenu
+              label="视频比例"
+              value={
+                image2proVideoContract
+                  ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
+                  : parameters.aspectRatio
+              }
+              options={mediaOptions.aspectRatio}
+              aspectOptions
+              onChange={(value) =>
+                image2proVideoContract
+                  ? updateImage2proParameter('aspectRatio', value)
+                  : updateParameter('aspectRatio', value)
+              }
+            />
+            <VideoDurationControl
+              value={durationDraft}
+              issue={durationIssue}
+              contract={durationContract}
+              sliderContract={
+                moonVideoContract || image2proVideoContract ? durationContract : undefined
+              }
+              declaredDurations={declaredDurations}
+              supportsAutomaticDuration={supportsAutomaticDuration}
+              inputDisabled={!onParametersChange}
+              onChange={(value) => {
+                setDurationDraft(value);
+                if (value === '') {
+                  if (image2proVideoContract) updateImage2proParameter('duration', undefined);
+                  else updateParameter('duration', undefined);
+                } else if (
+                  Number.isSafeInteger(Number(value)) &&
+                  (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
+                ) {
+                  if (image2proVideoContract) updateImage2proParameter('duration', Number(value));
+                  else updateParameter('duration', Number(value));
+                }
+              }}
+            />
             <NodeParameterSelect
               label="完成后"
               value={resolveVideoCompletionAction(node.data)}
@@ -2504,6 +2487,9 @@ export function applyNodeGenerationDefaults(
 ): AssetFlowNode['data'] {
   const mediaType = data.mediaType;
   const parameters = readNodeMediaParameters(data);
+  if (mediaType === 'video' && isRetiredImage2proVideoModel(model?.id ?? data.modelAlias)) {
+    return { ...data, parameters };
+  }
   const image2proContract =
     mediaType === 'video'
       ? image2proVideoContractForModel(model?.id ?? data.modelAlias)
@@ -2565,13 +2551,17 @@ export function applyNodeGenerationDefaults(
     for (const field of ['resolution', 'aspectRatio'] as const) {
       if (
         image2proContract &&
-        (field === 'resolution' ||
-          parameters.aspect_ratio !== undefined ||
-          parameters.ratio !== undefined)
+        (field === 'resolution'
+          ? parameters.video_resolution !== undefined || parameters.videoResolution !== undefined
+          : parameters.aspect_ratio !== undefined || parameters.ratio !== undefined)
       )
         continue;
       if (parameters[field] !== undefined) continue;
-      const value = firstAvailableOption(options[field]);
+      const value = image2proContract
+        ? field === 'resolution'
+          ? image2proContract.defaultResolution
+          : '16:9'
+        : firstAvailableOption(options[field]);
       if (value !== undefined) parameters[field] = value;
     }
   }
@@ -2651,6 +2641,7 @@ function getMediaOptions(
   const resolvedModelAlias = modelAlias ?? model?.id;
   const family = videoFamilyForModel(resolvedModelAlias);
   const moonContract = moonVideoContractForModel(resolvedModelAlias);
+  const image2proContract = image2proVideoContractForModel(resolvedModelAlias);
   const resolutionContract =
     mediaType === 'video'
       ? videoResolutionContractForModel(modelAlias ?? model?.id, allowMoonH3SuperResolution)
@@ -2751,7 +2742,9 @@ function getMediaOptions(
     contractResolutionOptions ??
       declaredResolution ??
       (allowLegacyFallback ? videoResolutionOptions : []),
-    parameters.resolution,
+    image2proContract
+      ? (parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution)
+      : parameters.resolution,
     'resolution',
   ).map((option) =>
     resolutionContract && !resolutionContract.includes(option.value.toLowerCase())
@@ -2761,41 +2754,52 @@ function getMediaOptions(
   const ratioContract: readonly string[] | undefined =
     mediaType !== 'video'
       ? undefined
-      : moonContract
-        ? moonContract.aspectRatios
-        : family === 'moon-minimax-h3'
-          ? moonH3FixedAspectRatios
-          : family === 'minimax-h3' || supportsAdaptiveVideoAspectRatio(family, resolvedModelAlias)
-            ? [
-                'adaptive',
-                '1:1',
-                '16:9',
-                '9:16',
-                '4:3',
-                '3:4',
-                ...(family === 'wan3' ? [] : ['21:9']),
-              ]
-            : undefined;
+      : image2proContract
+        ? image2proContract.aspectRatios
+        : moonContract
+          ? moonContract.aspectRatios
+          : family === 'moon-minimax-h3'
+            ? moonH3FixedAspectRatios
+            : family === 'minimax-h3' ||
+                supportsAdaptiveVideoAspectRatio(family, resolvedModelAlias)
+              ? [
+                  'adaptive',
+                  '1:1',
+                  '16:9',
+                  '9:16',
+                  '4:3',
+                  '3:4',
+                  ...(family === 'wan3' ? [] : ['21:9']),
+                ]
+              : undefined;
   const declaredAspectRatios =
     declaredImageAspectRatios ?? (allowLegacyFallback ? aspectRatioOptions : []);
-  const supportedAspectRatios = moonContract
-    ? moonContract.aspectRatios.map(
-        (value) =>
-          declaredAspectRatios.find((option) => option.value === value) ??
-          aspectRatioOptions.find((option) => option.value === value) ?? { value, label: value },
-      )
-    : family === 'moon-minimax-h3'
-      ? moonH3FixedAspectRatios.map(
+  const supportedAspectRatios =
+    image2proContract || moonContract
+      ? (image2proContract ?? moonContract)!.aspectRatios.map(
           (value) =>
             declaredAspectRatios.find((option) => option.value === value) ??
             aspectRatioOptions.find((option) => option.value === value) ?? { value, label: value },
         )
-      : declaredAspectRatios.filter(
-          (option) => !ratioContract || ratioContract.includes(option.value),
-        );
+      : family === 'moon-minimax-h3'
+        ? moonH3FixedAspectRatios.map(
+            (value) =>
+              declaredAspectRatios.find((option) => option.value === value) ??
+              aspectRatioOptions.find((option) => option.value === value) ?? {
+                value,
+                label: value,
+              },
+          )
+        : declaredAspectRatios.filter(
+            (option) => !ratioContract || ratioContract.includes(option.value),
+          );
   const aspectRatio = ensureCurrentOption(
     supportedAspectRatios,
-    mediaType === 'image' ? imageAspectRatioValue : parameters.aspectRatio,
+    mediaType === 'image'
+      ? imageAspectRatioValue
+      : image2proContract
+        ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
+        : parameters.aspectRatio,
     'aspectRatio',
   ).map((option) => {
     if (ratioContract && !ratioContract.includes(option.value))
@@ -2860,7 +2864,7 @@ function getMediaOptions(
   );
   return {
     quality,
-    videoResolutionSupported: !image2proVideoContractForModel(resolvedModelAlias),
+    videoResolutionSupported: true,
     resolution: mediaType === 'image' ? imageResolution : videoResolution,
     aspectRatio,
     duration,

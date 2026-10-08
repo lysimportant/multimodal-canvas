@@ -1,5 +1,6 @@
 import {
   image2proVideoContractForModel,
+  isRetiredImage2proVideoModel,
   type MediaType,
   type ModelSelection,
 } from '@multimodal-canvas/domain';
@@ -273,6 +274,7 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
   if (!isRecord(candidate)) return undefined;
   const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
   if (!id) return undefined;
+  if (isRetiredImage2proVideoModel(id)) return undefined;
   const explicitMediaTypes = extractMediaTypes(candidate);
   const inferredMediaTypes =
     explicitMediaTypes.length > 0 ? explicitMediaTypes : inferMediaTypes(id);

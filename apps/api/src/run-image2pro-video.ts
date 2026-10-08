@@ -1,7 +1,10 @@
 import {
   image2proVideoContractForModel,
+  isRetiredImage2proVideoModel,
+  retiredImage2proVideoModelReason,
   portRoleSchema,
   precheckVideoGenerationInputs,
+  renderPromptDocument,
   videoInputRoleForPromptMention,
   videoModeForPromptMentions,
   type RunInputSnapshot,
@@ -26,7 +29,7 @@ export class RunImage2proVideoError extends Error {
 }
 
 /**
- * 按已冻结版本预检实际执行的 Image2Pro 节点，其他模型继续沿用既有校验。
+ * 按已冻结版本预检实际执行的 Image2Pro 节点；退役 Flash 拒绝新运行，其他模型沿用既有校验。
  * @param snapshot 已完成资产归属、版本、模型和凭据冻结的快照；不修改其内容。
  * @returns 合同通过时无返回值；不读取素材字节，不创建或恢复任务。
  * @throws RunImage2proVideoError 参数、模式、媒体类型或参考数量不符合已确认合同。
@@ -39,11 +42,16 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
     if (
       node.data.mode !== 'generate' ||
       node.data.enabled === false ||
-      node.data.mediaType !== 'video' ||
-      !image2proVideoContractForModel(modelAlias)
+      node.data.mediaType !== 'video'
     ) {
       continue;
     }
+    if (isRetiredImage2proVideoModel(modelAlias)) {
+      throw new RunImage2proVideoError(node.id, [
+        { code: 'UNSUPPORTED_INPUT_COMBINATION', message: retiredImage2proVideoModelReason },
+      ]);
+    }
+    if (!image2proVideoContractForModel(modelAlias)) continue;
     const inputs: RunInputSnapshot[] =
       node.id === snapshot.targetNodeId
         ? [...snapshot.inputs]
@@ -80,7 +88,7 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
         throw new RunImage2proVideoError(node.id, [
           {
             code: 'UNSUPPORTED_INPUT_COMBINATION',
-            message: 'Image2Pro 当前模式仅支持普通图片参考，不支持首尾帧或音视频提及',
+            message: 'Image2Pro 当前模式不支持此资源提及，请使用全能参考模式或明确连接首尾帧',
           },
         ]);
       }
@@ -94,6 +102,9 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
         sortOrder: 10_000 + mention.blockOrder,
         sourceAssetId: mention.assetId,
         sourceAssetVersion: mention.assetVersion,
+        ...(mention.durationSeconds !== undefined
+          ? { sourceDurationSeconds: mention.durationSeconds }
+          : {}),
         snapshot: {
           id: `mention:${mention.mentionId}`,
           type: mention.mediaType,
@@ -106,17 +117,32 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
         },
       });
     }
+    const parameters =
+      node.id === snapshot.targetNodeId
+        ? snapshot.parameters
+        : {
+            ...(node.data.parameters ?? {}),
+            ...(node.data.inferenceStrength
+              ? { inferenceStrength: node.data.inferenceStrength }
+              : {}),
+          };
+    const textInput = inputs.find(
+      (input) =>
+        input.snapshot.data.mediaType === 'text' &&
+        (input.role === 'prompt' || input.role === 'content'),
+    );
+    const nodePrompt =
+      parameters.prompt ??
+      (node.data.promptDocument
+        ? renderPromptDocument(node.data.promptDocument)
+        : node.data.prompt);
+    const prompt =
+      textInput?.role === 'content'
+        ? textInput.snapshot.data.prompt
+        : (nodePrompt ?? textInput?.snapshot.data.prompt);
     const result = precheckVideoGenerationInputs([...inputs, ...mentionInputs], {
       modelAlias,
-      parameters:
-        node.id === snapshot.targetNodeId
-          ? snapshot.parameters
-          : {
-              ...(node.data.parameters ?? {}),
-              ...(node.data.inferenceStrength
-                ? { inferenceStrength: node.data.inferenceStrength }
-                : {}),
-            },
+      parameters: { ...parameters, ...(prompt !== undefined ? { prompt } : {}) },
       videoMode: videoModeForPromptMentions(node.data.videoMode, mentionInputs.length > 0),
     });
     if (result.issues.length) throw new RunImage2proVideoError(node.id, result.issues);

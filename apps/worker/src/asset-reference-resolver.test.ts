@@ -84,10 +84,10 @@ describe('StoredAssetReferenceResolver', () => {
       role: 'referenceImage',
       assetId: imageAssetId,
       mimeType: 'image/png',
-      modelAlias: '无限制-Flash-MAX-Video',
+      modelAlias: 'Seedance2.0 0.9r',
       contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
     });
-    snapshot.parameters = { duration: 5.5, aspectRatio: '9:16' };
+    snapshot.parameters = { duration: 5, resolution: '1080p', aspectRatio: '9:16' };
     snapshot.nodes[1]!.data.prompt = 'Animate this reference with a slow camera movement.';
     snapshot.inputs[0]!.sourceAssetVersion = 2;
     const { repository, blobStore } = fixtures({
@@ -160,10 +160,18 @@ describe('StoredAssetReferenceResolver', () => {
       'https://newapi.example.test/v1/videos/task_image2pro_public',
     ]);
     expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
-      model: '无限制-Flash-MAX-Video',
-      duration: 5.5,
+      model: 'Seedance2.0 0.9r',
+      duration: 5,
+      resolution: '1080p',
       ratio: '9:16',
-      images: [`data:image/png;base64,${frozen.toString('base64')}`],
+      content: [
+        { type: 'text', text: 'Animate this reference with a slow camera movement.' },
+        {
+          type: 'image_url',
+          image_url: { url: `data:image/png;base64,${frozen.toString('base64')}` },
+          role: 'reference_image',
+        },
+      ],
     });
     expect(resultArchiver).toHaveBeenCalledOnce();
     expect(resultArchiver.mock.calls[0]![0]).toMatchObject({
@@ -519,6 +527,13 @@ describe('StoredAssetReferenceResolver', () => {
 
   it.each([
     { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
+    {
+      modelAlias: 'Seedance2.0 0.9r',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
+    { modelAlias: 'Seedance2.0 0.9r', mediaType: 'video' as const, role: 'content' as const },
+    { modelAlias: 'Seedance2.0 0.9r', mediaType: 'audio' as const, role: 'audioTrack' as const },
     { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
     {
       modelAlias: 'seedance2.0-9-3-3-PT',
@@ -613,6 +628,8 @@ describe('StoredAssetReferenceResolver', () => {
 
   it.each([
     { modelAlias: 'MiniMax-H3', mediaType: 'video' as const },
+    { modelAlias: 'Seedance2.0 0.9r', mediaType: 'image' as const },
+    { modelAlias: 'Seedance2.0 0.9r', mediaType: 'audio' as const },
     { modelAlias: 'MiniMax-H3', mediaType: 'audio' as const },
     { modelAlias: 'wan3.0-video', mediaType: 'image' as const },
     { modelAlias: 'doubao-seedance-2-0-260128', mediaType: 'audio' as const },
@@ -792,6 +809,7 @@ describe('StoredAssetReferenceResolver', () => {
 
   it.each([
     { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
+    { modelAlias: 'Seedance2.0 0.9r', mediaType: 'video' as const, role: 'content' as const },
     { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
     {
       modelAlias: 'seedance2.0-9-3-3-PT',

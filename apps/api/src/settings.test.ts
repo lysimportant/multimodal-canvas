@@ -34,12 +34,20 @@ describe('New API 模型目录规范化', () => {
         { id: 'Seedance2.0 0.9r-other' },
       ],
     });
-    expect(models.map((model) => model.mediaTypes)).toEqual([
-      ['video'],
-      ['video'],
-      ['video'],
-      ['text'],
-    ]);
+    expect(models.map((model) => model.mediaTypes)).toEqual([['video'], ['text']]);
+    expect(models.map((model) => model.id)).toEqual(['Seedance2.0 0.9r', 'Seedance2.0 0.9r-other']);
+  });
+
+  it('两个退役 Flash 型号不因目录声明媒体或能力重新开放', () => {
+    expect(
+      normalizeModelsPayload({
+        data: ['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'].map((id) => ({
+          id,
+          mediaTypes: ['video', 'text'],
+          capabilities: { duration: [5], resolution: ['720p'] },
+        })),
+      }),
+    ).toEqual([]);
   });
 
   it('合并同名模型的媒体类型、能力、限制和价格', () => {

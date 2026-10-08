@@ -35,7 +35,7 @@ async function completedRun(service: MemoryRunService, id: string): Promise<RunR
 }
 
 /** 构造登录用户、冻结素材及真实 Provider，网络仅接受测试任务路径。 */
-async function fixture(modelAlias: string, references: boolean, invalidResolution = false) {
+async function fixture(modelAlias: string, references: boolean, invalidQuality = false) {
   const assetStore = new MemoryAssetStore();
   const projectStore = new MemoryProjectStore();
   const authStore = new MemoryAuthStore();
@@ -114,15 +114,16 @@ async function fixture(modelAlias: string, references: boolean, invalidResolutio
             : {}),
           parameters: {
             duration: 5,
+            resolution: '720p',
             aspectRatio: '9:16',
-            ...(invalidResolution ? { resolution: '720p' } : {}),
+            ...(invalidQuality ? { quality: 'high' } : {}),
           },
         },
       },
     ],
     edges: [],
   };
-  await projectStore.updateCanvas(project.id, canvas);
+  const savedCanvas = await projectStore.updateCanvas(project.id, canvas);
   const publicTaskId = 'task_image2pro_public';
   const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
     if (url === 'https://newapi.example.test/v1/videos' && init?.method === 'POST') {
@@ -163,11 +164,22 @@ async function fixture(modelAlias: string, references: boolean, invalidResolutio
     }),
   });
   apps.push(app);
-  return { app, session, project, runService, fetchImpl, publicTaskId, frozenImage };
+  return {
+    app,
+    session,
+    project,
+    runService,
+    fetchImpl,
+    publicTaskId,
+    frozenImage,
+    assetStore,
+    projectStore,
+    canvas: savedCanvas,
+  };
 }
 
 describe('Image2Pro HTTP 运行合同', () => {
-  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video', 'Seedance2.0 0.9r'])(
+  it.each(['Seedance2.0 0.9r'])(
     '%s 文生视频和图片提及均使用标准视频路径与公共任务 ID',
     async (modelAlias) => {
       for (const references of [false, true]) {
@@ -185,15 +197,14 @@ describe('Image2Pro HTTP 运行合同', () => {
         const body = JSON.parse(String(context.fetchImpl.mock.calls[0]![1]!.body));
         expect(body).toMatchObject({ model: modelAlias, duration: 5, ratio: '9:16' });
         expect(Object.keys(body).sort()).toEqual(
-          (references
-            ? ['model', 'prompt', 'duration', 'ratio', 'images']
-            : ['model', 'prompt', 'duration', 'ratio']
-          ).sort(),
+          ['model', 'content', 'duration', 'resolution', 'ratio'].sort(),
         );
         if (references)
-          expect(body.images).toEqual([
-            `data:image/png;base64,${context.frozenImage.toString('base64')}`,
-          ]);
+          expect(body.content).toContainEqual({
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${context.frozenImage.toString('base64')}` },
+            role: 'reference_image',
+          });
         expect(run.providerJob).toMatchObject({
           platformJobId: context.publicTaskId,
           payload: { contract: 'newapi-video-v1' },
@@ -203,8 +214,8 @@ describe('Image2Pro HTTP 运行合同', () => {
     },
   );
 
-  it('旧分辨率必须先移除，不能在真实 POST 时静默忽略', async () => {
-    const context = await fixture('无限制-Flash-MAX-Video', true, true);
+  it('不支持的旧质量必须先移除，不能在真实 POST 时静默忽略', async () => {
+    const context = await fixture('Seedance2.0 0.9r', true, true);
     const submitted = await context.app.inject({
       method: 'POST',
       url: '/v1/nodes/video-target/runs',
@@ -212,7 +223,73 @@ describe('Image2Pro HTTP 运行合同', () => {
       headers: { authorization: `Bearer ${context.session.accessToken}` },
     });
     expect(submitted.statusCode, submitted.body).toBe(400);
-    expect(submitted.body).toContain('resolution');
+    expect(submitted.body).toContain('quality');
     expect(context.fetchImpl).not.toHaveBeenCalled();
   });
+
+  it.each(['video', 'audio'] as const)(
+    '冻结 %s 提及时长单段或累计非法时，零 Run、零 POST',
+    async (mediaType) => {
+      for (const durations of [[1.99], [15.01], [8, 8]]) {
+        const context = await fixture('Seedance2.0 0.9r', true);
+        const blocks = context.canvas.nodes[0]!.data.promptDocument!.blocks;
+        for (const [index, durationSeconds] of durations.entries()) {
+          const asset = await context.assetStore.create({
+            ownerId: context.session.user.id,
+            projectId: context.project.id,
+            name: `${mediaType}-${index}`,
+            mediaType,
+            mimeType: mediaType === 'video' ? 'video/mp4' : 'audio/mpeg',
+            content: Buffer.from(`frozen-${mediaType}-${index}`),
+            metadata: { durationSeconds },
+          });
+          // 最新版本合法不能覆盖用户明确选择的旧版本时长。
+          await context.assetStore.createVersion(asset.id, {
+            content: Buffer.from('newer-valid-media'),
+            metadata: { durationSeconds: 2 },
+          });
+          blocks.push({
+            type: 'mention',
+            mentionId: `media-${index}`,
+            assetId: asset.id,
+            assetVersion: 1,
+            mediaType,
+            label: '参考素材',
+          });
+        }
+        await context.projectStore.updateCanvas(context.project.id, context.canvas);
+        const submitted = await context.app.inject({
+          method: 'POST',
+          url: '/v1/nodes/video-target/runs',
+          payload: { projectId: context.project.id },
+          headers: { authorization: `Bearer ${context.session.accessToken}` },
+        });
+        expect(submitted.statusCode, submitted.body).toBe(400);
+        expect(submitted.json()).toMatchObject({ code: 'UNSUPPORTED_INPUT_COMBINATION' });
+        expect(submitted.body).toContain(
+          durations.length > 1 ? '累计时长不能超过 15 秒' : '单段时长必须为 2 至 15 秒',
+        );
+        expect(await context.runService.listByProject(context.project.id)).toEqual([]);
+        expect(context.fetchImpl).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+    '%s 在 API 保存 Run 前拒绝，不发送 Provider 请求',
+    async (modelAlias) => {
+      const context = await fixture(modelAlias, false);
+      const submitted = await context.app.inject({
+        method: 'POST',
+        url: '/v1/nodes/video-target/runs',
+        payload: { projectId: context.project.id },
+        headers: { authorization: `Bearer ${context.session.accessToken}` },
+      });
+      expect(submitted.statusCode, submitted.body).toBe(400);
+      expect(submitted.json()).toMatchObject({ code: 'model_unavailable' });
+      expect(submitted.body).toContain(modelAlias);
+      expect(await context.runService.listByProject(context.project.id)).toEqual([]);
+      expect(context.fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 });

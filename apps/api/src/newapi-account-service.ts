@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Prisma, PrismaClient, type NewApiIdentity, type NewApiGroupBinding } from '@prisma/client';
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 import {
+  isRetiredImage2proVideoModel,
   runSnapshotSchema,
   type MediaType,
   type NewApiExecutionAuthority,
@@ -733,7 +734,11 @@ export class NewApiAccountService {
       throw new NewApiAccountError('credential_not_found', '分组模型不存在或不属于当前账号', 404);
     return groups.flatMap((group) =>
       parseCatalog(group.catalog)
-        .filter((model) => !mediaType || model.media_type === mediaType)
+        .filter(
+          (model) =>
+            !isRetiredImage2proVideoModel(model.id) &&
+            (!mediaType || model.media_type === mediaType),
+        )
         .map((model) => ({
           id: model.id,
           name: model.name ?? model.id,

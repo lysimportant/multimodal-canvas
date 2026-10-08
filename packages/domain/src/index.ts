@@ -4,6 +4,8 @@ import { moonVideoContractForModel } from './moon-video-contract.js';
 import {
   image2proVideoContractForModel,
   Image2proVideoParameterError,
+  isRetiredImage2proVideoModel,
+  retiredImage2proVideoModelReason,
   resolveImage2proVideoParameters,
 } from './image2pro-video-contract.js';
 export * from './video-recreation.js';
@@ -1885,17 +1887,41 @@ function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
+  if (isRetiredImage2proVideoModel(modelAlias)) {
+    return {
+      selectable: false,
+      livePost: false,
+      roles: [],
+      reason: retiredImage2proVideoModelReason,
+    };
+  }
   const image2proContract = image2proVideoContractForModel(modelAlias);
   if (image2proContract) {
     if (!image2proContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
     if (mode === 'text_to_video') {
       return { selectable: true, livePost: true, roles: textToVideoRoles };
     }
+    if (mode === 'first_frame') {
+      return {
+        selectable: true,
+        livePost: true,
+        roles: firstFrameRoles,
+        requiredRoles: ['firstFrame'],
+      };
+    }
+    if (mode === 'first_last_frame') {
+      return {
+        selectable: true,
+        livePost: true,
+        roles: firstLastFrameRoles,
+        requiredRoles: ['firstFrame', 'lastFrame'],
+      };
+    }
     return {
       selectable: true,
       livePost: true,
-      roles: image2proContract.confirmedInputRoles,
-      repeatableRoles: ['referenceImage', 'character', 'style'],
+      roles: omniReferenceRoles,
+      repeatableRoles: referenceRepeatableRoles,
       roleMediaTypes: referenceRoleMediaTypes,
     };
   }
@@ -2632,12 +2658,80 @@ function applyReferenceFamilyLimits(
   if (image2proContract) {
     const imageCount =
       inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
-    if (imageCount > image2proContract.referenceLimits.images) {
-      issues.push({
-        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-        role: 'referenceImage',
-        message: `Image2Pro 参考图数量超过模型上限 ${image2proContract.referenceLimits.images}`,
-      });
+    for (const [role, count, limit, label] of [
+      ['referenceImage', imageCount, image2proContract.referenceLimits.images, '参考图'],
+      ['content', inputSet.content.length, image2proContract.referenceLimits.videos, '参考视频'],
+      [
+        'audioTrack',
+        inputSet.audioTrack.length,
+        image2proContract.referenceLimits.audios,
+        '参考音频',
+      ],
+    ] as const) {
+      if (count > limit)
+        issues.push({
+          code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
+          role,
+          message: `Image2Pro ${label}数量超过模型上限 ${limit}`,
+        });
+    }
+    if (
+      imageCount + inputSet.content.length + inputSet.audioTrack.length >
+      image2proContract.referenceLimits.total
+    ) {
+      issues.push(
+        videoCombinationIssue(
+          `Image2Pro 参考素材总数不能超过 ${image2proContract.referenceLimits.total}`,
+        ),
+      );
+    }
+    if (
+      (inputSet.firstFrame || inputSet.lastFrame) &&
+      (imageCount || inputSet.content.length || inputSet.audioTrack.length)
+    ) {
+      issues.push(videoCombinationIssue('首帧或尾帧不能与其它参考素材混用'));
+    }
+    if (
+      inputSet.audioTrack.length &&
+      !imageCount &&
+      !inputSet.content.length &&
+      !inputSet.firstFrame &&
+      !inputSet.lastFrame
+    ) {
+      issues.push(videoCombinationIssue('Seedance 2.0 不支持只用参考音频生成视频'));
+    }
+    const durationLimits = image2proContract.referenceDurationSeconds;
+    for (const [role, references, label] of [
+      ['content', inputSet.content, '参考视频'],
+      ['audioTrack', inputSet.audioTrack, '参考音频'],
+    ] as const) {
+      let totalDuration = 0;
+      for (const input of references) {
+        const duration = input.sourceDurationSeconds;
+        // Web 草稿和历史素材可能尚无版本时长；只验证已冻结的事实，不从生成时长推断。
+        if (duration === undefined) continue;
+        if (
+          !Number.isFinite(duration) ||
+          duration < durationLimits.min ||
+          duration > durationLimits.max
+        ) {
+          issues.push(
+            videoCombinationIssue(
+              `Image2Pro ${label}单段时长必须为 ${durationLimits.min} 至 ${durationLimits.max} 秒`,
+              role,
+            ),
+          );
+        }
+        if (Number.isFinite(duration) && duration > 0) totalDuration += duration;
+      }
+      if (totalDuration > durationLimits.total) {
+        issues.push(
+          videoCombinationIssue(
+            `Image2Pro ${label}累计时长不能超过 ${durationLimits.total} 秒`,
+            role,
+          ),
+        );
+      }
     }
     return;
   }
@@ -2778,6 +2872,15 @@ export function precheckVideoGenerationInputs(
   const mode = options.videoMode;
   const family = videoFamilyForModel(options.modelAlias);
 
+  if (isRetiredImage2proVideoModel(options.modelAlias)) {
+    issues.push(videoCombinationIssue(retiredImage2proVideoModelReason));
+    return {
+      operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),
+      inputSet,
+      issues,
+    };
+  }
+
   if (mode) {
     const capability = videoModeCapability(mode, options.modelAlias);
     const allowed = new Set<PortRole>(capability.roles);
@@ -2860,10 +2963,22 @@ export function precheckVideoGenerationInputs(
   if (image2proContract) {
     // 无显式模式的历史输入也要验证媒体类型，避免 referenceImage 角色承载音视频。
     if (!mode) {
-      for (const role of ['referenceImage', 'character', 'style'] as const) {
-        for (const input of inputSet[role]) {
-          if (input.snapshot.data.mediaType !== 'image') {
-            issues.push(videoCombinationIssue(`Image2Pro 的 ${role} 只支持图片参考`, role));
+      for (const role of [
+        'firstFrame',
+        'lastFrame',
+        'referenceImage',
+        'character',
+        'style',
+        'content',
+        'audioTrack',
+      ] as const) {
+        for (const input of videoInputsForRole(inputSet, role)) {
+          const mediaType =
+            role === 'content' ? 'video' : role === 'audioTrack' ? 'audio' : 'image';
+          if (input.snapshot.data.mediaType !== mediaType) {
+            issues.push(
+              videoCombinationIssue(`Image2Pro 的 ${role} 只支持 ${mediaType} 参考`, role),
+            );
           }
         }
       }

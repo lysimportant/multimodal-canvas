@@ -13,7 +13,7 @@ function snapshot(): RunSnapshot {
     projectId: 'project',
     targetNodeId: 'video',
     canvasRevision: 1,
-    modelAlias: '无限制-Flash-MAX-Video',
+    modelAlias: 'Seedance2.0 0.9r',
     parameters: { duration: 5 },
     submittedAt: '2026-10-07T12:00:00.000Z',
     nodes: [
@@ -26,7 +26,7 @@ function snapshot(): RunSnapshot {
           mediaType: 'video',
           mode: 'generate',
           videoMode: 'omni_reference',
-          modelAlias: '无限制-Flash-MAX-Video',
+          modelAlias: 'Seedance2.0 0.9r',
           parameters: { duration: 5 },
         },
       },
@@ -73,6 +73,24 @@ function mention(index: number, assetVersion = 1): FrozenPromptMention {
 }
 
 describe('Image2Pro Run 提交预检', () => {
+  it('节点正文中的参数覆盖标记在保存 Run 前拒绝', () => {
+    const frozen = snapshot();
+    frozen.nodes[0]!.data.videoMode = 'text_to_video';
+    frozen.nodes[0]!.data.prompt = 'A scene --resolution 4k';
+    expect(() => validateRunImage2proVideo(frozen)).toThrow('不能包含覆盖生成参数');
+  });
+  it.each(['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
+    '%s 在保存 Run 前拒绝，未写视频模式也不回落到通用路径',
+    (modelAlias) => {
+      const frozen = snapshot();
+      frozen.modelAlias = modelAlias;
+      delete frozen.nodes[0]!.data.videoMode;
+      const before = structuredClone(frozen);
+      expect(() => validateRunImage2proVideo(frozen)).toThrow('Flash 视频模型已停止适配');
+      expect(frozen).toEqual(before);
+    },
+  );
+
   it('连线与同版本提及去重，第十张或另一版本图片明确拒绝', () => {
     const frozen = snapshot();
     frozen.inputs = Array.from({ length: 9 }, (_, index) => imageInput(index));
@@ -91,23 +109,53 @@ describe('Image2Pro Run 提交预检', () => {
     expect(frozen.nodes[0]!.data.videoMode).toBe('text_to_video');
   });
 
-  it.each(['first_frame', 'first_last_frame', 'video_edit', 'video_extend'] as const)(
-    '尚未开放的 %s 在排队前拒绝',
-    (videoMode) => {
-      const frozen = snapshot();
-      frozen.nodes[0]!.data.videoMode = videoMode;
-      frozen.inputs = [imageInput(0)];
-      expect(() => validateRunImage2proVideo(frozen)).toThrow(RunImage2proVideoError);
-    },
-  );
+  it.each(['video_edit', 'video_extend'] as const)('尚未开放的 %s 在排队前拒绝', (videoMode) => {
+    const frozen = snapshot();
+    frozen.nodes[0]!.data.videoMode = videoMode;
+    frozen.inputs = [imageInput(0)];
+    expect(() => validateRunImage2proVideo(frozen)).toThrow(RunImage2proVideoError);
+  });
 
-  it('音视频提及不能绕过普通图片合同', () => {
+  it('全能参考吸收音视频提及，纯音频仍拒绝', () => {
     for (const mediaType of ['audio', 'video'] as const) {
       const frozen = snapshot();
-      frozen.promptMentions = [{ ...mention(0), mediaType }];
-      expect(() => validateRunImage2proVideo(frozen)).toThrow('不支持首尾帧或音视频提及');
+      frozen.promptMentions = [mention(0), { ...mention(1), mediaType }];
+      expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
     }
+    const audioOnly = snapshot();
+    audioOnly.promptMentions = [{ ...mention(0), mediaType: 'audio' }];
+    expect(() => validateRunImage2proVideo(audioOnly)).toThrow('不支持只用参考音频');
   });
+
+  it.each(['audio', 'video'] as const)(
+    '冻结 %s 提及时长进入预检，单段及累计非法明确拒绝',
+    (mediaType) => {
+      for (const durations of [[2], [15], [2, 13], [undefined]]) {
+        const frozen = snapshot();
+        frozen.promptMentions = [
+          mention(0),
+          ...durations.map((durationSeconds, index) => ({
+            ...mention(index + 1),
+            mediaType,
+            ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+          })),
+        ];
+        expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
+      }
+      for (const durations of [[1.99], [15.01], [8, 8]]) {
+        const frozen = snapshot();
+        frozen.promptMentions = [
+          mention(0),
+          ...durations.map((durationSeconds, index) => ({
+            ...mention(index + 1),
+            mediaType,
+            durationSeconds,
+          })),
+        ];
+        expect(() => validateRunImage2proVideo(frozen)).toThrow(RunImage2proVideoError);
+      }
+    },
+  );
 
   it('检查实际执行的上游视频参数，跳过来源或禁用节点并保持其他模型行为', () => {
     const frozen = snapshot();
@@ -123,8 +171,8 @@ describe('Image2Pro Run 提交预检', () => {
     frozen.parameters = {};
     frozen.nodes.push(target);
     video.data.videoMode = 'text_to_video';
-    video.data.parameters = { duration: 5, resolution: '720p' };
-    expect(() => validateRunImage2proVideo(frozen)).toThrow('resolution');
+    video.data.parameters = { duration: 5, quality: 'high' };
+    expect(() => validateRunImage2proVideo(frozen)).toThrow('quality');
     video.data.enabled = false;
     expect(() => validateRunImage2proVideo(frozen)).not.toThrow();
     video.data.enabled = true;

@@ -62,6 +62,13 @@ async function installFixture(
   const origin = webUrl.origin;
   const mediaType = scenario.mediaType ?? 'image';
   const modelAlias = scenario.modelAlias ?? 'gpt-image-2.5-sunburst';
+  const frameRoles =
+    scenario.videoMode === 'first_frame'
+      ? ['firstFrame']
+      : scenario.videoMode === 'first_last_frame'
+        ? ['firstFrame', 'lastFrame']
+        : [];
+  const hasReferenceAsset = Boolean(scenario.referenceImage || frameRoles.length);
   const user = {
     id: 'parameter-user',
     email: 'parameter@example.test',
@@ -119,10 +126,33 @@ async function installFixture(
                 : {}),
             },
           },
+          ...frameRoles.map((role, index) => ({
+            id: `fixture-${role}`,
+            type: 'image',
+            position: { x: 20, y: 130 + index * 250 },
+            width: 240,
+            height: 180,
+            data: {
+              label: role === 'firstFrame' ? '首帧素材' : '尾帧素材',
+              mediaType: 'image',
+              mode: 'source',
+              enabled: true,
+              assetId: 'fixture-image',
+              mimeType: 'image/jpeg',
+              contentUrl: '/v1/assets/fixture-image/versions/3/content',
+            },
+          })),
         ],
-    edges: [],
+    edges: frameRoles.map((role, order) => ({
+      id: `fixture-edge-${role}`,
+      sourceNodeId: `fixture-${role}`,
+      sourceHandle: 'output:image',
+      targetNodeId: 'parameter-node',
+      targetHandle: `input:${role}`,
+      order,
+    })),
   });
-  const referenceAssets = scenario.referenceImage
+  const referenceAssets = hasReferenceAsset
     ? [
         {
           id: 'fixture-image',
@@ -197,14 +227,10 @@ async function installFixture(
       return json(route, { settings: { defaultModels: {} } });
     if (method === 'GET' && path === '/v1/prompt-skills') return json(route, { skills: [] });
     if (method === 'GET' && path === '/v1/assets') return json(route, { assets: referenceAssets });
-    if (
-      scenario.referenceImage &&
-      method === 'POST' &&
-      path === '/v1/assets/fixture-image/access-url'
-    )
+    if (hasReferenceAsset && method === 'POST' && path === '/v1/assets/fixture-image/access-url')
       return json(route, { url: origin + '/v1/assets/fixture-image/versions/3/content' });
     if (
-      scenario.referenceImage &&
+      hasReferenceAsset &&
       method === 'GET' &&
       (path === '/v1/assets/fixture-image/versions/3/content' ||
         path === '/v1/assets/fixture-image/versions/3/derivatives/thumbnail')
@@ -324,7 +350,7 @@ async function choose(page: Page, label: string, option: RegExp) {
 }
 
 /** 打开独立时长浮卡并校验固定滑轨合同；只读取控件，不触发参数保存。 */
-async function openDuration(page: Page) {
+async function openDuration(page: Page, limits = { min: 5, max: 30 }) {
   const trigger = page.getByRole('button', { name: /^时长（秒）：/ });
   await trigger.click();
   const card = page.getByRole('dialog', { name: '视频时长', exact: true });
@@ -332,8 +358,8 @@ async function openDuration(page: Page) {
   await expect(card).toBeVisible();
   await expect(card).toBeInViewport({ ratio: 1 });
   await expect(slider).toHaveAttribute('type', 'range');
-  await expect(slider).toHaveAttribute('min', '5');
-  await expect(slider).toHaveAttribute('max', '30');
+  await expect(slider).toHaveAttribute('min', String(limits.min));
+  await expect(slider).toHaveAttribute('max', String(limits.max));
   await expect(slider).toHaveAttribute('step', '1');
   await expect(slider).toBeInViewport({ ratio: 1 });
   await expect
@@ -378,8 +404,7 @@ test.describe('Image2Pro 参数与调用', () => {
   test.describe.configure({ timeout: 60_000 });
 
   for (const [modelAlias, referenceImage] of [
-    ['无限制-Flash-中配-Video', false],
-    ['无限制-Flash-MAX-Video', true],
+    ['Seedance2.0 0.9r', false],
     ['Seedance2.0 0.9r', true],
   ] as const) {
     test(`${modelAlias} 明确清理旧参数后按精确模型提交${referenceImage ? '图片参考' : '文生视频'}`, async ({
@@ -389,17 +414,17 @@ test.describe('Image2Pro 参数与调用', () => {
       const fixture = await installFixture(page, baseURL, {
         mediaType: 'video',
         modelAlias,
-        parameters: { resolution: '720p', duration: 5, aspectRatio: '16:9' },
+        parameters: { resolution: '720p', duration: 7.25, aspectRatio: '16:9', quality: 'high' },
         videoMode: referenceImage ? 'omni_reference' : 'text_to_video',
         referenceImage,
-        capabilities: { mentionMediaTypes: ['image'], resolution: ['720p'] },
+        capabilities: { mentionMediaTypes: ['image', 'video', 'audio'], resolution: ['720p'] },
       });
       const node = page.locator('.react-flow__node[data-id="parameter-node"]');
       const originalBounds = (await node.boundingBox())!;
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
       await openParameters(page);
-      await expect(page.getByRole('region', { name: '生成参数' })).toContainText('resolution');
-      await expect(page.getByRole('region', { name: '生成参数' })).toContainText('720p');
+      await expect(page.getByRole('region', { name: '生成参数' })).toContainText('quality');
+      await expect(page.getByRole('region', { name: '生成参数' })).toContainText(/720p/i);
       expect(fixture.patches).toHaveLength(0);
       expect(fixture.submissions).toHaveLength(0);
       await page.screenshot({
@@ -407,14 +432,18 @@ test.describe('Image2Pro 参数与调用', () => {
         animations: 'disabled',
       });
       await page.getByRole('button', { name: '移除不支持的参数', exact: true }).click();
-      await expect(page.getByRole('combobox', { name: /^视频清晰度：/ })).toHaveCount(0);
-      const durationInput = page.getByRole('spinbutton', { name: '时长（秒）', exact: true });
-      await durationInput.fill('');
-      await durationInput.pressSequentially('7.25');
-      await page.getByRole('textbox', { name: '视频比例', exact: true }).fill('21:9');
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+      const { trigger, slider } = await openDuration(page, { min: 4, max: 15 });
+      await slider.focus();
+      await slider.press('Home');
+      for (let step = 0; step < 4; step += 1) await slider.press('ArrowRight');
+      await expect(slider).toHaveValue('8');
+      await trigger.click();
+      await choose(page, '视频清晰度', /4k/i);
+      await choose(page, '视频比例', /21:9/);
       await expect
         .poll(() => fixture.canvas().nodes[0]!.data.parameters)
-        .toEqual({ duration: 7.25, aspectRatio: '21:9' });
+        .toEqual({ resolution: '4k', duration: 8, aspectRatio: '21:9' });
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
       const bounds = (await node.boundingBox())!;
       expect(bounds.width).toBeCloseTo(originalBounds.width, 2);
@@ -426,12 +455,9 @@ test.describe('Image2Pro 参数与调用', () => {
       await page.reload();
       await selectNode(page);
       await openParameters(page);
-      await expect(page.getByRole('spinbutton', { name: '时长（秒）', exact: true })).toHaveValue(
-        '7.25',
-      );
-      await expect(page.getByRole('textbox', { name: '视频比例', exact: true })).toHaveValue(
-        '21:9',
-      );
+      await expect(page.getByRole('button', { name: /^时长（秒）：8/ })).toBeVisible();
+      await expect(page.getByRole('combobox', { name: /^视频比例：21:9/ })).toBeVisible();
+      await expect(page.getByRole('combobox', { name: /^视频清晰度：4k/i })).toBeVisible();
       expect(fixture.submissions).toHaveLength(0);
       await page.getByRole('button', { name: '媒体参数', exact: true }).click();
       await page.getByRole('button', { name: '生成', exact: true }).click();
@@ -440,12 +466,13 @@ test.describe('Image2Pro 参数与调用', () => {
         modelAlias,
         credentialId,
         parameters: {
-          duration: 7.25,
+          duration: 8,
+          resolution: '4k',
           aspectRatio: '21:9',
           prompt: 'Create a scene with soft light.',
         },
       });
-      expect(fixture.submissions[0]!.parameters).not.toHaveProperty('resolution');
+      expect(fixture.submissions[0]!.parameters).not.toHaveProperty('quality');
       if (referenceImage) {
         expect(fixture.submissions[0]!.promptDocument).toMatchObject({
           blocks: expect.arrayContaining([
@@ -462,8 +489,92 @@ test.describe('Image2Pro 参数与调用', () => {
     });
   }
 
-  test('切换到 Image2Pro 保留旧清晰度并要求明确移除', async ({ page, baseURL }) => {
-    const modelAlias = '无限制-Flash-中配-Video';
+  for (const videoMode of ['first_frame', 'first_last_frame'] as const) {
+    test(`${videoMode} Image2Pro 冻结连线角色并提交官方参数`, async ({
+      page,
+      baseURL,
+    }, testInfo) => {
+      const fixture = await installFixture(page, baseURL, {
+        mediaType: 'video',
+        modelAlias: 'Seedance2.0 0.9r',
+        videoMode,
+        parameters: {
+          duration: 5,
+          resolution: '720p',
+          aspectRatio: 'adaptive',
+          generate_audio: false,
+        },
+      });
+      const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+      const originalBounds = (await node.boundingBox())!;
+      await expect(node.locator('[data-handleid="input:firstFrame"]')).toBeVisible();
+      if (videoMode === 'first_last_frame')
+        await expect(node.locator('[data-handleid="input:lastFrame"]')).toBeVisible();
+      await openParameters(page);
+      await expect(page.getByRole('combobox', { name: /^视频清晰度：720p/i })).toBeVisible();
+      await expect(page.getByRole('combobox', { name: /^视频比例：原图比例/ })).toBeVisible();
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+      await page.screenshot({
+        path: testInfo.outputPath('image2pro-frames.png'),
+        animations: 'disabled',
+      });
+      await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+      await page.getByRole('button', { name: '生成', exact: true }).click();
+      await expect.poll(() => fixture.submissions.length).toBe(1);
+      expect(fixture.submissions[0]).toMatchObject({
+        modelAlias: 'Seedance2.0 0.9r',
+        parameters: {
+          duration: 5,
+          resolution: '720p',
+          aspectRatio: 'adaptive',
+          generate_audio: false,
+        },
+      });
+      expect(fixture.canvas().nodes[0]!.data.videoMode).toBe(videoMode);
+      expect(fixture.canvas().edges.map((edge) => edge.targetHandle)).toEqual(
+        videoMode === 'first_frame'
+          ? ['input:firstFrame']
+          : ['input:firstFrame', 'input:lastFrame'],
+      );
+      const bounds = (await node.boundingBox())!;
+      expect(bounds.width).toBeCloseTo(originalBounds.width, 2);
+      expect(bounds.height).toBeCloseTo(originalBounds.height, 2);
+      expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  for (const modelAlias of ['无限制-Flash-中配-Video', '无限制-Flash-MAX-Video']) {
+    test(`${modelAlias} 历史节点保留参数并明确停止生成`, async ({ page, baseURL }) => {
+      const fixture = await installFixture(page, baseURL, {
+        mediaType: 'video',
+        modelAlias,
+        parameters: { duration: 5, aspectRatio: '16:9', resolution: '720p' },
+        videoMode: 'text_to_video',
+        capabilities: { mentionMediaTypes: ['image'] },
+      });
+      const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+      const originalBounds = (await node.boundingBox())!;
+      await openParameters(page);
+      const generate = page.getByRole('button', { name: '生成', exact: true });
+      await expect(
+        page.getByRole('status').filter({ hasText: 'Flash 视频模型已停止适配' }),
+      ).toBeVisible();
+      await expect(generate).toBeDisabled();
+      const invalidBounds = (await node.boundingBox())!;
+      expect(invalidBounds.width).toBeCloseTo(originalBounds.width, 2);
+      expect(invalidBounds.height).toBeCloseTo(originalBounds.height, 2);
+      expect(fixture.submissions).toHaveLength(0);
+      expect(fixture.canvas().nodes[0]!.data.parameters).toEqual({
+        duration: 5,
+        aspectRatio: '16:9',
+        resolution: '720p',
+      });
+      expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  test('切换到 Image2Pro 保留官方清晰度并明确移除旧推理强度', async ({ page, baseURL }) => {
+    const modelAlias = 'Seedance2.0 0.9r';
     const fixture = await installFixture(page, baseURL, {
       mediaType: 'video',
       modelAlias: 'wan3.0-video',
@@ -484,7 +595,7 @@ test.describe('Image2Pro 参数与调用', () => {
     await page.getByRole('button', { name: '移除不支持的参数', exact: true }).click();
     await expect
       .poll(() => fixture.canvas().nodes[0]!.data.parameters)
-      .toEqual({ duration: 5, aspectRatio: '16:9' });
+      .toEqual({ resolution: '720p', duration: 5, aspectRatio: '16:9' });
     await expect.poll(() => fixture.canvas().nodes[0]!.data.inferenceStrength).toBeUndefined();
     await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
     expect(fixture.submissions).toHaveLength(0);
@@ -492,6 +603,7 @@ test.describe('Image2Pro 参数与调用', () => {
     await page.getByRole('button', { name: '生成', exact: true }).click();
     await expect.poll(() => fixture.submissions.length).toBe(1);
     expect(fixture.submissions[0]!.parameters).toEqual({
+      resolution: '720p',
       duration: 5,
       aspectRatio: '16:9',
       prompt: 'Create a scene with soft light.',
