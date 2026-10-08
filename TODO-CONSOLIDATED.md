@@ -31,8 +31,8 @@
 - Image2Pro 保留 `Seedance2.0 0.9r` 官方参数，并按用户确认恢复 `无限制-Flash-MAX-Video` 的 H3 别名适配；MAX 只允许 `720p`、4–12 整秒，使用 H3 `content`，不继承 Seedance 布尔字段。`无限制-Flash-中配-Video` 继续停用。URL 仍用 Image2Pro 文档路径；目标环境须同步更新 Canvas 与有效插件 2.1.0，并核对数据库 override。真实成片及图/音/视频受理仍待独立验收；自动时长缺少网关实际秒数合同，暂不开放。历史非法参数须显式修正，详见[Image2Pro 检查点](docs/image2pro-canvas-checkpoint.md)。
 - 原始文字 `source` 节点同时保留资产与旧 `prompt` 时，Run 前预检和执行时水合的文字优先级仍可能不同；需单独确认存量数据兼容语义并收敛。Image2Pro 本轮已覆盖已完成文字结果的正常固定选版路径，未扩展此原始来源边界，详见同一检查点。
 - New API 公开估价桥接尚未发布 Image2Pro 完整媒体能力，也未支持官方顶层 `content` 的多媒体估价；当前 Canvas 生成链不调用该接口，后续启用估价时须双边适配并回归，不从当前本地生成验证推断其已支持。
-- 视频参考默认通过网站域名提供短期签名素材接口，无需单独配置 `MC_S3_PROVIDER_ENDPOINT`，见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。仍需验收目标部署的外部 GET/HEAD/Range；Moon 所有参考素材均要求可访问 URL，Wan 视频还要求冻结版本时长。线上网关需更新对应 Moon 插件及支持 H3 精确大小写共存的宿主；官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
-- `sd2-930-fast` 的线上 `invalid_reference` 仍需部署后验收。发送前可读性检查与排查步骤见[参考素材预检检查点](docs/video-reference-preflight-checkpoint.md)；本机读取通过不能代替供应商出口读取，实际外发链接与线上插件一致性仍待核对。
+- 视频参考默认通过网站域名提供短期签名素材接口，无需单独配置 `MC_S3_PROVIDER_ENDPOINT`，见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。2026-10-08 已分别验证本机临时 HTTPS 隧道和线上域名的冻结版本外网 GET/HEAD/Range 与字节一致性；Moon 所有参考素材仍要求供应商可访问 URL，Wan 视频还要求冻结版本时长。官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
+- 本机 `sd2-930-fast` 的 5 秒单图 Run 已成功并读回归档视频；线上本次提交实际为 `sd2-930-no-face` 10 秒，不能代替 `sd2-930-fast` 的 `invalid_reference` 复验。两端公网签名读取及本机 API 素材 GET 已有证据；线上流式 API 发布后，公网 HEAD、Range、完整 GET 与源素材哈希再次通过，其他服务及数据卷未改。请求方身份和精确外发链接仍待核对；线上 Moon 1.6.1 已生效，未见数据库插件覆盖。详见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。
 - 共享 Wan 模型 ID 尚不能在 Canvas 区分百炼与 Moon 的全部参数差异；Moon 的总引用数量、参考视频合计时长及不支持负向提示/自动时长等限制由网关插件在预扣与供应商 POST 前明确拒绝。后续按渠道身份细分预检，不以 Moon 限制收窄百炼合同。
 - 对已确认字段补齐序列化、响应解析、数量/组合边界和未知字段拒绝测试。现有 Grok 1.5 尾帧与参考图映射不重复列为待实现项。
 - 将其余视频模型的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；Image2Pro 已在 API 受理前校验，不能据此视为所有模型都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。

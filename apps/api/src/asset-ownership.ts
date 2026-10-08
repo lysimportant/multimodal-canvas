@@ -108,6 +108,14 @@ export function withAssetOwnershipPolicy(store: AssetStore, projects: ProjectSto
       const resolved = await resolveScope(id, scope);
       return resolved ? store.getVersionContent(id, version, resolved) : undefined;
     },
+    ...(store.getVersionContentSource
+      ? {
+          async getVersionContentSource(id, version, scope) {
+            const resolved = await resolveScope(id, scope);
+            return resolved ? store.getVersionContentSource!(id, version, resolved) : undefined;
+          },
+        }
+      : {}),
     async getDerivative(id, kind, scope) {
       const resolved = await resolveScope(id, scope);
       return resolved ? store.getDerivative(id, kind, resolved) : undefined;

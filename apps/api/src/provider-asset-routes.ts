@@ -94,7 +94,9 @@ export function registerProviderAssetRoutes(
       }
 
       const scope = { ownerId: grant.ownerId, projectId: grant.projectId };
-      const asset = await options.assetStore.get(grant.assetId, scope);
+      const asset = options.assetStore.getMetadata
+        ? await options.assetStore.getMetadata(grant.assetId, scope)
+        : await options.assetStore.get(grant.assetId, scope);
       if (
         !asset ||
         asset.status !== 'ready' ||
@@ -102,16 +104,18 @@ export function registerProviderAssetRoutes(
       ) {
         return reply.code(404).send({ error: 'provider asset not found' });
       }
-      const content = await options.assetStore.getVersionContent(
-        grant.assetId,
-        grant.version,
-        scope,
-      );
-      if (content === undefined) {
+      const source = options.assetStore.getVersionContentSource
+        ? await options.assetStore.getVersionContentSource(grant.assetId, grant.version, scope)
+        : undefined;
+      const content = options.assetStore.getVersionContentSource
+        ? undefined
+        : await options.assetStore.getVersionContent(grant.assetId, grant.version, scope);
+      const sizeBytes = source?.sizeBytes ?? content?.byteLength;
+      if (sizeBytes === undefined) {
         return reply.code(404).send({ error: 'provider asset not found' });
       }
 
-      const range = parseAssetByteRange(request.headers.range, content.byteLength);
+      const range = parseAssetByteRange(request.headers.range, sizeBytes);
       const contentType = publicAssetContentType(asset.mimeType);
       reply
         .header('accept-ranges', 'bytes')
@@ -123,19 +127,31 @@ export function registerProviderAssetRoutes(
       if (contentType.attachment) reply.header('content-disposition', 'attachment');
 
       if (range === null) {
-        return reply.header('content-range', `bytes */${content.byteLength}`).code(416).send();
+        return reply.header('content-range', `bytes */${sizeBytes}`).code(416).send();
+      }
+      const payload =
+        request.method === 'HEAD'
+          ? undefined
+          : source
+            ? await source.open(range ?? undefined)
+            : range
+              ? content!.subarray(range.start, range.end + 1)
+              : content;
+      if (request.method !== 'HEAD' && payload === undefined) {
+        reply.removeHeader('content-type');
+        reply.removeHeader('content-disposition');
+        return reply.code(404).send({ error: 'provider asset not found' });
       }
       if (range) {
-        const partial = content.subarray(range.start, range.end + 1);
         reply
-          .header('content-range', `bytes ${range.start}-${range.end}/${content.byteLength}`)
-          .header('content-length', String(partial.byteLength))
+          .header('content-range', `bytes ${range.start}-${range.end}/${sizeBytes}`)
+          .header('content-length', String(range.end - range.start + 1))
           .code(206);
-        return request.method === 'HEAD' ? reply.send() : reply.send(partial);
+        return reply.send(payload);
       }
 
-      reply.header('content-length', String(content.byteLength));
-      return request.method === 'HEAD' ? reply.send() : reply.send(content);
+      reply.header('content-length', String(sizeBytes));
+      return reply.send(payload);
     },
   });
 }

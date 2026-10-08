@@ -1,12 +1,68 @@
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { FileSystemBlobStore, MemoryAssetStore, MemoryBlobStore, PrismaAssetStore } from './assets';
+import {
+  FileSystemBlobStore,
+  MemoryAssetStore,
+  MemoryBlobStore,
+  PrismaAssetStore,
+  S3BlobStore,
+} from './assets';
 
 describe('BlobStore implementations', () => {
+  it('uses S3 HEAD and a ranged GET without collecting the object into memory', async () => {
+    const store = new S3BlobStore('test-bucket');
+    const send = vi.fn(async (command: unknown) => {
+      if (command instanceof HeadObjectCommand) return { ContentLength: 10 };
+      if (command instanceof GetObjectCommand)
+        return {
+          $metadata: { httpStatusCode: 206 },
+          ContentRange: 'bytes 2-5/10',
+          ContentLength: 4,
+          Body: Readable.from([Buffer.from('2345')]),
+        };
+      throw new Error('unexpected storage command');
+    });
+    Object.assign(store, { client: { send } });
+    expect(await store.head('asset/v1')).toEqual({ sizeBytes: 10 });
+    expect(send).toHaveBeenCalledTimes(1);
+    const stream = await store.open('asset/v1', { start: 2, end: 5 }, 10);
+    expect(stream).toBeInstanceOf(Readable);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from('2345'));
+    expect(send.mock.calls[0]?.[0]).toBeInstanceOf(HeadObjectCommand);
+    expect(send.mock.calls[1]?.[0]).toBeInstanceOf(GetObjectCommand);
+    expect((send.mock.calls[1]?.[0] as GetObjectCommand).input.Range).toBe('bytes=2-5');
+  });
+
+  it('rejects mismatched S3 ranges and distinguishes missing objects from storage errors', async () => {
+    const store = new S3BlobStore('test-bucket');
+    const body = Readable.from([Buffer.from('2345')]);
+    const send = vi.fn(async (_command: unknown): Promise<unknown> => ({
+      $metadata: { httpStatusCode: 200 },
+      ContentRange: 'bytes 2-5/10',
+      ContentLength: 4,
+      Body: body,
+    }));
+    Object.assign(store, { client: { send } });
+    await expect(store.open('asset/v1', { start: 2, end: 5 }, 10)).rejects.toThrow(
+      'does not match',
+    );
+    expect(body.destroyed).toBe(true);
+    send.mockRejectedValueOnce({ $metadata: { httpStatusCode: 404 } });
+    expect(await store.head('missing')).toBeUndefined();
+    send.mockRejectedValueOnce({ $metadata: { httpStatusCode: 403 } });
+    await expect(store.head('denied')).rejects.toMatchObject({
+      $metadata: { httpStatusCode: 403 },
+    });
+  });
+
   it('copies bytes in memory and persists bytes in a local directory', async () => {
     const memory = new MemoryBlobStore();
     const source = Buffer.from('hello');
@@ -18,9 +74,16 @@ describe('BlobStore implementations', () => {
     const files = new FileSystemBlobStore(root);
     await files.put('a/b', Buffer.from('hello'));
     expect(await files.get('a/b')).toEqual(Buffer.from('hello'));
+    expect(await files.head('a/b')).toEqual({ sizeBytes: 5 });
+    const chunks: Buffer[] = [];
+    for await (const chunk of (await files.open('a/b', { start: 1, end: 3 }))!) {
+      chunks.push(Buffer.from(chunk));
+    }
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from('ell'));
     expect(await readFile(join(root, 'a', 'b'))).toEqual(Buffer.from('hello'));
     await files.delete('a/b');
     expect(await files.get('a/b')).toBeUndefined();
+    expect(await files.head('a/b')).toBeUndefined();
   });
 
   it('rejects absolute and traversal keys', async () => {
@@ -33,6 +96,36 @@ describe('BlobStore implementations', () => {
 
 describe('PrismaAssetStore', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('reads version length and opens only the selected bytes through BlobStore', async () => {
+    const blobStore = new MemoryBlobStore();
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore, projectId: 'project-1' });
+    const asset = await store.create({
+      name: 'source.mp4',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      content: Buffer.from('0123456789'),
+    });
+    const get = vi.spyOn(blobStore, 'get');
+    const head = vi.spyOn(blobStore, 'head');
+    const open = vi.spyOn(blobStore, 'open');
+    const source = await store.getVersionContentSource(asset.id, 1);
+    expect(source?.sizeBytes).toBe(10);
+    expect(head).toHaveBeenCalledExactlyOnceWith(`assets/${asset.id}/v1`);
+    expect(get).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    const chunks: Buffer[] = [];
+    for await (const chunk of (await source!.open({ start: 2, end: 5 }))!) {
+      chunks.push(Buffer.from(chunk));
+    }
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from('2345'));
+    expect(open).toHaveBeenCalledExactlyOnceWith(`assets/${asset.id}/v1`, { start: 2, end: 5 }, 10);
+    expect(get).not.toHaveBeenCalled();
+    expect(
+      await store.getVersionContentSource(asset.id, 1, { projectId: 'other-project' }),
+    ).toBeUndefined();
+  });
 
   it('checks source and version objects without downloading their bytes', async () => {
     const blobStore = new MemoryBlobStore();

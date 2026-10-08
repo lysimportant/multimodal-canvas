@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open as openFile, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -12,6 +13,13 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 import { PrismaClient, type Prisma } from '@prisma/client';
 import type { Asset, AssetStatus, MediaType } from '@multimodal-canvas/domain';
+import type { AssetByteRange } from './asset-shares';
+
+/** 授权后的固定版本内容源；长度为实际对象字节数，open 只在 GET 时调用。 */
+export type AssetContentSource = {
+  sizeBytes: number;
+  open(range?: AssetByteRange): Promise<Readable | undefined>;
+};
 
 /** Object storage boundary used by asset metadata stores. */
 export interface BlobStore {
@@ -20,6 +28,10 @@ export interface BlobStore {
   delete(key: string): Promise<void>;
   /** 可选的无内容存在性检查；只有对象缺失返回 false，权限及传输错误必须抛出。 */
   exists?(key: string): Promise<boolean>;
+  /** 查询对象实际长度；缺失返回 undefined，其它存储错误抛出。 */
+  head?(key: string): Promise<{ sizeBytes: number } | undefined>;
+  /** 按闭区间打开对象流；expectedSize 用于核对 HEAD 与 GET 是否仍指向同一内容。 */
+  open?(key: string, range?: AssetByteRange, expectedSize?: number): Promise<Readable | undefined>;
   /** Optional native short-lived GET URL (for example an S3 presigned URL). */
   createPresignedGetUrl?(
     key: string,
@@ -68,6 +80,62 @@ export class S3BlobStore implements BlobStore {
       );
       if (!response.Body) return undefined;
       return Buffer.from(await response.Body.transformToByteArray());
+    } catch (error) {
+      if (isS3NotFound(error)) return undefined;
+      throw error;
+    }
+  }
+
+  /** 用 S3 HEAD 取得实际对象长度，不下载内容。 */
+  async head(key: string): Promise<{ sizeBytes: number } | undefined> {
+    try {
+      const response = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      if (!Number.isSafeInteger(response.ContentLength) || response.ContentLength! < 0) {
+        throw new Error('S3 object length is unavailable');
+      }
+      return { sizeBytes: response.ContentLength! };
+    } catch (error) {
+      if (isS3NotFound(error)) return undefined;
+      throw error;
+    }
+  }
+
+  /** 只读取请求的字节段，并校验对象存储返回的范围和长度。 */
+  async open(
+    key: string,
+    range?: AssetByteRange,
+    expectedSize?: number,
+  ): Promise<Readable | undefined> {
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          ...(range ? { Range: `bytes=${range.start}-${range.end}` } : {}),
+        }),
+      );
+      const body = response.Body;
+      const expectedLength = range ? range.end - range.start + 1 : undefined;
+      if (!(body instanceof Readable)) throw new Error('S3 object stream is unavailable');
+      if (
+        (range &&
+          (response.$metadata.httpStatusCode !== 206 ||
+            (expectedSize === undefined
+              ? !new RegExp(`^bytes ${range.start}-${range.end}/[0-9]+$`).test(
+                  response.ContentRange ?? '',
+                )
+              : response.ContentRange !== `bytes ${range.start}-${range.end}/${expectedSize}`) ||
+            response.ContentLength !== expectedLength)) ||
+        (!range &&
+          (response.$metadata.httpStatusCode !== 200 ||
+            (expectedSize !== undefined && response.ContentLength !== expectedSize)))
+      ) {
+        body.destroy();
+        throw new Error('S3 object response does not match the requested range');
+      }
+      return body;
     } catch (error) {
       if (isS3NotFound(error)) return undefined;
       throw error;
@@ -127,6 +195,20 @@ export class MemoryBlobStore implements BlobStore {
     return content ? Buffer.from(content) : undefined;
   }
 
+  /** 查询内存对象长度，不复制字节。 */
+  async head(key: string): Promise<{ sizeBytes: number } | undefined> {
+    const content = this.blobs.get(key);
+    return content ? { sizeBytes: content.byteLength } : undefined;
+  }
+
+  /** 只复制返回的字节段，避免将底层可变 Buffer 暴露给响应流。 */
+  async open(key: string, range?: AssetByteRange): Promise<Readable | undefined> {
+    const content = this.blobs.get(key);
+    if (!content) return undefined;
+    const selected = range ? content.subarray(range.start, range.end + 1) : content;
+    return Readable.from([Buffer.from(selected)]);
+  }
+
   async delete(key: string): Promise<void> {
     this.blobs.delete(key);
   }
@@ -160,6 +242,30 @@ export class FileSystemBlobStore implements BlobStore {
     const target = this.pathFor(key);
     try {
       return await readFile(target);
+    } catch (error) {
+      if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
+        return undefined;
+      throw error;
+    }
+  }
+
+  /** 查询普通文件的实际大小；目录与缺失路径均不作为对象。 */
+  async head(key: string): Promise<{ sizeBytes: number } | undefined> {
+    try {
+      const info = await stat(this.pathFor(key));
+      return info.isFile() ? { sizeBytes: info.size } : undefined;
+    } catch (error) {
+      if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
+        return undefined;
+      throw error;
+    }
+  }
+
+  /** 打开文件句柄后才返回流，使打开阶段的缺失/权限错误仍可按正常响应处理。 */
+  async open(key: string, range?: AssetByteRange): Promise<Readable | undefined> {
+    try {
+      const handle = await openFile(this.pathFor(key), 'r');
+      return handle.createReadStream(range ? { start: range.start, end: range.end } : {});
     } catch (error) {
       if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
         return undefined;
@@ -423,6 +529,12 @@ export interface AssetStore {
     version: number,
     scope?: AssetScope,
   ): Promise<Buffer | undefined>;
+  /** 读取固定版本的实际对象长度，并延迟到 GET 才打开内容流；旧适配器可省略。 */
+  getVersionContentSource?(
+    assetId: string,
+    version: number,
+    scope?: AssetScope,
+  ): Promise<AssetContentSource | undefined>;
   getDerivative(
     id: string,
     kind: string,
@@ -692,6 +804,27 @@ export class MemoryAssetStore implements AssetStore {
     if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return undefined;
     const record = this.versions.get(assetId)?.get(version);
     return record ? Buffer.from(record.content) : undefined;
+  }
+
+  /** 保留固定版本身份，HEAD 查询不复制内存内容。 */
+  async getVersionContentSource(
+    assetId: string,
+    version: number,
+    scope: AssetScope = {},
+  ): Promise<AssetContentSource | undefined> {
+    if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return undefined;
+    const record = this.versions.get(assetId)?.get(version);
+    if (!record) return undefined;
+    return {
+      sizeBytes: record.content.byteLength,
+      open: async (range) => {
+        if (this.versions.get(assetId)?.get(version) !== record) return undefined;
+        const content = range
+          ? record.content.subarray(range.start, range.end + 1)
+          : record.content;
+        return Readable.from([Buffer.from(content)]);
+      },
+    };
   }
 
   async getDerivative(
@@ -1172,6 +1305,40 @@ export class PrismaAssetStore implements AssetStore {
     if (!asset) return undefined;
     const row = await this.prisma.assetVersion.findFirst({ where: { assetId, version } });
     return row ? this.blobStore.get(row.contentKey) : undefined;
+  }
+
+  /** 先验证资产和版本，再查询实际对象长度；不支持流的旧 BlobStore 沿用 Buffer。 */
+  async getVersionContentSource(
+    assetId: string,
+    version: number,
+    scope: AssetScope = {},
+  ): Promise<AssetContentSource | undefined> {
+    const asset = await this.prisma.asset.findFirst({
+      where: { id: assetId, ...this.scopeWhere(scope) },
+      select: { id: true },
+    });
+    if (!asset) return undefined;
+    const row = await this.prisma.assetVersion.findFirst({
+      where: { assetId, version },
+      select: { contentKey: true },
+    });
+    if (!row) return undefined;
+    if (this.blobStore.head && this.blobStore.open) {
+      const info = await this.blobStore.head(row.contentKey);
+      return info
+        ? {
+            sizeBytes: info.sizeBytes,
+            open: (range) => this.blobStore.open!(row.contentKey, range, info.sizeBytes),
+          }
+        : undefined;
+    }
+    const content = await this.blobStore.get(row.contentKey);
+    if (content === undefined) return undefined;
+    return {
+      sizeBytes: content.byteLength,
+      open: async (range) =>
+        Readable.from([range ? content.subarray(range.start, range.end + 1) : content]),
+    };
   }
 
   /** 为授权范围内的源版本或实际存在的预览签名；预览支持新旧布局，错误保持显式。 */

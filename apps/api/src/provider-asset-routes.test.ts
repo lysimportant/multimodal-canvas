@@ -4,7 +4,7 @@ import {
 } from '@multimodal-canvas/credential-crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { MemoryAssetStore } from './assets';
+import { MemoryAssetStore, type AssetStore } from './assets';
 import { MemoryAuthStore } from './auth-store';
 import { buildApp } from './fixtures/test-app';
 import { MemoryProjectStore } from './projects';
@@ -247,6 +247,74 @@ describe('Provider frozen asset access route', () => {
     }
   });
 
+  it('HEAD and invalid ranges do not open content; GET opens only the requested range', async () => {
+    const context = await fixture();
+    try {
+      const original = context.assetStore.getVersionContentSource.bind(context.assetStore);
+      const open = vi.fn(async (range?: { start: number; end: number }) => {
+        const source = await original(context.asset.id, 1, {
+          ownerId: context.owner.id,
+          projectId: context.project.id,
+        });
+        return source?.open(range);
+      });
+      vi.spyOn(context.assetStore, 'getVersionContentSource').mockImplementation(
+        async (id, version, scope) => {
+          const source = await original(id, version, scope);
+          return source && { ...source, open };
+        },
+      );
+      const buffered = vi.spyOn(context.assetStore, 'getVersionContent');
+      const url = `${providerAssetAccessPath(context.asset.id, 1)}?access_token=${encodeURIComponent(context.token())}`;
+      expect((await context.app.inject({ method: 'HEAD', url })).statusCode).toBe(200);
+      expect(
+        (await context.app.inject({ method: 'HEAD', url, headers: { range: 'bytes=2-5' } }))
+          .statusCode,
+      ).toBe(206);
+      expect(
+        (await context.app.inject({ method: 'GET', url, headers: { range: 'bytes=20-25' } }))
+          .statusCode,
+      ).toBe(416);
+      expect(open).not.toHaveBeenCalled();
+      const response = await context.app.inject({
+        method: 'GET',
+        url,
+        headers: { range: 'bytes=2-5' },
+      });
+      expect(response.rawPayload).toEqual(Buffer.from('2345'));
+      expect(open).toHaveBeenCalledExactlyOnceWith({ start: 2, end: 5 });
+      expect(buffered).not.toHaveBeenCalled();
+    } finally {
+      await context.app.close();
+    }
+  });
+
+  it('keeps GET, HEAD and Range behavior for stores without the new source method', async () => {
+    const context = await fixture();
+    const legacyStore: AssetStore = context.assetStore;
+    legacyStore.getVersionContentSource = undefined;
+    const app = buildApp({
+      logger: false,
+      assetStore: legacyStore,
+      projectStore: context.projectStore,
+      authStore: context.authStore,
+    });
+    try {
+      const url = `${providerAssetAccessPath(context.asset.id, 1)}?access_token=${encodeURIComponent(context.token())}`;
+      const get = await app.inject({ method: 'GET', url });
+      expect(get.rawPayload).toEqual(Buffer.from('0123456789'));
+      const head = await app.inject({ method: 'HEAD', url });
+      expect(head.statusCode).toBe(200);
+      expect(head.headers['content-length']).toBe('10');
+      const ranged = await app.inject({ method: 'GET', url, headers: { range: 'bytes=2-5' } });
+      expect(ranged.statusCode).toBe(206);
+      expect(ranged.rawPayload).toEqual(Buffer.from('2345'));
+    } finally {
+      await app.close();
+      await context.app.close();
+    }
+  });
+
   it('keeps ordinary asset endpoints authenticated and does not accept provider tokens there', async () => {
     const context = await fixture();
     try {
@@ -304,7 +372,7 @@ describe('Provider frozen asset access route', () => {
   it('存储故障保留服务端错误状态，响应不泄露内部对象地址', async () => {
     const context = await fixture();
     try {
-      vi.spyOn(context.assetStore, 'getVersionContent').mockRejectedValue(
+      vi.spyOn(context.assetStore, 'getVersionContentSource').mockRejectedValue(
         new Error('synthetic private/object/key storage failure'),
       );
       const response = await context.app.inject({
@@ -314,6 +382,56 @@ describe('Provider frozen asset access route', () => {
       expect(response.statusCode).toBe(500);
       expect(response.json()).toMatchObject({ code: 'internal_error' });
       expect(response.body).not.toContain('private/object/key');
+    } finally {
+      await context.app.close();
+    }
+  });
+
+  it('does not expose storage details when opening the content stream fails', async () => {
+    const context = await fixture();
+    try {
+      const original = context.assetStore.getVersionContentSource.bind(context.assetStore);
+      vi.spyOn(context.assetStore, 'getVersionContentSource').mockImplementation(
+        async (id, version, scope) => {
+          const source = await original(id, version, scope);
+          return source
+            ? {
+                ...source,
+                open: async () => {
+                  throw new Error('synthetic private/object/key storage failure');
+                },
+              }
+            : undefined;
+        },
+      );
+      const response = await context.app.inject({
+        method: 'GET',
+        url: `${providerAssetAccessPath(context.asset.id, 1)}?access_token=${context.token()}`,
+      });
+      expect(response.statusCode).toBe(500);
+      expect(response.body).not.toContain('private/object/key');
+    } finally {
+      await context.app.close();
+    }
+  });
+
+  it('returns a JSON 404 if the object disappears between HEAD and GET', async () => {
+    const context = await fixture();
+    try {
+      const original = context.assetStore.getVersionContentSource.bind(context.assetStore);
+      vi.spyOn(context.assetStore, 'getVersionContentSource').mockImplementation(
+        async (id, version, scope) => {
+          const source = await original(id, version, scope);
+          return source ? { ...source, open: async () => undefined } : undefined;
+        },
+      );
+      const response = await context.app.inject({
+        method: 'GET',
+        url: `${providerAssetAccessPath(context.asset.id, 1)}?access_token=${context.token()}`,
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(response.json()).toEqual({ error: 'provider asset not found' });
     } finally {
       await context.app.close();
     }
