@@ -698,6 +698,8 @@ describe('AssetPreview', () => {
     expect(audio).not.toBeNull();
     expect(audio).toHaveAttribute('controls');
     expect(audio).toHaveAttribute('src', 'https://assets.example/result.mp3');
+    expect(container.querySelector('.artifact-preview-audio-shell')).not.toHaveClass('nodrag');
+    expect(audio).toHaveClass('nodrag', 'nopan', 'nowheel');
   });
 
   it('renders unknown MIME output as a downloadable file attachment', () => {

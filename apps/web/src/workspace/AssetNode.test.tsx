@@ -101,6 +101,7 @@ import type { NodeProps } from '@xyflow/react';
 import type { AssetFlowNode } from '../canvas-utils';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
+import * as auth from '../auth-client';
 import * as thumbnails from './image-thumbnail-cache';
 import {
   AssetNode,
@@ -1153,6 +1154,145 @@ describe('AssetNode result presentation', () => {
     );
     expect(container.querySelector('.artifact-preview-video-shell')).not.toHaveClass('nodrag');
     expect(container.querySelector('video')).not.toHaveAttribute('controls');
+  });
+
+  it('资源侧栏来源音频的留白可拖动，原生播放控件单独隔离拖动', () => {
+    const { container } = renderNode(
+      makeNode({
+        mediaType: 'audio',
+        mode: 'source',
+        mimeType: 'audio/mpeg',
+        assetId: 'source_audio',
+        contentUrl: 'https://assets.example/audio.mp3',
+      }),
+    );
+    const shell = container.querySelector('.artifact-preview-audio-shell')!;
+    const audio = shell.querySelector('audio')!;
+    expect(shell.closest('.nodrag, .nopan')).toBeNull();
+    expect(audio).toHaveAttribute('controls');
+    expect(audio).toHaveClass('nodrag', 'nopan', 'nowheel');
+    const pointerDown = vi.fn();
+    container.addEventListener('pointerdown', pointerDown);
+    try {
+      fireEvent.pointerDown(shell, { button: 0, pointerId: 1, pointerType: 'mouse' });
+      expect(pointerDown).toHaveBeenCalledOnce();
+      const move = screen.getByRole('button', { name: '拖动移动节点' });
+      expect(move.closest('.nodrag, .nopan')).toBeNull();
+      fireEvent.pointerDown(move, { button: 0, pointerId: 2, pointerType: 'mouse' });
+      expect(pointerDown).toHaveBeenCalledTimes(2);
+    } finally {
+      container.removeEventListener('pointerdown', pointerDown);
+    }
+  });
+
+  it('成功产物在悬浮栏提供无密码分享，点击才创建当前冻结版本', async () => {
+    const apiFetch = vi.spyOn(auth, 'apiFetch').mockResolvedValue(
+      Response.json({
+        token: 'node-share-token',
+        version: 3,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      }),
+    );
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'generated_video',
+          version: 3,
+          mimeType: 'video/mp4',
+          contentUrl: 'https://assets.example/versions/3/content',
+        },
+      }),
+    );
+    const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
+    const share = within(toolbar).getByRole('button', { name: '分享当前版本' });
+    expect(share).toHaveClass('flow-node-action-button', 'flow-node-share-button', 'nodrag');
+    expect(share.parentElement).toBe(toolbar);
+    expect(share).toHaveTextContent('分享');
+    expect(screen.queryByLabelText('分享查看密码')).not.toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalled();
+    await userEvent.click(share);
+    expect(
+      (await screen.findByRole('textbox', { name: '分享链接' })).getAttribute('value'),
+    ).toContain('/share#token=node-share-token');
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch.mock.calls[0]?.[0]).toBe(
+      'http://localhost:3000/v1/assets/generated_video/share',
+    );
+    expect(apiFetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ version: 3 }));
+    expect(screen.getByText('查看保护：未设置密码')).toBeInTheDocument();
+  });
+
+  it.each([
+    'draft',
+    'queued',
+    'preparing',
+    'running',
+    'processing',
+    'cancel_requested',
+    'failed',
+    'cancelled',
+  ] as const)('%s 状态即使保留旧产物也不显示悬浮分享', (runStatus) => {
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus,
+        resultAsset: {
+          assetId: 'old_video',
+          version: 1,
+          mimeType: 'video/mp4',
+          contentUrl: 'https://assets.example/versions/1/content',
+        },
+      }),
+    );
+    expect(screen.queryByRole('button', { name: '分享当前版本' })).not.toBeInTheDocument();
+  });
+
+  it('来源的冻结版本可分享，缺少版本或成功但缺少内容时隐藏入口', () => {
+    const node = makeNode({
+      mediaType: 'audio',
+      mode: 'source',
+      mimeType: 'audio/mpeg',
+      assetId: 'source_audio',
+      contentUrl: 'https://assets.example/versions/2/content',
+    });
+    const view = renderNode(node);
+    expect(screen.getByRole('button', { name: '分享当前版本' })).toBeInTheDocument();
+    view.rerender(
+      <AssetNode
+        {...({
+          id: node.id,
+          data: { ...node.data, contentUrl: 'https://assets.example/audio.mp3' },
+        } as NodeProps<AssetFlowNode>)}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: '分享当前版本' })).not.toBeInTheDocument();
+    view.rerender(
+      <AssetNode
+        {...({
+          id: node.id,
+          data: { ...node.data, contentUrl: undefined, runStatus: 'succeeded' },
+        } as NodeProps<AssetFlowNode>)}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: '分享当前版本' })).not.toBeInTheDocument();
+  });
+
+  it.each(['inline_result', 'remote_result'])('%s 不是持久化资源，不显示悬浮分享', (assetId) => {
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId,
+          version: 1,
+          mimeType: 'video/mp4',
+          contentUrl: 'https://assets.example/video.mp4',
+        },
+      }),
+    );
+    expect(screen.queryByRole('button', { name: '分享当前版本' })).not.toBeInTheDocument();
   });
 
   it('图片节点输入编辑器打开前点击不预览，打开后再次点击才预览', async () => {

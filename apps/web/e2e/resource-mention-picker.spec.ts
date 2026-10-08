@@ -2116,10 +2116,21 @@ for (const expanded of [false, true]) {
     const before = (await node.boundingBox())!;
     await editor.getByRole('button', { name: '添加参考资料' }).click();
     await expect(visibleMessage(page, '当前处于添加参考资料模式')).toBeVisible();
-    for (const index of [1, 2, 1])
-      await page
-        .locator(`.react-flow__node[data-id="decouple-${index}"]`)
-        .click({ position: { x: 30, y: 50 } });
+    for (const index of [1, 2, 1]) {
+      const source = page.locator(`.react-flow__node[data-id="decouple-${index}"]`);
+      const point = await source.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        for (let y = bounds.top + 12; y < bounds.bottom - 12; y += 12) {
+          for (let x = bounds.left + 12; x < bounds.right - 12; x += 12) {
+            const hit = document.elementFromPoint(x, y);
+            if (hit && element.contains(hit) && !hit.closest('button, .react-flow__handle'))
+              return { x, y };
+          }
+        }
+        throw new Error('来源节点没有未被输入面板遮挡的点选区域');
+      });
+      await page.mouse.click(point.x, point.y);
+    }
     await page.keyboard.press('Escape');
     await expect(editor.getByRole('article')).toHaveCount(2);
     await expect(editor.getByRole('textbox', { name: '提示词' })).toHaveValue('让小明走进房间');
@@ -2133,6 +2144,9 @@ for (const expanded of [false, true]) {
     const input = scope.getByRole('textbox', { name: '提示词' });
     await selectReferenceText(input, 1, 3);
     let picker = page.locator('.resource-mention-picker');
+    await expect(picker).toBeHidden();
+    await selectReferenceText(input, 3);
+    await input.pressSequentially('@');
     await picker.getByRole('option', { name: /场景参考图 2/ }).click();
     await expect(input).toHaveAttribute('contenteditable', 'true');
     await expect(input.locator('[data-inline-reference]')).toHaveCount(1);
@@ -3159,7 +3173,15 @@ for (const presentation of ['快捷', '完整'] as const) {
     });
 
     await buttons[0]!.click();
+    const resources = page.getByRole('dialog', { name: '选择参考资料', exact: true });
+    await expect(resources).toBeVisible();
+    expect(fileChooserCount).toBe(0);
+    const chooserPromise = page.waitForEvent('filechooser');
+    await resources.getByRole('button', { name: '上传本地文件', exact: true }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles([]);
     await expect.poll(() => fileChooserCount).toBe(1);
+    await resources.getByRole('button', { name: '关闭参考资料选择', exact: true }).click();
     await expect(buttons[1]!).toHaveAttribute('aria-pressed', 'false');
     expect((await readReferenceCamera(page)).requests).toEqual([]);
     const camera = await openSyntheticReferenceCamera(page, editor);

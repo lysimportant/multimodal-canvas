@@ -252,7 +252,7 @@ describe('TextPromptEditor 连线别名与独立引用', () => {
     expect(custom).toMatchObject({ assetVersion: 1, entityName: '侧影' });
   });
 
-  it('中文输入单字别名保持普通文字，显式选字引用才插入来源冻结版本的原子', async () => {
+  it('中文输入和鼠标选字保持普通文字，显式 @ 才插入来源冻结版本的原子', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
     const connectedAssets = connectedImages();
@@ -277,6 +277,10 @@ describe('TextPromptEditor 连线别名与独立引用', () => {
     editor.focus();
     selectInlinePrompt(editor, 1, 2);
     fireEvent.mouseUp(editor);
+    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+    expect(onDocumentChange).toHaveBeenCalledTimes(1);
+    selectInlinePrompt(editor, 2);
+    await user.keyboard('@');
     await user.click(screen.getByRole('option', { name: /良.*v2/ }));
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
       { type: 'text', text: '让良' },

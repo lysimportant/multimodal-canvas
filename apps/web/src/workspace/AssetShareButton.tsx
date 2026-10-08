@@ -33,9 +33,12 @@ type ShareRecord = {
 /** 剪贴板写入结果；失败时保留输入框供用户手动复制。 */
 type CopyState = 'idle' | 'copied' | 'failed';
 
-/** 预览标题栏分享按钮的资源配置。 */
+/** 当前资源版本的分享入口配置。 */
 export type AssetShareButtonProps = {
+  /** 已保存的资源及当前展示的版本内容地址。 */
   asset: Asset;
+  /** 节点悬浮栏只显示按钮并默认无密码；预览标题栏保留可选密码输入。 */
+  presentation?: 'viewer' | 'node-toolbar';
 };
 
 /** 从冻结内容地址读取版本；旧地址没有版本时回退资源索引的最新版本。 */
@@ -58,9 +61,11 @@ function isShareExpired(share: ShareRecord, now = Date.now()): boolean {
 /**
  * 为当前资源版本创建七天只读分享链接，并在本次预览中复用未过期结果。
  * @param asset 当前预览资源；必须有持久化资源 ID 和内容地址。
- * @returns 标题栏按钮及挂载到 document.body 的分享浮层。
+ * @param presentation 入口位置；节点悬浮栏不占用密码输入的布局空间。
+ * @returns 分享按钮及挂载到 document.body 的分享浮层；只有用户点击才创建链接。
  */
-export function AssetShareButton({ asset }: AssetShareButtonProps) {
+export function AssetShareButton({ asset, presentation = 'viewer' }: AssetShareButtonProps) {
+  const nodeToolbar = presentation === 'node-toolbar';
   const identity = [asset.id, asset.contentUrl ?? '', asset.latestVersion ?? ''].join(':');
   const version = resolveAssetShareVersion(asset);
   const disabledReason = !asset.id.trim()
@@ -481,6 +486,56 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
     </div>
   );
 
+  const sharePopover = (
+    <Popover
+      trigger="click"
+      open={panelOpen}
+      onOpenChange={handlePanelOpenChange}
+      afterOpenChange={(open) => {
+        // 展开动画结束时，用户可能已经点入密码框，不能重新抢走输入焦点。
+        if (open && document.activeElement !== passwordInputRef.current)
+          closeButtonRef.current?.focus({ preventScroll: true });
+      }}
+      placement="bottomRight"
+      destroyOnHidden
+      arrow={false}
+      getPopupContainer={() => document.body}
+      classNames={{ root: 'asset-share-popover' }}
+      content={panel}
+    >
+      <Button
+        ref={triggerRef}
+        type="button"
+        variant={nodeToolbar ? 'ghost' : undefined}
+        className={
+          nodeToolbar
+            ? 'flow-node-action-button flow-node-share-button asset-share-trigger nodrag nopan nowheel'
+            : 'artifact-preview-viewer-download asset-share-trigger'
+        }
+        aria-label="分享当前版本"
+        aria-expanded={panelOpen}
+        aria-busy={creating}
+        title={disabledReason ?? '创建当前版本的只读分享链接'}
+        disabled={Boolean(disabledReason) || creating}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {creating ? (
+          <LoaderCircle size={nodeToolbar ? 18 : 16} className="spin" aria-hidden="true" />
+        ) : (
+          <Share2 size={nodeToolbar ? 18 : 16} aria-hidden="true" />
+        )}
+        <span
+          className={nodeToolbar ? 'flow-node-action-label' : undefined}
+          role={creating ? 'status' : undefined}
+        >
+          {creating ? '创建中…' : '分享'}
+        </span>
+      </Button>
+    </Popover>
+  );
+
+  if (nodeToolbar) return sharePopover;
   return (
     <div className="asset-share" onPointerDown={(event) => event.stopPropagation()}>
       <Input
@@ -496,40 +551,7 @@ export function AssetShareButton({ asset }: AssetShareButtonProps) {
         disabled={Boolean(disabledReason)}
         onChange={handlePasswordChange}
       />
-      <Popover
-        trigger="click"
-        open={panelOpen}
-        onOpenChange={handlePanelOpenChange}
-        afterOpenChange={(open) => {
-          // 展开动画结束时，用户可能已经点入密码框，不能重新抢走输入焦点。
-          if (open && document.activeElement !== passwordInputRef.current)
-            closeButtonRef.current?.focus({ preventScroll: true });
-        }}
-        placement="bottomRight"
-        destroyOnHidden
-        arrow={false}
-        getPopupContainer={() => document.body}
-        classNames={{ root: 'asset-share-popover' }}
-        content={panel}
-      >
-        <Button
-          ref={triggerRef}
-          type="button"
-          className="artifact-preview-viewer-download asset-share-trigger"
-          aria-label="分享当前版本"
-          aria-expanded={panelOpen}
-          aria-busy={creating}
-          title={disabledReason ?? '创建当前版本的只读分享链接'}
-          disabled={Boolean(disabledReason) || creating}
-        >
-          {creating ? (
-            <LoaderCircle size={16} className="spin" aria-hidden="true" />
-          ) : (
-            <Share2 size={16} aria-hidden="true" />
-          )}
-          <span role={creating ? 'status' : undefined}>{creating ? '创建中…' : '分享'}</span>
-        </Button>
-      </Popover>
+      {sharePopover}
     </div>
   );
 }

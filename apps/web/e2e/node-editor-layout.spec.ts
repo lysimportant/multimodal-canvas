@@ -390,9 +390,12 @@ for (const viewport of [
     const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
     const before = await readPrompt(prompt);
     expect(before).toBe(promptText);
+    await editor.getByRole('button', { name: '上传引用资源', exact: true }).click();
+    const resources = page.getByRole('dialog', { name: '选择参考资料', exact: true });
+    await expect(resources).toBeVisible();
     const [chooser] = await Promise.all([
       page.waitForEvent('filechooser'),
-      editor.getByRole('button', { name: '上传引用资源', exact: true }).click(),
+      resources.getByRole('button', { name: '上传本地文件', exact: true }).click(),
     ]);
     await chooser.setFiles({
       name: 'layout-reference.jpg',
@@ -402,6 +405,7 @@ for (const viewport of [
     await expect
       .poll(() => fixture.uploads.map((upload) => upload.stages))
       .toEqual([['init', 'PUT', 'complete']]);
+    await resources.getByRole('button', { name: '关闭参考资料选择', exact: true }).click();
     const card = editor.getByRole('article', {
       name: '参考资源 1：layout-reference',
       exact: true,

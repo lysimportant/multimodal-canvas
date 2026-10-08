@@ -318,7 +318,9 @@ async function installFixture(page: Page, baseURL: string | undefined) {
       }
     }
     if (method === 'GET' && path === '/v1/assets') return json(route, { assets });
-    const media = path.match(/^\/v1\/assets\/([^/]+)(?:\/versions\/1)?\/(content|access-url)$/);
+    const media = path.match(
+      /^\/v1\/assets\/([^/]+)(?:\/versions\/1)?\/(content|derivatives\/thumbnail|access-url)$/,
+    );
     if (media && method === (media[2] === 'access-url' ? 'POST' : 'GET')) {
       const asset = assets.find((item) => item.id === media[1]);
       if (asset) {
@@ -498,20 +500,44 @@ async function saveCanvas(page: Page, scenario: Scenario) {
 }
 
 /**
- * 仅测量真实高亮文本的字符矩形，然后使用鼠标按下、拖动、抬起选字。
+ * 通过 textarea 字体指标或可编辑正文的字符矩形，真实拖选首行文字。
  * 不设置 selectionRange、不分发 select 事件，也不改变 DOM 或应用状态。
- * @throws 文本不存在、跨行或高亮层缺失时失败，避免错误坐标伪造测试。
+ * @throws 文本不存在、跨行或超出可见首行时失败，避免错误坐标伪造测试。
  */
 async function dragSelect(page: Page, input: Locator, text: string) {
   const points = await input.evaluate((element, selectedText) => {
-    const textarea = element as HTMLTextAreaElement;
-    const highlight = textarea
-      .closest('.resource-mention-composer')
-      ?.querySelector('.resource-mention-highlight');
-    if (!highlight) throw new Error('缺少提示词高亮层');
-    const start = textarea.value.indexOf(selectedText);
+    const native = element instanceof HTMLTextAreaElement;
+    const text = native ? element.value : (element.textContent ?? '');
+    const start = text.indexOf(selectedText);
     if (start < 0) throw new Error('待圈选文字不存在');
-    const walker = document.createTreeWalker(highlight, NodeFilter.SHOW_TEXT);
+    if (native) {
+      const prefix = text.slice(0, start);
+      if (prefix.includes('\n') || selectedText.includes('\n'))
+        throw new Error('圈选文字必须位于首行');
+      const style = getComputedStyle(element);
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('浏览器无法测量提示词字体');
+      context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const spacing = Number.parseFloat(style.letterSpacing) || 0;
+      const measure = (value: string) => context.measureText(value).width + value.length * spacing;
+      const inset = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.borderLeftWidth);
+      const left = inset + measure(prefix) - element.scrollLeft;
+      const right = inset + measure(prefix + selectedText) - element.scrollLeft;
+      if (right > element.clientWidth - Number.parseFloat(style.paddingRight))
+        throw new Error('圈选文字超出可见首行');
+      const bounds = element.getBoundingClientRect();
+      const scale = bounds.width / element.offsetWidth;
+      const top = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.borderTopWidth);
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      if (!Number.isFinite(lineHeight)) throw new Error('提示词行高未确认');
+      return {
+        x1: bounds.left + (left + 0.2) * scale,
+        x2: bounds.left + (right - 0.2) * scale,
+        y: bounds.top + (top + lineHeight / 2 - element.scrollTop) * scale,
+      };
+    }
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     let offset = 0;
     let node = walker.nextNode();
     while (node) {
@@ -528,7 +554,7 @@ async function dragSelect(page: Page, input: Locator, text: string) {
       offset += length;
       node = walker.nextNode();
     }
-    throw new Error('高亮层与提示词文本不一致');
+    throw new Error('提示词正文的字符位置不一致');
   }, text);
   await page.mouse.move(points.x1, points.y);
   await page.mouse.down();
@@ -536,16 +562,14 @@ async function dragSelect(page: Page, input: Locator, text: string) {
   await page.mouse.up();
   await expect
     .poll(() =>
-      input.evaluate((element) => {
-        const textarea = element as HTMLTextAreaElement;
-        return textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
-      }),
+      input.evaluate((element) =>
+        element instanceof HTMLTextAreaElement
+          ? element.value.slice(element.selectionStart, element.selectionEnd)
+          : document.getSelection()?.toString(),
+      ),
     )
     .toBe(text);
-  await expect(page.getByRole('listbox', { name: '选择资源', exact: true })).toBeVisible();
-  await expect(
-    page.getByText(`选择资源，将「${text}」设为引用名称`, { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole('listbox', { name: '选择资源', exact: true })).toBeHidden();
 }
 
 /** 真实鼠标点击已禁用按钮，验证不会通过残留事件重复提交。 */
@@ -642,58 +666,7 @@ test('连入资源别名通过 PATCH 保存并刷新恢复，revision 递增且�
   expect(scenario.canvas().revision).toBe(initial.revision + 1);
 });
 
-test('真实鼠标拖选普通文字，以原文字为 entityName 引用资源且原文刷新后不变', async ({
-  page,
-  scenario,
-}, testInfo) => {
-  await openProject(page);
-  const editor = await openEditor(page, 'node-a');
-  const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
-  await dragSelect(page, prompt, '白色小猫');
-  await screenshot(page, testInfo, 'mouse-selection-picker');
-  await page
-    .getByRole('listbox', { name: '选择资源', exact: true })
-    .getByRole('option', { name: /角色照片/ })
-    .click();
-  await expect(page.getByRole('listbox', { name: '选择资源', exact: true })).toBeHidden();
-  await expect(prompt).toHaveValue(originalPrompt);
-  await expect(
-    editor.getByRole('button', { name: '预览并命名 白色小猫', exact: true }),
-  ).toBeVisible();
-  const write = await saveCanvas(page, scenario);
-  const document = write.body.nodes.find((node) => node.id === 'node-a')!.data.promptDocument;
-  expect(document).toEqual({
-    version: 1,
-    blocks: [
-      { type: 'text', text: '让' },
-      {
-        type: 'mention',
-        mentionId: expect.any(String),
-        assetId: 'character-image',
-        assetVersion: 1,
-        label: '角色照片',
-        mediaType: 'image',
-        entityName: '白色小猫',
-      },
-      { type: 'text', text: '坐在窗边。' },
-    ],
-  });
-  expect(write.body.nodes.find((node) => node.id === 'node-a')!.data.prompt).toBe(originalPrompt);
-  await page.reload();
-  await fitCanvas(page);
-  const restored = await openEditor(page, 'node-a');
-  await expect(restored.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
-    originalPrompt,
-  );
-  await expect(
-    restored.getByRole('button', { name: '预览并命名 白色小猫', exact: true }),
-  ).toBeVisible();
-  expect(scenario.assets.find((asset) => asset.id === 'character-image')!.name).toBe('角色照片');
-  expect(scenario.submissions).toEqual([]);
-  await screenshot(page, testInfo, 'mouse-selection-restored');
-});
-
-test('鼠标圈选后取消按钮和 Escape 均不改文字、引用、连线或持久化状态', async ({
+test('真实鼠标拖选普通文字不打开搜索，正文和已有资料刷新后不变', async ({
   page,
   scenario,
 }, testInfo) => {
@@ -701,15 +674,40 @@ test('鼠标圈选后取消按钮和 Escape 均不改文字、引用、连线或
   const initial = scenario.canvas();
   const editor = await openEditor(page, 'node-a');
   const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
-  for (const [action, text] of [
-    ['button', '白色小猫'],
-    ['escape', '窗边'],
-  ] as const) {
+  await dragSelect(page, prompt, '白色小猫');
+  await screenshot(page, testInfo, 'mouse-selection-no-picker');
+  await expect(page.getByRole('listbox', { name: '选择资源', exact: true })).toBeHidden();
+  await expect(prompt).toHaveValue(originalPrompt);
+  await expect(
+    editor.getByRole('button', { name: '预览并命名 源参考图片', exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press('Control+s');
+  await page.waitForLoadState('networkidle');
+  expect(scenario.canvasWrites).toEqual([]);
+  expect(scenario.canvas()).toEqual(initial);
+  await page.reload();
+  await fitCanvas(page);
+  const restored = await openEditor(page, 'node-a');
+  await expect(restored.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+    originalPrompt,
+  );
+  await expect(
+    restored.getByRole('button', { name: '预览并命名 源参考图片', exact: true }),
+  ).toBeVisible();
+  expect(scenario.assets.find((asset) => asset.id === 'character-image')!.name).toBe('角色照片');
+  expect(scenario.submissions).toEqual([]);
+  await screenshot(page, testInfo, 'mouse-selection-restored');
+});
+
+test('鼠标圈选后 Escape 不改文字、引用、连线或持久化状态', async ({ page, scenario }, testInfo) => {
+  await openProject(page);
+  const initial = scenario.canvas();
+  const editor = await openEditor(page, 'node-a');
+  const prompt = editor.getByRole('textbox', { name: '提示词', exact: true });
+  for (const text of ['白色小猫', '窗边']) {
     // 下一次从不同的普通文字起拖，避免原生浏览器把操作解释成拖移既有选区。
     await dragSelect(page, prompt, text);
-    if (action === 'button')
-      await page.getByRole('button', { name: '取消引用', exact: true }).click();
-    else await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
     await expect(page.getByRole('listbox', { name: '选择资源', exact: true })).toBeHidden();
     await expect(prompt).toHaveValue(originalPrompt);
     await expect(editor.getByRole('button', { name: /^预览并命名 / })).toHaveCount(1);

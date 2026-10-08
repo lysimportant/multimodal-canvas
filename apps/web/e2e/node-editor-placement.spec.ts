@@ -560,14 +560,9 @@ for (const releaseOutside of [false, true]) {
     await textarea.fill(draft);
     await textarea.press('Home');
     await textarea.press('Shift+ArrowRight');
-    // 选中文字会打开引用选择器，先按正常交互关闭，避免遮挡拖动起点。
-    await textarea.press('Escape');
     await expect(page.locator('.resource-mention-picker')).toBeHidden();
     const originalInput = await textarea.elementHandle();
-    const selection = await textarea.evaluate((input: HTMLTextAreaElement) => [
-      input.selectionStart,
-      input.selectionEnd,
-    ]);
+    const selection = await inputSelection(textarea);
     const node = page.locator(nodeSelector);
     const size = await node.evaluate((element: HTMLElement) => [
       element.offsetWidth,
@@ -591,12 +586,7 @@ for (const releaseOutside of [false, true]) {
     expect(await textarea.evaluate((input, original) => input === original, originalInput)).toBe(
       true,
     );
-    expect(
-      await textarea.evaluate((input: HTMLTextAreaElement) => [
-        input.selectionStart,
-        input.selectionEnd,
-      ]),
-    ).toEqual(selection);
+    expect(await inputSelection(textarea)).toEqual(selection);
     expect(
       await node.evaluate((element: HTMLElement) => [element.offsetWidth, element.offsetHeight]),
     ).toEqual(size);

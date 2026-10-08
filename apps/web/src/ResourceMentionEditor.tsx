@@ -52,6 +52,7 @@ import {
   type InlinePromptPosition,
 } from './InlinePromptInput';
 import { createPromptMentionId } from './resource-mention-sync';
+import { ReferenceResourceDialog } from './ReferenceResourceDialog';
 import { AssetPreview } from './workspace/AssetPreview';
 import { CameraCaptureDialog } from './workspace/CameraCaptureDialog';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
@@ -95,9 +96,9 @@ export type ResourceMentionEditorProps = {
   onChange?: (value: string) => void;
   /** 结构化文档回调；新引用能力应优先使用此回调持久化。 */
   onDocumentChange?: (document: PromptDocument) => void;
-  /** 资源条占位按钮选择本地文件后，把文件收成可引用资源。 */
+  /** 资料选择窗口请求本地文件后，把文件收成可引用资源。 */
   onUploadResource?: (file: File) => Promise<Asset>;
-  /** 上传完成后独立保存参考资料；缺省时仅留在本地资料池，不插入正文。 */
+  /** 上传或选择项目资源后独立保存参考资料；缺省时仅留在本地资料池，不插入正文。 */
   onResourceAttach?: (asset: Asset) => void;
   /** 提及详情按钮的可选回调。 */
   onMentionDetails?: (mention: PromptMention, asset: Asset | undefined) => void;
@@ -113,9 +114,6 @@ type MentionRange = {
   start: number;
   end: number;
 };
-
-/** 鼠标选中文字的冻结范围；打开搜索框后不依赖焦点或原生选区。 */
-type SelectedTextRange = { start: number; end: number; name: string };
 
 type EditorSnapshot = {
   text: string;
@@ -206,7 +204,6 @@ export function ResourceMentionEditor({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const caretRef = useRef(initialText.length);
   const [trigger, setTrigger] = useState<{ start: number; query: string } | null>(null);
-  const [selectedTextRange, setSelectedTextRange] = useState<SelectedTextRange | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [mediaFilter, setMediaFilter] = useState<(typeof RESOURCE_FILTERS)[number]>('all');
@@ -234,12 +231,15 @@ export function ResourceMentionEditor({
   const [resourceNameError, setResourceNameError] = useState<string | null>(null);
   const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [referenceDialogNodeId, setReferenceDialogNodeId] = useState<string | null>(null);
+  const [resourceCatalogRevision, setResourceCatalogRevision] = useState(0);
   /** 文件上传批次绑定编辑会话，切换节点或卸载后不接收迟到资料。 */
   const uploadSessionRef = useRef<{ nodeId: string } | null>(null);
   useEffect(() => {
     const session = { nodeId };
     uploadSessionRef.current = session;
     setUploading(false);
+    setReferenceDialogNodeId(null);
     return () => {
       if (uploadSessionRef.current === session) uploadSessionRef.current = null;
     };
@@ -283,7 +283,6 @@ export function ResourceMentionEditor({
       nextRanges: MentionRange[],
       options?: { recordHistory?: boolean; capturePool?: boolean },
     ) => {
-      setSelectedTextRange(null);
       const normalizedRanges = normalizeRanges(nextText, nextRanges);
       const previous = {
         text: textRef.current,
@@ -373,7 +372,6 @@ export function ResourceMentionEditor({
     const signature = documentSignature(promptDocument, value);
     const identityChanged = identityRef.current !== nodeId;
     if (identityRef.current !== nodeId || signature !== lastPropSignatureRef.current) {
-      setSelectedTextRange(null);
       setResourceDialogId(null);
     }
     if (identityRef.current !== nodeId) {
@@ -466,7 +464,7 @@ export function ResourceMentionEditor({
       if (!asset) return [];
       return [projectSearchEntry(asset)];
     }
-    if (!trigger && replaceMentionId === null && !selectedTextRange) return [];
+    if (!trigger && replaceMentionId === null) return [];
     const source =
       resourceScope === 'node'
         ? nodeSearchEntries
@@ -505,16 +503,12 @@ export function ResourceMentionEditor({
     replaceMentionId,
     trigger,
     mediaFilter,
-    selectedTextRange,
   ]);
 
   const pickerOpen =
-    !disabled &&
-    Boolean(
-      trigger || replaceMentionId !== null || pendingDropAssetId !== null || selectedTextRange,
-    );
+    !disabled && Boolean(trigger || replaceMentionId !== null || pendingDropAssetId !== null);
   const pickerId = `resource-mention-picker-${nodeId}`;
-  const pickerOffset = selectedTextRange?.end ?? trigger?.start ?? caretRef.current;
+  const pickerOffset = trigger?.start ?? caretRef.current;
   useLayoutEffect(() => {
     if (!pickerOpen) return;
     const input = textareaRef.current?.element;
@@ -589,7 +583,6 @@ export function ResourceMentionEditor({
 
   const closePicker = useCallback(() => {
     pickerDismissedRef.current = true;
-    setSelectedTextRange(null);
     setTrigger(null);
     setReplaceMentionId(null);
     setPendingDropAssetId(null);
@@ -612,8 +605,6 @@ export function ResourceMentionEditor({
     trigger?.start,
     replaceMentionId,
     pendingDropAssetId,
-    selectedTextRange?.start,
-    selectedTextRange?.end,
   ]);
 
   useEffect(() => {
@@ -658,50 +649,6 @@ export function ResourceMentionEditor({
     (entry: SearchEntry) => {
       if (disabled || entry.unavailableReason) return;
       const { asset, assetVersion } = entry;
-      if (selectedTextRange) {
-        const { start, end, name } = selectedTextRange;
-        if (
-          textRef.current.slice(start, end) !== name ||
-          rangesRef.current.some((range) => start < range.end && end > range.start)
-        ) {
-          closePicker();
-          setProtectedEditMessage('选中文字已变化，请重新选择');
-          return;
-        }
-        const nextText =
-          textRef.current.slice(0, end) + INLINE_REFERENCE + textRef.current.slice(end);
-        caretRef.current = end + 1;
-        commitState(nextText, [
-          ...updateRangesForTextEdit(textRef.current, nextText, rangesRef.current, {
-            editStart: end,
-            editEnd: end,
-            replacementLength: 1,
-          }),
-          {
-            start: end,
-            end: end + 1,
-            mention: {
-              type: 'mention',
-              inline: true,
-              mentionId: createMentionId(rangesRef.current),
-              assetId: asset.id,
-              label: asset.name,
-              mediaType: asset.mediaType,
-              entityName:
-                nodeSearchEntries.find((item) => item.key === entry.key)?.name ??
-                defaultResourceDisplayName(entry.name),
-              ...(assetVersion ? { assetVersion } : {}),
-            },
-          },
-        ]);
-        setProtectedEditMessage(null);
-        closePicker();
-        requestAnimationFrame(() => {
-          textareaRef.current?.focus({ preventScroll: true });
-          textareaRef.current?.setSelectionRange(end + 1, end + 1);
-        });
-        return;
-      }
       const replacing = replaceMentionId
         ? rangesRef.current.find((range) => range.mention.mentionId === replaceMentionId)
         : undefined;
@@ -813,16 +760,40 @@ export function ResourceMentionEditor({
         control.setSelectionRange(caretRef.current, caretRef.current);
       });
     },
-    [
-      commitState,
-      replaceMentionId,
-      trigger,
-      selectedTextRange,
-      nodeSearchEntries,
-      closePicker,
-      connectedAssets,
-      disabled,
-    ],
+    [commitState, replaceMentionId, trigger, nodeSearchEntries, connectedAssets, disabled],
+  );
+
+  /** 上传和项目目录选择共用冻结版本的资料保存，不改变正文或引用原子。 */
+  const attachReference = useCallback(
+    (asset: Asset) => {
+      if (disabled) throw new Error('当前节点不能添加参考资料');
+      const assetVersion = getAssetVersion(asset);
+      if (assetVersion === undefined) throw new Error('资源缺少明确版本，请刷新项目资料后重试');
+      if (onResourceAttach) {
+        // 受控资料以父层为准，正文不变的撤销也必须能移除资料卡片。
+        onResourceAttach(asset);
+        return;
+      }
+      setRetainedMentions((current) =>
+        retainMentionPool(current, [
+          {
+            start: 0,
+            end: 0,
+            mention: {
+              type: 'mention',
+              inline: true,
+              mentionId: createMentionId(current),
+              assetId: asset.id,
+              assetVersion,
+              mediaType: asset.mediaType,
+              label: asset.name,
+              entityName: defaultResourceDisplayName(asset.name),
+            },
+          },
+        ]),
+      );
+    },
+    [disabled, onResourceAttach],
   );
 
   /** 文件上传只增加资料池，不改变正文、原生选区或已有引用原子。 */
@@ -839,31 +810,8 @@ export function ResourceMentionEditor({
           const asset = await onUploadResource(file);
           if (uploadSessionRef.current !== session) return;
           if (!asset) continue;
-          const entry = projectSearchEntry(asset);
-          if (entry.assetVersion === undefined) throw new Error('上传资源缺少明确版本，请重新上传');
-          if (onResourceAttach) {
-            // 受控资料以父层为准，正文不变的撤销也必须能移除上传卡片。
-            onResourceAttach(asset);
-            continue;
-          }
-          setRetainedMentions((current) =>
-            retainMentionPool(current, [
-              {
-                start: 0,
-                end: 0,
-                mention: {
-                  type: 'mention',
-                  inline: true,
-                  mentionId: createMentionId(current),
-                  assetId: asset.id,
-                  assetVersion: entry.assetVersion,
-                  mediaType: asset.mediaType,
-                  label: asset.name,
-                  entityName: defaultResourceDisplayName(asset.name),
-                },
-              },
-            ]),
-          );
+          attachReference(asset);
+          setResourceCatalogRevision((current) => current + 1);
         }
       } catch (error) {
         if (uploadSessionRef.current === session)
@@ -872,7 +820,7 @@ export function ResourceMentionEditor({
         if (uploadSessionRef.current === session) setUploading(false);
       }
     },
-    [disabled, onUploadResource, onResourceAttach],
+    [disabled, onUploadResource, attachReference],
   );
 
   /** 关闭预览只取消引用接收；已经开始的上传不会被当作新节点的资料。 */
@@ -987,7 +935,6 @@ export function ResourceMentionEditor({
   const handleTextChange = useCallback(
     (value: string, start: number, _end: number, references?: InlinePromptPosition[]) => {
       pickerDismissedRef.current = false;
-      setSelectedTextRange(null);
       caretRef.current = start;
       if (references) {
         const nextRanges = references.flatMap(({ id, start }) => {
@@ -1055,19 +1002,13 @@ export function ResourceMentionEditor({
       }
       if (
         event.key === 'Escape' &&
-        (trigger || replaceMentionId !== null || pendingDropAssetId !== null || selectedTextRange)
+        (trigger || replaceMentionId !== null || pendingDropAssetId !== null)
       ) {
         event.preventDefault();
         closePicker();
         return;
       }
-      if (
-        !trigger &&
-        replaceMentionId === null &&
-        pendingDropAssetId === null &&
-        !selectedTextRange
-      )
-        return;
+      if (!trigger && replaceMentionId === null && pendingDropAssetId === null) return;
       if (
         (event.key === 'ArrowDown' || event.key === 'ArrowUp') &&
         !command &&
@@ -1089,7 +1030,6 @@ export function ResourceMentionEditor({
     },
     [
       activeIndex,
-      selectedTextRange,
       pendingDropAssetId,
       closePicker,
       restoreSnapshot,
@@ -1154,37 +1094,13 @@ export function ResourceMentionEditor({
       caretRef.current = start;
       if (pointer) pickerDismissedRef.current = false;
       if (pickerDismissedRef.current) return;
-      const selected = rangesRef.current.find(
-        (range) => start === range.start && end === range.end,
-      );
-      if (selected && start !== end) {
-        setSelectedTextRange(null);
-        setReplaceMentionId(selected.mention.mentionId);
-        setTrigger({ start: selected.start, query: '' });
-        setActiveIndex(0);
-        setHoveredMentionId(null);
-        return;
-      }
       setReplaceMentionId(null);
       if (start !== end) {
+        // 鼠标选字和选中引用原子均保留原生选区，不自动打开资源搜索。
         setTrigger(null);
         setHoveredMentionId(null);
-        const selectedText = textRef.current.slice(start, end);
-        const name = selectedText.trim();
-        const overlapsMention = rangesRef.current.some(
-          (range) => start < range.end && end > range.start,
-        );
-        if (!name || overlapsMention || name.length > 160) {
-          setSelectedTextRange(null);
-          if (name.length > 160) setProtectedEditMessage('引用名称不能超过 160 个字符，请缩小选区');
-          return;
-        }
-        setSelectedTextRange({ start, end, name: selectedText });
-        setPendingDropAssetId(null);
-        setProtectedEditMessage(null);
         return;
       }
-      setSelectedTextRange(null);
       const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
       if (inside) setHoveredMentionId(inside.mention.mentionId);
       updateTrigger(textRef.current, caretRef.current, setTrigger);
@@ -1234,7 +1150,6 @@ export function ResourceMentionEditor({
       }
       setTrigger(null);
       setReplaceMentionId(null);
-      setSelectedTextRange(null);
       setPendingDropAssetId(asset.id);
       setActiveIndex(0);
     },
@@ -1426,11 +1341,6 @@ export function ResourceMentionEditor({
           ))}
         </div>
       </div>
-      {selectedTextRange && (
-        <p className="resource-mention-selection-label">
-          选择资源，插入到「{selectedTextRange.name}」后面
-        </p>
-      )}
       <div
         className="resource-mention-picker-body"
         id={`${pickerId}-panel`}
@@ -1549,7 +1459,7 @@ export function ResourceMentionEditor({
           </UiButton>
         </div>
       )}
-      {(replaceMentionId !== null || pendingDropAssetId !== null || selectedTextRange !== null) && (
+      {(replaceMentionId !== null || pendingDropAssetId !== null) && (
         <UiButton type="button" className="resource-mention-picker-cancel" onClick={closePicker}>
           <X size={13} aria-hidden="true" />
           {replaceMentionId !== null ? '取消替换' : '取消引用'}
@@ -1578,8 +1488,12 @@ export function ResourceMentionEditor({
           className="resource-mention-thumb resource-mention-thumb-add"
           aria-label="上传引用资源"
           title="上传引用资源"
-          disabled={disabled || !onUploadResource || uploading}
-          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || uploading}
+          onClick={() => {
+            closePicker();
+            setProtectedEditMessage(null);
+            setReferenceDialogNodeId(nodeId);
+          }}
         >
           <Plus size={16} aria-hidden="true" />
         </UiButton>
@@ -1840,6 +1754,20 @@ export function ResourceMentionEditor({
         )}
       </div>
 
+      {referenceDialogNodeId === nodeId && !disabled && (
+        <ReferenceResourceDialog
+          nodeId={nodeId}
+          assets={assets}
+          onSearchProjectResources={onSearchProjectResources}
+          uploadRevision={resourceCatalogRevision}
+          uploading={uploading}
+          uploadError={protectedEditMessage}
+          onUploadRequest={onUploadResource ? () => fileInputRef.current?.click() : undefined}
+          onSelect={attachReference}
+          onClose={() => setReferenceDialogNodeId(null)}
+        />
+      )}
+
       {protectedEditMessage && (
         <p className="resource-mention-edit-warning" role="status">
           {protectedEditMessage}
@@ -1893,6 +1821,27 @@ export function ResourceMentionEditor({
               </p>
             )}
             <div className="resource-mention-dialog-actions">
+              {dialogItem.mentionId && (
+                <UiButton
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    const range = rangesRef.current.find(
+                      (range) => range.mention.mentionId === dialogItem.mentionId,
+                    );
+                    if (!range) return;
+                    pickerDismissedRef.current = false;
+                    setResourceDialogId(null);
+                    setPendingDropAssetId(null);
+                    setReplaceMentionId(range.mention.mentionId);
+                    setTrigger({ start: range.start, query: '' });
+                    setHoveredMentionId(null);
+                  }}
+                >
+                  <Replace size={14} aria-hidden="true" />
+                  更换资源
+                </UiButton>
+              )}
               <UiButton
                 type="button"
                 className="button button-primary"
@@ -2141,11 +2090,12 @@ function documentSignature(document: PromptDocument | undefined, fallbackText: s
   return `legacy:${fallbackText}`;
 }
 
+/** 光标前最新的 @ 即可开启查询，允许紧接普通正文；空白或另一个 @ 结束旧查询。 */
 function findMentionTrigger(text: string, caret: number): { start: number; query: string } | null {
   const prefix = text.slice(0, caret);
-  const match = /(?:^|[\s([{"'“‘，。！？、；：])@([^\s@]*)$/u.exec(prefix);
+  const match = /@([^\s@]*)$/u.exec(prefix);
   if (!match || match.index < 0) return null;
-  return { start: match.index + match[0].length - match[1].length - 1, query: match[1] };
+  return { start: match.index, query: match[1] };
 }
 
 function updateTrigger(

@@ -1016,7 +1016,7 @@ export function AssetViewerDialog({
 
 /**
  * 节点内图片/视频默认可拖拽；预览改为页内 Dialog，不再打开新标签页。
- * 音频控件需要捕获指针，因此保留 nodrag。
+ * 音频只在播放控件上隔离拖动，外围留白仍可移动节点。
  */
 function MediaArtifactPreview({
   asset,
@@ -1152,7 +1152,7 @@ function MediaArtifactPreview({
     ) : (
       <audio
         key={`${src}:${attempt}`}
-        className={mediaClassName}
+        className={`${mediaClassName}${controls ? ' nodrag nopan nowheel' : ''}`}
         src={src}
         controls={controls}
         preload="metadata"
@@ -1179,7 +1179,7 @@ function MediaArtifactPreview({
     );
   }
 
-  const capturePointer = kind === 'audio' || showInlineControls || useNativeVideoControls;
+  const capturePointer = kind !== 'audio' && (showInlineControls || useNativeVideoControls);
   return (
     <div
       className={`artifact-preview-media-shell artifact-preview-${kind}-shell ${className}${capturePointer ? ' nodrag nopan nowheel' : ''}`}

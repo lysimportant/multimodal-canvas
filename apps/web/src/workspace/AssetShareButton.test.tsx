@@ -80,6 +80,29 @@ afterEach(() => {
 });
 
 describe('AssetShareButton', () => {
+  it('节点悬浮栏使用直接按钮，不展示密码框，显式点击才创建无密码分享', async () => {
+    const writeText = mockClipboard();
+    auth.apiFetch.mockResolvedValue(shareResponse('node-toolbar-token'));
+    const view = render(
+      <div role="group" aria-label="节点操作">
+        <AssetShareButton asset={makeAsset()} presentation="node-toolbar" />
+      </div>,
+    );
+    const trigger = screen.getByRole('button', { name: '分享当前版本' });
+    expect(trigger.parentElement).toBe(screen.getByRole('group', { name: '节点操作' }));
+    expect(trigger).toHaveClass('flow-node-action-button', 'flow-node-share-button', 'nodrag');
+    expect(trigger.querySelector('.flow-node-action-label')).toHaveTextContent('分享');
+    expect(screen.queryByLabelText('分享查看密码')).not.toBeInTheDocument();
+    expect(auth.apiFetch).not.toHaveBeenCalled();
+
+    await userEvent.click(trigger);
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    const panel = screen.getByRole('group', { name: '资源分享链接' });
+    expect(view.container).not.toContainElement(panel);
+    expect(auth.apiFetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ version: 4 }));
+    expect(panel).toHaveTextContent('查看保护：未设置密码');
+  });
+
   it('明确点击才创建冻结版本链接，并把浮层 Portal 到裁切容器之外', async () => {
     const writeText = mockClipboard();
     auth.apiFetch.mockResolvedValue(shareResponse('share token/+'));

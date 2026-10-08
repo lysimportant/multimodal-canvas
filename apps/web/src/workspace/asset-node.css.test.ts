@@ -6,16 +6,24 @@ const assetNodeCss = readFileSync(resolve(process.cwd(), 'src/workspace/asset-no
 const normalizedCss = assetNodeCss.replace(/\s+/g, ' ');
 
 describe('asset node floating controls CSS contracts', () => {
-  it('节点普通、悬停和选中状态均不显示外框，不改变节点内容区域', () => {
+  it('未选中节点不占边框，选中及悬停保留 1px 透明边框', () => {
     for (const selector of [
       '.react-flow__node .flow-asset-node',
       '.react-flow__node .flow-asset-node:hover',
-      '.react-flow__node .flow-asset-node.is-selected, .react-flow__node .flow-asset-node.is-selected:hover',
     ]) {
       expect(normalizedCss.slice(normalizedCss.indexOf(selector + ' {')).split('}')[0]).toContain(
         'border: 0;',
       );
     }
+    const selectedRule = normalizedCss
+      .slice(
+        normalizedCss.indexOf(
+          '.react-flow__node .flow-asset-node.is-selected, .react-flow__node .flow-asset-node.is-selected:hover {',
+        ),
+      )
+      .split('}')[0];
+    expect(selectedRule).toContain('border: 1px solid transparent;');
+    expect(selectedRule).toContain('box-sizing: border-box;');
     expect(normalizedCss).not.toContain('border-width: 3px;');
   });
 

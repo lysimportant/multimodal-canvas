@@ -572,11 +572,11 @@ describe('ResourceMentionEditor', () => {
     expectEditorValue(editor, '生成 ');
     view.rerender(<ResourceMentionEditor {...props} resourceRefs={[reference]} />);
 
-    setEditorSelection(editor, 0, 2);
-    fireEvent.mouseUp(editor);
+    setEditorSelection(editor, 3);
+    await user.keyboard('@');
     await user.click(screen.getByRole('option', { name: /产品图.*v3/ }));
     expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
-      { type: 'text', text: '生成' },
+      { type: 'text', text: '生成 ' },
       expect.objectContaining({
         type: 'mention',
         assetId: imageAsset.id,
@@ -584,7 +584,6 @@ describe('ResourceMentionEditor', () => {
         entityName: '产品图',
         inline: true,
       }),
-      { type: 'text', text: ' ' },
     ]);
   });
 
@@ -1897,6 +1896,9 @@ describe('ResourceMentionEditor', () => {
     const editor = screen.getByRole('textbox') as PromptEditorElement;
     const marker = editorValue(editor).indexOf(INLINE_REFERENCE);
     setEditorSelection(editor, marker, marker + 1);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '预览并命名 旧资源' }));
+    await user.click(screen.getByRole('button', { name: '更换资源' }));
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('option', { name: /产品图/ }));
 
@@ -2214,10 +2216,10 @@ describe('ResourceMentionEditor', () => {
     expect(name).toHaveValue('主角');
   });
 
-  it('鼠标选中文字后保留普通正文，在选区后插入独立资源引用', async () => {
+  it('鼠标选中文字不搜索，显式 @ 插入与撤销重做保留周边普通正文', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
-    const value = '让主角站在窗边，主角回头';
+    const value = '让主角 站在窗边，主角回头';
     render(
       <ResourceMentionEditor
         nodeId="selection"
@@ -2231,21 +2233,25 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     setEditorSelection(editor, 1, 3);
     fireEvent.mouseUp(editor);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    setEditorSelection(editor, 4);
+    await user.keyboard('@');
     await waitFor(() => expect(screen.getByRole('listbox', { name: '选择资源' })).toBeVisible());
     expect(screen.getByRole('searchbox', { name: '搜索资源' })).toHaveValue('');
     expect(document.querySelector('[data-resource-picker-anchor]')).toHaveAttribute(
       'data-offset',
-      '3',
+      '4',
     );
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     await user.click(screen.getByRole('button', { name: '图片' }));
     await user.type(screen.getByRole('searchbox', { name: '搜索资源' }), '产品');
     await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expectEditorValue(currentPromptEditor(), `让主角${INLINE_REFERENCE}站在窗边，主角回头`);
+    expectEditorValue(currentPromptEditor(), `让主角 ${INLINE_REFERENCE}站在窗边，主角回头`);
     expect(onDocumentChange).toHaveBeenLastCalledWith({
       version: 1,
       blocks: [
-        { type: 'text', text: '让主角' },
+        { type: 'text', text: '让主角 ' },
         expect.objectContaining({
           type: 'mention',
           assetId: imageAsset.id,
@@ -2261,15 +2267,18 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     await user.click(currentPromptEditor());
     await user.keyboard('{Control>}z{/Control}');
+    expectEditorValue(currentPromptEditor(), '让主角 @站在窗边，主角回头');
+    await user.keyboard('{Control>}z{/Control}');
     expectEditorValue(currentPromptEditor(), value);
     expect(screen.getByRole('article')).toBeInTheDocument();
     await user.keyboard('{Control>}y{/Control}');
-    expectEditorValue(currentPromptEditor(), `让主角${INLINE_REFERENCE}站在窗边，主角回头`);
+    await user.keyboard('{Control>}y{/Control}');
+    expectEditorValue(currentPromptEditor(), `让主角 ${INLINE_REFERENCE}站在窗边，主角回头`);
     expect(screen.getByRole('button', { name: '预览并命名 产品图' })).toBeVisible();
   });
 
   it.each([imageAsset, audioAsset, videoAsset])(
-    '选中文字插入 $mediaType 原子后反复从资源条解绑仍完整保留原文',
+    '显式 @ 插入 $mediaType 原子后反复从资源条解绑仍完整保留原文',
     async (asset) => {
       const user = userEvent.setup();
       const onDocumentChange = vi.fn();
@@ -2286,10 +2295,8 @@ describe('ResourceMentionEditor', () => {
       );
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const current = currentPromptEditor();
-        setEditorSelection(current, 0);
-        fireEvent.mouseDown(current);
-        setEditorSelection(current, 0, name.length + 4);
-        fireEvent.mouseUp(current);
+        setEditorSelection(current, name.length + 4);
+        await user.keyboard('@');
         await user.click(screen.getByRole('tab', { name: '项目资源' }));
         await user.click(screen.getByRole('option', { name: new RegExp(asset.name) }));
         expectEditorValue(
@@ -2320,12 +2327,11 @@ describe('ResourceMentionEditor', () => {
         expect(screen.queryByRole('article')).not.toBeInTheDocument();
         expect(document.querySelectorAll('.resource-mention-token')).toHaveLength(0);
       }
-      expect(onDocumentChange).toHaveBeenCalledTimes(4);
+      expect(onDocumentChange).toHaveBeenCalledTimes(6);
     },
   );
 
-  it('取消选中文字引用不修改原文，重复选中可以重新打开', async () => {
-    const user = userEvent.setup();
+  it('反复选中文字不打开搜索，原生复制事件不被拦截且保留选区和正文', () => {
     const onDocumentChange = vi.fn();
     render(
       <ResourceMentionEditor
@@ -2340,8 +2346,9 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
-    await user.click(screen.getByRole('searchbox', { name: '搜索资源' }));
-    await user.keyboard('{Escape}');
+    const copy = new Event('copy', { bubbles: true, cancelable: true });
+    fireEvent(editor, copy);
+    expect(copy.defaultPrevented).toBe(false);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expectEditorValue(editor, '主角回头');
     expect(onDocumentChange).not.toHaveBeenCalled();
@@ -2349,11 +2356,12 @@ describe('ResourceMentionEditor', () => {
     fireEvent.mouseDown(editor);
     setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
-    await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect((editor as HTMLTextAreaElement).selectionStart).toBe(0);
+    expect((editor as HTMLTextAreaElement).selectionEnd).toBe(2);
   });
 
-  it('选区的边界空白保留，长名称与纯空白不创建引用', async () => {
-    const user = userEvent.setup();
+  it('选区的边界空白和长文字保持原生选择，不弹搜索或引用名称警告', () => {
     const onDocumentChange = vi.fn();
     const view = render(
       <ResourceMentionEditor
@@ -2368,14 +2376,9 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     setEditorSelection(editor, 0, 6);
     fireEvent.mouseUp(editor);
-    await user.click(screen.getByRole('tab', { name: '项目资源' }));
-    await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expectEditorValue(currentPromptEditor(), `  主角  ${INLINE_REFERENCE}回头`);
-    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([
-      { type: 'text', text: '  主角  ' },
-      expect.objectContaining({ entityName: imageAsset.name, inline: true }),
-      { type: 'text', text: '回头' },
-    ]);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expectEditorValue(editor, '  主角  回头');
+    expect(onDocumentChange).not.toHaveBeenCalled();
     view.rerender(
       <ResourceMentionEditor
         nodeId="selection-long"
@@ -2389,11 +2392,11 @@ describe('ResourceMentionEditor', () => {
     setEditorSelection(longEditor, 0, 161);
     fireEvent.mouseUp(longEditor);
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent('引用名称不能超过 160 个字符');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect((longEditor as HTMLTextAreaElement).selectionEnd).toBe(161);
   });
 
-  it('选中文字与另一资源别名冲突时仍保留普通文字并插入独立原子', async () => {
-    const user = userEvent.setup();
+  it('选中文字与另一资源别名相同时保留普通文字，不插入独立原子', () => {
     const onDocumentChange = vi.fn();
     render(
       <ResourceMentionEditor
@@ -2409,22 +2412,12 @@ describe('ResourceMentionEditor', () => {
     editor.focus();
     setEditorSelection(editor, 0, 2);
     fireEvent.mouseUp(editor);
-    await user.click(screen.getByRole('tab', { name: '项目资源' }));
-    await user.click(screen.getByRole('option', { name: /产品图/ }));
-    expectEditorValue(currentPromptEditor(), `主角${INLINE_REFERENCE}回头`);
-    expect(onDocumentChange).toHaveBeenCalledOnce();
-    expect(onDocumentChange.mock.calls.at(-1)?.[0].blocks).toEqual([
-      { type: 'text', text: '主角' },
-      expect.objectContaining({
-        type: 'mention',
-        assetId: imageAsset.id,
-        inline: true,
-      }),
-      { type: 'text', text: '回头' },
-    ]);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expectEditorValue(editor, '主角回头');
+    expect(onDocumentChange).not.toHaveBeenCalled();
   });
 
-  it('纯空白或只读编辑器不创建选字引用，父文档更新会关闭旧选区', async () => {
+  it('纯空白、普通文字及只读编辑器不打开搜索，父文档更新保留外部正文', () => {
     const onDocumentChange = vi.fn();
     const view = render(
       <ResourceMentionEditor
@@ -2442,7 +2435,7 @@ describe('ResourceMentionEditor', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     setEditorSelection(editor, 2, 4);
     fireEvent.mouseUp(editor);
-    await waitFor(() => expect(screen.getByRole('listbox')).toBeVisible());
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     view.rerender(
       <ResourceMentionEditor
         nodeId="selection-reset"
@@ -2606,7 +2599,7 @@ describe('ResourceMentionEditor', () => {
     { key: 'ArrowUp', ctrlKey: true, shiftKey: true },
     { key: 'ArrowDown', metaKey: true, shiftKey: true },
     { key: 'ArrowUp', altKey: true },
-  ])('选字引用弹层不拦截原生组合方向键 $key', (modifiers) => {
+  ])('普通文字选区不拦截原生组合方向键 $key', (modifiers) => {
     render(
       <ResourceMentionEditor
         nodeId="selection-native"

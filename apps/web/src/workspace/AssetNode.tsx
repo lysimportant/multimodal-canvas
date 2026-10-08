@@ -68,6 +68,7 @@ import type { AssetFlowNode } from '../canvas-utils';
 import { isImeKeyboardEvent } from '../ime';
 import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
+import { AssetShareButton, resolveAssetShareVersion } from './AssetShareButton';
 import { resolveOriginalImageAsset } from './image-thumbnail-cache';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
@@ -472,6 +473,18 @@ export function AssetNode({
   const writingDisabled = isNodeRunning(data.runStatus) || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
+  /** 只分享已就绪的明确版本；新任务的排队、运行或失败不沿用旧结果入口。 */
+  const shareableAsset =
+    previewAsset?.status === 'ready' &&
+    previewAsset.id.trim() &&
+    !previewAsset.id.startsWith('inline_') &&
+    !previewAsset.id.startsWith('remote_') &&
+    previewAsset.contentUrl &&
+    resolveAssetShareVersion(previewAsset) !== undefined &&
+    uploadProgress === null &&
+    (data.runStatus === undefined || data.runStatus === 'succeeded')
+      ? previewAsset
+      : undefined;
   /** 抵消画布缩放，让悬浮栏保持屏幕像素大小；宽度随图标和文字收缩。 */
   const floatingControlStyle = {
     '--flow-node-zoom': zoom,
@@ -1005,6 +1018,9 @@ export function AssetNode({
                   </NodeFloatingActionLabel>
                 </NodeFloatingActionButton>
               )}
+              {shareableAsset ? (
+                <AssetShareButton asset={shareableAsset} presentation="node-toolbar" />
+              ) : null}
               {deleteNode ? (
                 <NodeFloatingActionButton
                   type="button"

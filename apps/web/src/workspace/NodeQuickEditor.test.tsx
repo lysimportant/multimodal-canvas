@@ -490,9 +490,14 @@ describe('NodeQuickEditor', () => {
         );
 
         await user.click(within(strip).getByRole('button', { name: '上传引用资源' }));
+        const resources = await screen.findByRole('dialog', { name: '选择参考资料' });
+        expect(openFile).not.toHaveBeenCalled();
+        expect(inputs.onReferencePickToggle).not.toHaveBeenCalled();
+        await user.click(within(resources).getByRole('button', { name: '上传本地文件' }));
         expect(openFile).toHaveBeenCalledOnce();
         expect(inputs.onReferencePickToggle).not.toHaveBeenCalled();
         expect(screen.queryByRole('dialog', { name: '拍照' })).not.toBeInTheDocument();
+        await user.click(within(resources).getByRole('button', { name: '关闭参考资料选择' }));
         await user.click(within(strip).getByRole('button', { name: '拍照引用' }));
         const camera = await screen.findByRole('dialog', { name: '拍照' });
         expect(openFile).toHaveBeenCalledOnce();
