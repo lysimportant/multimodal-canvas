@@ -519,43 +519,155 @@ describe('ResourceMentionEditor', () => {
     expect(screen.getByRole('button', { name: '上传引用资源' })).toBeInTheDocument();
   });
 
-  it('uploads a local file from the strip placeholder and binds the new name', async () => {
+  it('上传只添加冻结版本的资料，保留正文和选区，显式选取才插入原子', async () => {
     const user = userEvent.setup();
     const onDocumentChange = vi.fn();
+    const onResourceAttach = vi.fn();
     const onUploadResource = vi.fn(async () => imageAsset);
-    render(
+    const view = render(
       <ResourceMentionEditor
         nodeId="node-upload"
         value="生成 "
         assets={[]}
         onDocumentChange={onDocumentChange}
         onUploadResource={onUploadResource}
+        onResourceAttach={onResourceAttach}
         ariaLabel="提示词"
       />,
     );
     const editor = screen.getByRole('textbox', { name: '提示词' });
+    setEditorSelection(editor, 0, 2);
     const file = new File(['png'], '产品图.png', { type: 'image/png' });
     const input = editor
       .closest('.resource-mention-editor')
       ?.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(input, file);
     expect(onUploadResource).toHaveBeenCalledWith(file);
-    await waitFor(() => {
-      expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: 'mention',
-            assetId: imageAsset.id,
-            entityName: '产品图',
-            inline: true,
-          }),
-        ]),
-      );
-      expectEditorValue(
-        screen.getByRole('textbox', { name: '提示词' }),
-        `生成 ${INLINE_REFERENCE}`,
-      );
+    expect(onResourceAttach).toHaveBeenCalledExactlyOnceWith(imageAsset);
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expectEditorValue(editor, '生成 ');
+    expect(editor.querySelectorAll('[data-inline-reference]')).toHaveLength(0);
+
+    const props = {
+      nodeId: 'node-upload',
+      value: '生成 ',
+      assets: [imageAsset],
+      onDocumentChange,
+      onUploadResource,
+      onResourceAttach,
+      ariaLabel: '提示词',
+    };
+    const reference: NodeResourceRef = {
+      id: 'uploaded-reference',
+      assetId: imageAsset.id,
+      assetVersion: 3,
+      name: '产品图',
+      mediaType: 'image',
+      attached: true,
+    };
+    view.rerender(<ResourceMentionEditor {...props} resourceRefs={[reference]} />);
+    expect(screen.getByRole('article', { name: '参考资源 1：产品图' })).toBeVisible();
+    view.rerender(<ResourceMentionEditor {...props} resourceRefs={[]} />);
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expectEditorValue(editor, '生成 ');
+    view.rerender(<ResourceMentionEditor {...props} resourceRefs={[reference]} />);
+
+    setEditorSelection(editor, 0, 2);
+    fireEvent.mouseUp(editor);
+    await user.click(screen.getByRole('option', { name: /产品图.*v3/ }));
+    expect(onDocumentChange.mock.lastCall?.[0].blocks).toEqual([
+      { type: 'text', text: '生成' },
+      expect.objectContaining({
+        type: 'mention',
+        assetId: imageAsset.id,
+        assetVersion: 3,
+        entityName: '产品图',
+        inline: true,
+      }),
+      { type: 'text', text: ' ' },
+    ]);
+  });
+
+  it('独立编辑器批量上传只保留资料池，重复身份不覆盖前一项，切换节点不残留', async () => {
+    const user = userEvent.setup();
+    const secondVersion = { ...imageAsset, latestVersion: 4 };
+    const onUploadResource = vi
+      .fn()
+      .mockResolvedValueOnce(imageAsset)
+      .mockResolvedValueOnce({ ...audioAsset, latestVersion: 1 })
+      .mockResolvedValueOnce(imageAsset)
+      .mockResolvedValueOnce(secondVersion);
+    const onDocumentChange = vi.fn();
+    const props = { value: '保留正文', onUploadResource, onDocumentChange, ariaLabel: '提示词' };
+    const view = render(<ResourceMentionEditor nodeId="upload-batch" {...props} />);
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(input, [
+      new File(['one'], 'one.png', { type: 'image/png' }),
+      new File(['two'], 'two.mp3', { type: 'audio/mpeg' }),
+      new File(['same'], 'same.png', { type: 'image/png' }),
+      new File(['version'], 'version.png', { type: 'image/png' }),
+    ]);
+    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(3));
+    expect(screen.getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual([
+      '参考资源 1：产品图',
+      '参考资源 2：声音样本',
+      '参考资源 3：产品图',
+    ]);
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expectEditorValue(currentPromptEditor(), '保留正文');
+    view.rerender(<ResourceMentionEditor nodeId="next-node" {...props} />);
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+  });
+
+  it('上传期间切换节点后不接收迟到资料，也不继续批次后续文件', async () => {
+    const user = userEvent.setup();
+    let resolve!: (asset: Asset) => void;
+    const promise = new Promise<Asset>((done) => {
+      resolve = done;
     });
+    const onUploadResource = vi.fn(() => promise);
+    const onResourceAttach = vi.fn();
+    const onDocumentChange = vi.fn();
+    const props = { onUploadResource, onResourceAttach, onDocumentChange, ariaLabel: '提示词' };
+    const view = render(<ResourceMentionEditor nodeId="upload-old" {...props} />);
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, [
+      new File(['one'], 'one.png', { type: 'image/png' }),
+      new File(['two'], 'two.png', { type: 'image/png' }),
+    ]);
+    expect(onUploadResource).toHaveBeenCalledOnce();
+    view.rerender(<ResourceMentionEditor nodeId="upload-new" {...props} />);
+    resolve(imageAsset);
+    await waitFor(() => expect(screen.getByRole('button', { name: '上传引用资源' })).toBeEnabled());
+    expect(onUploadResource).toHaveBeenCalledOnce();
+    expect(onResourceAttach).not.toHaveBeenCalled();
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+  });
+
+  it('父层拒绝保存上传资料时保留正文，显示原因，不留下未保存的卡片或原子', async () => {
+    const user = userEvent.setup();
+    const onDocumentChange = vi.fn();
+    render(
+      <ResourceMentionEditor
+        nodeId="rejected-upload"
+        value="保留原文"
+        ariaLabel="提示词"
+        onUploadResource={async () => imageAsset}
+        onResourceAttach={() => {
+          throw new Error('节点引用资源不能超过 40 个');
+        }}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    await user.upload(
+      document.querySelector('input[type="file"]') as HTMLInputElement,
+      new File(['image'], 'image.png', { type: 'image/png' }),
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('节点引用资源不能超过 40 个');
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expectEditorValue(currentPromptEditor(), '保留原文');
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expect(currentPromptEditor().querySelectorAll('[data-inline-reference]')).toHaveLength(0);
   });
 
   it('shows a hover preview on the hovered mention name, not only the first name', async () => {

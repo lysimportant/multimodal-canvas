@@ -133,6 +133,8 @@ export type NodeQuickEditorProps = {
   onPromptDocumentChange?: (document: PromptDocument) => void;
   /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
   onUploadResource?: (file: File) => Promise<Asset>;
+  /** 将上传素材加入节点资料条；保留提示词正文，不触发生成。 */
+  onResourceAttach?: (asset: Asset) => void;
   /** 修改复刻工作流配置；资源引用与生成提示词由父层原子更新。 */
   onVideoRecreationChange?: (config: VideoRecreationConfig) => void | Promise<void>;
   /** 当前节点连续添加画布参考资源的开关；不触发生成。 */
@@ -457,6 +459,7 @@ export function NodeQuickEditor({
   onPromptChange,
   onPromptDocumentChange,
   onUploadResource,
+  onResourceAttach,
   onVideoRecreationChange,
   referencePickActive,
   onReferencePickToggle,
@@ -853,6 +856,7 @@ export function NodeQuickEditor({
         onChange={onPromptDocumentChange ? undefined : onPromptChange}
         onDocumentChange={onPromptDocumentChange}
         onUploadResource={onUploadResource}
+        onResourceAttach={onResourceAttach}
         referencePickActive={referencePickActive}
         onReferencePickToggle={
           onReferencePickToggle
@@ -897,8 +901,6 @@ export function NodeQuickEditor({
     },
   };
   const skillPanel = <PromptSkillPanel {...skillPanelProps} />;
-  /** 完整编辑器只展示已生成的优化结果，不把配置悬浮卡片嵌套进 Dialog。 */
-  const inlineSkillPreview = <PromptSkillPanel {...skillPanelProps} presentation="inline" />;
 
   /** 来源图只读展示：点击缩略图预览，点击名称定位到来源节点。 */
   const sourcePreviewAsset = imageEditSource
@@ -1415,7 +1417,7 @@ export function NodeQuickEditor({
   const controls = (
     <div className="node-quick-editor-controls">
       <div className="node-quick-editor-run-group">
-        {!expandedEditorOpen && !node.data.videoRecreation && skillPanel}
+        {!node.data.videoRecreation && skillPanel}
         <NodeParameterSelect
           label="生成数量"
           className="node-quick-editor-generation-count"
@@ -1657,7 +1659,6 @@ export function NodeQuickEditor({
             {expandedEditorOpen && recreationPanel}
             {topControls}
             <div className="node-quick-editor-prompt-group">{promptEditor}</div>
-            {expandedEditorOpen && inlineSkillPreview}
             {controls}
             {generationCountIssue && (
               <p className="node-quick-editor-parameter-issue" role="status">

@@ -157,6 +157,80 @@ function referencePool(
 }
 
 /**
+ * 把已上传资源追加到节点独立资料池，不改正文或创建来源节点、连线。
+ * @param target 接收上传结果的节点；调用方负责校验当前用户、忙碌状态和编辑会话。
+ * @param nodes 当前画布节点，供既有资料池恢复冻结来源。
+ * @param edges 当前连线；视频模式切换不得丢弃已有首尾帧输入。
+ * @param assets 当前项目目录，只用于恢复已有引用的展示元数据。
+ * @param asset 上传接口返回的资源，必须携带正整数版本。
+ * @returns 待原子保存的数据及变更标志；重复身份沿用原别名、顺序和模式。
+ * @throws 版本未知、资源归档、资料超限或视频模式与现有连线不兼容时整次拒绝。
+ */
+export function attachUploadedNodeResource(
+  target: AssetFlowNode,
+  nodes: readonly AssetFlowNode[],
+  edges: readonly FlowEdge[],
+  assets: readonly Asset[],
+  asset: Asset,
+): { data: AssetFlowNode['data']; changed: boolean } {
+  const version = asset.latestVersion ?? asset.metadata?.version;
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1)
+    throw new Error('上传资源缺少明确版本，请重新上传');
+  if (asset.status === 'archived' || asset.archivedAt) throw new Error('上传资源已归档，不能添加');
+  const { references } = referencePool(target, nodes, edges, assets);
+  if (
+    references.some(
+      (reference) => reference.assetId === asset.id && reference.assetVersion === version,
+    )
+  )
+    return { data: target.data, changed: false };
+  if (references.length >= 40) throw new Error('节点引用资源不能超过 40 个');
+  const resourceRefs = [
+    ...references,
+    {
+      id: `reference:uploaded:${encodeURIComponent(asset.id)}:${version}`,
+      assetId: asset.id,
+      assetVersion: version,
+      mediaType: asset.mediaType,
+      name: uniqueResourceDisplayName(
+        asset.name,
+        new Set(references.map((reference) => reference.name)),
+      ),
+      attached: true,
+    },
+  ];
+  const promoteOmni =
+    target.data.mediaType === 'video' &&
+    target.data.mode !== 'source' &&
+    !target.data.imageEditSource &&
+    !['omni_reference', 'video_edit', 'video_extend'].includes(target.data.videoMode ?? '');
+  const data: AssetFlowNode['data'] = {
+    ...target.data,
+    resourceRefs,
+    stale: true,
+    ...(promoteOmni ? { videoMode: 'omni_reference' as const } : {}),
+  };
+  nodeDataSchema.parse(data);
+  if (promoteOmni) {
+    const nextTarget = { ...target, data };
+    for (const edge of edges.filter((item) => item.target === target.id)) {
+      const source = nodes.find((node) => node.id === edge.source);
+      if (
+        !source ||
+        !isPortConnectionAllowed(
+          source,
+          edge.sourceHandle ?? '',
+          nextTarget,
+          edge.targetHandle ?? '',
+        )
+      )
+        throw new Error('当前首尾帧连线与全能参考不兼容，请先确认生成模式；原连线未改变');
+    }
+  }
+  return { data, changed: true };
+}
+
+/**
  * 原子添加节点资料及来源连线，不改正文；重复点击同一身份不会重复添加。
  * @param targetId 保持选中的生成节点，不允许选择自身或无资源来源。
  * @param sourceId 被点击的画布节点；引用其当前已确定版本，不生成新资源。

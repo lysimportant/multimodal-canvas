@@ -18,8 +18,6 @@ type Candidate = {
 
 /** 仅保留在内存中的拖动状态；不修改节点位置、尺寸或持久化数据。 */
 export type QuickEditorPlacementState = Candidate & {
-  /** 未受节点外侧空间限制的内容高度，内容变高时不能继续沿用旧的裁剪上限。 */
-  naturalHeight: number;
   /** 节点尺寸、缩放或可见区域变化时重新择位，不能沿用旧的触边距离。 */
   geometryKey: string;
   /** 沿当前方向向外为正的节点边缘坐标，单位为视口像素。 */
@@ -36,6 +34,8 @@ type LayoutInput = {
   zoom: number;
   /** 面板不受当前 max-height 裁剪的自然高度。 */
   editorHeight: number;
+  /** 已确定逻辑宽度经面板显示倍率换算的屏幕宽度；缺省使用节点屏幕宽度的两倍。 */
+  editorWidth?: number;
   previous: QuickEditorPlacementState | null;
 };
 
@@ -71,20 +71,21 @@ function pickInitialCandidate(candidates: Candidate[], height: number) {
 /**
  * 按面板实际触边位置计算稳定换向；触边前保持当前方向，等待期间只钳制坐标。
  * @param input 节点、可见区域、面板自然高度与上一次布局状态，均不被修改。
- * @returns 节点外侧有可用区域时返回布局；完全占满画布时返回 null。
+ * @returns 完整面板的贴边布局；画布无有效可见区域时返回 null。
  */
 export function getQuickEditorLayout({
   node,
   bounds,
   zoom,
   editorHeight,
+  editorWidth,
   previous,
 }: LayoutInput): LayoutResult | null {
   const availableWidth = bounds.right - bounds.left;
   const availableHeight = bounds.bottom - bounds.top;
   if (availableWidth <= 0 || availableHeight <= 0) return null;
 
-  const desiredWidth = Math.min(node.width * 2, availableWidth);
+  const desiredWidth = Math.min(editorWidth ?? node.width * 2, availableWidth);
   const desiredHeight = Math.min(editorHeight, availableHeight);
   const gap = NODE_GAP * zoom;
   const areas: Candidate[] = [
@@ -99,8 +100,7 @@ export function getQuickEditorLayout({
       maxHeight: Math.min(bounds.bottom, node.top - TOOLBAR_GAP) - bounds.top,
     },
   ];
-  const candidates = areas.filter((candidate) => candidate.width > 0 && candidate.maxHeight > 0);
-  if (candidates.length === 0) return null;
+  const candidates = areas.filter((candidate) => candidate.maxHeight > 0);
 
   // 平移后的 DOMRect 可能带有亚像素运算误差，不能把它误判为节点重新缩放。
   const geometryKey = [
@@ -115,15 +115,11 @@ export function getQuickEditorLayout({
     .map((value) => Math.round(value * 1000) / 1000)
     .join(':');
   const last = previous?.geometryKey === geometryKey ? previous : null;
-  const initial = pickInitialCandidate(candidates, desiredHeight);
+  const initial = pickInitialCandidate(candidates.length ? candidates : areas, desiredHeight);
   let placement = last?.placement ?? initial.placement;
-  const area = areas.find((candidate) => candidate.placement === placement)!;
-  // 可用区域变小时保留已有尺寸，避免等待换向期间编辑器被压扁；恢复空间时允许展开。
-  let width = Math.min(desiredWidth, Math.max(last?.width ?? 0, area.width));
-  let maxHeight =
-    last && desiredHeight > last.naturalHeight
-      ? desiredHeight
-      : Math.min(desiredHeight, Math.max(last?.maxHeight ?? 0, area.maxHeight));
+  // 节点外侧空隙只决定方向；空间不足时贴边重叠节点，不能裁剪整张输入面板。
+  const width = desiredWidth;
+  const maxHeight = desiredHeight;
 
   /** 返回未经边界钳制的位置和当前方向越界量，用面板外缘而非节点外缘判断触边。 */
   const getPosition = (direction: QuickEditorPlacement) => {
@@ -170,8 +166,6 @@ export function getQuickEditorLayout({
   if (next && movedOutwardPastContact) {
     // 只有对侧能容纳当前面板且超过滞后阈值才换向；空间不足时继续钳制当前方向。
     placement = next.placement;
-    width = Math.min(desiredWidth, next.width);
-    maxHeight = Math.min(desiredHeight, next.maxHeight);
     position = getPosition(placement);
     contact = null;
   }
@@ -186,7 +180,6 @@ export function getQuickEditorLayout({
       placement,
       width,
       maxHeight,
-      naturalHeight: desiredHeight,
       geometryKey,
       position: position.position,
       contact,

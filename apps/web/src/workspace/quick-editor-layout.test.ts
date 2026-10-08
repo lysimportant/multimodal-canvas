@@ -28,6 +28,34 @@ function expectVisible(
 }
 
 describe('输入面板实际触边滞后', () => {
+  it('首次打开时上下空隙都不足，仍完整显示并吸附底部', () => {
+    const bounds = { left: 88, top: 98, right: 792, bottom: 702 };
+    const result = getQuickEditorLayout({
+      node: rect(380, 300, 180, 180),
+      bounds,
+      zoom: 1,
+      editorHeight: 400,
+      previous: null,
+    })!;
+    expect(result.placement).toBe('below');
+    expectVisible(result, bounds, 360, 400);
+    expect(result.top).toBe(302);
+  });
+
+  it('放大节点覆盖整个画布时，面板仍吸附边界而不是隐藏', () => {
+    const bounds = { left: 88, top: 98, right: 792, bottom: 702 };
+    const result = getQuickEditorLayout({
+      node: rect(110, 0, 520, 710),
+      bounds,
+      zoom: 2,
+      editorHeight: 604,
+      previous: null,
+    })!;
+    expect(result).not.toBeNull();
+    expectVisible(result, bounds, 704, 604);
+    expect(result.top).toBe(bounds.top);
+  });
+
   const directions: QuickEditorPlacement[] = ['below', 'above'];
   const cases = directions.flatMap((direction) =>
     [0.25, 0.5, 1, 1.5].map((zoom) => ({ direction, zoom })),

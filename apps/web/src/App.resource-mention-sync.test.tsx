@@ -46,6 +46,8 @@ vi.mock('./workspace/WorkflowCanvas', () => ({
         onResourceRemove={(resource, document) =>
           props.onResourceRemove?.(resource, document, target.id)
         }
+        onResourceAttach={(asset) => props.onResourceAttach?.(asset, target.id)}
+        onUploadResource={props.onUploadResource}
         onDocumentChange={(document) => props.onPromptDocumentChange?.(document, target.id)}
         ariaLabel="提示词"
       />
@@ -119,6 +121,7 @@ let allowRejectedSubmission: boolean;
 const thumbnailPaths = new Set([
   `/v1/assets/${image.id}/versions/1/derivatives/thumbnail`,
   `/v1/assets/${image.id}/versions/2/derivatives/thumbnail`,
+  `/v1/assets/${image.id}/versions/9/derivatives/thumbnail`,
   `/v1/assets/${mansui.assetId}/versions/4/derivatives/thumbnail`,
 ]);
 
@@ -929,6 +932,93 @@ describe('选区资源新建节点', () => {
     act(() => view.canvas!.onAddGenerateNode('text', { x: 760, y: 0 }));
     expect(view.canvas!.nodes.filter((node) => node.selected)).toEqual([view.canvas!.nodes.at(-1)]);
     expect(view.canvas!.nodes.at(-1)?.data.promptDocument).toBeUndefined();
+  });
+});
+
+describe('上传资料独立保存', () => {
+  it('同一编辑事件连续添加不同版本时读取实时资料池，不丢失批次前项', async () => {
+    render(<App />);
+    await screen.findByRole('textbox', { name: '提示词' });
+    const before = structuredClone(view.canvas!.nodes[2].data.promptDocument);
+    const attach = view.canvas!.onResourceAttach!;
+    act(() => {
+      attach(image, 'video-target');
+      attach({ ...image, latestVersion: 2 }, 'video-target');
+      attach(image, 'video-target');
+    });
+    const references = view.canvas!.nodes[2].data.resourceRefs!;
+    expect(
+      references.slice(-2).map((reference) => [reference.assetId, reference.assetVersion]),
+    ).toEqual([
+      [image.id, 9],
+      [image.id, 2],
+    ]);
+    expect(view.canvas!.nodes[2].data.promptDocument).toEqual(before);
+    await waitFor(() => expect(canvas.nodes[2].data.resourceRefs).toEqual(references));
+  });
+
+  it('上传完成只追加资料，保存刷新与撤销重做保留正文和冻结版本', async () => {
+    const app = render(<App />);
+    await screen.findByRole('textbox', { name: '提示词' });
+    const before = structuredClone(view.canvas!.nodes[2].data);
+    const edges = structuredClone(view.canvas!.edges);
+    act(() => view.canvas!.onResourceAttach!(image, 'video-target'));
+    const attached = view.canvas!.nodes[2].data;
+    expect(attached.promptDocument).toEqual(before.promptDocument);
+    expect(attached.prompt).toEqual(before.prompt);
+    expect(view.canvas!.edges).toEqual(edges);
+    expect(attached.resourceRefs?.at(-1)).toMatchObject({
+      assetId: image.id,
+      assetVersion: 9,
+      name: '图片生成节点 6',
+      attached: true,
+    });
+    expect(
+      attached.resourceRefs?.filter((reference) => reference.assetId === image.id),
+    ).toHaveLength(1);
+    const references = structuredClone(attached.resourceRefs);
+    act(() => view.canvas!.onResourceAttach!(image, 'video-target'));
+    expect(view.canvas!.nodes[2].data.resourceRefs).toEqual(references);
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes[2].data).toEqual(before);
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes[2].data.resourceRefs).toEqual(references);
+    await waitFor(() => expect(canvas.nodes[2].data.resourceRefs).toEqual(references));
+    expect(canvas.nodes[2].data.promptDocument).toEqual(before.promptDocument);
+    app.unmount();
+    view.canvas = null;
+    render(<App />);
+    await screen.findByRole('textbox', { name: '提示词' });
+    expect(view.canvas!.nodes[2].data.resourceRefs).toEqual(references);
+    expect(view.canvas!.nodes[2].data.promptDocument).toEqual(before.promptDocument);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([]);
+  });
+
+  it('新资料沿用视频全能参考模式，重复帧资料保留原模式和连线，新身份冲突整次拒绝', async () => {
+    canvas.nodes[2].data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: '原始正文' }],
+    };
+    canvas.nodes[2].data.resourceRefs = [];
+    canvas.nodes[2].data.videoMode = 'text_to_video';
+    canvas.edges = [];
+    const app = render(<App />);
+    await screen.findByRole('textbox', { name: '提示词' });
+    act(() => view.canvas!.onResourceAttach!(image, 'video-target'));
+    expect(view.canvas!.nodes[2].data.videoMode).toBe('omni_reference');
+    expect(view.canvas!.nodes[2].data.promptDocument).toEqual(canvas.nodes[2].data.promptDocument);
+    app.unmount();
+    canvas = initialCanvas();
+    restoreLegacyCanvas();
+    await openLegacyEditor();
+    const before = structuredClone(view.canvas!.nodes);
+    const edges = structuredClone(view.canvas!.edges);
+    act(() => view.canvas!.onResourceAttach!({ ...image, latestVersion: 1 }, 'video-target'));
+    expect(view.canvas!.nodes).toEqual(before);
+    expect(view.canvas!.edges).toEqual(edges);
+    expect(() => view.canvas!.onResourceAttach!(image, 'video-target')).toThrow(/首尾帧/);
+    expect(view.canvas!.nodes).toEqual(before);
+    expect(view.canvas!.edges).toEqual(edges);
   });
 });
 

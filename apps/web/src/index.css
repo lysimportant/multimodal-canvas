@@ -1919,9 +1919,7 @@ h2 {
 }
 
 .quick-editor-overlay > .node-quick-editor {
-  max-height: var(--quick-editor-max-height, calc(100dvh - 16px));
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
   max-width: 100%;
   width: 100%;
 }

@@ -275,6 +275,8 @@ export type WorkflowCanvasProps = {
     resources: readonly { assetId: string; assetVersion?: number }[],
     nodeId?: string,
   ) => void;
+  /** 上传后仅追加冻结版本的参考资料，不改写目标节点正文。 */
+  onResourceAttach?: (asset: Asset, nodeId?: string) => void;
   /** 原子移除目标节点的资源连线及引用，保留文档文字和源节点。 */
   onResourceRemove?: (
     resource: { assetId: string; assetVersion?: number },
@@ -283,7 +285,7 @@ export type WorkflowCanvasProps = {
   ) => void;
   /** 保存目标节点的技能选择，不触发生成。 */
   onPromptSkillChange?: (skillId: string | undefined, nodeId?: string) => void;
-  /** 提示词资源条点击上传后，把文件收成项目资源并回写提及。 */
+  /** 上传文件为项目资源，返回真实资源及版本；引用由独立资料回调保存。 */
   onUploadResource?: (file: File) => Promise<Asset>;
   onParametersChange?: (value: Record<string, unknown>, nodeId?: string) => void;
   /** 每次生成的独立结果数量，不进入供应商 parameters。 */
@@ -412,6 +414,7 @@ export function WorkflowCanvas({
   onAddNodeReference,
   onSearchProjectResources,
   onResourceReorder,
+  onResourceAttach,
   onResourceRemove,
   onPromptSkillChange,
   onUploadResource,
@@ -1358,6 +1361,9 @@ export function WorkflowCanvas({
         onResourceReorder={
           onResourceReorder ? (resources) => onResourceReorder(resources, editorNode.id) : undefined
         }
+        onResourceAttach={
+          onResourceAttach ? (asset) => onResourceAttach(asset, editorNode.id) : undefined
+        }
         onResourceRemove={
           onResourceRemove
             ? (resource, document) => onResourceRemove(resource, document, editorNode.id)
@@ -1445,6 +1451,7 @@ export function WorkflowCanvas({
     onConnectedResourceRename,
     onSearchProjectResources,
     onResourceReorder,
+    onResourceAttach,
     onResourceRemove,
     onAddNodeReference,
     referenceTargetId,
@@ -1788,9 +1795,9 @@ type QuickEditorOverlayProps = {
 };
 
 /**
- * 在画布外层渲染输入面板，空间足够时宽度为节点的两倍，并随视口倍率同步缩放。
+ * 在画布外层渲染输入面板，空间足够时宽度为节点的两倍，并跟随画布倍率缩放。
  * portal 避免被节点的 overflow 裁剪；碰撞检测使用屏幕像素，最终尺寸换回画布像素，
- * 使输入内容不影响节点外框；贴边等待换向时允许暂时重叠节点，但始终留在可见画布内。
+ * 使输入内容不影响节点外框；贴边时允许重叠节点，整卡过高时限制显示倍率以保留全部控件。
  */
 function QuickEditorOverlay({
   nodeId,
@@ -1848,9 +1855,17 @@ function QuickEditorOverlay({
     );
     const canvasRect = canvas.getBoundingClientRect();
     const hasCanvasBounds = canvasRect.width > 0 && canvasRect.height > 0;
+    const resourcePanel = canvas.closest('.app-shell')?.querySelector('.resource-panel');
+    const resourcePanelRect = resourcePanel?.getBoundingClientRect();
+    // 资源抽屉浮在画布上方；贴边面板须避开其可见列，不能让模型栏被盖住。
+    const resourcePanelRight =
+      resourcePanelRect && resourcePanelRect.width > 0 && resourcePanelRect.height > 0
+        ? resourcePanelRect.right + QUICK_EDITOR_VIEWPORT_MARGIN
+        : 0;
     const canvasLeft = hasCanvasBounds
       ? Math.max(QUICK_EDITOR_VIEWPORT_MARGIN, canvasRect.left + QUICK_EDITOR_VIEWPORT_MARGIN)
       : QUICK_EDITOR_VIEWPORT_MARGIN;
+    const editorLeftBound = Math.max(canvasLeft, resourcePanelRight);
     const canvasRight = hasCanvasBounds
       ? Math.min(
           viewportWidth - QUICK_EDITOR_VIEWPORT_MARGIN,
@@ -1871,23 +1886,34 @@ function QuickEditorOverlay({
           canvasRect.bottom - QUICK_EDITOR_VIEWPORT_MARGIN,
         )
       : viewportHeight - QUICK_EDITOR_VIEWPORT_MARGIN;
-    const boundedRight = Math.max(canvasLeft, canvasRight);
+    const boundedRight = Math.max(editorLeftBound, canvasRight);
     const boundedBottom = Math.max(canvasTop, canvasBottom);
     let maxHeight = Math.max(1, boundedBottom - canvasTop);
+    const editor = overlay.firstElementChild as HTMLElement | null;
+    // 完整内容含边框并预留 1px；大倍率时缩小整卡显示，不压缩固定输入区或滚动操作栏。
+    const contentHeight =
+      editor && editor.scrollHeight > 0
+        ? editor.scrollHeight + editor.offsetHeight - editor.clientHeight + 1
+        : QUICK_EDITOR_FALLBACK_HEIGHT;
+    const editorScale = Math.min(viewportZoom, maxHeight / contentHeight);
     const nodeRect = nodeElement.getBoundingClientRect();
     const hasNodeBounds = nodeRect.width > 0 && nodeRect.height > 0;
-    let width = Math.min(
-      hasNodeBounds ? nodeRect.width * 2 : QUICK_EDITOR_FALLBACK_WIDTH * viewportZoom,
-      Math.max(1, boundedRight - canvasLeft),
-    );
+    // 逻辑宽度只由画布几何决定；限高缩放不再反向改变工具栏换行和自然高度。
+    let width =
+      (Math.min(
+        hasNodeBounds ? nodeRect.width * 2 : QUICK_EDITOR_FALLBACK_WIDTH * viewportZoom,
+        Math.max(1, boundedRight - editorLeftBound),
+      ) /
+        viewportZoom) *
+      editorScale;
     const nodeCenter = hasNodeBounds
       ? nodeRect.left + nodeRect.width / 2
-      : (canvasLeft + boundedRight) / 2;
+      : (editorLeftBound + boundedRight) / 2;
     const getCenteredLeft = (editorWidth: number) =>
       clampQuickEditorValue(
         nodeCenter - editorWidth / 2,
-        canvasLeft,
-        Math.max(canvasLeft, boundedRight - editorWidth),
+        editorLeftBound,
+        Math.max(editorLeftBound, boundedRight - editorWidth),
       );
 
     let left = getCenteredLeft(width);
@@ -1895,22 +1921,17 @@ function QuickEditorOverlay({
     let top = canvasTop;
     let placement: QuickEditorLayout['placement'] = 'below';
     if (hasNodeBounds) {
-      const editor = overlay.firstElementChild as HTMLElement | null;
-      // scrollHeight 包含被 max-height 隐藏的内容；额外 1px 避免 CSSOM 取整制造无谓滚动条。
-      const contentHeight =
-        editor && editor.scrollHeight > 0
-          ? editor.scrollHeight + editor.offsetHeight - editor.clientHeight + 1
-          : 0;
       const resolved = getQuickEditorLayout({
         node: nodeRect,
         bounds: {
-          left: canvasLeft,
+          left: editorLeftBound,
           right: boundedRight,
           top: canvasTop,
           bottom: boundedBottom,
         },
         zoom: viewportZoom,
-        editorHeight: (contentHeight || QUICK_EDITOR_FALLBACK_HEIGHT) * viewportZoom,
+        editorHeight: contentHeight * editorScale,
+        editorWidth: width,
         previous: placementRef.current,
       });
       placementRef.current = resolved?.state ?? null;
@@ -1924,9 +1945,9 @@ function QuickEditorOverlay({
     const nextLayout: QuickEditorLayout = {
       left,
       top,
-      width: width / viewportZoom,
-      maxHeight: maxHeight / viewportZoom,
-      scale: viewportZoom,
+      width: width / editorScale,
+      maxHeight: maxHeight / editorScale,
+      scale: editorScale,
       placement,
       ready: true,
     };
@@ -1970,6 +1991,8 @@ function QuickEditorOverlay({
     if (canvas) resizeObserver?.observe(canvas);
     if (nodeElement) resizeObserver?.observe(nodeElement);
     if (overlay) resizeObserver?.observe(overlay);
+    const resourcePanel = canvas?.closest('.app-shell')?.querySelector('.resource-panel');
+    if (resourcePanel) resizeObserver?.observe(resourcePanel);
 
     const mutationObserver =
       typeof MutationObserver === 'undefined' ? null : new MutationObserver(update);
@@ -1993,6 +2016,9 @@ function QuickEditorOverlay({
         attributeFilter: ['style'],
       });
     }
+    // 抽屉显隐是工作区直接子节点变化，不订阅画布子树或节点位置更新。
+    const workspace = canvas?.closest('.workspace');
+    if (workspace) mutationObserver?.observe(workspace, { childList: true });
 
     return () => {
       disposed = true;

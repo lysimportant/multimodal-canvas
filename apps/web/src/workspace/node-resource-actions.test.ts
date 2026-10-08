@@ -3,6 +3,7 @@ import { renderPromptDocument, type Asset, type PromptDocument } from '@multimod
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import {
   addNodeResourceReference,
+  attachUploadedNodeResource,
   removeNodeResourceReference,
   reorderNodeResources,
 } from './node-resource-actions';
@@ -65,6 +66,97 @@ function legacyAliasGraph(): { nodes: AssetFlowNode[]; edges: FlowEdge[] } {
 
 /** 空目录只允许引用来源节点明确提供的版本，不读取真实资产。 */
 const assets: Asset[] = [];
+
+describe('attachUploadedNodeResource', () => {
+  /** 上传结果的明确版本优先于旧元数据；不读目录中的可变最新版本。 */
+  const uploaded: Asset = {
+    id: 'uploaded-image',
+    name: '参考图.png',
+    mediaType: 'image',
+    mimeType: 'image/png',
+    sizeBytes: 20,
+    status: 'ready',
+    tags: [],
+    latestVersion: 3,
+    metadata: { version: 2 },
+    contentUrl: '/v1/assets/uploaded-image/versions/3/content',
+  };
+
+  it('保留既有资料顺序与原文，新版本追加并复用资料池命名，重复身份保持原对象', () => {
+    const destination = target();
+    destination.data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: '参考图.png 是普通文字。' }],
+    };
+    destination.data.resourceRefs = [
+      {
+        id: 'saved-image',
+        assetId: uploaded.id,
+        assetVersion: 1,
+        mediaType: 'image',
+        name: '参考图',
+        attached: true,
+      },
+    ];
+    destination.data.resultAsset = { assetId: 'old-video', version: 5 };
+    const before = structuredClone(destination);
+    const result = attachUploadedNodeResource(destination, [destination], [], assets, uploaded);
+    expect(result.changed).toBe(true);
+    expect(result.data.resourceRefs).toEqual([
+      before.data.resourceRefs![0],
+      expect.objectContaining({
+        assetId: uploaded.id,
+        assetVersion: 3,
+        name: '参考图2',
+        attached: true,
+      }),
+    ]);
+    expect(result.data.promptDocument).toBe(destination.data.promptDocument);
+    expect(result.data.prompt).toBe(destination.data.prompt);
+    expect(result.data.resultAsset).toEqual(before.data.resultAsset);
+    expect(destination).toEqual(before);
+    const withResource = { ...destination, data: result.data };
+    const duplicate = attachUploadedNodeResource(
+      withResource,
+      [withResource],
+      [],
+      assets,
+      uploaded,
+    );
+    expect(duplicate).toEqual({ data: result.data, changed: false });
+    expect(duplicate.data).toBe(result.data);
+  });
+
+  it('缺少版本、归档或超过 40 项时拒绝添加并保留原数据', () => {
+    const destination = target();
+    expect(() =>
+      attachUploadedNodeResource(destination, [destination], [], assets, {
+        ...uploaded,
+        latestVersion: undefined,
+        metadata: {},
+      }),
+    ).toThrow(/明确版本/);
+    expect(() =>
+      attachUploadedNodeResource(destination, [destination], [], assets, {
+        ...uploaded,
+        status: 'archived',
+      }),
+    ).toThrow(/归档/);
+    destination.data.resourceRefs = Array.from({ length: 40 }, (_, index) => ({
+      id: 'retained-' + index,
+      assetId: 'retained-' + index,
+      assetVersion: 1,
+      mediaType: 'image' as const,
+      name: '保留资料' + index,
+      attached: true,
+    }));
+    const before = structuredClone(destination);
+    expect(() =>
+      attachUploadedNodeResource(destination, [destination], [], assets, uploaded),
+    ).toThrow(/40/);
+    expect(destination).toEqual(before);
+  });
+});
 
 describe('removeNodeResourceReference', () => {
   it.each(['text', 'image', 'audio', 'video'] as const)(

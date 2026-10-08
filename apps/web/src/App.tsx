@@ -126,6 +126,7 @@ import {
 import { projectGenerationBatches } from './workspace/generation-batch-view';
 import {
   addNodeResourceReference,
+  attachUploadedNodeResource,
   removeNodeResourceReference,
   reorderNodeResources,
   type NodeResourceIdentity,
@@ -2874,6 +2875,34 @@ function WorkspaceApp({
     [assets, isNodeBusy, rememberHistory, setNodes, setEdges],
   );
 
+  /** 上传只保存独立资料；正文、来源节点和连线保持原状，整次操作共用一个画布撤销。 */
+  const handleResourceAttach = useCallback(
+    (asset: Asset, nodeId?: string) => {
+      const targetId = nodeId ?? effectiveSelectedNodeId;
+      const target = nodesRef.current.find((node) => node.id === targetId);
+      if (!target) throw new Error('节点已不存在，请重新打开编辑器');
+      if (isNodeBusy(target.id)) throw new Error('节点正在生成，请完成后再添加参考资源');
+      const next = attachUploadedNodeResource(
+        target,
+        nodesRef.current,
+        edgesRef.current,
+        assets,
+        asset,
+      );
+      if (!next.changed) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(target.id, () => next.data);
+    },
+    [
+      assets,
+      isNodeBusy,
+      effectiveSelectedNodeId,
+      rememberHistory,
+      updateNodeDataAndMarkDownstreamStale,
+    ],
+  );
+
   /** 引用顺序沿既有 resourceRefs 持久化；正文、连线及素材版本不互换。 */
   const handleResourceReorder = useCallback(
     (resources: readonly NodeResourceIdentity[], nodeId?: string) => {
@@ -5302,6 +5331,7 @@ function WorkspaceApp({
             onAddNodeReference={handleAddNodeReference}
             onResourceReorder={handleResourceReorder}
             onResourceRemove={handleResourceRemove}
+            onResourceAttach={handleResourceAttach}
             onSearchProjectResources={handleSearchProjectResources}
             onPromptSkillChange={updateSelectedPromptSkill}
             onUploadResource={uploadProjectAsset}

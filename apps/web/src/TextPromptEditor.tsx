@@ -44,6 +44,8 @@ type TextPromptEditorProps = {
   onDocumentChange?: (document: PromptDocument) => void;
   /** 提示词资源条点击上传后，把本地文件收成项目资源。 */
   onUploadResource?: (file: File) => Promise<Asset>;
+  /** 上传完成只添加独立资料，不把资源原子或名称写入正文。 */
+  onResourceAttach?: (asset: Asset) => void;
   /** 查看提及资源详情的可选回调。 */
   onMentionDetails?: (mention: PromptMention, asset: Asset | undefined) => void;
   ariaLabel?: string;
@@ -75,6 +77,7 @@ export function TextPromptEditor({
   onConnectedResourceRename,
   onDocumentChange,
   onUploadResource,
+  onResourceAttach,
   onMentionDetails,
   ariaLabel,
   disabled,
@@ -128,6 +131,7 @@ export function TextPromptEditor({
         onChange={onDocumentChange ? undefined : onChange}
         onDocumentChange={onDocumentChange}
         onUploadResource={onUploadResource}
+        onResourceAttach={onResourceAttach}
         onMentionDetails={onMentionDetails}
         placeholder={placeholder}
         ariaLabel={ariaLabel}

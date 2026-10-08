@@ -1730,7 +1730,7 @@ test('节点输入区数量样式统一，Skill 同行悬浮且不撑大节点',
   await editor.getByRole('button', { name: '打开完整编辑器' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('combobox', { name: '生成数量：3份' })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Skill 配置', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Skill 配置', exact: true })).toBeVisible();
   await expect(page.getByRole('group', { name: 'Skill 配置', exact: true })).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await page.screenshot({

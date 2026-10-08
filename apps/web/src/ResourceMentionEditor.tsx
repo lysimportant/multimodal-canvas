@@ -97,6 +97,8 @@ export type ResourceMentionEditorProps = {
   onDocumentChange?: (document: PromptDocument) => void;
   /** 资源条占位按钮选择本地文件后，把文件收成可引用资源。 */
   onUploadResource?: (file: File) => Promise<Asset>;
+  /** 上传完成后独立保存参考资料；缺省时仅留在本地资料池，不插入正文。 */
+  onResourceAttach?: (asset: Asset) => void;
   /** 提及详情按钮的可选回调。 */
   onMentionDetails?: (mention: PromptMention, asset: Asset | undefined) => void;
   placeholder?: string;
@@ -173,6 +175,7 @@ export function ResourceMentionEditor({
   onChange,
   onDocumentChange,
   onUploadResource,
+  onResourceAttach,
   onMentionDetails,
   placeholder = '输入提示词',
   ariaLabel,
@@ -231,6 +234,16 @@ export function ResourceMentionEditor({
   const [resourceNameError, setResourceNameError] = useState<string | null>(null);
   const [hoveredMentionId, setHoveredMentionId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  /** 文件上传批次绑定编辑会话，切换节点或卸载后不接收迟到资料。 */
+  const uploadSessionRef = useRef<{ nodeId: string } | null>(null);
+  useEffect(() => {
+    const session = { nodeId };
+    uploadSessionRef.current = session;
+    setUploading(false);
+    return () => {
+      if (uploadSessionRef.current === session) uploadSessionRef.current = null;
+    };
+  }, [nodeId]);
   /** 每次打开都用独立会话，关闭或切换节点后不接收迟到的照片上传。 */
   const [cameraNodeId, setCameraNodeId] = useState<string | null>(null);
   const cameraSessionRef = useRef<{ nodeId: string } | null>(null);
@@ -812,24 +825,54 @@ export function ResourceMentionEditor({
     ],
   );
 
-  /** 资源条占位按钮选中本地文件后上传并插入独立引用。 */
+  /** 文件上传只增加资料池，不改变正文、原生选区或已有引用原子。 */
   const handleUploadFiles = useCallback(
     async (files: readonly File[]) => {
       if (!onUploadResource || files.length === 0 || disabled) return;
+      const session = uploadSessionRef.current;
+      if (!session) return;
       setUploading(true);
       setProtectedEditMessage(null);
       try {
         for (const file of files) {
+          if (uploadSessionRef.current !== session) return;
           const asset = await onUploadResource(file);
-          if (asset) selectMention(projectSearchEntry(asset));
+          if (uploadSessionRef.current !== session) return;
+          if (!asset) continue;
+          const entry = projectSearchEntry(asset);
+          if (entry.assetVersion === undefined) throw new Error('上传资源缺少明确版本，请重新上传');
+          if (onResourceAttach) {
+            // 受控资料以父层为准，正文不变的撤销也必须能移除上传卡片。
+            onResourceAttach(asset);
+            continue;
+          }
+          setRetainedMentions((current) =>
+            retainMentionPool(current, [
+              {
+                start: 0,
+                end: 0,
+                mention: {
+                  type: 'mention',
+                  inline: true,
+                  mentionId: createMentionId(current),
+                  assetId: asset.id,
+                  assetVersion: entry.assetVersion,
+                  mediaType: asset.mediaType,
+                  label: asset.name,
+                  entityName: defaultResourceDisplayName(asset.name),
+                },
+              },
+            ]),
+          );
         }
       } catch (error) {
-        setProtectedEditMessage(error instanceof Error ? error.message : '资源上传失败');
+        if (uploadSessionRef.current === session)
+          setProtectedEditMessage(error instanceof Error ? error.message : '资源上传失败');
       } finally {
-        setUploading(false);
+        if (uploadSessionRef.current === session) setUploading(false);
       }
     },
-    [disabled, onUploadResource, selectMention],
+    [disabled, onUploadResource, onResourceAttach],
   );
 
   /** 关闭预览只取消引用接收；已经开始的上传不会被当作新节点的资料。 */

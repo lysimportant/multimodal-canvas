@@ -92,9 +92,9 @@ describe('桌面节点输入区高度', () => {
     );
   });
 
-  it('快速编辑的纯文本和资源引用固定为 300px，父面板受限时不压缩提示词组', () => {
+  it('快速编辑的纯文本和资源引用固定为 250px，父面板受限时不压缩提示词组', () => {
     expect(layoutCss).toMatch(
-      /\.node-quick-editor \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\) \{ height: 300px; max-height: 300px; min-height: 300px; overflow-y: auto; resize: none; \}/,
+      /\.node-quick-editor \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\) \{ height: 250px; max-height: 250px; min-height: 250px; overflow-y: auto; resize: none; \}/,
     );
     expect(layoutCss).toMatch(
       /\.node-quick-editor \.node-quick-editor-prompt-group \{ flex: 0 0 auto; \}/,
@@ -125,10 +125,13 @@ describe('桌面节点输入区高度', () => {
     );
   });
 
-  it('保留浮层定位和可用高度约束，低矮视口仍在编辑器内部滚动', () => {
+  it('保留浮层定位，整体不滚动或裁剪底部控件', () => {
     expect(indexCss).toMatch(/\.quick-editor-overlay \{[^}]*position: fixed;/);
     expect(indexCss).toMatch(
-      /\.quick-editor-overlay > \.node-quick-editor \{ max-height: var\(--quick-editor-max-height, calc\(100dvh - 16px\)\); overflow-y: auto; overscroll-behavior: contain;/,
+      /\.quick-editor-overlay > \.node-quick-editor \{ overflow: visible; max-width: 100%; width: 100%; \}/,
+    );
+    expect(indexCss).not.toMatch(
+      /\.quick-editor-overlay > \.node-quick-editor \{[^}]*overflow-y: auto;/,
     );
   });
 });

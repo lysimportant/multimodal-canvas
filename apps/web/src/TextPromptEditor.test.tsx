@@ -110,6 +110,41 @@ describe('TextPromptEditor', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('转发上传资料回调，上传只添加资料而不触发正文回写', async () => {
+    const user = userEvent.setup();
+    const asset: Asset = {
+      id: 'shared-upload',
+      name: '上传参考.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      sizeBytes: 1,
+      status: 'ready',
+      tags: [],
+      latestVersion: 2,
+      contentUrl: '/v1/assets/shared-upload/versions/2/content',
+    };
+    const onResourceAttach = vi.fn();
+    const onDocumentChange = vi.fn();
+    render(
+      <TextPromptEditor
+        nodeId="shared-upload-node"
+        value="原始正文"
+        ariaLabel="提示词"
+        onUploadResource={async () => asset}
+        onResourceAttach={onResourceAttach}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+    await user.upload(
+      document.querySelector('input[type="file"]') as HTMLInputElement,
+      new File(['image'], 'image.png', { type: 'image/png' }),
+    );
+    expect(onResourceAttach).toHaveBeenCalledExactlyOnceWith(asset);
+    expect(onDocumentChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: '提示词' })).toHaveValue('原始正文');
+    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+  });
+
   it.each(['快速', '完整'])(
     '%s编辑器经共享入口解绑后保留原文，切换编辑器也不恢复旧绑定',
     async (mode) => {
