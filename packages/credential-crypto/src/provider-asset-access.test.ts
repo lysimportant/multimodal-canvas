@@ -1,9 +1,10 @@
 import { createHmac } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createProviderAssetAccessToken,
+  createProviderAssetUrlSignerFromEnvironment,
   PROVIDER_ASSET_ACCESS_TTL_SECONDS,
   providerAssetAccessPath,
   verifyProviderAssetAccessToken,
@@ -39,6 +40,39 @@ function signedPayload(payload: Record<string, unknown>, secret = SECRET): strin
 }
 
 describe('Provider asset access token', () => {
+  it('shared URL signer preserves the frozen grant and one-hour token contract', () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      const signer = createProviderAssetUrlSignerFromEnvironment({
+        CANVAS_WEB_URL: 'https://canvas.example.com/workspace',
+        ASSET_ACCESS_URL_SECRET: SECRET,
+        API_JWT_SECRET: 'synthetic-other-session-key',
+      });
+      const { expiresAt: _expiresAt, ...frozen } = grant();
+      const url = new URL(signer!(frozen));
+      const token = url.searchParams.get('access_token')!;
+      expect(url.origin).toBe('https://canvas.example.com');
+      expect(url.pathname).toBe('/v1/provider-assets/asset%2Fprovider-1/versions/3/content');
+      expect(verifyProviderAssetAccessToken(token, SECRET, NOW)).toEqual({
+        ...frozen,
+        expiresAt: NOW + PROVIDER_ASSET_ACCESS_TTL_SECONDS * 1000,
+      });
+      expect(
+        verifyProviderAssetAccessToken(token, 'synthetic-other-session-key', NOW),
+      ).toBeUndefined();
+      expect(
+        verifyProviderAssetAccessToken(
+          token,
+          SECRET,
+          NOW + PROVIDER_ASSET_ACCESS_TTL_SECONDS * 1000,
+        ),
+      ).toBeUndefined();
+      expect(url.toString()).not.toContain(SECRET);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('round-trips a grant and builds an encoded version path', () => {
     const input = grant();
     const token = createProviderAssetAccessToken(input, SECRET, NOW);

@@ -5,7 +5,11 @@ import type {
   RunSnapshot,
 } from '@multimodal-canvas/domain';
 import { describe, expect, it } from 'vitest';
-import { RunImage2proVideoError, validateRunImage2proVideo } from './run-image2pro-video';
+import {
+  RunImage2proVideoError,
+  validateRunImage2proVideo,
+  validateRunVideoInputs,
+} from './run-image2pro-video';
 
 /** 构造只含身份和版本元数据的冻结快照，预检不需要图片字节。 */
 function snapshot(): RunSnapshot {
@@ -71,6 +75,166 @@ function mention(index: number, assetVersion = 1): FrozenPromptMention {
     blockOrder: index,
   };
 }
+
+/** 源流普通参考预检夹具，保留显式时长和非空正文。 */
+function yuanSnapshot(modelAlias = 'Yuan-Seedance-2.5-LJ-Full'): RunSnapshot {
+  const frozen = snapshot();
+  frozen.modelAlias = modelAlias;
+  frozen.nodes[0]!.data.modelAlias = modelAlias;
+  frozen.nodes[0]!.data.prompt = 'Create a scene following the references.';
+  return frozen;
+}
+
+describe('Yuan Run 提交预检', () => {
+  it.each(['Yuan-Seedance-2.5-LW', 'yuan-seedance-2.5-lj', 'yl_unadapted_model'])(
+    '%s 缺少 videoMode 的历史节点仍明确拒绝',
+    (modelAlias) => {
+      const frozen = yuanSnapshot(modelAlias);
+      delete frozen.nodes[0]!.data.videoMode;
+      expect(() => validateRunVideoInputs(frozen)).toThrow(
+        expect.objectContaining({ code: 'UNSUPPORTED_INPUT_COMBINATION' }),
+      );
+    },
+  );
+
+  it.each([
+    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: {} },
+    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: { duration: 'auto' } },
+    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: { duration: 5.5 } },
+    { modelAlias: 'Yuan-Seedance-2.0-HD', parameters: { duration: 6 } },
+    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: { duration: 5, watermark: false } },
+  ])('$modelAlias 非法参数 %# 不改写冻结快照', ({ modelAlias, parameters }) => {
+    const frozen = yuanSnapshot(modelAlias);
+    frozen.nodes[0]!.data.videoMode = 'text_to_video';
+    frozen.parameters = parameters;
+    const before = structuredClone(frozen);
+    expect(() => validateRunVideoInputs(frozen)).toThrow();
+    expect(frozen).toEqual(before);
+  });
+
+  it.each(['first_frame', 'first_last_frame', 'video_edit', 'video_extend'] as const)(
+    '未适配的 %s 不借用普通 Seedance 合同',
+    (videoMode) => {
+      const frozen = yuanSnapshot();
+      frozen.nodes[0]!.data.videoMode = videoMode;
+      frozen.inputs = [imageInput(0)];
+      expect(() => validateRunVideoInputs(frozen)).toThrow(
+        expect.objectContaining({ code: 'UNSUPPORTED_INPUT_COMBINATION' }),
+      );
+    },
+  );
+
+  it.each(['firstFrame', 'lastFrame', 'negativePrompt'] as const)(
+    '普通参考不能携带 %s 角色',
+    (role) => {
+      const frozen = yuanSnapshot();
+      frozen.inputs = [{ ...imageInput(0), role }];
+      expect(() => validateRunVideoInputs(frozen)).toThrow();
+    },
+  );
+
+  it('连线和提及按资产、版本与角色去重，不同版本或角色占用独立名额', () => {
+    const frozen = yuanSnapshot('Yuan-Seedance-2.0-LJ');
+    frozen.inputs = Array.from({ length: 9 }, (_, index) => imageInput(index));
+    frozen.promptMentions = [mention(0), { ...mention(0), mentionId: 'same-version' }];
+    expect(() => validateRunVideoInputs(frozen)).not.toThrow();
+    frozen.promptMentions.push(mention(0, 2));
+    expect(() => validateRunVideoInputs(frozen)).toThrow('参考图数量超过模型上限 9');
+    frozen.promptMentions.pop();
+    frozen.inputs.push({ ...imageInput(0), role: 'style' });
+    expect(() => validateRunVideoInputs(frozen)).toThrow('参考图数量超过模型上限 9');
+  });
+
+  it('音视频分别受精确型号上限约束，混合普通参考仍受总数 40 约束', () => {
+    const frozen = yuanSnapshot();
+    frozen.promptMentions = Array.from({ length: 30 }, (_, index) => mention(index));
+    frozen.promptMentions.push(
+      ...Array.from({ length: 10 }, (_, index) => ({
+        ...mention(30 + index),
+        mediaType: 'video' as const,
+      })),
+    );
+    expect(() => validateRunVideoInputs(frozen)).not.toThrow();
+    frozen.promptMentions.push({ ...mention(40), mediaType: 'audio' });
+    expect(() => validateRunVideoInputs(frozen)).toThrow('参考素材总数不能超过 40');
+    for (const mediaType of ['video', 'audio'] as const) {
+      frozen.promptMentions = Array.from({ length: 11 }, (_, index) => ({
+        ...mention(index),
+        mediaType,
+      }));
+      expect(() => validateRunVideoInputs(frozen)).toThrow('超过模型上限 10');
+    }
+  });
+
+  it.each(['node', 'document', 'connected'] as const)(
+    '按最终 %s 正文验证必填和精确型号字符上限',
+    (source) => {
+      const frozen = yuanSnapshot('Yuan-Seedance-2.5-YL1');
+      frozen.parameters = { duration: 30 };
+      frozen.nodes[0]!.data.videoMode = 'text_to_video';
+      const input = imageInput(0);
+      input.role = 'content';
+      input.snapshot.type = 'text';
+      input.snapshot.data.mediaType = 'text';
+      delete input.sourceAssetId;
+      delete input.sourceAssetVersion;
+      delete input.snapshot.data.assetId;
+      delete input.snapshot.data.contentUrl;
+      const setPrompt = (prompt: string) => {
+        if (source === 'node') frozen.nodes[0]!.data.prompt = prompt;
+        if (source === 'document')
+          frozen.nodes[0]!.data.promptDocument = {
+            version: 1,
+            blocks: [{ type: 'text', text: prompt }],
+          };
+        if (source === 'connected') {
+          input.snapshot.data.prompt = prompt;
+          frozen.inputs = [input];
+        }
+      };
+      setPrompt('');
+      expect(() => validateRunVideoInputs(frozen)).toThrow('必须提供非空文本');
+      setPrompt('x'.repeat(8001));
+      expect(() => validateRunVideoInputs(frozen)).toThrow('8000');
+    },
+  );
+
+  it('冻结 txt 待水合时延后正文验证，不能回落到旧参数正文', () => {
+    const frozen = yuanSnapshot();
+    frozen.nodes[0]!.data.videoMode = 'text_to_video';
+    frozen.nodes[0]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: ' ' }] };
+    frozen.parameters.prompt = 'x'.repeat(16001);
+    const input = imageInput(0);
+    input.role = 'prompt';
+    input.snapshot.type = 'text';
+    input.snapshot.data.mediaType = 'text';
+    frozen.inputs = [input];
+    const before = structuredClone(frozen);
+    expect(() => validateRunVideoInputs(frozen)).not.toThrow();
+    expect(frozen).toEqual(before);
+  });
+
+  it('实际执行的上游 Yuan 节点使用自己的参数，不借用下游目标参数', () => {
+    const frozen = yuanSnapshot();
+    frozen.inputs = [];
+    const video = frozen.nodes[0]!;
+    video.data.videoMode = 'text_to_video';
+    video.data.parameters = { duration: 5, generate_audio: false };
+    const target: CanvasNode = {
+      id: 'text-target',
+      type: 'text',
+      position: { x: 0, y: 0 },
+      data: { label: '下游', mediaType: 'text', mode: 'generate', modelAlias: 'text-model' },
+    };
+    frozen.targetNodeId = target.id;
+    frozen.modelAlias = 'text-model';
+    frozen.parameters = { duration: 30 };
+    frozen.nodes.push(target);
+    expect(() => validateRunVideoInputs(frozen)).toThrow('generate_audio');
+    delete video.data.parameters.generate_audio;
+    expect(() => validateRunVideoInputs(frozen)).not.toThrow();
+  });
+});
 
 describe('Image2Pro Run 提交预检', () => {
   it.each([false, true])('H3 空白节点或文档不遮盖合法 prompt 文字连线：document=%s', (document) => {

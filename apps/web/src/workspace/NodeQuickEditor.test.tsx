@@ -218,6 +218,169 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
+  it.each([
+    ['Yuan-Seedance-2.5-Official', 5],
+    ['Yuan-Seedance-2.5-HD-Full', 10],
+    ['Yuan-Seedance-2.5-YL1', 30],
+    ['yl_seedance-2-5_750271498003', 10],
+  ] as const)('Yuan %s 新建按精确型号初始化，不采用目录的宽松参数', (modelAlias, duration) => {
+    const result = applyNodeGenerationDefaults(
+      { ...videoNode.data, modelAlias, videoMode: 'omni_reference' },
+      {
+        id: modelAlias,
+        name: modelAlias,
+        mediaTypes: ['video'],
+        capabilities: {
+          duration: [-1, 1, 60],
+          resolution: ['4k'],
+          aspectRatio: ['3:2'],
+          reasoning_effort: ['high'],
+        },
+      },
+    );
+    expect(result.parameters).toEqual({ duration, resolution: '720p', aspectRatio: '16:9' });
+    expect(result.inferenceStrength).toBeUndefined();
+  });
+
+  it.each([
+    { modelAlias: 'Yuan-Seedance-2.0-HD', saved: 6, durations: [5, 10, 15], corrected: 10 },
+    { modelAlias: 'Yuan-Seedance-2.5-YL1', saved: 5, durations: [30], corrected: 30 },
+  ])(
+    'Yuan $modelAlias 只提供离散时长并保留非法旧值直到显式修改',
+    async ({ modelAlias, saved, durations, corrected }) => {
+      const user = userEvent.setup();
+      const props = makeProps({
+        node: {
+          ...videoNode,
+          data: {
+            ...videoNode.data,
+            modelAlias,
+            videoMode: 'omni_reference',
+            parameters: { duration: saved },
+          },
+        },
+        onParametersChange: vi.fn(),
+      });
+      const view = render(<NodeQuickEditor {...props} />);
+      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+      expect(screen.getByRole('status')).toHaveTextContent('源流视频参数 duration');
+      expect(props.onParametersChange).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('combobox', { name: new RegExp(`^时长（秒）：${saved}`) }));
+      const group = screen.getByText('时长（秒）').parentElement!;
+      const options = selectPopup(group);
+      for (const seconds of durations)
+        expect(options.getByRole('option', { name: `${seconds} 秒` })).toBeInTheDocument();
+      expect(
+        options.getByRole('option', { name: `${saved} 已保存，当前模型不支持` }),
+      ).toHaveAttribute('aria-disabled', 'true');
+      expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+      await user.click(options.getByRole('option', { name: `${corrected} 秒` }));
+      expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({ duration: corrected });
+      view.rerender(
+        <NodeQuickEditor
+          {...props}
+          node={{
+            ...props.node,
+            data: { ...props.node.data, parameters: { duration: corrected } },
+          }}
+        />,
+      );
+      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    },
+  );
+
+  it('Yuan 全能参考兼容旧字段，显式编辑清晰度和秒数才收敛别名', async () => {
+    const user = userEvent.setup();
+    const modelAlias = 'Yuan-Seedance-2.5-Official';
+    const parameters = { seconds: 8, ratio: '4:3', size: '720p' };
+    const data = applyNodeGenerationDefaults(
+      { ...videoNode.data, modelAlias, videoMode: 'omni_reference', parameters },
+      { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
+    );
+    expect(data.parameters).toEqual(parameters);
+    const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('combobox', { name: /^视频清晰度：720P/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /^视频比例：4:3/ })).toBeInTheDocument();
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('combobox', { name: /^视频清晰度：/ }));
+    await user.click(screen.getByRole('option', { name: '1080P' }));
+    expect(props.onParametersChange).toHaveBeenLastCalledWith({
+      seconds: 8,
+      ratio: '4:3',
+      resolution: '1080p',
+    });
+    await user.click(screen.getByRole('button', { name: /^时长（秒）：8/ }));
+    const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
+    expect(slider).toHaveAttribute('min', '4');
+    expect(slider).toHaveAttribute('max', '30');
+    expect(durationCard().queryByRole('button', { name: '自动时长' })).not.toBeInTheDocument();
+    fireEvent.change(slider, { target: { value: '10' } });
+    expect(props.onParametersChange).toHaveBeenLastCalledWith({
+      duration: 10,
+      ratio: '4:3',
+      size: '720p',
+    });
+  });
+
+  it('Yuan 保留旧推理强度与未知参数直到用户明确移除，并要求有效提示词', async () => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+          videoMode: 'omni_reference',
+          inferenceStrength: 'high',
+          parameters: { duration: 5, seed: 17 },
+        },
+      },
+      onParametersChange: vi.fn(),
+    });
+    const view = render(<NodeQuickEditor {...props} />);
+    expect(screen.queryByText('推理强度')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    await userEvent.setup().click(screen.getByRole('button', { name: '移除不支持的参数' }));
+    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({ duration: 5 });
+    expect(props.onInferenceStrengthChange).toHaveBeenCalledExactlyOnceWith('');
+    view.rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...props.node,
+          data: {
+            ...props.node.data,
+            prompt: '',
+            inferenceStrength: undefined,
+            parameters: { duration: 5 },
+          },
+        }}
+        hasConnectedInput
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('源流视频 必须填写提示词或连接文字输入');
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    view.rerender(
+      <NodeQuickEditor
+        {...props}
+        node={{
+          ...props.node,
+          data: {
+            ...props.node.data,
+            prompt: '',
+            inferenceStrength: undefined,
+            parameters: { duration: 5 },
+          },
+        }}
+        hasConnectedInput
+        hasConnectedTextPromptInput
+      />,
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
   it.each(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'])(
     'Image2Pro %s 使用官方 5 秒和 720p 默认值',
     (modelAlias) => {

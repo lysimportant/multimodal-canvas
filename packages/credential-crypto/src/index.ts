@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 export * from './provider-asset-access.js';
+export * from './provider-asset-url.js';
 
 /** 当前密文格式使用的稳定前缀。 */
 const CIPHER_PREFIX = 'mc:v2:';

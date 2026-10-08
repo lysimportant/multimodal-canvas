@@ -30,6 +30,10 @@ import {
   isRetiredImage2proVideoModel,
   retiredImage2proVideoModelReason,
   resolveImage2proVideoParameters,
+  yuanliuVideoContractForModel,
+  resolveYuanliuVideoParameters,
+  isUnadaptedYuanliuVideoModel,
+  unadaptedYuanliuVideoModelReason,
   moonVideoContractForModel,
   type Image2proVideoModelContract,
   type MoonVideoModelContract,
@@ -1016,6 +1020,7 @@ export class NewApiVideoProvider {
     const image2pro =
       Boolean(image2proVideoContractForModel(snapshot.modelAlias)) ||
       isRetiredImage2proVideoModel(snapshot.modelAlias);
+    const yuanliu = Boolean(yuanliuVideoContractForModel(snapshot.modelAlias));
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
     const requestIds: NewApiRequestIds = {
@@ -1052,11 +1057,19 @@ export class NewApiVideoProvider {
           retryable: false,
         });
       }
-      if (isRetiredImage2proVideoModel(snapshot.modelAlias)) {
-        throw new NewApiProviderError(retiredImage2proVideoModelReason, {
-          code: 'UNSUPPORTED_INPUT_COMBINATION',
-          retryable: false,
-        });
+      if (
+        isRetiredImage2proVideoModel(snapshot.modelAlias) ||
+        isUnadaptedYuanliuVideoModel(snapshot.modelAlias)
+      ) {
+        throw new NewApiProviderError(
+          isUnadaptedYuanliuVideoModel(snapshot.modelAlias)
+            ? unadaptedYuanliuVideoModelReason
+            : retiredImage2proVideoModelReason,
+          {
+            code: 'UNSUPPORTED_INPUT_COMBINATION',
+            retryable: false,
+          },
+        );
       }
       // 已受理任务只按冻结合同查询；原素材失效或新增参数校验不得阻断取回结果。
       const { inputs: absorbedMentionInputs, absorbedMentionIds } =
@@ -1078,14 +1091,14 @@ export class NewApiVideoProvider {
         'seedance-2.5',
       ].includes(family);
       const moonContract = moonVideoContractForModel(snapshot.modelAlias);
-      if ((official || moonContract || image2pro) && !openaiVideo) {
+      if ((official || moonContract || image2pro || yuanliu) && !openaiVideo) {
         throw new NewApiProviderError(
           '该视频模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
           { code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false },
         );
       }
       if (unified) validateUnifiedVideoParameters(snapshot.parameters);
-      else if (!image2pro)
+      else if (!image2pro && !yuanliu)
         validateMediaParameters(
           snapshot.parameters,
           'video',
@@ -1321,7 +1334,7 @@ export class NewApiVideoProvider {
         requestIds.pollNewApiRequestId =
           statusResponse.newApiRequestId ?? requestIds.pollNewApiRequestId;
         const polledId = videoPlatformId(statusResponse.payload, contract, snapshot.modelAlias);
-        if ((unified || (openaiVideo && image2pro)) && polledId !== platformJobId) {
+        if ((unified || (openaiVideo && (image2pro || yuanliu))) && polledId !== platformJobId) {
           throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
             code: 'VIDEO_TASK_ID_MISMATCH',
             retryable: false,
@@ -1930,7 +1943,7 @@ function videoCreatePath(contract: FrozenVideoContract): string {
   return newApiVideoCreatePath;
 }
 
-/** 按合同读取平台任务 ID；Image2Pro 只认宿主顶层 id，不误用上游任务或关联请求身份。 */
+/** 按合同读取平台任务 ID；精确插件只认宿主顶层 id，不误用上游任务或关联请求身份。 */
 function videoPlatformId(
   payload: Record<string, unknown>,
   contract: FrozenVideoContract,
@@ -1938,7 +1951,9 @@ function videoPlatformId(
 ): string | undefined {
   if (contract === 'newapi-unified-v1') return normalizeErrorField(payload.task_id);
   if (contract === 'newapi-video-v1') {
-    return image2proVideoContractForModel(modelAlias) || isRetiredImage2proVideoModel(modelAlias)
+    return image2proVideoContractForModel(modelAlias) ||
+      isRetiredImage2proVideoModel(modelAlias) ||
+      yuanliuVideoContractForModel(modelAlias)
       ? normalizeErrorField(payload.id)
       : extractOpenAiVideoId(payload);
   }
@@ -2141,6 +2156,9 @@ function openaiVideoPayload(
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
+  if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
+    return yuanliuVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
+  }
   const image2proContract = image2proVideoContractForModel(snapshot.modelAlias);
   if (image2proContract) {
     return image2proVideoPayload(
@@ -2173,6 +2191,56 @@ function openaiVideoPayload(
     payload.last_frame = payload.last_frame.url.trim();
   }
   return payload;
+}
+
+/**
+ * 组装源流插件的普通参考 JSON，媒体只来自受授权输入，不赋予首尾帧语义。
+ * @param snapshot 冻结精确型号与参数；时长必须显式指定。
+ * @param label 目标节点名称，仅供现有提示词来源解析。
+ * @param nodePrompt 目标节点提示词；正文仍遵守文字 content 连线覆盖规则。
+ * @param inputs 已通过共享预检的普通参考，保留资源条顺序和重复次数。
+ * @param nodePromptDocument 冻结提示词文档，包括提及标签。
+ * @returns POST /v1/videos 的 JSON；元数据 content 使用 reference_* 角色。
+ * @throws 参数、引用编号或非 HTTP(S) 素材错误在持久化提交意图之前失败。
+ */
+function yuanliuVideoPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  inputs: VideoInputMapping,
+  nodePromptDocument: PromptDocument | undefined,
+): Record<string, unknown> {
+  let source = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
+  if (!source.value.trim()) source = { value: '', explicit: false };
+  const prompt =
+    source.explicit || inputs.prompt
+      ? resolveMappedPromptInput(source, inputs.prompt, 'video')
+      : '';
+  const parameters = resolveYuanliuVideoParameters(
+    { ...snapshot.parameters, prompt },
+    snapshot.modelAlias,
+  );
+  const media = orderedVideoMedia(snapshot, inputs).map((input) => {
+    const type = input.snapshot.data.mediaType;
+    return {
+      type: `${type}_url`,
+      role: `reference_${type}`,
+      [`${type}_url`]: {
+        url: officialVideoReferenceUrl(input, 'yuanliu', snapshot.modelAlias),
+      },
+    };
+  });
+  return {
+    model: snapshot.modelAlias,
+    prompt,
+    duration: parameters.seconds,
+    resolution: parameters.resolution,
+    aspect_ratio: parameters.aspectRatio,
+    metadata: {
+      content: [{ type: 'text', text: prompt }, ...media],
+      ...(media.length ? { omni_reference_task_type: 'reference' } : {}),
+    },
+  };
 }
 
 /**
@@ -2685,6 +2753,23 @@ function officialVideoReferenceUrl(
   modelAlias: string,
 ): string {
   const data = input.snapshot.data;
+  if (family === 'yuanliu') {
+    const value = data.contentUrl;
+    const mimeType = normalizedMimeType(data.mimeType);
+    if (
+      typeof value !== 'string' ||
+      !/^https?:\/\/[^/?#@]+(?:[/?][^#]*)?$/.test(value) ||
+      /[\s\\\u0000-\u001f\u007f#]/.test(value) ||
+      !providerRemoteUrl(value) ||
+      (mimeType && !mimeType.startsWith(`${data.mediaType}/`))
+    ) {
+      throw new NewApiProviderError('源流参考素材需要与媒体类型匹配的 HTTP(S) 公网地址', {
+        code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
+        retryable: false,
+      });
+    }
+    return value;
+  }
   const value = normalizeErrorField(data.contentUrl);
   const parsed = value ? parseDataUrl(value) : undefined;
   const mimeType = normalizedMimeType(data.mimeType);
@@ -4625,8 +4710,13 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
     const mimeType = nonEmptyString(hydratedBlock.mimeType)
       ? hydratedBlock.mimeType.trim()
       : undefined;
+    const yuanliuReference =
+      nodeId === snapshot.targetNodeId &&
+      Boolean(yuanliuVideoContractForModel(snapshot.modelAlias));
     const dataUrl = nonEmptyString(hydratedBlock.contentUrl)
-      ? hydratedBlock.contentUrl.trim()
+      ? yuanliuReference
+        ? hydratedBlock.contentUrl
+        : hydratedBlock.contentUrl.trim()
       : undefined;
     const remoteUrl = dataUrl ? providerRemoteUrl(dataUrl) : undefined;
     const hasHydratedDuration =
@@ -4659,7 +4749,7 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
           ? { durationSeconds: frozen.durationSeconds }
           : {}),
       source: remoteUrl
-        ? { kind: 'remote-url' as const, mimeType, url: remoteUrl }
+        ? { kind: 'remote-url' as const, mimeType, url: yuanliuReference ? dataUrl! : remoteUrl }
         : { kind: 'data-url' as const, mimeType, dataUrl: dataUrl! },
     };
   });
@@ -5513,7 +5603,7 @@ function mapVideoInputs(
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   const contract = image2proVideoContractForModel(snapshot.modelAlias);
   let parameters = snapshot.parameters;
-  if (contract?.requiresPrompt) {
+  if (contract?.requiresPrompt || yuanliuVideoContractForModel(snapshot.modelAlias)) {
     let source = resolvePromptSource(
       snapshot,
       target?.data.label ?? '',

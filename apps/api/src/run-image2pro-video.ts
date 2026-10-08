@@ -1,5 +1,8 @@
 import {
   image2proVideoContractForModel,
+  yuanliuVideoContractForModel,
+  isUnadaptedYuanliuVideoModel,
+  unadaptedYuanliuVideoModelReason,
   isRetiredImage2proVideoModel,
   retiredImage2proVideoModelReason,
   portRoleSchema,
@@ -12,8 +15,8 @@ import {
   type VideoGenerationIssue,
 } from '@multimodal-canvas/domain';
 
-/** Image2Pro 提交前的节点诊断，不保存 Run 或发送 Provider 请求。 */
-export class RunImage2proVideoError extends Error {
+/** 已确认视频合同的提交前诊断，不保存 Run 或发送 Provider 请求。 */
+export class RunVideoInputError extends Error {
   /** 第一个共享合同错误码，与 Provider 的拒绝原因一致。 */
   readonly code: VideoGenerationIssue['code'];
 
@@ -22,19 +25,19 @@ export class RunImage2proVideoError extends Error {
     readonly nodeId: string,
     readonly issues: readonly VideoGenerationIssue[],
   ) {
-    super(issues[0]?.message ?? 'Image2Pro 视频输入不符合合同');
-    this.name = 'RunImage2proVideoError';
+    super(issues[0]?.message ?? '视频输入不符合已确认合同');
+    this.name = 'RunVideoInputError';
     this.code = issues[0]?.code ?? 'UNSUPPORTED_INPUT_COMBINATION';
   }
 }
 
 /**
- * 按已冻结版本预检实际执行的 Image2Pro 节点；退役 Flash 中配拒绝新运行，其他模型沿用既有校验。
+ * 按已冻结版本预检实际执行的 Image2Pro 与 Yuan 节点；退役 Flash 中配拒绝新运行。
  * @param snapshot 已完成资产归属、版本、模型和凭据冻结的快照；不修改其内容。
  * @returns 合同通过时无返回值；不读取素材字节，不创建或恢复任务。
- * @throws RunImage2proVideoError 参数、模式、媒体类型或参考数量不符合已确认合同。
+ * @throws RunVideoInputError 参数、模式、媒体类型或参考数量不符合已确认合同。
  */
-export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
+export function validateRunVideoInputs(snapshot: RunSnapshot): void {
   const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
   for (const node of snapshot.nodes) {
     const modelAlias =
@@ -47,11 +50,17 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
       continue;
     }
     if (isRetiredImage2proVideoModel(modelAlias)) {
-      throw new RunImage2proVideoError(node.id, [
+      throw new RunVideoInputError(node.id, [
         { code: 'UNSUPPORTED_INPUT_COMBINATION', message: retiredImage2proVideoModelReason },
       ]);
     }
-    const contract = image2proVideoContractForModel(modelAlias);
+    if (isUnadaptedYuanliuVideoModel(modelAlias)) {
+      throw new RunVideoInputError(node.id, [
+        { code: 'UNSUPPORTED_INPUT_COMBINATION', message: unadaptedYuanliuVideoModelReason },
+      ]);
+    }
+    const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
+    const contract = yuanliuContract ?? image2proVideoContractForModel(modelAlias);
     if (!contract) continue;
     const inputs: RunInputSnapshot[] =
       node.id === snapshot.targetNodeId
@@ -86,10 +95,12 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
         modelAlias,
       );
       if (!role) {
-        throw new RunImage2proVideoError(node.id, [
+        throw new RunVideoInputError(node.id, [
           {
             code: 'UNSUPPORTED_INPUT_COMBINATION',
-            message: 'Image2Pro 当前模式不支持此资源提及，请使用全能参考模式或明确连接首尾帧',
+            message: yuanliuContract
+              ? 'Yuan 当前模式不支持此资源提及，请使用普通全能参考模式'
+              : 'Image2Pro 当前模式不支持此资源提及，请使用全能参考模式或明确连接首尾帧',
           },
         ]);
       }
@@ -139,16 +150,16 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
     const documentPrompt = node.data.promptDocument
       ? renderPromptDocument(node.data.promptDocument)
       : undefined;
-    const h3NodePrompt = node.data.promptDocument
+    const requiredNodePrompt = node.data.promptDocument
       ? documentPrompt
       : (parameterPrompt ?? node.data.prompt);
     const nodePrompt = contract.requiresPrompt
-      ? h3NodePrompt?.trim()
-        ? h3NodePrompt
+      ? requiredNodePrompt?.trim()
+        ? requiredNodePrompt
         : undefined
       : (parameters.prompt ?? documentPrompt ?? node.data.prompt);
     if (contract.requiresPrompt && nodePrompt !== undefined && textInput?.role === 'prompt') {
-      throw new RunImage2proVideoError(node.id, [
+      throw new RunVideoInputError(node.id, [
         {
           code: 'INPUT_ROLE_CONFLICT',
           role: 'prompt',
@@ -168,6 +179,12 @@ export function validateRunImage2proVideo(snapshot: RunSnapshot): void {
       videoMode: videoModeForPromptMentions(node.data.videoMode, mentionInputs.length > 0),
       allowUnresolvedFrozenTextInput: true,
     });
-    if (result.issues.length) throw new RunImage2proVideoError(node.id, result.issues);
+    if (result.issues.length) throw new RunVideoInputError(node.id, result.issues);
   }
 }
+
+// 保留现有内部调用入口，新合同共用同一份冻结输入预检。
+export {
+  RunVideoInputError as RunImage2proVideoError,
+  validateRunVideoInputs as validateRunImage2proVideo,
+};

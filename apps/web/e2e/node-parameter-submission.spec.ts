@@ -28,9 +28,10 @@ type ParameterScenario = {
   videoMode?: VideoMode;
   /** 保留旧无 videoMode 画布的文字 content 连线，目标节点不填写正文。 */
   legacyTextContent?: boolean;
-  /** 仅 Image2Pro 合同冒烟附带固定版本的合成本地素材。 */
+  /** 合同冒烟附带固定版本的合成本地素材，不使用真实项目资源。 */
   referenceImage?: boolean;
   referenceAudio?: boolean;
+  referenceVideo?: boolean;
   additionalModels?: {
     id: string;
     name: string;
@@ -72,9 +73,26 @@ async function installFixture(
         ? ['firstFrame', 'lastFrame']
         : [];
   const hasReferenceAsset = Boolean(
-    scenario.referenceImage || scenario.referenceAudio || frameRoles.length,
+    scenario.referenceImage ||
+    scenario.referenceAudio ||
+    scenario.referenceVideo ||
+    frameRoles.length,
   );
-  const referenceType = scenario.referenceAudio ? 'audio' : 'image';
+  const referenceType = scenario.referenceAudio
+    ? 'audio'
+    : scenario.referenceVideo
+      ? 'video'
+      : 'image';
+  const referenceLabel = scenario.referenceAudio
+    ? '参考音频'
+    : scenario.referenceVideo
+      ? '参考视频'
+      : '参考图';
+  const referenceMimeType = scenario.referenceAudio
+    ? 'audio/wav'
+    : scenario.referenceVideo
+      ? 'video/mp4'
+      : 'image/jpeg';
   const referenceId = `fixture-${referenceType}`;
   const user = {
     id: 'parameter-user',
@@ -112,7 +130,7 @@ async function installFixture(
               ...(mediaType === 'video' && !scenario.legacyTextContent
                 ? { videoMode: scenario.videoMode ?? 'text_to_video' }
                 : {}),
-              ...(scenario.referenceImage || scenario.referenceAudio
+              ...(scenario.referenceImage || scenario.referenceAudio || scenario.referenceVideo
                 ? {
                     promptDocument: {
                       version: 1,
@@ -123,7 +141,7 @@ async function installFixture(
                           mentionId: 'fixture-reference',
                           assetId: referenceId,
                           assetVersion: 3,
-                          label: scenario.referenceAudio ? '参考音频' : '参考图',
+                          label: referenceLabel,
                           mediaType: referenceType,
                           inline: true,
                         },
@@ -198,15 +216,17 @@ async function installFixture(
       ? [
           {
             id: referenceId,
-            name: scenario.referenceAudio ? '参考音频' : '参考图',
+            name: referenceLabel,
             mediaType: referenceType,
-            mimeType: scenario.referenceAudio ? 'audio/wav' : 'image/jpeg',
+            mimeType: referenceMimeType,
             latestVersion: 3,
             sizeBytes: 1,
             status: 'ready',
             tags: [],
             contentUrl: `/v1/assets/${referenceId}/versions/3/content`,
-            ...(scenario.referenceAudio ? { metadata: { durationSeconds: 3 } } : {}),
+            ...(scenario.referenceAudio || scenario.referenceVideo
+              ? { metadata: { durationSeconds: 3 } }
+              : {}),
           },
         ]
       : []),
@@ -310,13 +330,22 @@ async function installFixture(
         path === `/v1/assets/${referenceId}/versions/3/derivatives/thumbnail`)
     )
       return route.fulfill({
-        contentType: scenario.referenceAudio ? 'audio/wav' : 'image/jpeg',
-        body: scenario.referenceAudio
-          ? Buffer.from(
-              'RIFF$\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\0\0\0\0',
-              'binary',
-            )
-          : readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url)),
+        contentType: path.endsWith('/thumbnail') ? 'image/jpeg' : referenceMimeType,
+        body: path.endsWith('/thumbnail')
+          ? readFileSync(new URL('../public/demo/field-study-poster.jpg', import.meta.url))
+          : scenario.referenceAudio
+            ? Buffer.from(
+                'RIFF$\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\0\0\0\0',
+                'binary',
+              )
+            : readFileSync(
+                new URL(
+                  scenario.referenceVideo
+                    ? '../public/demo/field-study.mp4'
+                    : '../public/demo/field-study-poster.jpg',
+                  import.meta.url,
+                ),
+              ),
       });
     if (method === 'GET' && path === '/v1/models')
       return json(route, {
@@ -476,6 +505,177 @@ async function dragDuration(page: Page, slider: Locator) {
   expect(seconds).toBeLessThan(30);
   expect(seconds).not.toBe(before);
   return seconds;
+}
+
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 1366, height: 768 },
+]) {
+  test.describe(`Yuan ${viewport.width}×${viewport.height} 参数与全能参考`, () => {
+    test.use({ viewport });
+    test.describe.configure({ timeout: 60_000 });
+
+    for (const scenario of [
+      {
+        modelAlias: 'Yuan-Seedance-2.5-Official',
+        referenceImage: true,
+        referenceType: 'image',
+        resolution: '1080p',
+        ratio: '9:16',
+      },
+      {
+        modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+        referenceVideo: true,
+        referenceType: 'video',
+        resolution: '720p',
+        ratio: 'auto',
+      },
+      {
+        modelAlias: 'Yuan-Seedance-2.5-YS-Full',
+        referenceAudio: true,
+        referenceType: 'audio',
+        resolution: '720p',
+        ratio: '16:9',
+      },
+    ] as const) {
+      test(`${scenario.modelAlias} 全能参考保存和提交固定版本的${scenario.referenceType}素材`, async ({
+        page,
+        baseURL,
+      }, testInfo) => {
+        const fixture = await installFixture(page, baseURL, {
+          ...scenario,
+          mediaType: 'video',
+          videoMode: 'text_to_video',
+          parameters: { seconds: 7.25, size: '720p', ratio: '16:9', quality: 'high' },
+          capabilities: {
+            resolution: ['2k'],
+            duration: [60],
+            mentionMediaTypes: ['image', 'video', 'audio'],
+          },
+        });
+        const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+        const originalBounds = (await node.boundingBox())!;
+        await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+        expect(fixture.patches).toHaveLength(0);
+        await choose(page, '生成模式', /^全能参考(?:\s|$)/);
+        await expect.poll(() => fixture.canvas().nodes[0]!.data.videoMode).toBe('omni_reference');
+        await openParameters(page);
+        await page.getByRole('button', { name: '移除不支持的参数', exact: true }).click();
+        await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+        const { trigger, slider, card } = await openDuration(page, {
+          min: scenario.referenceType === 'video' ? 5 : 4,
+          max: 30,
+        });
+        await expect(card.getByRole('button', { name: '自动时长', exact: true })).toHaveCount(0);
+        await slider.press('Home');
+        for (let step = Number(await slider.inputValue()); step < 8; step += 1)
+          await slider.press('ArrowRight');
+        await expect(slider).toHaveValue('8');
+        await trigger.click();
+        await choose(page, '视频清晰度', new RegExp(scenario.resolution, 'i'));
+        await choose(
+          page,
+          '视频比例',
+          scenario.ratio === 'auto' ? /^auto$/ : new RegExp(scenario.ratio),
+        );
+        const parameters = {
+          duration: 8,
+          resolution: scenario.resolution,
+          aspectRatio: scenario.ratio,
+        };
+        await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
+        await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+        const bounds = (await node.boundingBox())!;
+        expect(bounds.width).toBeCloseTo(originalBounds.width, 2);
+        expect(bounds.height).toBeCloseTo(originalBounds.height, 2);
+        await page.screenshot({
+          path: testInfo.outputPath(`yuan-${scenario.referenceType}-parameters.png`),
+          animations: 'disabled',
+        });
+        await page.reload();
+        await selectNode(page);
+        await openParameters(page);
+        await expect(page.getByRole('button', { name: /^时长（秒）：8/ })).toBeVisible();
+        await expect(page.getByRole('combobox', { name: /^视频清晰度：/ })).toHaveAccessibleName(
+          new RegExp(scenario.resolution, 'i'),
+        );
+        expect(fixture.canvas().nodes[0]!.data.videoMode).toBe('omni_reference');
+        expect(fixture.submissions).toHaveLength(0);
+        await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+        await page.getByRole('button', { name: '生成', exact: true }).click();
+        await expect.poll(() => fixture.submissions.length).toBe(1);
+        expect(fixture.submissions[0]).toMatchObject({
+          modelAlias: scenario.modelAlias,
+          credentialId,
+          parameters: { ...parameters, prompt: 'Create a scene with soft light.' },
+        });
+        expect(fixture.submissions[0]!.promptDocument).toMatchObject({
+          blocks: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'mention',
+              assetId: `fixture-${scenario.referenceType}`,
+              assetVersion: 3,
+              mediaType: scenario.referenceType,
+            }),
+          ]),
+        });
+        expect(fixture.errors).toEqual([]);
+      });
+    }
+
+    for (const scenario of [
+      { modelAlias: 'Yuan-Seedance-2.0-HD', seconds: 10, values: [5, 10, 15] },
+      { modelAlias: 'Yuan-Seedance-2.5-YL1', seconds: 30, values: [30] },
+    ]) {
+      test(`${scenario.modelAlias} 保留非法旧秒数，明确选择离散时长后刷新并提交`, async ({
+        page,
+        baseURL,
+      }, testInfo) => {
+        const fixture = await installFixture(page, baseURL, {
+          mediaType: 'video',
+          modelAlias: scenario.modelAlias,
+          parameters: { resolution: '720p', aspectRatio: '16:9', seconds: 7 },
+        });
+        await openParameters(page);
+        await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+        expect(fixture.patches).toHaveLength(0);
+        await page.getByRole('combobox', { name: /^时长（秒）：/ }).click();
+        await expect(page.getByRole('slider', { name: '视频时长（秒）', exact: true })).toHaveCount(
+          0,
+        );
+        for (const value of scenario.values)
+          await expect(
+            page.getByRole('option', { name: new RegExp(`^${value}(?:\\s|$)`) }),
+          ).toBeVisible();
+        await page
+          .getByRole('option', { name: new RegExp(`^${scenario.seconds}(?:\\s|$)`) })
+          .click();
+        const parameters = { resolution: '720p', aspectRatio: '16:9', duration: scenario.seconds };
+        await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
+        await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+        await page.screenshot({
+          path: testInfo.outputPath('yuan-discrete-duration.png'),
+          animations: 'disabled',
+        });
+        await page.reload();
+        await selectNode(page);
+        await openParameters(page);
+        await expect(page.getByRole('combobox', { name: /^时长（秒）：/ })).toHaveAccessibleName(
+          `时长（秒）：${scenario.seconds}`,
+        );
+        expect(fixture.submissions).toHaveLength(0);
+        await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+        await page.getByRole('button', { name: '生成', exact: true }).click();
+        await expect.poll(() => fixture.submissions.length).toBe(1);
+        expect(fixture.submissions[0]).toMatchObject({
+          modelAlias: scenario.modelAlias,
+          credentialId,
+          parameters: { ...parameters, prompt: 'Create a scene with soft light.' },
+        });
+        expect(fixture.errors).toEqual([]);
+      });
+    }
+  });
 }
 
 test.describe('Image2Pro 参数与调用', () => {

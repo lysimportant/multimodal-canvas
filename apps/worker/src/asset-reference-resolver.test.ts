@@ -302,9 +302,13 @@ describe('StoredAssetReferenceResolver', () => {
     },
   );
 
-  it.each(['site', 's3'] as const)(
-    '%s 签发的冻结 v2 在连线与重复提及之间只预检一次，签名不进入原快照',
-    async (source) => {
+  it.each(
+    (['site', 's3'] as const).flatMap((source) =>
+      ['sd2-930-fast', 'Yuan-Seedance-2.5-LJ-Full'].map((modelAlias) => ({ source, modelAlias })),
+    ),
+  )(
+    '$modelAlias $source 签发的冻结 v2 在连线与重复提及之间只预检一次，签名不进入原快照',
+    async ({ source, modelAlias }) => {
       const content = Buffer.from('frozen image version two');
       const snapshot = referenceSnapshot({
         sourceMediaType: 'image',
@@ -313,7 +317,7 @@ describe('StoredAssetReferenceResolver', () => {
         assetId: imageAssetId,
         contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
         mimeType: 'image/png',
-        modelAlias: 'sd2-930-fast',
+        modelAlias,
       });
       const mentions = promptMentionSnapshot({
         assetId: imageAssetId,
@@ -321,7 +325,7 @@ describe('StoredAssetReferenceResolver', () => {
         label: '参考图片',
         mediaType: 'image',
         repeat: true,
-        modelAlias: 'sd2-930-fast',
+        modelAlias,
         targetMediaType: 'video',
       });
       snapshot.nodes[1]!.data.promptDocument = mentions.nodes[0]!.data.promptDocument;
@@ -395,70 +399,82 @@ describe('StoredAssetReferenceResolver', () => {
     expect(repository.findAsset).not.toHaveBeenCalled();
   });
 
-  it('本站签名读取失败时 Worker 不发送视频生成请求', async () => {
-    const content = Buffer.from('frozen image');
-    const snapshot = referenceSnapshot({
-      sourceMediaType: 'image',
-      targetMediaType: 'video',
-      role: 'referenceImage',
-      assetId: imageAssetId,
-      mimeType: 'image/png',
-      modelAlias: 'sd2-930-fast',
-    });
-    const { repository, blobStore } = fixtures({
-      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId, userId)],
-      blobs: { 'objects/image-current': content },
-    });
-    const preflightFetch = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(new Response('private response', { status: 401 }));
-    const providerFetch = vi.fn<typeof fetch>();
-    const job: StubJob = {
-      id: projectId,
-      data: {
-        runId: projectId,
-        userId,
-        snapshot,
-        attempt: 1,
-        provider: 'newapi',
-        cancelRequested: false,
-      },
-      async updateData(data) {
-        this.data = data;
-      },
-      async updateProgress() {},
-    };
-    bullmqState.job = job;
-    createRunWorker({
-      connection: { host: '127.0.0.1', port: 6379 },
-      stepDelayMs: 0,
-      providerName: 'newapi',
-      videoProvider: new NewApiVideoProvider({
-        baseUrl: 'https://newapi.example.test/v1',
-        apiKey: 'synthetic-test-key',
-        videoContract: 'newapi-video-v1',
-        fetchImpl: providerFetch,
-      }),
-      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore, {
-        providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment({
-          CANVAS_WEB_URL: 'https://canvas.example.com',
-          API_JWT_SECRET: 'synthetic-site-secret',
+  it.each(['sd2-930-fast', 'Yuan-Seedance-2.5-LJ-Full'])(
+    '%s 本站签名读取失败时 Worker 不发送视频生成请求',
+    async (modelAlias) => {
+      const content = Buffer.from('frozen image');
+      const snapshot = referenceSnapshot({
+        sourceMediaType: 'image',
+        targetMediaType: 'video',
+        role: 'referenceImage',
+        assetId: imageAssetId,
+        mimeType: 'image/png',
+        modelAlias,
+      });
+      snapshot.parameters.duration = 5;
+      snapshot.nodes[1]!.data.prompt = 'Create a tracking shot.';
+      const { repository, blobStore } = fixtures({
+        assets: [asset(imageAssetId, 'image', 'image/png', content, projectId, userId)],
+        blobs: { 'objects/image-current': content },
+      });
+      const preflightFetch = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response('private response', { status: 401 }));
+      const providerFetch = vi.fn<typeof fetch>();
+      const job: StubJob = {
+        id: projectId,
+        data: {
+          runId: projectId,
+          userId,
+          snapshot,
+          attempt: 1,
+          provider: 'newapi',
+          cancelRequested: false,
+        },
+        async updateData(data) {
+          this.data = data;
+        },
+        async updateProgress() {},
+      };
+      bullmqState.job = job;
+      createRunWorker({
+        connection: { host: '127.0.0.1', port: 6379 },
+        stepDelayMs: 0,
+        providerName: 'newapi',
+        videoProvider: new NewApiVideoProvider({
+          baseUrl: 'https://newapi.example.test/v1',
+          apiKey: 'synthetic-test-key',
+          videoContract: 'newapi-video-v1',
+          fetchImpl: providerFetch,
         }),
-        providerAssetPreflight: createProviderAssetPreflight(preflightFetch),
-      }),
-    });
+        assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore, {
+          providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment({
+            CANVAS_WEB_URL: 'https://canvas.example.com',
+            API_JWT_SECRET: 'synthetic-site-secret',
+          }),
+          providerAssetPreflight: createProviderAssetPreflight(preflightFetch),
+        }),
+      });
 
-    await expect(bullmqState.processor?.(job)).rejects.toThrow('HTTP 401');
-    expect(preflightFetch).toHaveBeenCalledOnce();
-    expect(providerFetch).not.toHaveBeenCalled();
-    expect(JSON.stringify(job.data)).not.toMatch(
-      /access_token|synthetic-site-secret|private response/,
-    );
-  });
+      await expect(bullmqState.processor?.(job)).rejects.toThrow('HTTP 401');
+      expect(preflightFetch).toHaveBeenCalledOnce();
+      expect(providerFetch).not.toHaveBeenCalled();
+      expect(JSON.stringify(job.data)).not.toMatch(
+        /access_token|synthetic-site-secret|private response/,
+      );
+    },
+  );
 
-  it.each(['image', 'video', 'audio'] as const)(
-    '自动用本站 HTTPS 提供冻结的 %s 版本且不持久化签名',
-    async (mediaType) => {
+  it.each(
+    (['image', 'video', 'audio'] as const).flatMap((mediaType) =>
+      ['sd2-930-fast', 'Yuan-Seedance-2.5-LJ-Full'].map((modelAlias) => ({
+        mediaType,
+        modelAlias,
+      })),
+    ),
+  )(
+    '$modelAlias 自动用本站 HTTPS 提供冻结的 $mediaType 版本且不持久化签名',
+    async ({ mediaType, modelAlias }) => {
       const content = Buffer.from('frozen media version two');
       const mimeType = mediaType === 'image' ? 'image/png' : `${mediaType}/mp4`;
       const snapshot = referenceSnapshot({
@@ -473,7 +489,7 @@ describe('StoredAssetReferenceResolver', () => {
         assetId: imageAssetId,
         contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
         mimeType,
-        modelAlias: 'sd2-930-fast',
+        modelAlias,
       });
       const original = structuredClone(snapshot);
       const { repository, blobStore } = fixtures({
@@ -648,6 +664,21 @@ describe('StoredAssetReferenceResolver', () => {
 
   it.each([
     { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      mediaType: 'video' as const,
+      role: 'content' as const,
+    },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
     {
       modelAlias: 'Seedance2.0 0.9r',
       mediaType: 'image' as const,
@@ -941,6 +972,21 @@ describe('StoredAssetReferenceResolver', () => {
 
   it.each([
     { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      mediaType: 'image' as const,
+      role: 'referenceImage' as const,
+    },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      mediaType: 'video' as const,
+      role: 'content' as const,
+    },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      mediaType: 'audio' as const,
+      role: 'audioTrack' as const,
+    },
     { modelAlias: 'Seedance2.0 0.9r', mediaType: 'video' as const, role: 'content' as const },
     { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
     {
@@ -1632,6 +1678,275 @@ describe('StoredAssetReferenceResolver', () => {
 });
 
 describe('createRunWorker asset hydration boundary', () => {
+  it('Yuan 保留显式重复参考和不同冻结版本，公共任务归档及持久记录不含素材签名或字节', async () => {
+    const audioAssetId = '123e4567-e89b-42d3-a456-426614174714';
+    const secret = 'synthetic-yuan-worker-signing-secret';
+    const modelAlias = 'Yuan-Seedance-2.5-LJ-Full';
+    const references = [
+      { assetId: imageAssetId, version: 2, mediaType: 'image' as const, mimeType: 'image/png' },
+      { assetId: imageAssetId, version: 1, mediaType: 'image' as const, mimeType: 'image/png' },
+      { assetId: videoAssetId, version: 1, mediaType: 'video' as const, mimeType: 'video/mp4' },
+      { assetId: audioAssetId, version: 1, mediaType: 'audio' as const, mimeType: 'audio/wav' },
+    ].map((reference) => ({
+      ...reference,
+      content: Buffer.from(`yuan-worker-frozen-${reference.mediaType}-v${reference.version}`),
+      contentKey: `objects/yuan-worker-${reference.mediaType}-v${reference.version}`,
+    }));
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      mimeType: 'image/png',
+      modelAlias,
+      contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+    });
+    snapshot.inputs[0]!.sourceAssetVersion = 2;
+    snapshot.inputs.push({ ...snapshot.inputs[0]!, sortOrder: 1 });
+    snapshot.edges.push({ ...snapshot.edges[0]!, id: 'edge_repeat_reference', order: 1 });
+    snapshot.credentialId = userId;
+    snapshot.credentialVersion = 1;
+    snapshot.parameters = { duration: 5, resolution: '720p', aspectRatio: '9:16' };
+    const mentions = [references[0]!, references[0]!, ...references.slice(1)].map(
+      (reference, index) => ({
+        type: 'mention' as const,
+        mentionId: `yuan-reference-${index}`,
+        assetId: reference.assetId,
+        assetVersion: reference.version,
+        mediaType: reference.mediaType,
+        label: `参考${reference.mediaType} v${reference.version}`,
+      }),
+    );
+    snapshot.nodes[1]!.data.promptDocument = {
+      version: 1,
+      blocks: [{ type: 'text', text: 'Animate these references in order: ' }, ...mentions],
+    };
+    snapshot.promptMentions = mentions.map(
+      ({ mentionId, assetId, assetVersion, mediaType, label }, index) => ({
+        mentionId,
+        assetId,
+        assetVersion,
+        mediaType,
+        label,
+        nodeId: 'node_target',
+        blockOrder: index + 1,
+      }),
+    );
+    const original = structuredClone(snapshot);
+    const { repository, blobStore } = fixtures({
+      assets: references
+        .filter((reference) => reference.version !== 2)
+        .map((reference) =>
+          asset(
+            reference.assetId,
+            reference.mediaType,
+            reference.mimeType,
+            reference.content,
+            projectId,
+            userId,
+          ),
+        ),
+      versions: references.map((reference) => ({
+        assetId: reference.assetId,
+        version: reference.version,
+        sizeBytes: BigInt(reference.content.length),
+        contentKey: reference.contentKey,
+      })),
+      blobs: Object.fromEntries(
+        references.map((reference) => [reference.contentKey, reference.content]),
+      ),
+    });
+    const signer = vi.fn(
+      createProviderAssetUrlSignerFromEnvironment({
+        CANVAS_WEB_URL: 'https://canvas.example.com',
+        ASSET_ACCESS_URL_SECRET: secret,
+      })!,
+    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({ id: 'task_yuan_mixed_public', object: 'video', status: 'queued' }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          id: 'task_yuan_mixed_public',
+          object: 'video',
+          status: 'completed',
+          url: 'https://cdn.example.com/yuan-mixed.mp4',
+        }),
+      );
+    const persistence = {
+      getProviderCredentials: vi.fn(async (_reference: unknown) => ({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-yuan-worker-key',
+      })),
+      ensureRun: vi.fn(async (_input: unknown) => undefined),
+      updateRun: vi.fn(async (_input: unknown) => undefined),
+      upsertProviderJob: vi.fn(async (_input: unknown) => undefined),
+      upsertRequestPromptRecord: vi.fn(async (_input: unknown) => undefined),
+      recordRequestPromptOutcome: vi.fn(async (_input: unknown) => undefined),
+      recordUsage: vi.fn(async (_input: unknown) => undefined),
+    };
+    const jobUpdates: unknown[] = [];
+    const job: StubJob = {
+      id: projectId,
+      data: {
+        runId: projectId,
+        userId,
+        snapshot,
+        attempt: 1,
+        provider: 'newapi',
+        cancelRequested: false,
+      },
+      async updateData(data) {
+        jobUpdates.push(structuredClone(data));
+        this.data = data;
+      },
+      async updateProgress() {},
+    };
+    const resultArchiver = vi.fn<
+      NonNullable<Parameters<typeof createRunWorker>[0]['resultArchiver']>
+    >(async () => ({
+      assetId: '123e4567-e89b-42d3-a456-426614174715',
+      version: 1,
+      mimeType: 'video/mp4',
+    }));
+    bullmqState.job = job;
+    createRunWorker({
+      connection: { host: '127.0.0.1', port: 6379 },
+      stepDelayMs: 0,
+      providerName: 'newapi',
+      videoProvider: new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-yuan-worker-key',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+        pollIntervalMs: 0,
+        maxPollAttempts: 1,
+      }),
+      assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore, {
+        providerAssetUrlSigner: signer,
+      }),
+      persistence,
+      resultArchiver,
+    });
+
+    const result = await bullmqState.processor?.(job);
+
+    expect(result).toMatchObject({ status: 'succeeded', progress: 100 });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ['https://newapi.example.test/v1/videos', 'POST'],
+      ['https://newapi.example.test/v1/videos/task_yuan_mixed_public', 'GET'],
+    ]);
+    expect(signer).toHaveBeenCalledTimes(4);
+    expect(repository.findVersion).toHaveBeenCalledTimes(4);
+    expect(blobStore.get).toHaveBeenCalledTimes(4);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+    const expectedReferences = [references[0]!, ...references];
+    const expectedContent = expectedReferences.map((reference) => {
+      const signedIndex = signer.mock.calls.findIndex(
+        ([grant]) => grant.assetId === reference.assetId && grant.version === reference.version,
+      );
+      expect(signedIndex).toBeGreaterThanOrEqual(0);
+      const signedUrl = signer.mock.results[signedIndex]!.value as string;
+      const url = new URL(signedUrl);
+      expect(url.origin).toBe('https://canvas.example.com');
+      expect(url.pathname).toBe(
+        `/v1/provider-assets/${reference.assetId}/versions/${reference.version}/content`,
+      );
+      expect(
+        verifyProviderAssetAccessToken(url.searchParams.get('access_token')!, secret),
+      ).toMatchObject({
+        assetId: reference.assetId,
+        version: reference.version,
+        projectId,
+        ownerId: userId,
+      });
+      expect(repository.findVersion).toHaveBeenCalledWith(reference.assetId, reference.version);
+      expect(blobStore.get).toHaveBeenCalledWith(
+        reference.contentKey,
+        reference.content.length + 1,
+      );
+      return {
+        type: `${reference.mediaType}_url`,
+        role: `reference_${reference.mediaType}`,
+        [`${reference.mediaType}_url`]: { url: signedUrl },
+      };
+    });
+    expect(body).toEqual({
+      model: modelAlias,
+      prompt: expect.stringContaining('Animate these references in order:'),
+      duration: 5,
+      resolution: '720p',
+      aspect_ratio: '9:16',
+      metadata: {
+        content: [{ type: 'text', text: body.prompt }, ...expectedContent],
+        omni_reference_task_type: 'reference',
+      },
+    });
+    expect(resultArchiver).toHaveBeenCalledOnce();
+    expect(resultArchiver.mock.calls[0]![0]).toMatchObject({
+      result: { mediaType: 'video', targetNodeId: 'node_target' },
+      output: { kind: 'url', url: 'https://cdn.example.com/yuan-mixed.mp4', mimeType: 'video/mp4' },
+    });
+    expect(persistence.getProviderCredentials).toHaveBeenCalledWith({
+      credentialId: userId,
+      credentialVersion: 1,
+    });
+    expect(persistence.ensureRun).toHaveBeenCalledOnce();
+    expect(persistence.upsertRequestPromptRecord).toHaveBeenCalledOnce();
+    expect(persistence.upsertRequestPromptRecord.mock.calls[0]![0]).toMatchObject({
+      record: {
+        resources: expectedReferences.map((reference) => ({
+          assetId: reference.assetId,
+          assetVersion: reference.version,
+        })),
+      },
+    });
+    expect(persistence.recordRequestPromptOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sendStatus: 'sent',
+        assetId: '123e4567-e89b-42d3-a456-426614174715',
+        assetVersion: 1,
+      }),
+    );
+    expect(persistence.upsertProviderJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerJob: expect.objectContaining({
+          platformJobId: 'task_yuan_mixed_public',
+          status: 'succeeded',
+        }),
+      }),
+    );
+    expect(persistence.updateRun).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'succeeded' }),
+    );
+    expect(jobUpdates.length).toBeGreaterThan(0);
+    expect(snapshot).toEqual(original);
+    expect(job.data.snapshot).toEqual(withTestExecutionBindings(original));
+    const durable = JSON.stringify({
+      original,
+      job: job.data,
+      jobUpdates,
+      records: [
+        ...persistence.ensureRun.mock.calls,
+        ...persistence.updateRun.mock.calls,
+        ...persistence.upsertProviderJob.mock.calls,
+        ...persistence.upsertRequestPromptRecord.mock.calls,
+        ...persistence.recordRequestPromptOutcome.mock.calls,
+        ...persistence.recordUsage.mock.calls,
+      ],
+    });
+    expect(durable).not.toMatch(
+      /access_token|X-Amz-Signature|;base64,|https:\/\/canvas\.example\.com\/v1\/provider-assets\//,
+    );
+    expect(durable).not.toContain(secret);
+    for (const reference of references) {
+      expect(durable).not.toContain(reference.content.toString('base64'));
+      expect(durable).not.toContain(reference.content.toString('utf8'));
+    }
+  });
+
   it.each(['mentions', 'link-and-mentions'])(
     '多图 %s 水合后按顺序提交 image[]，不同冻结版本保留且所有 job 更新均不含字节',
     async (kind) => {

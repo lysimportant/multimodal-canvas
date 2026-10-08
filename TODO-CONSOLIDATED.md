@@ -1,6 +1,6 @@
 # 待完成任务汇总
 
-更新时间：2026-10-08（Image2Pro 保留 Seedance，恢复 Flash-MAX 的 H3 别名适配）
+更新时间：2026-10-08（补充 Yuan 配套部署与真实全能参考验收边界）
 整理基线：`main @ 43c69b6`
 来源：[视频节点任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-VIDEO-NODE.md)、[本地任务历史版本](https://github.com/lysimportant/multimodal-canvas/blob/c750763925a2fd63988c8a84402dc982a6ec460a/TODO-LOCAL.md)。
 
@@ -29,13 +29,14 @@
 - MiniMax-H3、Wan3.0 与 Seedance 2.0/2.5 的官方首尾帧及多媒体参考已完成插件字段映射；Moon Wan3、当前 Seedance 三模型与精确小写 `minimax-h3` 的配套修复见 `next.md` 第 16 节。Wan3/Seedance 编辑、延长按已确认版本开放。仍需补齐其它拟接入模型的正式字段取证，以及各模型真实上游验收，不能把本地映射测试视为供应商验收。
 - Moon 新 `sd2*`、PT、`seedance-2-5-official`、ArtsDance 与 `grok-v1.5-video` 的 Canvas 配套状态见[型号映射检查点](docs/moon-video-models-checkpoint.md)。新系列参考输入仍需验证部署网站的素材地址可被供应商读取，并核对目标 New API 的实际 Moon 插件版本；不要求第三方 OSS。离线插件校验不替代公网读取或真实生成验收。
 - Image2Pro 保留 `Seedance2.0 0.9r` 官方参数，并按用户确认恢复 `无限制-Flash-MAX-Video` 的 H3 别名适配；MAX 只允许 `720p`、4–12 整秒，使用 H3 `content`，不继承 Seedance 布尔字段。`无限制-Flash-中配-Video` 继续停用。URL 仍用 Image2Pro 文档路径；目标环境须同步更新 Canvas 与有效插件 2.1.0，并核对数据库 override。真实成片及图/音/视频受理仍待独立验收；自动时长缺少网关实际秒数合同，暂不开放。历史非法参数须显式修正，详见[Image2Pro 检查点](docs/image2pro-canvas-checkpoint.md)。
+- Yuan 的 13 个既有精确 ID/别名已补本地文生及全能参考合同，目标环境仍需同时更新 Canvas 和 New API，并核对有效插件、渠道映射、定价及本站 HTTPS 冻结素材被供应商实际读取。LW 等新目录型号未适配，历史 Official 合同保留不等于仍在上架；各型号真实图/音/视频受理、成片与费用须单独验收，见[Yuan 检查点](docs/yuanliu-video-checkpoint.md)。
 - 原始文字 `source` 节点同时保留资产与旧 `prompt` 时，Run 前预检和执行时水合的文字优先级仍可能不同；需单独确认存量数据兼容语义并收敛。Image2Pro 本轮已覆盖已完成文字结果的正常固定选版路径，未扩展此原始来源边界，详见同一检查点。
 - New API 公开估价桥接尚未发布 Image2Pro 完整媒体能力，也未支持官方顶层 `content` 的多媒体估价；当前 Canvas 生成链不调用该接口，后续启用估价时须双边适配并回归，不从当前本地生成验证推断其已支持。
 - 视频参考默认通过网站域名提供短期签名素材接口，无需单独配置 `MC_S3_PROVIDER_ENDPOINT`，见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。2026-10-08 已分别验证本机临时 HTTPS 隧道和线上域名的冻结版本外网 GET/HEAD/Range 与字节一致性；Moon 所有参考素材仍要求供应商可访问 URL，Wan 视频还要求冻结版本时长。官方 Seedance 自动时长要求 Doubao 1.0.3 插件。
 - 本机 `sd2-930-fast` 5 秒与线上 `sd2-930-no-face` 10 秒的单图全能参考 Run 均已成功并归档视频；用户确认线上 10 秒为有意选择，本次两端链路按实际模型和参数验收，不据此声称线上 `sd2-930-fast` 也已单独验收。两端公网签名读取及本机 API 素材 GET 已有证据；线上流式 API 发布后，公网 HEAD、Range、完整 GET 与源素材哈希再次通过，其他服务及数据卷未改。请求方身份和精确外发链接仍待核对；线上 Moon 1.6.1 已生效，未见数据库插件覆盖。详见[本站素材检查点](docs/provider-asset-https-checkpoint.md)。
 - 共享 Wan 模型 ID 尚不能在 Canvas 区分百炼与 Moon 的全部参数差异；Moon 的总引用数量、参考视频合计时长及不支持负向提示/自动时长等限制由网关插件在预扣与供应商 POST 前明确拒绝。后续按渠道身份细分预检，不以 Moon 限制收窄百炼合同。
 - 对已确认字段补齐序列化、响应解析、数量/组合边界和未知字段拒绝测试。现有 Grok 1.5 尾帧与参考图映射不重复列为待实现项。
-- 将其余视频模型的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；Image2Pro 已在 API 受理前校验，不能据此视为所有模型都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。
+- 将其余视频模型的精确合同校验集中到 API 创建 Run/入队前，避免绕过 Web 的无效参数先产生失败 Run；Image2Pro 和已适配 Yuan 型号已在 API 受理前校验，不能据此视为所有模型都零 Run 拒绝，见[视频参数复核](docs/image-output-parameters.md#视频时长滑块与传值复核)。
 - 明确各模型重复端口上限，取产品、模型、供应商限制的最小值；来源文档中的示例配额不能当成确认值。
 
 完成条件：拟开放组合均有字段证据与测试，未确认角色、超限输入和不支持的组合在供应商创建 POST 前明确失败，不静默丢弃或降级；共享模型 ID 的渠道差异需另行完成 Canvas 预检。

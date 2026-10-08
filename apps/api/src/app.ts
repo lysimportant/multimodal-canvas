@@ -4,6 +4,7 @@ import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createProviderAssetUrlSignerFromEnvironment } from '@multimodal-canvas/credential-crypto';
 
 import {
   createAssetAccessToken,
@@ -26,7 +27,7 @@ import { withLocalResourceReferences } from './local-resource-references';
 import { withConnectedImageResults } from './connected-image-results';
 import { withConnectedTextInputs } from './connected-text-inputs';
 import { RunImageParameterError, validateRunImageParameters } from './run-image-parameters';
-import { RunImage2proVideoError, validateRunImage2proVideo } from './run-image2pro-video';
+import { RunVideoInputError, validateRunVideoInputs } from './run-image2pro-video';
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
@@ -1415,6 +1416,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             process.env.RESOURCE_MENTION_MAX_BYTES,
             DEFAULT_RESOURCE_MENTION_MAX_BYTES,
           ),
+          createProviderAssetUrlSignerFromEnvironment(),
         )
       : options.runExecutor;
   const runService: RunService =
@@ -3537,7 +3539,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         frozenNodeImageEditCapabilities,
         ...(credential ?? {}),
       });
-      validateRunImage2proVideo(snapshot);
+      validateRunVideoInputs(snapshot);
       if (options.newApiAccount)
         snapshot = await options.newApiAccount.freeze(
           requestSessions.get(request)!.user.id,
@@ -3563,7 +3565,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       );
       return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
-      if (error instanceof RunImage2proVideoError) {
+      if (error instanceof RunVideoInputError) {
         return reply.code(400).send({
           error: error.message,
           code: error.code,

@@ -1,8 +1,10 @@
 import {
   image2proVideoContractForModel,
+  yuanliuVideoContractForModel,
   isRetiredImage2proVideoModel,
   type MediaType,
 } from '@multimodal-canvas/domain';
+import type { ProviderAssetUrlSigner } from '@multimodal-canvas/credential-crypto';
 import type { ResolvedMention } from '@multimodal-canvas/providers';
 
 import type { AssetScope, AssetStore } from './assets';
@@ -13,12 +15,13 @@ import type { RunExecutor, RunExecutorRequest } from './runs';
 const imageSourceRoles = new Set(['imageEdit', 'content', 'referenceImage']);
 
 /**
- * 为 API 内存运行读取文字、聊天多模态、图片编辑和 Image2Pro 冻结媒体参考。
+ * 为 API 内存运行读取文字、聊天多模态、图片编辑及已确认视频合同的冻结参考。
  * @param executor 已配置的真实 Provider 执行器，不在此重试或下载外部 URL。
  * @param assetStore 已套用项目归属策略的资产存储。
  * @param projectStore 项目存储，执行前重新确认项目未归档且用户仍有访问权。
  * @param maxBytes 单项资源允许读取的字节上限，使用 API 资源提及限制。
- * @returns 仅将临时 data URL 和已解析提及交给 Provider 的执行器，不改写持久快照。
+ * @param providerAssetUrlSigner 为已授权冻结版本签发本站公网 HTTPS 地址；Yuan 媒体必需。
+ * @returns 仅将临时素材 URL 和已解析提及交给 Provider 的执行器，不改写持久快照。
  * @throws 项目/资产不可访问、归档、版本不可用、格式或大小非法、运行已取消时停止请求。
  */
 export function withLocalResourceReferences(
@@ -26,6 +29,7 @@ export function withLocalResourceReferences(
   assetStore: AssetStore,
   projectStore: ProjectStore,
   maxBytes: number,
+  providerAssetUrlSigner?: ProviderAssetUrlSigner,
 ): RunExecutor {
   return async (request: RunExecutorRequest) => {
     const target = request.snapshot.nodes.find((node) => node.id === request.snapshot.targetNodeId);
@@ -37,10 +41,14 @@ export function withLocalResourceReferences(
         ? image2proVideoContractForModel(request.snapshot.modelAlias)
         : undefined;
     const image2proVideo = Boolean(image2proContract);
+    const yuanliuVideo =
+      target.data.mediaType === 'video' &&
+      Boolean(yuanliuVideoContractForModel(request.snapshot.modelAlias));
+    const contractVideo = image2proVideo || yuanliuVideo;
     // 已有公共任务只查询结果，不能因原图后来失效阻断恢复。
     if (
       target.data.mediaType === 'video' &&
-      (image2proVideo || isRetiredImage2proVideoModel(request.snapshot.modelAlias)) &&
+      (contractVideo || isRetiredImage2proVideoModel(request.snapshot.modelAlias)) &&
       request.providerJob?.platformJobId
     ) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
@@ -51,7 +59,7 @@ export function withLocalResourceReferences(
         : (input.snapshot.data.mediaType === 'image' &&
             ((target.data.mediaType === 'text' && input.role === 'content') ||
               (target.data.mediaType === 'image' && imageSourceRoles.has(input.role)))) ||
-          (image2proVideo &&
+          (contractVideo &&
             [
               'firstFrame',
               'lastFrame',
@@ -66,7 +74,7 @@ export function withLocalResourceReferences(
       (mention) =>
         (mention.nodeId ?? request.snapshot.targetNodeId) === target.id &&
         (target.data.mediaType === 'text' ||
-          image2proVideo ||
+          contractVideo ||
           (target.data.mediaType === 'image' && mention.mediaType === 'image')),
     );
     if (resourceInputs.length === 0 && frozenMentions.length === 0) {
@@ -89,6 +97,7 @@ export function withLocalResourceReferences(
     await assertProjectAccessible();
 
     const readAssets: Array<{ assetId: string; scope: AssetScope }> = [];
+    const providerUrls = new Map<string, string>();
     /** 后续资源读取或请求说明落库期间，先前已读资源也可能被撤销。只复查元数据。 */
     const assertReadAssetsAccessible = async () => {
       for (const { assetId, scope } of readAssets) {
@@ -105,7 +114,7 @@ export function withLocalResourceReferences(
       version: number,
       mediaType: MediaType,
       declaredMimeType?: string,
-    ): Promise<Extract<ResolvedMention['source'], { kind: 'data-url' }>> => {
+    ): Promise<ResolvedMention['source']> => {
       const projectScope: AssetScope = {
         projectId: request.snapshot.projectId,
         ...(request.userId ? { ownerId: request.userId } : {}),
@@ -163,6 +172,35 @@ export function withLocalResourceReferences(
         throw new Error(`资源 ${assetId} 已不可访问或已归档`);
       readAssets.push({ assetId, scope });
       assertActive();
+      if (yuanliuVideo && mediaType !== 'text') {
+        if (!providerAssetUrlSigner) {
+          throw new Error(
+            '参考素材需要公网 HTTPS 访问：部署后会自动使用网站域名；当前网站地址或签名密钥不可用。本机 localhost 无法被远端模型读取。',
+          );
+        }
+        const ownerId = request.userId;
+        if (!ownerId) throw new Error('生成素材访问链接需要已确认的运行账号');
+        const ownership = await assetStore.getOwnership?.(assetId);
+        if (
+          !ownership ||
+          ownership.projectId !== scope.projectId ||
+          (ownership.ownerId !== null && ownership.ownerId !== ownerId)
+        ) {
+          throw new Error(`资源 ${assetId} 的归属与运行账号不一致，不能签发访问链接`);
+        }
+        const key = `${assetId}:${version}`;
+        let url = providerUrls.get(key);
+        if (!url) {
+          url = providerAssetUrlSigner({
+            assetId,
+            version,
+            projectId: ownership.projectId,
+            ownerId,
+          });
+          providerUrls.set(key, url);
+        }
+        return { kind: 'remote-url', mimeType, url };
+      }
       return {
         kind: 'data-url',
         mimeType,
@@ -204,7 +242,7 @@ export function withLocalResourceReferences(
         ...input.snapshot,
         data: {
           ...input.snapshot.data,
-          contentUrl: source.dataUrl,
+          contentUrl: source.kind === 'data-url' ? source.dataUrl : source.url,
           mimeType: source.mimeType,
           ...(input.snapshot.data.mediaType === 'text' ? { prompt: undefined } : {}),
         },

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
 import { NewApiProvider, NewApiVideoProvider } from '@multimodal-canvas/providers';
+import { verifyProviderAssetAccessToken } from '@multimodal-canvas/credential-crypto';
 import { MemoryAssetStore } from './assets';
 import { AuthService } from './auth-service';
 import { MemoryAuthStore } from './auth-store';
@@ -17,6 +18,8 @@ beforeEach(() => {
   vi.stubEnv('WORKER_PROVIDER', 'newapi');
   vi.stubEnv('API_JWT_SECRET', 'synthetic-image2pro-session-secret');
   vi.stubEnv('API_AUTH_TOKEN', '');
+  vi.stubEnv('CANVAS_WEB_URL', '');
+  vi.stubEnv('ASSET_ACCESS_URL_SECRET', '');
 });
 
 afterEach(async () => {
@@ -172,6 +175,7 @@ async function fixture(modelAlias: string, references: boolean, invalidQuality =
     fetchImpl,
     publicTaskId,
     frozenImage,
+    imageAsset: asset,
     assetStore,
     projectStore,
     canvas: savedCanvas,
@@ -504,6 +508,198 @@ describe('Image2Pro HTTP 运行合同', () => {
       expect(submitted.body).toContain(modelAlias);
       expect(await context.runService.listByProject(context.project.id)).toEqual([]);
       expect(context.fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('Yuan HTTP 运行合同', () => {
+  it.each([
+    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: {}, prompt: 'Create a scene.' },
+    { modelAlias: 'Yuan-Seedance-2.0-HD', parameters: { duration: 6 }, prompt: 'Create a scene.' },
+    {
+      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
+      parameters: { duration: 5, generate_audio: false },
+      prompt: 'Create a scene.',
+    },
+    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: { duration: 5 }, prompt: '' },
+    { modelAlias: 'Yuan-Seedance-2.5-LW', parameters: { duration: 5 }, prompt: 'Create a scene.' },
+    { modelAlias: 'yuan-seedance-2.5-lj', parameters: { duration: 5 }, prompt: 'Create a scene.' },
+  ])(
+    '$modelAlias 非法冻结参数或未适配名称 %# 为零 Run、零外发',
+    async ({ modelAlias, parameters, prompt }) => {
+      const context = await fixture(modelAlias, false);
+      const target = context.canvas.nodes[0]!.data;
+      target.parameters = parameters;
+      target.prompt = prompt;
+      if (modelAlias.includes('LW') || modelAlias.startsWith('yuan-')) delete target.videoMode;
+      await context.projectStore.updateCanvas(context.project.id, context.canvas);
+      const submitted = await context.app.inject({
+        method: 'POST',
+        url: '/v1/nodes/video-target/runs',
+        payload: { projectId: context.project.id },
+        headers: { authorization: `Bearer ${context.session.accessToken}` },
+      });
+      expect(submitted.statusCode, submitted.body).toBe(400);
+      expect(await context.runService.listByProject(context.project.id)).toEqual([]);
+      expect(context.fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('普通混合参考使用被冻结版本的本站签名 URL，公开任务查询与持久记录不含签名', async () => {
+    const secret = 'synthetic-yuan-asset-signing-secret';
+    vi.stubEnv('CANVAS_WEB_URL', 'https://canvas.example.com');
+    vi.stubEnv('ASSET_ACCESS_URL_SECRET', secret);
+    const context = await fixture('Yuan-Seedance-2.5-LJ-Full', true);
+    const target = context.canvas.nodes[0]!.data;
+    const blocks = target.promptDocument!.blocks;
+    blocks.push(
+      {
+        type: 'mention',
+        mentionId: 'same-image-v1',
+        assetId: context.imageAsset.id,
+        assetVersion: 1,
+        mediaType: 'image',
+        label: '重复参考图',
+      },
+      {
+        type: 'mention',
+        mentionId: 'selected-image-v2',
+        assetId: context.imageAsset.id,
+        assetVersion: 2,
+        mediaType: 'image',
+        label: '另一版本',
+      },
+    );
+    const expectedReferences: Array<{
+      assetId: string;
+      version: number;
+      mediaType: 'image' | 'video' | 'audio';
+      content: Buffer;
+    }> = [
+      {
+        assetId: context.imageAsset.id,
+        version: 1,
+        mediaType: 'image',
+        content: context.frozenImage,
+      },
+      {
+        assetId: context.imageAsset.id,
+        version: 2,
+        mediaType: 'image',
+        content: Buffer.from('newer-image2pro-image-v2'),
+      },
+    ];
+    for (const mediaType of ['video', 'audio'] as const) {
+      const content = Buffer.from(`yuan-frozen-${mediaType}-v1`);
+      const asset = await context.assetStore.create({
+        ownerId: context.session.user.id,
+        projectId: context.project.id,
+        name: `reference-${mediaType}`,
+        mediaType,
+        mimeType: mediaType === 'video' ? 'video/mp4' : 'audio/mpeg',
+        content,
+      });
+      await context.assetStore.createVersion(asset.id, {
+        content: Buffer.from('unselected-newer-version'),
+      });
+      blocks.push({
+        type: 'mention',
+        mentionId: `selected-${mediaType}`,
+        assetId: asset.id,
+        assetVersion: 1,
+        mediaType,
+        label: '参考素材',
+      });
+      expectedReferences.push({ assetId: asset.id, version: 1, mediaType, content });
+    }
+    await context.projectStore.updateCanvas(context.project.id, context.canvas);
+    const submitted = await context.app.inject({
+      method: 'POST',
+      url: '/v1/nodes/video-target/runs',
+      payload: { projectId: context.project.id },
+      headers: { authorization: `Bearer ${context.session.accessToken}` },
+    });
+    expect(submitted.statusCode, submitted.body).toBe(202);
+    const run = await completedRun(context.runService, submitted.json().run.id);
+    expect(run.status, JSON.stringify(run.error)).toBe('succeeded');
+    expect(context.fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'https://newapi.example.test/v1/videos',
+      `https://newapi.example.test/v1/videos/${context.publicTaskId}`,
+    ]);
+    const body = JSON.parse(String(context.fetchImpl.mock.calls[0]![1]!.body));
+    expect(body).toMatchObject({
+      model: 'Yuan-Seedance-2.5-LJ-Full',
+      duration: 5,
+      resolution: '720p',
+      aspect_ratio: '9:16',
+      metadata: { omni_reference_task_type: 'reference' },
+    });
+    expect(body.metadata.content[0]).toEqual({ type: 'text', text: body.prompt });
+    const media = body.metadata.content.slice(1);
+    expect(media).toHaveLength(expectedReferences.length);
+    for (const [index, expected] of expectedReferences.entries()) {
+      const reference = media[index];
+      const url = new URL(reference[`${expected.mediaType}_url`].url);
+      expect(reference).toMatchObject({
+        type: `${expected.mediaType}_url`,
+        role: `reference_${expected.mediaType}`,
+      });
+      expect(url.origin).toBe('https://canvas.example.com');
+      expect(
+        verifyProviderAssetAccessToken(url.searchParams.get('access_token')!, secret),
+      ).toMatchObject({
+        assetId: expected.assetId,
+        version: expected.version,
+        projectId: context.project.id,
+        ownerId: context.session.user.id,
+      });
+      const content = await context.app.inject({
+        method: 'GET',
+        url: `${url.pathname}${url.search}`,
+      });
+      expect(content.statusCode, content.body).toBe(200);
+      expect(content.rawPayload).toEqual(expected.content);
+    }
+    expect(run.providerJob).toMatchObject({
+      platformJobId: context.publicTaskId,
+      payload: { contract: 'newapi-video-v1' },
+    });
+    const summaries = await context.runService.listRequestPromptRecords(run.id);
+    const records = await Promise.all(
+      summaries.map((summary) => context.runService.getRequestPromptRecord(run.id, summary.id)),
+    );
+    expect(records).not.toHaveLength(0);
+    const persistedCanvas = await context.projectStore.getCanvas(context.project.id);
+    expect(persistedCanvas).toBeDefined();
+    const persisted = JSON.stringify({
+      snapshot: run.snapshot,
+      canvas: persistedCanvas,
+      records,
+    });
+    expect(persisted).not.toContain('access_token');
+    expect(persisted).not.toContain('https://canvas.example.com/v1/provider-assets/');
+    expect(persisted).not.toContain(';base64,');
+    for (const expected of expectedReferences)
+      expect(persisted).not.toContain(expected.content.toString('base64'));
+  });
+
+  it.each(['', 'http://localhost:5173', 'https://127.0.0.1'])(
+    '网站来源 %s 不能签发公网素材 URL 时明确失败且零外发',
+    async (webUrl) => {
+      vi.stubEnv('CANVAS_WEB_URL', webUrl);
+      const context = await fixture('Yuan-Seedance-2.5-LJ-Full', true);
+      const submitted = await context.app.inject({
+        method: 'POST',
+        url: '/v1/nodes/video-target/runs',
+        payload: { projectId: context.project.id },
+        headers: { authorization: `Bearer ${context.session.accessToken}` },
+      });
+      expect(submitted.statusCode, submitted.body).toBe(202);
+      const run = await completedRun(context.runService, submitted.json().run.id);
+      expect(run.status).toBe('failed');
+      expect(JSON.stringify(run.error)).toContain('参考素材需要公网 HTTPS 访问');
+      expect(context.fetchImpl).not.toHaveBeenCalled();
+      expect(JSON.stringify(run.snapshot)).not.toContain(';base64,');
     },
   );
 });

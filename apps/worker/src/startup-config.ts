@@ -1,5 +1,7 @@
-import { isIP } from 'node:net';
+import { normalizeProviderAssetEndpoint } from '@multimodal-canvas/credential-crypto';
 import { DEFAULT_GENERATION_CONCURRENCY } from '@multimodal-canvas/domain';
+
+export { normalizeProviderAssetEndpoint } from '@multimodal-canvas/credential-crypto';
 
 export type StartupEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -159,31 +161,6 @@ export function shouldStartWorkerProcess(environment: StartupEnvironment = proce
   return environment.NODE_ENV !== 'test' && environment.RUN_SERVICE !== 'memory';
 }
 
-/**
- * 校验只用于 Provider 拉取冻结素材的对象存储 endpoint。
- * 该检查只排除显然不可公网访问的地址，不能替代部署后的外部 GET 验收。
- */
-export function normalizeProviderAssetEndpoint(value: string): string {
-  let url: URL;
-  try {
-    url = new URL(value.trim());
-  } catch {
-    throw new Error('S3_PROVIDER_ENDPOINT must be a valid public HTTPS URL');
-  }
-  if (
-    url.protocol !== 'https:' ||
-    !url.hostname ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    isObviouslyPrivateHostname(url.hostname)
-  ) {
-    throw new Error('S3_PROVIDER_ENDPOINT must be a public HTTPS URL');
-  }
-  return url.toString();
-}
-
 function requireValue(
   environment: StartupEnvironment,
   variable: string,
@@ -259,52 +236,6 @@ function isLoopbackHostname(hostname: string): boolean {
     ) &&
     octets[0] === '127'
   );
-}
-
-/**
- * 忽略 DNS 尾点后排除回环、私网、链路本地和保留测试域名；不做 DNS 查询。
- * 仅规范化校验副本，保留原 endpoint 主机，避免改变后续 S3 签名的 Host。
- */
-function isObviouslyPrivateHostname(hostname: string): boolean {
-  const normalized = hostname
-    .trim()
-    .toLowerCase()
-    .replace(/^\[|\]$/g, '')
-    .replace(/\.+$/, '');
-  if (
-    ['localhost', '::', '::1'].includes(normalized) ||
-    ['.localhost', '.local', '.internal', '.test', '.example', '.invalid'].some((suffix) =>
-      normalized.endsWith(suffix),
-    )
-  ) {
-    return true;
-  }
-  if (isIP(normalized) === 4) {
-    const [first = 0, second = 0, third = 0] = normalized.split('.').map(Number);
-    return (
-      first === 0 ||
-      first === 10 ||
-      first === 127 ||
-      (first === 100 && second >= 64 && second <= 127) ||
-      (first === 169 && second === 254) ||
-      (first === 172 && second >= 16 && second <= 31) ||
-      (first === 192 && second === 0 && (third === 0 || third === 2)) ||
-      (first === 192 && second === 168) ||
-      (first === 198 && (second === 18 || second === 19)) ||
-      (first === 198 && second === 51 && third === 100) ||
-      (first === 203 && second === 0 && third === 113) ||
-      first >= 224
-    );
-  }
-  if (isIP(normalized) === 6) {
-    return (
-      /^(?:fc|fd|fe[89ab]|ff)/.test(normalized) ||
-      normalized.startsWith('::ffff:') ||
-      normalized === '2001:db8::' ||
-      normalized.startsWith('2001:db8:')
-    );
-  }
-  return !normalized.includes('.');
 }
 
 function validateS3CredentialPair(

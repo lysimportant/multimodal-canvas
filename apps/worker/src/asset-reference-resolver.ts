@@ -7,6 +7,7 @@ import {
   imageEditSourceSchema,
   image2proVideoContractForModel,
   moonVideoContractForModel,
+  yuanliuVideoContractForModel,
   runSnapshotSchema,
   videoFamilyForModel,
   type FrozenPromptMention,
@@ -798,7 +799,9 @@ function providerAssetUrlPolicy(
       ? snapshot.modelAlias
       : consumer.data.modelAlias?.trim();
   if (!modelAlias) return 'data';
-  if (moonVideoContractForModel(modelAlias)) return 'required';
+  if (moonVideoContractForModel(modelAlias) || yuanliuVideoContractForModel(modelAlias)) {
+    return 'required';
+  }
   if (
     modelAlias === 'seedance-2-0-official' ||
     modelAlias === 'seedance-2-0-fast-official' ||

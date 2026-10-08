@@ -40,12 +40,15 @@ import {
   isValidGenerationCount,
   moonVideoContractForModel,
   resolveImage2proVideoParameters,
+  resolveYuanliuVideoParameters,
   resolveVideoCompletionAction,
   videoFamilyForModel,
   videoModeCapability,
   videoModeDescriptions,
   videoModeLabels,
   videoModes,
+  yuanliuVideoContractForModel,
+  YuanliuVideoParameterError,
 } from '@multimodal-canvas/domain';
 import { renderPromptDocument } from '@multimodal-canvas/domain';
 import {
@@ -279,6 +282,7 @@ const adaptiveVideoAspectRatioOption: MediaOption = {
 
 /** 判断模型家族是否接受 -1 自动时长。 */
 function supportsAutomaticVideoDuration(family: VideoModelFamily, modelAlias?: string): boolean {
+  if (yuanliuVideoContractForModel(modelAlias)) return false;
   const moonContract = moonVideoContractForModel(modelAlias);
   return (
     moonContract?.supportsAutomaticDuration ??
@@ -288,6 +292,7 @@ function supportsAutomaticVideoDuration(family: VideoModelFamily, modelAlias?: s
 
 /** Wan3 与 Seedance 2.x 可显式选择 adaptive 比例。 */
 function supportsAdaptiveVideoAspectRatio(family: VideoModelFamily, modelAlias?: string): boolean {
+  if (yuanliuVideoContractForModel(modelAlias)) return false;
   if (image2proVideoContractForModel(modelAlias)) return true;
   const moonContract = moonVideoContractForModel(modelAlias);
   return (
@@ -348,12 +353,22 @@ const videoDurationContracts: Partial<
   image2pro: { min: 4, max: 15, presets: [4, 8, 12, 15], default: 5 },
 };
 
-/** 精确 Image2Pro 合同优先；Moon 再按输出分辨率收窄时长，其它模型沿用家族合同。 */
+/** 精确型号合同优先；Moon 按输出分辨率收窄时长，其它模型沿用家族合同。 */
 function videoDurationContractForModel(
   modelAlias: string | undefined,
   family: VideoModelFamily,
   resolution?: unknown,
 ) {
+  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
+  if (yuanliuContract) {
+    const { min, max, default: defaultDuration, values } = yuanliuContract.duration;
+    return {
+      min,
+      max,
+      default: defaultDuration,
+      presets: values ?? Array.from({ length: max - min + 1 }, (_, index) => min + index),
+    };
+  }
   const image2proContract = image2proVideoContractForModel(modelAlias);
   if (image2proContract) {
     const { min, max, default: defaultDuration } = image2proContract.duration;
@@ -412,6 +427,8 @@ function videoResolutionContractForModel(
   modelAlias?: string,
   allowMoonH3SuperResolution = false,
 ): readonly string[] | undefined {
+  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
+  if (yuanliuContract) return yuanliuContract.resolutions;
   const image2proContract = image2proVideoContractForModel(modelAlias);
   if (image2proContract) return image2proContract.resolutions;
   const moonContract = moonVideoContractForModel(modelAlias);
@@ -573,19 +590,21 @@ export function NodeQuickEditor({
   const moonVideoContract = moonVideoContractForModel(currentModel);
   const image2proVideoContract =
     node.data.mediaType === 'video' ? image2proVideoContractForModel(currentModel) : undefined;
-  const unsupportedImage2proParameters = image2proVideoContract
+  const yuanliuVideoContract =
+    node.data.mediaType === 'video' ? yuanliuVideoContractForModel(currentModel) : undefined;
+  const strictVideoContract = image2proVideoContract ?? yuanliuVideoContract;
+  const unsupportedVideoParameters = strictVideoContract
     ? Object.entries({
         ...parameters,
         ...(node.data.inferenceStrength ? { inferenceStrength: node.data.inferenceStrength } : {}),
       }).filter(
-        ([key, value]) =>
-          value !== undefined && !image2proVideoContract.parameterKeys.includes(key),
+        ([key, value]) => value !== undefined && !strictVideoContract.parameterKeys.includes(key),
       )
     : [];
-  const storedDuration = image2proVideoContract
+  const storedDuration = strictVideoContract
     ? (parameters.duration ?? parameters.seconds ?? parameters.durationSeconds)
     : parameters.duration;
-  const storedAspectRatio = image2proVideoContract
+  const storedAspectRatio = strictVideoContract
     ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
     : parameters.aspectRatio;
   const currentVideoMode =
@@ -758,23 +777,27 @@ export function NodeQuickEditor({
     : (node.data.prompt ?? '');
   const hasConnectedPrompt =
     hasConnectedTextPromptInput || (hasConnectedInput && connectedInputRoles.includes('prompt'));
-  let image2proParameterIssue: string | undefined;
-  if (image2proVideoContract) {
-    if (unsupportedImage2proParameters.length) {
-      image2proParameterIssue = `Image2Pro 不支持已保存参数 ${unsupportedImage2proParameters.map(([key]) => key).join('、')}，请明确移除后生成`;
+  let strictVideoParameterIssue: string | undefined;
+  if (strictVideoContract) {
+    if (unsupportedVideoParameters.length) {
+      strictVideoParameterIssue = `${yuanliuVideoContract ? '源流' : 'Image2Pro'} 不支持已保存参数 ${unsupportedVideoParameters.map(([key]) => key).join('、')}，请明确移除后生成`;
     } else {
       try {
-        resolveImage2proVideoParameters({ ...parameters, prompt: effectivePrompt }, currentModel);
-        if (
-          image2proVideoContract.requiresPrompt &&
-          !effectivePrompt.trim() &&
-          !hasConnectedPrompt
-        ) {
-          image2proParameterIssue = 'Flash-MAX 必须填写提示词或连接文字输入';
+        if (yuanliuVideoContract) {
+          resolveYuanliuVideoParameters({ ...parameters, prompt: effectivePrompt }, currentModel);
+        } else {
+          resolveImage2proVideoParameters({ ...parameters, prompt: effectivePrompt }, currentModel);
+        }
+        if (strictVideoContract.requiresPrompt && !effectivePrompt.trim() && !hasConnectedPrompt) {
+          strictVideoParameterIssue = `${yuanliuVideoContract ? '源流视频' : 'Flash-MAX'} 必须填写提示词或连接文字输入`;
         }
       } catch (error) {
-        if (!(error instanceof Image2proVideoParameterError)) throw error;
-        image2proParameterIssue = error.message;
+        if (
+          !(error instanceof Image2proVideoParameterError) &&
+          !(error instanceof YuanliuVideoParameterError)
+        )
+          throw error;
+        strictVideoParameterIssue = error.message;
       }
     }
   }
@@ -783,7 +806,7 @@ export function NodeQuickEditor({
   const imageEditPromptRequired = Boolean(imageEditSource);
   const hasRunnableParameters = imageEditPromptRequired
     ? hasPrompt
-    : image2proVideoContract?.requiresPrompt
+    : strictVideoContract?.requiresPrompt
       ? hasPrompt || hasConnectedPrompt
       : hasPrompt || hasConnectedInput;
   const invalidVideoDimensions = (['width', 'height'] as const).filter((field) => {
@@ -811,7 +834,7 @@ export function NodeQuickEditor({
   const mediaParameterIssue =
     recreationIssue ??
     imageOutputParameterIssue ??
-    image2proParameterIssue ??
+    strictVideoParameterIssue ??
     durationIssue ??
     resolutionIssue ??
     aspectRatioIssue ??
@@ -834,8 +857,8 @@ export function NodeQuickEditor({
     onParametersChange(next);
   };
 
-  /** Image2Pro 显式修改秒数或比例时收敛同义字段，保留其它参数供用户单独处理。 */
-  const updateImage2proParameter = (
+  /** 精确视频合同在显式编辑时收敛同义字段，保留其它参数供用户单独处理。 */
+  const updateStrictVideoParameter = (
     key: 'duration' | 'aspectRatio' | 'resolution',
     value: unknown,
   ) => {
@@ -845,7 +868,12 @@ export function NodeQuickEditor({
       key === 'duration'
         ? ['duration', 'seconds', 'durationSeconds']
         : key === 'resolution'
-          ? ['resolution', 'video_resolution', 'videoResolution']
+          ? [
+              'resolution',
+              'video_resolution',
+              'videoResolution',
+              ...(yuanliuVideoContract ? ['size'] : []),
+            ]
           : ['aspectRatio', 'aspect_ratio', 'ratio'];
     for (const alias of aliases) delete next[alias];
     if (value !== undefined && value !== '') next[key] = value;
@@ -879,7 +907,7 @@ export function NodeQuickEditor({
 
   /** 推理强度对文字节点直接显示，对媒体节点收进参数页。 */
   const inferenceEditor =
-    inferenceOptions.length > 0 && !image2proVideoContract ? (
+    inferenceOptions.length > 0 && !strictVideoContract ? (
       <NodeParameterSelect
         label="推理强度"
         value={node.data.inferenceStrength}
@@ -1043,7 +1071,7 @@ export function NodeQuickEditor({
         nextParameters.aspectRatio = 'adaptive';
         parametersChanged = true;
       }
-    } else {
+    } else if (!yuanliuVideoContract) {
       if (
         (currentVideoMode === 'video_edit' ||
           (moonVideoContract && currentVideoMode === 'video_extend')) &&
@@ -1171,16 +1199,17 @@ export function NodeQuickEditor({
             <NodeParameterSelect
               label="视频清晰度"
               value={normalizeCurrentOptionValue(
-                image2proVideoContract
+                strictVideoContract
                   ? (parameters.resolution ??
                       parameters.video_resolution ??
-                      parameters.videoResolution)
+                      parameters.videoResolution ??
+                      (yuanliuVideoContract ? parameters.size : undefined))
                   : parameters.resolution,
               )}
               options={mediaOptions.resolution}
               onChange={(value) =>
-                image2proVideoContract
-                  ? updateImage2proParameter('resolution', value)
+                strictVideoContract
+                  ? updateStrictVideoParameter('resolution', value)
                   : updateParameter('resolution', value)
               }
               className="node-quick-editor-select-group"
@@ -1189,42 +1218,56 @@ export function NodeQuickEditor({
             <QuickOptionMenu
               label="视频比例"
               value={
-                image2proVideoContract
+                strictVideoContract
                   ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
                   : parameters.aspectRatio
               }
               options={mediaOptions.aspectRatio}
               aspectOptions
               onChange={(value) =>
-                image2proVideoContract
-                  ? updateImage2proParameter('aspectRatio', value)
+                strictVideoContract
+                  ? updateStrictVideoParameter('aspectRatio', value)
                   : updateParameter('aspectRatio', value)
               }
             />
-            <VideoDurationControl
-              value={durationDraft}
-              issue={durationIssue}
-              contract={durationContract}
-              sliderContract={
-                moonVideoContract || image2proVideoContract ? durationContract : undefined
-              }
-              declaredDurations={declaredDurations}
-              supportsAutomaticDuration={supportsAutomaticDuration}
-              inputDisabled={!onParametersChange}
-              onChange={(value) => {
-                setDurationDraft(value);
-                if (value === '') {
-                  if (image2proVideoContract) updateImage2proParameter('duration', undefined);
-                  else updateParameter('duration', undefined);
-                } else if (
-                  Number.isSafeInteger(Number(value)) &&
-                  (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
-                ) {
-                  if (image2proVideoContract) updateImage2proParameter('duration', Number(value));
-                  else updateParameter('duration', Number(value));
+            {yuanliuVideoContract?.duration.values ? (
+              <NodeParameterSelect
+                label="时长（秒）"
+                value={durationDraft}
+                options={mediaOptions.duration}
+                disabled={!onParametersChange}
+                onChange={(value) => {
+                  setDurationDraft(value);
+                  updateStrictVideoParameter('duration', Number(value));
+                }}
+                className="node-quick-editor-select-group"
+              />
+            ) : (
+              <VideoDurationControl
+                value={durationDraft}
+                issue={durationIssue}
+                contract={durationContract}
+                sliderContract={
+                  moonVideoContract || strictVideoContract ? durationContract : undefined
                 }
-              }}
-            />
+                declaredDurations={declaredDurations}
+                supportsAutomaticDuration={supportsAutomaticDuration}
+                inputDisabled={!onParametersChange}
+                onChange={(value) => {
+                  setDurationDraft(value);
+                  if (value === '') {
+                    if (strictVideoContract) updateStrictVideoParameter('duration', undefined);
+                    else updateParameter('duration', undefined);
+                  } else if (
+                    Number.isSafeInteger(Number(value)) &&
+                    (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
+                  ) {
+                    if (strictVideoContract) updateStrictVideoParameter('duration', Number(value));
+                    else updateParameter('duration', Number(value));
+                  }
+                }}
+              />
+            )}
             <NodeParameterSelect
               label="完成后"
               value={resolveVideoCompletionAction(node.data)}
@@ -1326,11 +1369,11 @@ export function NodeQuickEditor({
         </div>
       )}
       {inferenceEditor}
-      {unsupportedImage2proParameters.length > 0 && (
+      {unsupportedVideoParameters.length > 0 && (
         <div className="node-quick-editor-unsupported-parameters">
           <p>当前模型不支持以下已保存参数。移除后使用模型自身的输出设置。</p>
           <dl>
-            {unsupportedImage2proParameters.map(([key, value]) => (
+            {unsupportedVideoParameters.map(([key, value]) => (
               <div key={key}>
                 <dt>{key}</dt>
                 <dd>{typeof value === 'string' ? value : JSON.stringify(value)}</dd>
@@ -1343,7 +1386,7 @@ export function NodeQuickEditor({
             disabled={!onParametersChange}
             onClick={() => {
               const next = { ...parameters };
-              for (const [key] of unsupportedImage2proParameters) delete next[key];
+              for (const [key] of unsupportedVideoParameters) delete next[key];
               onParametersChange?.(next);
               if (node.data.inferenceStrength) onInferenceStrengthChange('');
             }}
@@ -2554,19 +2597,22 @@ export function applyNodeGenerationDefaults(
     mediaType === 'video'
       ? image2proVideoContractForModel(model?.id ?? data.modelAlias)
       : undefined;
+  const yuanliuContract =
+    mediaType === 'video' ? yuanliuVideoContractForModel(model?.id ?? data.modelAlias) : undefined;
+  const strictVideoContract = image2proContract ?? yuanliuContract;
   if (mediaType === 'video') {
     const modelAlias = model?.id ?? data.modelAlias;
     const family = videoFamilyForModel(modelAlias);
     const moonContract = moonVideoContractForModel(modelAlias);
     if (
-      !image2proContract &&
+      !strictVideoContract &&
       !supportsAutomaticVideoDuration(family, modelAlias) &&
       parameters.duration === -1
     ) {
       delete parameters.duration;
     }
     if (
-      !image2proContract &&
+      !strictVideoContract &&
       !supportsAdaptiveVideoAspectRatio(family, modelAlias) &&
       parameters.aspectRatio === 'adaptive'
     ) {
@@ -2574,7 +2620,7 @@ export function applyNodeGenerationDefaults(
     }
     if (
       parameters.duration === undefined &&
-      (!image2proContract ||
+      (!strictVideoContract ||
         (parameters.seconds === undefined && parameters.durationSeconds === undefined))
     ) {
       const automaticCompletionDuration = moonContract
@@ -2588,7 +2634,7 @@ export function applyNodeGenerationDefaults(
           (family === 'seedance-2.5' || isMoonSeedanceModel(modelAlias));
       parameters.duration = automaticCompletionDuration
         ? -1
-        : (image2proContract?.duration.default ??
+        : (strictVideoContract?.duration.default ??
           moonContract?.duration.default ??
           VIDEO_DURATION_RANGE.default);
     }
@@ -2610,17 +2656,19 @@ export function applyNodeGenerationDefaults(
   } else if (mediaType === 'video') {
     for (const field of ['resolution', 'aspectRatio'] as const) {
       if (
-        image2proContract &&
+        strictVideoContract &&
         (field === 'resolution'
-          ? parameters.video_resolution !== undefined || parameters.videoResolution !== undefined
+          ? parameters.video_resolution !== undefined ||
+            parameters.videoResolution !== undefined ||
+            (yuanliuContract && parameters.size !== undefined)
           : parameters.aspect_ratio !== undefined || parameters.ratio !== undefined)
       )
         continue;
       if (parameters[field] !== undefined) continue;
-      const value = image2proContract
+      const value = strictVideoContract
         ? field === 'resolution'
-          ? image2proContract.defaultResolution
-          : image2proContract.requiresAdaptiveFrameRatio &&
+          ? strictVideoContract.defaultResolution
+          : image2proContract?.requiresAdaptiveFrameRatio &&
               data.videoMode &&
               data.videoMode !== 'text_to_video'
             ? 'adaptive'
@@ -2635,7 +2683,7 @@ export function applyNodeGenerationDefaults(
   }
   const inferenceStrength =
     data.inferenceStrength ??
-    (image2proContract
+    (strictVideoContract
       ? undefined
       : preferredInferenceStrength(
           getInferenceStrengthOptions(model, mediaType, model.id, undefined),
@@ -2707,6 +2755,8 @@ function getMediaOptions(
   const family = videoFamilyForModel(resolvedModelAlias);
   const moonContract = moonVideoContractForModel(resolvedModelAlias);
   const image2proContract = image2proVideoContractForModel(resolvedModelAlias);
+  const yuanliuContract = yuanliuVideoContractForModel(resolvedModelAlias);
+  const strictVideoContract = image2proContract ?? yuanliuContract;
   const resolutionContract =
     mediaType === 'video'
       ? videoResolutionContractForModel(modelAlias ?? model?.id, allowMoonH3SuperResolution)
@@ -2807,8 +2857,11 @@ function getMediaOptions(
     contractResolutionOptions ??
       declaredResolution ??
       (allowLegacyFallback ? videoResolutionOptions : []),
-    image2proContract
-      ? (parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution)
+    strictVideoContract
+      ? (parameters.resolution ??
+          parameters.video_resolution ??
+          parameters.videoResolution ??
+          (yuanliuContract ? parameters.size : undefined))
       : parameters.resolution,
     'resolution',
   ).map((option) =>
@@ -2819,34 +2872,36 @@ function getMediaOptions(
   const ratioContract: readonly string[] | undefined =
     mediaType !== 'video'
       ? undefined
-      : image2proContract
-        ? image2proContract.requiresAdaptiveFrameRatio &&
-          (videoMode === 'first_frame' || videoMode === 'first_last_frame')
-          ? ['adaptive']
-          : image2proContract.requiresPrompt && videoMode === 'text_to_video'
-            ? image2proContract.aspectRatios.filter((value) => value !== 'adaptive')
-            : image2proContract.aspectRatios
-        : moonContract
-          ? moonContract.aspectRatios
-          : family === 'moon-minimax-h3'
-            ? moonH3FixedAspectRatios
-            : family === 'minimax-h3' ||
-                supportsAdaptiveVideoAspectRatio(family, resolvedModelAlias)
-              ? [
-                  'adaptive',
-                  '1:1',
-                  '16:9',
-                  '9:16',
-                  '4:3',
-                  '3:4',
-                  ...(family === 'wan3' ? [] : ['21:9']),
-                ]
-              : undefined;
+      : yuanliuContract
+        ? yuanliuContract.aspectRatios
+        : image2proContract
+          ? image2proContract.requiresAdaptiveFrameRatio &&
+            (videoMode === 'first_frame' || videoMode === 'first_last_frame')
+            ? ['adaptive']
+            : image2proContract.requiresPrompt && videoMode === 'text_to_video'
+              ? image2proContract.aspectRatios.filter((value) => value !== 'adaptive')
+              : image2proContract.aspectRatios
+          : moonContract
+            ? moonContract.aspectRatios
+            : family === 'moon-minimax-h3'
+              ? moonH3FixedAspectRatios
+              : family === 'minimax-h3' ||
+                  supportsAdaptiveVideoAspectRatio(family, resolvedModelAlias)
+                ? [
+                    'adaptive',
+                    '1:1',
+                    '16:9',
+                    '9:16',
+                    '4:3',
+                    '3:4',
+                    ...(family === 'wan3' ? [] : ['21:9']),
+                  ]
+                : undefined;
   const declaredAspectRatios =
     declaredImageAspectRatios ?? (allowLegacyFallback ? aspectRatioOptions : []);
   const supportedAspectRatios =
-    image2proContract || moonContract
-      ? (image2proContract ? ratioContract! : moonContract!.aspectRatios).map(
+    strictVideoContract || moonContract
+      ? (strictVideoContract ? ratioContract! : moonContract!.aspectRatios).map(
           (value) =>
             declaredAspectRatios.find((option) => option.value === value) ??
             aspectRatioOptions.find((option) => option.value === value) ?? { value, label: value },
@@ -2867,7 +2922,7 @@ function getMediaOptions(
     supportedAspectRatios,
     mediaType === 'image'
       ? imageAspectRatioValue
-      : image2proContract
+      : strictVideoContract
         ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
         : parameters.aspectRatio,
     'aspectRatio',
@@ -2894,7 +2949,10 @@ function getMediaOptions(
         return (
           Number.isSafeInteger(seconds) &&
           ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
-            (seconds >= durationContract.min && seconds <= durationContract.max))
+            (seconds >= durationContract.min &&
+              seconds <= durationContract.max &&
+              (!yuanliuContract?.duration.values ||
+                yuanliuContract.duration.values.includes(seconds))))
         );
       })
     : declaredDuration;
@@ -2919,19 +2977,26 @@ function getMediaOptions(
         label: String(value),
         description: '秒',
       })));
-  const duration = ensureCurrentOption(durationOptions, parameters.duration, 'duration').map(
-    (option) => {
-      if (!durationContract) return option;
-      const seconds = Number(option.value);
-      const supported =
-        Number.isSafeInteger(seconds) &&
-        ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
-          (seconds >= durationContract.min && seconds <= durationContract.max));
-      return supported
-        ? option
-        : { ...option, disabled: true, description: '已保存，当前模型不支持' };
-    },
-  );
+  const duration = ensureCurrentOption(
+    durationOptions,
+    strictVideoContract
+      ? (parameters.duration ?? parameters.seconds ?? parameters.durationSeconds)
+      : parameters.duration,
+    'duration',
+  ).map((option) => {
+    if (!durationContract) return option;
+    const seconds = Number(option.value);
+    const supported =
+      Number.isSafeInteger(seconds) &&
+      ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
+        (seconds >= durationContract.min &&
+          seconds <= durationContract.max &&
+          (!yuanliuContract?.duration.values ||
+            yuanliuContract.duration.values.includes(seconds))));
+    return supported
+      ? option
+      : { ...option, disabled: true, description: '已保存，当前模型不支持' };
+  });
   return {
     quality,
     videoResolutionSupported: true,

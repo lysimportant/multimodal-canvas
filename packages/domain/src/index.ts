@@ -2,6 +2,13 @@ import { z } from 'zod';
 import { videoRecreationConfigSchema, parseVideoRecreationTemplate } from './video-recreation.js';
 import { moonVideoContractForModel } from './moon-video-contract.js';
 import {
+  yuanliuVideoContractForModel,
+  YuanliuVideoParameterError,
+  resolveYuanliuVideoParameters,
+  isUnadaptedYuanliuVideoModel,
+  unadaptedYuanliuVideoModelReason,
+} from './yuanliu-video-contract.js';
+import {
   image2proVideoContractForModel,
   Image2proVideoParameterError,
   isRetiredImage2proVideoModel,
@@ -11,6 +18,7 @@ import {
 export * from './video-recreation.js';
 export * from './moon-video-contract.js';
 export * from './image2pro-video-contract.js';
+export * from './yuanliu-video-contract.js';
 
 export * from './prompt-skills.js';
 export * from './newapi-contracts.js';
@@ -1754,6 +1762,7 @@ export type VideoModelFamily =
   | 'moon-seedance-2.5-official'
   | 'moon-grok-v1.5-video'
   | 'image2pro'
+  | 'yuanliu'
   | 'minimax-h3'
   | 'wan3'
   | 'seedance-2'
@@ -1769,6 +1778,7 @@ export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
   const exactId = (modelAlias ?? '').trim();
   if (!exactId) return 'unknown';
   if (image2proVideoContractForModel(exactId)) return 'image2pro';
+  if (yuanliuVideoContractForModel(exactId)) return 'yuanliu';
   if (exactId === 'minimax-h3') return 'moon-minimax-h3';
   if (exactId === 'MiniMax-H3') return 'minimax-h3';
   const id = exactId.toLowerCase();
@@ -1887,12 +1897,36 @@ function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
+  if (isUnadaptedYuanliuVideoModel(modelAlias)) {
+    return {
+      selectable: false,
+      livePost: false,
+      roles: [],
+      reason: unadaptedYuanliuVideoModelReason,
+    };
+  }
   if (isRetiredImage2proVideoModel(modelAlias)) {
     return {
       selectable: false,
       livePost: false,
       roles: [],
       reason: retiredImage2proVideoModelReason,
+    };
+  }
+  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
+  if (yuanliuContract) {
+    if (!yuanliuContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
+    if (mode === 'text_to_video') {
+      return { selectable: true, livePost: true, roles: textToVideoRoles };
+    }
+    return {
+      selectable: true,
+      livePost: true,
+      roles: yuanliuContract.confirmedInputRoles,
+      repeatableRoles: referenceRepeatableRoles.filter((role) =>
+        yuanliuContract.confirmedInputRoles.includes(role),
+      ),
+      roleMediaTypes: referenceRoleMediaTypes,
     };
   }
   const image2proContract = image2proVideoContractForModel(modelAlias);
@@ -2340,6 +2374,8 @@ export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
  * @param modelAlias 运行快照中的模型 ID。
  */
 export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly PortRole[] {
+  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
+  if (yuanliuContract) return yuanliuContract.confirmedInputRoles;
   const image2proContract = image2proVideoContractForModel(modelAlias);
   if (image2proContract) return image2proContract.confirmedInputRoles;
   const moonContract = moonVideoContractForModel(modelAlias);
@@ -2656,16 +2692,18 @@ function applyReferenceFamilyLimits(
   issues: VideoGenerationIssue[],
 ) {
   const image2proContract = image2proVideoContractForModel(modelAlias);
-  if (image2proContract) {
+  const referenceContract = image2proContract ?? yuanliuVideoContractForModel(modelAlias);
+  if (referenceContract) {
+    const providerLabel = image2proContract ? 'Image2Pro' : '源流';
     const imageCount =
       inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
     for (const [role, count, limit, label] of [
-      ['referenceImage', imageCount, image2proContract.referenceLimits.images, '参考图'],
-      ['content', inputSet.content.length, image2proContract.referenceLimits.videos, '参考视频'],
+      ['referenceImage', imageCount, referenceContract.referenceLimits.images, '参考图'],
+      ['content', inputSet.content.length, referenceContract.referenceLimits.videos, '参考视频'],
       [
         'audioTrack',
         inputSet.audioTrack.length,
-        image2proContract.referenceLimits.audios,
+        referenceContract.referenceLimits.audios,
         '参考音频',
       ],
     ] as const) {
@@ -2673,19 +2711,20 @@ function applyReferenceFamilyLimits(
         issues.push({
           code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
           role,
-          message: `Image2Pro ${label}数量超过模型上限 ${limit}`,
+          message: `${providerLabel} ${label}数量超过模型上限 ${limit}`,
         });
     }
     if (
       imageCount + inputSet.content.length + inputSet.audioTrack.length >
-      image2proContract.referenceLimits.total
+      referenceContract.referenceLimits.total
     ) {
       issues.push(
         videoCombinationIssue(
-          `Image2Pro 参考素材总数不能超过 ${image2proContract.referenceLimits.total}`,
+          `${providerLabel} 参考素材总数不能超过 ${referenceContract.referenceLimits.total}`,
         ),
       );
     }
+    if (!image2proContract) return;
     if (
       (inputSet.firstFrame || inputSet.lastFrame) &&
       (imageCount || inputSet.content.length || inputSet.audioTrack.length)
@@ -2876,15 +2915,27 @@ export function precheckVideoGenerationInputs(
   } = {},
 ): VideoGenerationPrecheck {
   const image2proContract = image2proVideoContractForModel(options.modelAlias);
-  // Image2Pro 的旧 content 图片也是普通参考图，不能因缺少 videoMode 被解释成首帧。
+  const yuanliuContract = yuanliuVideoContractForModel(options.modelAlias);
+  // 两种插件的旧 content 图片也是普通参考图，缺少 videoMode 不能将其解释成首帧。
   const collectionMode =
-    image2proContract && !options.videoMode ? 'omni_reference' : options.videoMode;
+    (image2proContract || yuanliuContract) && !options.videoMode
+      ? 'omni_reference'
+      : options.videoMode;
   const { inputSet, issues } = collectVideoInputSet(inputs, collectionMode);
   const mode = options.videoMode;
   const family = videoFamilyForModel(options.modelAlias);
 
-  if (isRetiredImage2proVideoModel(options.modelAlias)) {
-    issues.push(videoCombinationIssue(retiredImage2proVideoModelReason));
+  if (
+    isRetiredImage2proVideoModel(options.modelAlias) ||
+    isUnadaptedYuanliuVideoModel(options.modelAlias)
+  ) {
+    issues.push(
+      videoCombinationIssue(
+        isUnadaptedYuanliuVideoModel(options.modelAlias)
+          ? unadaptedYuanliuVideoModelReason
+          : retiredImage2proVideoModelReason,
+      ),
+    );
     return {
       operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),
       inputSet,
@@ -2971,7 +3022,8 @@ export function precheckVideoGenerationInputs(
   if (family === 'grok-imagine-video-1.5') {
     applyGrokImagineVideo15Limits(inputSet, options.parameters, issues);
   }
-  if (image2proContract) {
+  if (image2proContract || yuanliuContract) {
+    const providerLabel = image2proContract ? 'Image2Pro' : '源流';
     // 无显式模式的历史输入也要验证媒体类型，避免 referenceImage 角色承载音视频。
     if (!mode) {
       for (const role of [
@@ -2988,7 +3040,7 @@ export function precheckVideoGenerationInputs(
             role === 'content' ? 'video' : role === 'audioTrack' ? 'audio' : 'image';
           if (input.snapshot.data.mediaType !== mediaType) {
             issues.push(
-              videoCombinationIssue(`Image2Pro 的 ${role} 只支持 ${mediaType} 参考`, role),
+              videoCombinationIssue(`${providerLabel} 的 ${role} 只支持 ${mediaType} 参考`, role),
             );
           }
         }
@@ -3001,11 +3053,14 @@ export function precheckVideoGenerationInputs(
           inputSet.prompt?.role === 'content' && textInput !== undefined
             ? textInput
             : (options.parameters.prompt ?? textInput);
-        const parameters = resolveImage2proVideoParameters(
-          image2proContract.requiresPrompt ? { ...options.parameters, prompt } : options.parameters,
-          options.modelAlias,
-        );
-        if (image2proContract.requiresPrompt) {
+        const requiresPrompt = Boolean(image2proContract?.requiresPrompt || yuanliuContract);
+        const resolvedParameters = requiresPrompt
+          ? { ...options.parameters, prompt }
+          : options.parameters;
+        const parameters = yuanliuContract
+          ? resolveYuanliuVideoParameters(resolvedParameters, yuanliuContract.modelAlias)
+          : resolveImage2proVideoParameters(resolvedParameters, options.modelAlias);
+        if (requiresPrompt) {
           const frozenText = inputSet.prompt;
           const pendingFrozenText =
             options.allowUnresolvedFrozenTextInput === true &&
@@ -3018,11 +3073,13 @@ export function precheckVideoGenerationInputs(
             frozenText.snapshot.data.contentUrl ===
               `/v1/assets/${encodeURIComponent(frozenText.sourceAssetId)}/versions/${frozenText.sourceAssetVersion}/content`;
           if ((typeof prompt !== 'string' || !prompt.trim()) && !pendingFrozenText) {
-            throw new Image2proVideoParameterError('prompt', '必须提供非空文本');
+            throw yuanliuContract
+              ? new YuanliuVideoParameterError('prompt', '必须提供非空文本')
+              : new Image2proVideoParameterError('prompt', '必须提供非空文本');
           }
           const hasFrame = Boolean(inputSet.firstFrame || inputSet.lastFrame);
           if (
-            image2proContract.requiresAdaptiveFrameRatio &&
+            image2proContract?.requiresAdaptiveFrameRatio &&
             hasFrame &&
             parameters.aspectRatio !== undefined &&
             parameters.aspectRatio !== 'adaptive'
@@ -3030,15 +3087,35 @@ export function precheckVideoGenerationInputs(
             throw new Image2proVideoParameterError('ratio', '首尾帧模式仅支持 adaptive');
           }
           if (
+            image2proContract &&
             !hasFrame &&
             omniReferenceCount(inputSet) === 0 &&
             parameters.aspectRatio === 'adaptive'
           ) {
             throw new Image2proVideoParameterError('ratio', '文生视频不能使用 adaptive');
           }
+          if (yuanliuContract && typeof prompt === 'string') {
+            const counts = {
+              Image:
+                inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length,
+              Video: inputSet.content.length,
+              Audio: inputSet.audioTrack.length,
+            };
+            for (const match of prompt.matchAll(/@(Image|Video|Audio)(\d+)/g)) {
+              const count = counts[match[1] as keyof typeof counts];
+              const index = Number(match[2]);
+              if (index < 1 || index > count) {
+                throw new YuanliuVideoParameterError('prompt', '素材引用编号超出已提供的参考范围');
+              }
+            }
+          }
         }
       } catch (error) {
-        if (!(error instanceof Image2proVideoParameterError)) throw error;
+        if (
+          !(error instanceof Image2proVideoParameterError) &&
+          !(error instanceof YuanliuVideoParameterError)
+        )
+          throw error;
         issues.push({ code: error.code, message: error.message });
       }
     }
