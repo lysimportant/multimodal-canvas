@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { NewApiAccountError } from './newapi-account-client';
-import { NewApiAccountService } from './newapi-account-service';
+import { AUTH_SYNC_INTERVAL_MS, NewApiAccountService } from './newapi-account-service';
 import type { AuthenticatedSession } from './auth-service';
 
 /** HttpOnly 会话名，仅同源 API 读取，浏览器脚本不会接触 bearer。 */
@@ -130,7 +130,8 @@ export function registerNewApiAccountRoutes(
   });
   app.post('/v1/auth/refresh', async (request, reply) => {
     const id = userId(request);
-    await service.synchronize(id);
+    // 续期前实时复核上游授权；逐组全量同步按与 /v1/auth/me 相同的间隔节流。
+    await service.synchronizeIfStale(id, AUTH_SYNC_INTERVAL_MS);
     const identity = await service.identity(id);
     const result = await service.options.auth.refresh(
       requestCookie(request, NEWAPI_SESSION_COOKIE) ?? '',

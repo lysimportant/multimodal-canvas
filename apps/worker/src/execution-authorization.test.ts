@@ -109,7 +109,6 @@ describe('PrismaWorkerExecutionAuthorization', () => {
   it('以持久授权为准拒绝队列伪造的 userId', async () => {
     const { frozen, execution, prisma } = fixture();
     const authorization = new PrismaWorkerExecutionAuthorization(
-      execution as never,
       prisma as never,
     );
     await expect(authorization.authorizeRun('run-1', frozen, 'other-user')).rejects.toMatchObject({
@@ -121,7 +120,6 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     const { frozen, execution, prisma } = fixture();
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
-      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -144,7 +142,6 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     const { frozen, execution, prisma } = fixture('revision-2');
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
-      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -161,7 +158,6 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     prisma.newApiGroupBinding.findFirst.mockResolvedValue({ ...group, status: 'removed' });
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
-      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -176,7 +172,6 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     const { frozen, execution, prisma } = fixture('revision-1', 'credential-2');
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
-      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -195,7 +190,6 @@ describe('Worker 暂存回执委托', () => {
       const { frozen, execution, prisma } = fixture();
       const verifyUpstream = vi.fn(async () => undefined);
       const authorization = new PrismaWorkerExecutionAuthorization(
-        execution as never,
         prisma as never,
         verifyUpstream,
       );
@@ -226,7 +220,6 @@ describe('Worker 暂存回执委托', () => {
       const error = new Error('synthetic conflict');
       execution[method].mockRejectedValueOnce(error);
       const authorization = new PrismaWorkerExecutionAuthorization(
-        execution as never,
         prisma as never,
       );
       await expect(

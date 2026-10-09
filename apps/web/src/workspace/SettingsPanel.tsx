@@ -1,5 +1,5 @@
 import { Select, Tabs } from 'antd';
-import { ExternalLink, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { AudioLines, ExternalLink, FileText, ImageIcon, LoaderCircle, RefreshCw, Video, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '@multimodal-canvas/ui';
@@ -7,8 +7,8 @@ import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 import { GENERATION_COUNT_MAX, isValidGenerationCount } from '@multimodal-canvas/domain';
 
 import { apiFetch, getAuthSessionGeneration, startNewApiLogin } from '../auth-client';
-import { useModelCatalogQuery } from '../query/models';
-import { useWorkspacePreferences, type CanvasTheme } from '../state/workspace-preferences';
+import { useModelCatalogQuery, fetchCustomGroupModels } from '../query/models';
+import { useWorkspacePreferences, useCustomApiGroupsStore, getCustomApiVisibleForUsers, setCustomApiVisibleForUsers, type CanvasTheme } from '../state/workspace-preferences';
 import { isImeKeyboardEvent } from '../ime';
 import { GenerationConcurrencySettings } from './GenerationConcurrencySettings';
 import { appearanceEdgeEffectOptions, appearanceEdgePathOptions } from './AppearancePicker';
@@ -28,7 +28,7 @@ const MIN_PROVIDER_TIMEOUT_MS = 1_000;
 const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 const mediaOrder: MediaType[] = ['text', 'image', 'audio', 'video'];
 
-type SettingsCategory = 'overview' | 'defaults' | 'generation' | 'appearance';
+type SettingsCategory = 'overview' | 'defaults' | 'generation' | 'appearance' | 'custom-api';
 type AccountGroup = {
   group: string;
   credentialId?: string;
@@ -55,6 +55,7 @@ const settingsCategories: Array<{ id: SettingsCategory; label: string }> = [
   { id: 'defaults', label: '节点默认' },
   { id: 'generation', label: '生成并发' },
   { id: 'appearance', label: '画布外观' },
+  { id: 'custom-api', label: '自定义 API' },
 ];
 
 const themeOptions: Array<{ value: CanvasTheme; label: string }> = [
@@ -99,6 +100,174 @@ function parseModelOption(value: string): ModelSelection | undefined {
 }
 
 /**
+ * 自定义 API 配置面板 — 四个节点类型各一行，固定对应文字/图片/音频/视频节点。
+ * 每行独立填写 Base URL 和 API Key，拉取的模型只注入到对应媒体类型的节点选择器。
+ */
+function CustomApiSection() {
+  const config = useCustomApiGroupsStore((s) => s.config);
+  const updateGroup = useCustomApiGroupsStore((s) => s.updateGroup);
+
+  type MediaType = 'text' | 'image' | 'audio' | 'video';
+  const rows: { mediaType: MediaType; label: string; icon: typeof import('lucide-react').FileText }[] = [
+    { mediaType: 'text', label: '文字节点', icon: FileText },
+    { mediaType: 'image', label: '图片节点', icon: ImageIcon },
+    { mediaType: 'audio', label: '音频节点', icon: AudioLines },
+    { mediaType: 'video', label: '视频节点', icon: Video },
+  ];
+
+  const [testResults, setTestResults] = useState<
+    Record<string, { status: 'ok' | 'err'; message: string }>
+  >({});
+  const [testingKeys, setTestingKeys] = useState<Set<string>>(new Set());
+
+  const testEntry = async (mediaType: MediaType) => {
+    const entry = config[mediaType];
+    if (!entry.baseUrl.trim() || !entry.apiKey.trim()) return;
+    setTestingKeys((prev) => new Set([...prev, mediaType]));
+    try {
+      const { fetchCustomGroupModels } = await import('../query/models');
+      const models = await fetchCustomGroupModels({
+        mediaType,
+        baseUrl: entry.baseUrl,
+        apiKey: entry.apiKey,
+      });
+      setTestResults((prev) => ({
+        ...prev,
+        [mediaType]: { status: 'ok', message: `加载成功，共 ${models.length} 个模型` },
+      }));
+    } catch (err) {
+      setTestResults((prev) => ({
+        ...prev,
+        [mediaType]: {
+          status: 'err',
+          message: err instanceof Error ? err.message : '连接失败',
+        },
+      }));
+    } finally {
+      setTestingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(mediaType);
+        return next;
+      });
+    }
+  };
+
+  const [allowForUsers, setAllowForUsers] = useState(() => getCustomApiVisibleForUsers());
+
+  const handleAllowForUsersChange = (value: string) => {
+    const allow = value === 'on';
+    setAllowForUsers(allow);
+    setCustomApiVisibleForUsers(allow);
+  };
+
+  return (
+    <section className="settings-section" aria-labelledby="custom-api-title">
+      <div className="settings-section-heading">
+        <h2 id="custom-api-title">自定义 API</h2>
+        <p className="settings-status">
+          为每种节点配置独立的 OpenAI 兼容 API。启用后模型自动出现在对应节点的选择器里。
+        </p>
+      </div>
+      <div className="settings-custom-api-group">
+        <div className="settings-custom-api-group-header">
+          <span className="settings-custom-api-media-label">普通用户可见性</span>
+          <label className="settings-field settings-custom-api-toggle-field">
+            <span>允许普通用户查看此设置</span>
+            <Select
+              aria-label="允许普通用户查看自定义 API 设置"
+              value={allowForUsers ? 'on' : 'off'}
+              onChange={handleAllowForUsersChange}
+              options={[
+                { value: 'on', label: '允许' },
+                { value: 'off', label: '仅管理员' },
+              ]}
+              virtual={false}
+              styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+            />
+          </label>
+        </div>
+        <p className="settings-status">
+          开启后，普通用户也能在设置页面看到并填写自定义 API，拉取的模型只在他们自己的浏览器里生效。
+        </p>
+      </div>
+      <div className="settings-custom-api-grid">
+      {rows.map(({ mediaType, label, icon: Icon }) => {
+        const entry = config[mediaType];
+        const isTesting = testingKeys.has(mediaType);
+        const canTest = entry.baseUrl.trim() !== '' && entry.apiKey.trim() !== '';
+        const result = testResults[mediaType];
+        return (
+          <div key={mediaType} className="settings-custom-api-group">
+            <div className="settings-custom-api-group-header">
+              <span className="settings-custom-api-media-label">
+                <Icon size={15} aria-hidden="true" />
+                {label}
+              </span>
+              <label className="settings-field settings-custom-api-toggle-field">
+                <span>启用</span>
+                <Select
+                  aria-label={`启用 ${label} 自定义 API`}
+                  value={entry.enabled ? 'on' : 'off'}
+                  onChange={(value) => updateGroup(mediaType, { enabled: value === 'on' })}
+                  options={[
+                    { value: 'on', label: '启用' },
+                    { value: 'off', label: '停用' },
+                  ]}
+                  virtual={false}
+                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                />
+              </label>
+            </div>
+            <label className="settings-field">
+              <span>API Base URL</span>
+              <Input
+                aria-label={`${label} API Base URL`}
+                value={entry.baseUrl}
+                onChange={(e) => updateGroup(mediaType, { baseUrl: e.target.value })}
+                placeholder="https://api.example.com"
+              />
+            </label>
+            <label className="settings-field">
+              <span>API Key</span>
+              <Input
+                aria-label={`${label} API Key`}
+                type="password"
+                value={entry.apiKey}
+                onChange={(e) => updateGroup(mediaType, { apiKey: e.target.value })}
+                placeholder="sk-..."
+              />
+            </label>
+            <div className="settings-custom-api-group-footer">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={isTesting || !canTest}
+                onClick={() => void testEntry(mediaType)}
+              >
+                {isTesting ? (
+                  <>
+                    <LoaderCircle className="spin" size={15} />
+                    正在测试连通性
+                  </>
+                ) : (
+                  '测试连通性'
+                )}
+              </Button>
+              {result && (
+                <span className={result.status === 'ok' ? 'settings-status' : 'settings-field-error'}>
+                  {result.message}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 显示 New API 账号分组、模型默认值和本机画布偏好。
  *
  * @param projectId 当前项目 ID；存在时可编辑项目默认模型。
@@ -113,12 +282,15 @@ export function SettingsPanel({
   onClose,
   onNotice,
   presentation = 'dialog',
+  isAdmin = false,
 }: {
   projectId?: string | null;
   projectName?: string;
   onClose: () => void;
   onNotice: (notice: { kind: 'error' | 'success'; message: string }) => void;
   presentation?: 'dialog' | 'page';
+  /** 当前用户是否为管理员；true 时显示"自定义 API"tab，false 时隐藏。 */
+  isAdmin?: boolean;
 }) {
   const [category, setCategory] = useState<SettingsCategory>('overview');
   const [account, setAccount] = useState<NewApiAccount | null>(null);
@@ -554,6 +726,9 @@ export function SettingsPanel({
         </section>
       )}
       {category === 'generation' && <GenerationConcurrencySettings onNotice={onNotice} />}
+      {category === 'custom-api' && (
+        <CustomApiSection />
+      )}
       {!loading && category === 'appearance' && (
         <section className="settings-section" aria-labelledby="appearance-title">
           <div className="settings-section-heading">
@@ -665,7 +840,9 @@ export function SettingsPanel({
         activeKey={category}
         onChange={(key) => setCategory(key as SettingsCategory)}
         destroyOnHidden
-        items={settingsCategories.map((entry) => ({
+        items={settingsCategories
+          .filter((entry) => entry.id !== 'custom-api' || isAdmin)
+          .map((entry) => ({
           key: entry.id,
           label: entry.label,
           children: settingsContent,

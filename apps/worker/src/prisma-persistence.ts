@@ -22,7 +22,6 @@ import {
   type RunSnapshot,
   type RunStatus,
 } from '@multimodal-canvas/domain';
-import { executionDatabaseRunId } from '@multimodal-canvas/execution';
 import { mergeNodeTimings, parseStoredNodeTimings } from './node-timings';
 import type {
   ObservableRequestPromptSendStatus,
@@ -604,7 +603,9 @@ function toPrismaStatus(status: RunStatus): PrismaRunStatus {
 }
 
 export function databaseRunId(runId: string): string {
-  return executionDatabaseRunId(runId);
+  if (UUID_PATTERN.test(runId)) return runId;
+  const digest = createHash('sha256').update(`multimodal-canvas:run:${runId}`).digest('hex');
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
 function stableProviderJobId(provider: string, providerJobId: string): string {

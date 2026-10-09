@@ -19,6 +19,7 @@ COPY apps/web/package.json ./apps/web/package.json
 COPY apps/worker/package.json ./apps/worker/package.json
 COPY packages/credential-crypto/package.json ./packages/credential-crypto/package.json
 COPY packages/domain/package.json ./packages/domain/package.json
+COPY packages/execution/package.json ./packages/execution/package.json
 COPY packages/observability/package.json ./packages/observability/package.json
 COPY packages/providers/package.json ./packages/providers/package.json
 COPY packages/ui/package.json ./packages/ui/package.json

@@ -74,8 +74,6 @@ import {
   type ResultAssetArchiveInput,
 } from './result-output';
 import { resolveWorkerConcurrency, shouldStartWorkerProcess } from './startup-config';
-import type { SendIntentStatus } from '@multimodal-canvas/execution';
-import { PrismaExecutionService } from '@multimodal-canvas/execution';
 import { PrismaWorkerExecutionAuthorization } from './execution-authorization';
 import { createMockWorkerOutput } from './mock-output';
 import {
@@ -263,7 +261,7 @@ export interface WorkerExecutionAuthorization {
     runId: string;
     nodeId: string;
     attempt: number;
-    status: Exclude<SendIntentStatus, 'pending' | 'sending'>;
+    status: 'sent' | 'unknown' | 'failed';
     providerRequestId?: string;
     platformJobId?: string;
     error?: string;
@@ -3328,7 +3326,6 @@ function createProcessPersistence(): {
   return {
     persistence,
     execution: new PrismaWorkerExecutionAuthorization(
-      new PrismaExecutionService(persistence.prisma),
       persistence.prisma,
     ),
     resolveDatabaseRunId: (runId) => databaseRunId(runId),

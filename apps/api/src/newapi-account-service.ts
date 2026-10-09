@@ -27,6 +27,9 @@ const bootstrapRepairSchema = z.object({
   revision: z.string().min(1),
 });
 
+/** 登录检查与续期触发逐组全量同步的最短间隔；期间只做一次上游授权复核。 */
+export const AUTH_SYNC_INTERVAL_MS = 5 * 60 * 1_000;
+
 /** 稳定身份、加密授权与本人分组映射；所有远端操作限定在部署配置的单个实例。 */
 export class NewApiAccountService {
   constructor(
@@ -198,6 +201,44 @@ export class NewApiAccountService {
     )
       throw new NewApiAccountError('authorization_revoked', 'New API 授权无效，请重新登录', 401);
     return identity;
+  }
+
+  /**
+   * 登录检查与续期使用的轻量复核：每次都向上游确认授权与身份，仅在分组集合变化、
+   * 身份非 active 或距上次同步达到 `maxAgeMs` 时才执行逐组全量同步。
+   * 撤销（上游 401）与身份变化的处理与 synchronize 一致；生成前 validateGroup 仍实时核对分组。
+   * @returns 是否实际执行了全量同步。
+   */
+  async synchronizeIfStale(userId: string, maxAgeMs: number): Promise<boolean> {
+    const identity = await this.identity(userId);
+    const syncedAt = identity.syncedAt?.getTime();
+    if (
+      identity.status !== 'active' ||
+      syncedAt === undefined ||
+      Date.now() - syncedAt >= maxAgeMs
+    ) {
+      await this.synchronize(userId);
+      return true;
+    }
+    const token = this.options.keyring.decrypt(identity.encryptedGrant).plaintext;
+    let state;
+    try {
+      state = await this.options.client.account(token);
+    } catch (error) {
+      await this.recordIdentityFailure(identity, error, identity.syncedAt);
+      throw error;
+    }
+    if (state.user.id !== identity.externalUserId || state.grant_id !== identity.grantId)
+      throw new NewApiAccountError('identity_changed', 'New API 账号已变化，请重新登录', 401);
+    const upstream = new Set(state.groups.filter((group) => group !== '神秘分组'));
+    const local = await this.options.prisma.newApiGroupBinding.findMany({
+      where: { identityId: identity.id, group: { not: '神秘分组' }, status: { not: 'removed' } },
+      select: { group: true },
+    });
+    if (local.length === upstream.size && local.every(({ group }) => upstream.has(group)))
+      return false;
+    await this.synchronize(userId);
+    return true;
   }
 
   /** 登录和手动同步共用恢复流程：补建缺失 Key、纠正错组；不接管同名前缀令牌。 */

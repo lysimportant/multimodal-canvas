@@ -229,7 +229,8 @@ import {
 } from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
 import { SessionLoading } from './startup/SessionLoading';
-import { usePlatformModelCatalogQuery } from './query/models';
+import { usePlatformModelCatalogQuery, useCustomGroupsModelQuery } from './query/models';
+import { useCustomApiGroupsStore, getCustomApiVisibleForUsers } from './state/workspace-preferences';
 import {
   mergeRunUpdate,
   shouldApplyRunUpdate,
@@ -706,7 +707,12 @@ function WorkspaceApp({
   const nodePreferenceNoticeRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const platformModelsQuery = usePlatformModelCatalogQuery(authUser?.id);
-  const modelCatalog = platformModelsQuery.data ?? [];
+  const customApiConfig = useCustomApiGroupsStore((s) => s.config);
+  const customGroupsQueries = useCustomGroupsModelQuery(customApiConfig);
+  const customGroupModels = customGroupsQueries
+    .filter((q) => q.isSuccess && q.data)
+    .flatMap((q) => q.data ?? []);
+  const modelCatalog = [...(platformModelsQuery.data ?? []), ...customGroupModels];
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -5402,6 +5408,7 @@ function WorkspaceApp({
               void defaultsQuery.refetch();
             }}
             onNotice={setNotice}
+            isAdmin={authUser?.role === 'admin' || getCustomApiVisibleForUsers()}
           />
         )}
       </main>
@@ -5599,6 +5606,7 @@ function RoutedApplication({
             projectName={projectQuery.data?.name ?? '平台全局'}
             onClose={() => navigate(appPaths.workspace)}
             onNotice={setPageNotice}
+            isAdmin={authUser?.role === 'admin' || getCustomApiVisibleForUsers()}
           />
         ) : null}
       </SettingsPage>

@@ -995,7 +995,6 @@ describe('BullMQ run result integrity', () => {
     const persistence = { getRun: vi.fn(async () => durable) };
     const service = new BullMqRunService({
       connection: { host: '127.0.0.1', port: 6379 },
-      execution: execution as never,
       persistence: persistence as never,
     });
     return {

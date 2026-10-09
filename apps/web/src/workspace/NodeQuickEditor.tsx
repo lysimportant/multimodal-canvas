@@ -29,11 +29,9 @@ import {
   DEFAULT_GENERATION_COUNT,
   GENERATION_COUNT_MAX,
   displayVideoMode,
-  imageEditCapability,
   ImageOutputParameterError,
   normalizeImageOutputParameters,
   resolveImageOutputParameters,
-  implementedVideoModes,
   image2proVideoContractForModel,
   isRetiredImage2proVideoModel,
   Image2proVideoParameterError,
@@ -43,7 +41,6 @@ import {
   resolveYuanliuVideoParameters,
   resolveVideoCompletionAction,
   videoFamilyForModel,
-  videoModeCapability,
   videoModeDescriptions,
   videoModeLabels,
   videoModes,
@@ -717,13 +714,7 @@ export function NodeQuickEditor({
           )
         ? `当前模型不支持视频比例 ${storedAspectRatio}`
         : undefined;
-  const videoModeIssue =
-    node.data.mediaType === 'video' && currentVideoMode && currentModel
-      ? videoModeCapability(currentVideoMode, currentModel).livePost
-        ? undefined
-        : (videoModeCapability(currentVideoMode, currentModel).reason ??
-          `当前模型不能按「${videoModeLabels[currentVideoMode]}」模式发起真实请求`)
-      : undefined;
+  const videoModeIssue: string | undefined = undefined;
   const mediaOptions = {
     ...catalogMediaOptions,
     duration: supportsAutomaticDuration
@@ -827,9 +818,7 @@ export function NodeQuickEditor({
       ));
   const imageEditSourceIssue = imageEditSource?.versionUnavailable
     ? '来源图已不可读取或版本已变更，请重新从图片节点创建修改节点'
-    : hasImageEditInput && imageEditCapability(selectedModel).unsupported
-      ? '当前模型明确不支持图片编辑，请更换模型后再运行'
-      : undefined;
+    : undefined;
   const recreationIssue = recreationGenerationIssue(node.data);
   const mediaParameterIssue =
     recreationIssue ??
@@ -1109,19 +1098,11 @@ export function NodeQuickEditor({
       <NodeParameterSelect
         label="生成模式"
         value={displayVideoMode(node.data, connectedInputRoles)}
-        options={videoModes.map((mode) => {
-          const capability = videoModeCapability(mode, node.data.modelAlias);
-          const implemented = (implementedVideoModes as readonly VideoMode[]).includes(mode);
-          return {
-            value: mode,
-            label: videoModeLabels[mode],
-            description: capability.reason ?? videoModeDescriptions[mode],
-            disabled:
-              !implemented ||
-              !capability.selectable ||
-              (Boolean(currentModel) && !capability.livePost),
-          };
-        })}
+        options={videoModes.map((mode) => ({
+          value: mode,
+          label: videoModeLabels[mode],
+          description: videoModeDescriptions[mode],
+        }))}
         onChange={(value) => changeVideoMode(value as VideoMode)}
         className="node-quick-editor-select-group node-quick-editor-video-mode"
       />
@@ -1602,11 +1583,7 @@ export function NodeQuickEditor({
                             videoContractParameterIssue)
                           : !nodeHasPrompt(node.data)
                             ? '请先填写提示词'
-                            : node.data.mediaType === 'image' &&
-                                selectedModel &&
-                                imageEditCapability(selectedModel).unsupported
-                              ? '当前模型明确不支持图片编辑，请更换模型后再运行'
-                              : mediaParameterIssue
+                            : mediaParameterIssue
                                 ? mediaParameterIssue
                                 : '把修改结果写到新节点'
                 }
@@ -1625,11 +1602,6 @@ export function NodeQuickEditor({
                     videoContractParameterIssue,
                   ) ||
                   !nodeHasPrompt(node.data) ||
-                  Boolean(
-                    node.data.mediaType === 'image' &&
-                    selectedModel &&
-                    imageEditCapability(selectedModel).unsupported,
-                  ) ||
                   Boolean(mediaParameterIssue)
                 }
               >

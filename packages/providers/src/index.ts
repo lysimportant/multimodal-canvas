@@ -208,7 +208,7 @@ type RequestPromptPayload = {
 export type RequestPromptCaptureInput = RequestPromptPayload & {
   snapshot: RunSnapshot;
   /** 实际发起请求的 Provider 标识。 */
-  provider: 'newapi' | 'xfyun';
+  provider: 'newapi';
   mediaType: MediaType;
   /** 同一 attempt 内的请求身份，由请求路径与序号组成。 */
   requestIdentity: string;
@@ -5809,4 +5809,3 @@ function inputRoleValueError(
   });
 }
 
-export * from './xfyun.js';

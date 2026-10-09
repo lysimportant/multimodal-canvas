@@ -134,7 +134,7 @@ export class XfyunTtsProvider {
     if (onRequestPrompt) {
       await reportRequestPrompt({
         snapshot,
-        provider: 'xfyun',
+        provider: 'newapi',
         mediaType: 'audio',
         requestIdentity: xfyunRequestIdentity,
         onRequestPrompt,

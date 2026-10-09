@@ -1,7 +1,7 @@
 import { buildApp } from './app';
 import { FilePromptSkillStore, PrismaPromptSkillStore } from './prompt-skill-store';
 import { PrismaClient } from '@prisma/client';
-import { PrismaExecutionService } from '@multimodal-canvas/execution';
+
 import { createCredentialEncryptionKeyringFromEnvironment } from '@multimodal-canvas/credential-crypto';
 import { NewApiAccountClient } from './newapi-account-client';
 import { NewApiAccountService } from './newapi-account-service';
@@ -66,7 +66,6 @@ const newApiAccount = new NewApiAccountService({
     .map((id) => id.trim())
     .filter(Boolean),
 });
-const execution = new PrismaExecutionService(prisma);
 /** 所有环境均使用本人 New API 目录，测试通过 buildApp 显式注入替身。 */
 const settingsStore = new NewApiAccountSettings(newApiAccount);
 /** 本地和数据库部署均保存各用户自定义 Skill 与内置覆盖。 */
@@ -114,7 +113,6 @@ const runService = useMemoryRunService
         : {}),
       providerName,
       ...(runPersistence ? { persistence: runPersistence } : {}),
-      execution,
     });
 // Keep local projects across API restarts when PostgreSQL is not configured.
 // Tests that call buildApp() directly still receive the isolated in-memory

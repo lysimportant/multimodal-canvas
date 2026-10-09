@@ -8,6 +8,8 @@ import {
   type ProviderExecution,
 } from '@multimodal-canvas/providers';
 
+import type { NodeData } from '@multimodal-canvas/domain';
+
 import {
   DEFAULT_PROVIDER_TIMEOUT_MS,
   normalizeProviderTimeout,

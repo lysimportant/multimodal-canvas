@@ -200,6 +200,87 @@ const preferenceStorage: StateStorage = {
   },
 };
 
+export const CUSTOM_API_GROUPS_KEY = 'multimodal-canvas:custom-api-groups';
+/** 管理员控制普通用户是否可见"自定义 API"设置 tab 的 localStorage key。 */
+export const ALLOW_CUSTOM_API_FOR_USERS_KEY = 'multimodal-canvas:allow-custom-api-for-users';
+
+/** 读取管理员设置的用户可见性开关；默认不可见（false）。 */
+export function getCustomApiVisibleForUsers(): boolean {
+  try {
+    return localStorage.getItem(ALLOW_CUSTOM_API_FOR_USERS_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/** 管理员写入用户可见性开关。 */
+export function setCustomApiVisibleForUsers(value: boolean): void {
+  try {
+    localStorage.setItem(ALLOW_CUSTOM_API_FOR_USERS_KEY, String(value));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 四个节点类型各自独立的自定义 API 配置，固定对应文字/图片/音频/视频节点。
+ * 拉取到的模型只注入到对应媒体类型的节点选择器里。
+ */
+export type CustomApiGroup = {
+  /** 对应的节点媒体类型，固定为四个值之一。 */
+  mediaType: 'text' | 'image' | 'audio' | 'video';
+  /** 完整的 API base URL，例如 https://api.example.com。 */
+  baseUrl: string;
+  /** 用于调用该 API 的密钥，明文存储在本机 localStorage。 */
+  apiKey: string;
+  /** false 时该配置的模型不加入节点选择器。 */
+  enabled: boolean;
+};
+
+/** 四个节点类型固定各一组，按 mediaType 索引。 */
+export type CustomApiGroupsConfig = {
+  text: Omit<CustomApiGroup, 'mediaType'>;
+  image: Omit<CustomApiGroup, 'mediaType'>;
+  audio: Omit<CustomApiGroup, 'mediaType'>;
+  video: Omit<CustomApiGroup, 'mediaType'>;
+};
+
+const emptyEntry = (): Omit<CustomApiGroup, 'mediaType'> => ({
+  baseUrl: '',
+  apiKey: '',
+  enabled: false,
+});
+
+type CustomApiGroupsState = {
+  config: CustomApiGroupsConfig;
+  /** 更新某个媒体类型的配置字段。 */
+  updateGroup: (
+    mediaType: 'text' | 'image' | 'audio' | 'video',
+    updates: Partial<Omit<CustomApiGroup, 'mediaType'>>,
+  ) => void;
+};
+
+export const useCustomApiGroupsStore = create<CustomApiGroupsState>()(
+  persist(
+    (set) => ({
+      config: {
+        text: emptyEntry(),
+        image: emptyEntry(),
+        audio: emptyEntry(),
+        video: emptyEntry(),
+      },
+      updateGroup: (mediaType, updates) =>
+        set((state) => ({
+          config: {
+            ...state.config,
+            [mediaType]: { ...state.config[mediaType], ...updates },
+          },
+        })),
+    }),
+    { name: CUSTOM_API_GROUPS_KEY },
+  ),
+);
+
 export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
   persist(
     (set) => ({

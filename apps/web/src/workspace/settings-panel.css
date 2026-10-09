@@ -34,6 +34,54 @@
   max-width: 320px;
 }
 
+/* 自定义 API 四节点网格：每排两列，不让内容纵向堆叠到屏幕外 */
+.settings-custom-api-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.settings-custom-api-group {
+  border: 1px solid var(--mc-border, #dce3e7);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.settings-custom-api-group-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.settings-custom-api-media-label {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 6px;
+}
+
+.settings-custom-api-toggle-field {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.settings-custom-api-toggle-field .ant-select {
+  min-width: 72px !important;
+  width: auto !important;
+}
+
+.settings-custom-api-group-footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .generation-concurrency-settings .settings-status {
   line-height: 1.6;
   overflow-wrap: anywhere;

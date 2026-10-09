@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 
 import { apiFetch, readStoredAuthSession } from '../auth-client';
 import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
@@ -71,6 +71,74 @@ export function usePlatformModelCatalogQuery(userId?: string) {
     queryKey: modelCatalogQueryKeyFor(undefined, userId),
     enabled: Boolean(userId),
     queryFn: ({ signal }) => fetchModelCatalog(signal),
+  });
+}
+
+/** 媒体类型的中文标签，用于自定义分组的 group 字段显示。 */
+const customGroupMediaLabels: Record<'text' | 'image' | 'audio' | 'video', string> = {
+  text: '文字',
+  image: '图片',
+  audio: '音频',
+  video: '视频',
+};
+
+/**
+ * 按自定义 API 配置拉取模型列表，通过后端代理避免暴露 API Key。
+ * 返回的模型 mediaTypes 只包含对应的单一媒体类型，确保模型只注入到正确的节点选择器。
+ *
+ * @param group 媒体类型、连接配置。
+ * @param signal 取消信号。
+ */
+export async function fetchCustomGroupModels(
+  group: { mediaType: 'text' | 'image' | 'audio' | 'video'; baseUrl: string; apiKey: string },
+  signal?: AbortSignal,
+): Promise<ModelEntry[]> {
+  const response = await apiFetch(`${API_BASE_URL}/v1/models/node`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ baseUrl: group.baseUrl, apiKey: group.apiKey }),
+    signal,
+  });
+  const result = (await response.json().catch(() => ({}))) as {
+    data?: Array<{ id: string; [key: string]: unknown }>;
+    models?: ModelEntry[];
+    error?: string;
+  };
+  if (!response.ok) throw new Error(result.error ?? '自定义 API 模型加载失败');
+  // OpenAI 兼容的 /v1/models 返回 { data: [{ id, ... }] }
+  const raw = result.data ?? result.models ?? [];
+  const label = customGroupMediaLabels[group.mediaType];
+  return raw.map((m) => ({
+    id: typeof m === 'object' && m !== null ? String((m as { id?: unknown }).id ?? '') : String(m),
+    name: typeof m === 'object' && m !== null ? String((m as { id?: unknown }).id ?? '') : String(m),
+    mediaTypes: [group.mediaType] as [typeof group.mediaType],
+    group: `自定义·${label}`,
+    credentialId: `custom:${group.mediaType}`,
+    available: true,
+    availability: 'available' as const,
+  }));
+}
+
+/**
+ * 四个媒体类型各自独立的自定义 API 模型查询钩子。
+ * 每个启用且配置完整的条目发起一次独立查询，结果只包含对应媒体类型。
+ *
+ * @param config 四个媒体类型的配置字典。
+ */
+export function useCustomGroupsModelQuery(
+  config: Record<'text' | 'image' | 'audio' | 'video', { baseUrl: string; apiKey: string; enabled: boolean }>,
+) {
+  const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
+  return useQueries({
+    queries: mediaTypes
+      .filter((mt) => config[mt].enabled && config[mt].baseUrl.trim() && config[mt].apiKey.trim())
+      .map((mt) => ({
+        queryKey: ['custom-api-models', mt, config[mt].baseUrl, config[mt].apiKey],
+        queryFn: ({ signal }: { signal?: AbortSignal }) =>
+          fetchCustomGroupModels({ mediaType: mt, baseUrl: config[mt].baseUrl, apiKey: config[mt].apiKey }, signal),
+        staleTime: 5 * 60 * 1000,
+        retry: false,
+      })),
   });
 }
 

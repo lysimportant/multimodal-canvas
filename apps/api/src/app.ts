@@ -163,8 +163,8 @@ import {
   type PromptSkillStore,
 } from './prompt-skill-store';
 import { registerPromptSkillRoutes } from './prompt-skill-routes';
-import { ExecutionError } from '@multimodal-canvas/execution';
-import { NewApiAccountService } from './newapi-account-service';
+
+import { AUTH_SYNC_INTERVAL_MS, NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountError } from './newapi-account-client';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 import {
@@ -1347,14 +1347,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof ExecutionError) {
-      const status =
-        error.code === 'authorization_required' || error.code === 'authorization_revoked'
-          ? 403
-          : 409;
-      return reply.code(status).send({ code: error.code, error: error.message });
-    }
-    if (error instanceof NewApiAccountError)
+    if (
+      error instanceof NewApiAccountError)
       return reply.code(error.status).send({ code: error.code, error: error.message });
     if (error instanceof RateLimitUnavailableError) {
       request.log.warn({ requestId: request.id }, 'global rate limiter unavailable');
@@ -1919,7 +1913,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!session) return reply.code(401).send({ error: 'authentication required' });
     if (options.newApiAccount) {
       try {
-        await options.newApiAccount.synchronize(session.user.id);
+        // 每次复核上游授权，逐组全量同步按间隔节流，避免刷新页面阻塞数十秒。
+        await options.newApiAccount.synchronizeIfStale(session.user.id, AUTH_SYNC_INTERVAL_MS);
       } catch (error) {
         if (!(error instanceof NewApiAccountError) || error.status !== 503) throw error;
       }
@@ -2151,6 +2146,58 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           return reply.code(404).send({ error: 'credential not found', code: error.code });
         }
         throw error;
+      }
+    },
+  );
+
+  /**
+   * 按节点级自定义 endpoint 拉取模型列表。
+   * 前端传入节点上配置的 baseUrl 和 apiKey，API 代理转发到 {baseUrl}/models，
+   * 避免 API key 暴露到浏览器网络层。
+   */
+  app.post<{ Body: { baseUrl: string; apiKey: string } }>(
+    '/v1/models/node',
+    async (request, reply) => {
+      const body = z
+        .object({
+          baseUrl: z.string().trim().min(1).max(2048),
+          apiKey: z.string().trim().min(1).max(512),
+        })
+        .safeParse(request.body);
+      if (!body.success) {
+        return reply.code(400).send({ error: 'baseUrl and apiKey are required' });
+      }
+
+      const { baseUrl, apiKey } = body.data;
+
+      // 规范化 baseUrl：去除末尾斜杠，补 /v1 后缀
+      let normalizedBase = baseUrl.trim().replace(/\/+$/, '');
+      if (!normalizedBase.startsWith('http://') && !normalizedBase.startsWith('https://')) {
+        return reply.code(400).send({ error: 'baseUrl must use HTTP(S)' });
+      }
+      if (!/\/v\d/.test(new URL(normalizedBase).pathname)) {
+        normalizedBase = `${normalizedBase}/v1`;
+      }
+
+      try {
+        const upstream = await fetch(`${normalizedBase}/models`, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!upstream.ok) {
+          const text = await upstream.text().catch(() => '');
+          return reply
+            .code(upstream.status)
+            .send({ error: 'upstream models request failed', detail: text.slice(0, 500) });
+        }
+        const data = await upstream.json();
+        return reply.send(data);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.code(502).send({ error: 'failed to reach upstream', detail: message });
       }
     },
   );
@@ -3208,7 +3255,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           });
           return reply.code(202).send({ optimization: publicPromptOptimization(run) });
         } catch (error) {
-          if (error instanceof NewApiAccountError || error instanceof ExecutionError) throw error;
+          if (error instanceof NewApiAccountError) throw error;
           if (
             error instanceof ResourceMentionFreezeError ||
             error instanceof ResourceMentionCapabilityError

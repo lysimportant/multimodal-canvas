@@ -115,7 +115,6 @@ integrationDescribe('中性执行授权与 outbox（隔离 PostgreSQL + Redis）
       queueName,
       providerName: 'newapi',
       persistence: new PrismaRunPersistence(prisma),
-      execution,
     });
   }, 60_000);
 
