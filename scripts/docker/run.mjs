@@ -15,7 +15,7 @@ const service = process.argv[2];
 if (!Object.hasOwn(commands, service)) throw new Error('Unknown Docker runtime command');
 try {
   const environment = await runtimeEnvironment();
-  if (!['admin', 'health'].includes(service)) await waitForDependencies(service);
+  if (!['admin', 'health'].includes(service)) await waitForDependencies(service, environment);
   const child = spawn(process.execPath, commands[service], { env: environment, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
   child.once('error', () => {
@@ -27,7 +27,7 @@ try {
   });
 } catch (error) {
   console.error(
-    `Docker runtime could not start (${service}): ${error.code ?? error.name}. Check dependencies and the secret volume.`,
+    `Docker runtime could not start (${service}): ${error.code ?? error.name}. Check required environment variables, dependencies and the secret volume.`,
   );
   process.exitCode = 1;
 }

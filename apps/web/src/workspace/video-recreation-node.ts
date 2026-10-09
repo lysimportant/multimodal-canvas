@@ -49,9 +49,6 @@ export function recreationGenerationIssue(data: FlowNodeData): string | undefine
   if (!data.videoRecreation) return undefined;
   return (
     getVideoRecreationIssue(data.videoRecreation) ??
-    (!Number.isSafeInteger(data.videoRecreation.analysis?.template.durationSeconds)
-      ? '当前视频接口仅支持整秒时长，不能取整、裁剪或省略整片分析时长'
-      : undefined) ??
     (data.videoMode !== 'omni_reference'
       ? '复刻节点需要支持参考视频与人物图片的全能参考模式'
       : undefined) ??

@@ -994,7 +994,7 @@ describe('上传资料独立保存', () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([]);
   });
 
-  it('新资料沿用视频全能参考模式，重复帧资料保留原模式和连线，新身份冲突整次拒绝', async () => {
+  it('新资料保留当前视频模式，重复帧资料保持原模式和连线且附加幂等', async () => {
     canvas.nodes[2].data.promptDocument = {
       version: 1,
       blocks: [{ type: 'text', text: '原始正文' }],
@@ -1005,7 +1005,7 @@ describe('上传资料独立保存', () => {
     const app = render(<App />);
     await screen.findByRole('textbox', { name: '提示词' });
     act(() => view.canvas!.onResourceAttach!(image, 'video-target'));
-    expect(view.canvas!.nodes[2].data.videoMode).toBe('omni_reference');
+    expect(view.canvas!.nodes[2].data.videoMode).toBe('text_to_video');
     expect(view.canvas!.nodes[2].data.promptDocument).toEqual(canvas.nodes[2].data.promptDocument);
     app.unmount();
     canvas = initialCanvas();
@@ -1016,7 +1016,7 @@ describe('上传资料独立保存', () => {
     act(() => view.canvas!.onResourceAttach!({ ...image, latestVersion: 1 }, 'video-target'));
     expect(view.canvas!.nodes).toEqual(before);
     expect(view.canvas!.edges).toEqual(edges);
-    expect(() => view.canvas!.onResourceAttach!(image, 'video-target')).toThrow(/首尾帧/);
+    expect(() => view.canvas!.onResourceAttach!(image, 'video-target')).not.toThrow();
     expect(view.canvas!.nodes).toEqual(before);
     expect(view.canvas!.edges).toEqual(edges);
   });

@@ -234,7 +234,7 @@ export class WorkerFileBlobStore implements ResultBlobStore {
   }
 }
 
-/** S3-compatible storage adapter (works with MinIO in development). */
+/** S3-compatible storage adapter (works with R2 in development). */
 export class WorkerS3BlobStore implements ResultBlobStore {
   private readonly client: S3Client;
   /** 单次 S3 请求（含 SDK 重试）的毫秒上限，默认 30 秒。 */

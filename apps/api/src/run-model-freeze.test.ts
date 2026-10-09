@@ -327,38 +327,6 @@ describe('per-node run model snapshots', () => {
     );
   });
 
-  it('rejects an unavailable intermediate model before creating a run', async () => {
-    const projectStore = new MemoryProjectStore();
-    const settingsStore = new MemoryAiSettingsStore('model-freeze-unavailable');
-    settingsStore.replaceModels([model('text-ok', 'text'), model('video-ok', 'video')]);
-    const app = buildApp({ logger: false, projectStore, settingsStore });
-    apps.push(app);
-    const canvas = workflowCanvas();
-    canvas.nodes = canvas.nodes.map((node) =>
-      node.id === 'node_text' || node.id === 'node_text_second'
-        ? { ...node, data: { ...node.data, modelAlias: 'text-ok' } }
-        : node.id === 'node_image'
-          ? { ...node, data: { ...node.data, modelAlias: 'image-missing' } }
-          : node,
-    );
-    const projectId = await createProject(app, canvas);
-
-    const submitted = await app.inject({
-      method: 'POST',
-      url: '/v1/nodes/node_video/runs',
-      payload: { projectId, modelAlias: 'video-ok' },
-    });
-
-    expect(submitted.statusCode).toBe(400);
-    expect(submitted.json()).toMatchObject({
-      code: 'model_unavailable',
-      error: expect.stringContaining('image-missing'),
-    });
-    expect(submitted.json().error).toContain('node_image');
-    const runs = await app.inject({ method: 'GET', url: `/v1/projects/${projectId}/runs` });
-    expect(runs.json()).toEqual({ runs: [] });
-  });
-
   it.each([
     { nodeEnvironment: 'test', workerProvider: 'newapi', label: 'New API mode' },
     { nodeEnvironment: 'production', workerProvider: 'mock', label: 'production mode' },

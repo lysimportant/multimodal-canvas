@@ -40,6 +40,7 @@ describe('本地图片执行与 Provider 适配器', () => {
     { modelAlias: 'gpt-image-1', capabilities: undefined },
     { modelAlias: 'gpt-image-2.5-sunburst', capabilities: { mentionMediaTypes: ['text'] } },
     { modelAlias: 'gpt-image-2.5-sunburst', capabilities: { mentionMediaTypes: [] } },
+    { modelAlias: 'future/custom-image', capabilities: { imageEdit: false, maxImages: 1 } },
   ])('HTTP $modelAlias 多图冻结与去重', async ({ modelAlias, capabilities }) => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
@@ -82,7 +83,7 @@ describe('本地图片执行与 Provider 适配器', () => {
         {
           id: modelAlias,
           name: 'GPT Image',
-          mediaTypes: ['image'],
+          mediaTypes: modelAlias === 'future/custom-image' ? ['text'] : ['image'],
           capabilities,
           refreshedAt: new Date().toISOString(),
         },
@@ -108,6 +109,15 @@ describe('本地图片执行与 Provider 适配器', () => {
             mode: 'generate',
             modelAlias,
             credentialId: credential.id,
+            ...(modelAlias === 'future/custom-image'
+              ? {
+                  parameters: {
+                    n: 12,
+                    size: '8192x8192',
+                    vendor_option: { enabled: false, seed: 0 },
+                  },
+                }
+              : {}),
             promptDocument: {
               version: 1,
               blocks: [
@@ -174,7 +184,11 @@ describe('本地图片执行与 Provider 适配器', () => {
       ),
     ).toEqual([secondVersion, otherImage, firstVersion]);
     expect(form.get('model')).toBe(modelAlias);
-    expect(form.get('n')).toBe('1');
+    expect(form.get('n')).toBe(modelAlias === 'future/custom-image' ? '12' : '1');
+    if (modelAlias === 'future/custom-image') {
+      expect(form.get('size')).toBe('8192x8192');
+      expect(JSON.parse(String(form.get('vendor_option')))).toEqual({ enabled: false, seed: 0 });
+    }
     expect(reader.mock.calls.map(([assetId, version]) => ({ assetId, version }))).toEqual(
       references.map(({ assetId, assetVersion }) => ({ assetId, version: assetVersion })),
     );

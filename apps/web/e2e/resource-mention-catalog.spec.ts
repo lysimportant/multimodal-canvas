@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import {
   canvasDocumentSchema,
+  renderPromptDocument,
   type Asset,
   type CanvasDocument,
   type PromptDocument,
@@ -271,8 +272,8 @@ for (const outcome of ['成功', 'HTTP 400', '断网'] as const) {
       .getByRole('option', { name: '2份', exact: true })
       .click();
     await expect(editor.getByRole('combobox', { name: '生成数量：2份' })).toBeVisible();
-    const expectedPrompt = (await prompt.inputValue()).trim();
-    expect(expectedPrompt).toMatch(/^Use\s+reference/);
+    const expectedPrompt = ((await prompt.textContent()) ?? '').trim();
+    expect(expectedPrompt).toBe('Use');
     expect(fixture.submissions).toEqual([]);
     await editor.getByRole('button', { name: '生成', exact: true }).click();
     const expectedCount = outcome === '成功' ? 2 : 1;
@@ -320,7 +321,7 @@ for (const outcome of ['成功', 'HTTP 400', '断网'] as const) {
         modelAlias: model.id,
         credentialId: model.credentialId,
         promptDocument,
-        parameters: { aspectRatio: '1:1', prompt: expectedPrompt },
+        parameters: { size: '1024x1024', prompt: renderPromptDocument(promptDocument).trim() },
       });
       expect(submission.body.parameters).not.toHaveProperty('generationCount');
       expect(

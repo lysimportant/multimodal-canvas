@@ -94,7 +94,6 @@ function createFixture() {
   const finishSend = vi.fn<WorkerExecutionAuthorization['finishSend']>(async (input) => {
     sendStatuses.set(input.runId + '/' + input.nodeId + '/' + input.attempt, input.status);
   });
-  const recordUsage = vi.fn(async () => {});
   const execute = vi.fn(async (request: WorkerProviderRequest): Promise<ProviderExecution> => {
     const run = runs.find(({ runId }) => runId === request.runId);
     if (!run) throw new Error('收到本测试以外的 Run');
@@ -139,7 +138,7 @@ function createFixture() {
         mimeType: 'text/plain',
         format: 'txt',
       },
-      usage: { amount: '0.25', currency: 'USD' },
+      usage: { metadata: { amount: '0.25', currency: 'USD' } },
     };
   });
   const resultArchiver = vi.fn(
@@ -185,7 +184,6 @@ function createFixture() {
       },
       async upsertProviderJob() {},
       async upsertRequestPromptRecord() {},
-      recordUsage,
     },
   });
   worker.on('error', (error) => workerErrors.push(error));
@@ -206,7 +204,6 @@ function createFixture() {
     resultArchiver,
     beginSend,
     finishSend,
-    recordUsage,
     sendStatuses,
     /** 一次入队两个独立 Run；每个 job 仅允许一次尝试，无收费请求或自动重试。 */
     async enqueue() {
@@ -305,7 +302,6 @@ describe.skipIf(!isolatedRedis)('隔离 Redis 的真实 Worker Run 并发', () =
       expect(fixture.finishSend).toHaveBeenCalledTimes(4);
       expect([...fixture.sendStatuses.values()]).toEqual(['sent', 'sent', 'sent', 'sent']);
       expect(fixture.resultArchiver).toHaveBeenCalledTimes(4);
-      expect(fixture.recordUsage).not.toHaveBeenCalled();
       expect(fixture.workerErrors).toEqual([]);
       expect(fetch).not.toHaveBeenCalled();
     } finally {
@@ -381,7 +377,6 @@ describe.skipIf(!isolatedRedis)('隔离 Redis 的真实 Worker Run 并发', () =
             .filter(([request]) => request.runId === unaffected!.runId)
             .map(([request]) => request.snapshot.targetNodeId),
         ).toEqual(['draft', 'final']);
-        expect(fixture.recordUsage).not.toHaveBeenCalled();
         expect(fixture.workerErrors).toEqual([]);
         expect(fetch).not.toHaveBeenCalled();
       } finally {

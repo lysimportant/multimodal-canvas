@@ -300,58 +300,6 @@ describe('AI settings endpoints', () => {
       await settingsApp.close();
     }
   });
-
-  it('校验默认模型的凭据范围和媒体类型后再保存', async () => {
-    const store = new MemoryAiSettingsStore('preference-validation');
-    store.update({
-      baseUrl: 'https://newapi.example.test/v1',
-      apiKey: 'synthetic-validation-key',
-    });
-    const credential = store.listCredentials()[0]!;
-    store.replaceModels(
-      [
-        {
-          id: 'image-model',
-          name: 'Image model',
-          mediaTypes: ['image'],
-          refreshedAt: appModelRefreshedAt,
-        },
-      ],
-      credential.id,
-    );
-    const settingsApp = buildApp({ logger: false, settingsStore: store });
-    try {
-      const wrongMedia = await settingsApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          defaultModels: {
-            video: { modelAlias: 'image-model', credentialId: credential.id },
-          },
-        },
-      });
-      expect(wrongMedia.statusCode).toBe(400);
-      expect(wrongMedia.json()).toMatchObject({ code: 'model_unavailable' });
-
-      const unknownCredential = await settingsApp.inject({
-        method: 'PATCH',
-        url: '/v1/settings/ai',
-        payload: {
-          defaultModels: {
-            image: {
-              modelAlias: 'image-model',
-              credentialId: '123e4567-e89b-12d3-a456-426614174099',
-            },
-          },
-        },
-      });
-      expect(unknownCredential.statusCode).toBe(404);
-      expect(unknownCredential.json()).toMatchObject({ code: 'credential_not_found' });
-      expect(store.get().defaultModels).toEqual({});
-    } finally {
-      await settingsApp.close();
-    }
-  });
 });
 describe('asset endpoints', () => {
   it('starts with an empty asset collection', async () => {
@@ -1387,108 +1335,6 @@ describe('workflow import HTTP contract', () => {
       await importApp.close();
     }
   });
-
-  it('imports valid model defaults and rejects invalid defaults without changing saved state', async () => {
-    const settingsStore = new MemoryAiSettingsStore('workflow-import-model-defaults');
-    settingsStore.replaceModels([
-      {
-        id: 'import-image-model',
-        name: 'Import image model',
-        mediaTypes: ['image'],
-        refreshedAt: appModelRefreshedAt,
-      },
-      {
-        id: 'import-text-model',
-        name: 'Import text model',
-        mediaTypes: ['text'],
-        refreshedAt: appModelRefreshedAt,
-      },
-      {
-        id: 'import-text-model-next',
-        name: 'Next import text model',
-        mediaTypes: ['text'],
-        refreshedAt: appModelRefreshedAt,
-      },
-    ]);
-    const importApp = buildApp({
-      logger: false,
-      settingsStore,
-      projectStore: new MemoryProjectStore(),
-    });
-    try {
-      const created = await importApp.inject({
-        method: 'POST',
-        url: '/v1/projects',
-        payload: { name: 'Model defaults target' },
-      });
-      const projectId = created.json().project.id as string;
-      const valid = await importApp.inject({
-        method: 'POST',
-        url: `/v1/projects/${projectId}/import/workflow`,
-        payload: {
-          ...workflowImportPayload({
-            nodeId: 'node_valid_defaults',
-            modelDefaults: {
-              image: 'import-image-model',
-              text: 'import-text-model',
-            },
-          }),
-          expectedRevision: 0,
-        },
-      });
-
-      expect(valid.statusCode).toBe(200);
-      const importedNodeId = valid.json().nodeIdMap.node_valid_defaults;
-      expect(importedNodeId).not.toBe('node_valid_defaults');
-      expect(valid.json()).toMatchObject({
-        modelDefaults: {
-          image: 'import-image-model',
-          text: 'import-text-model',
-        },
-        canvas: { revision: 1, nodes: [{ id: importedNodeId }] },
-      });
-      const invalid = await importApp.inject({
-        method: 'POST',
-        url: `/v1/projects/${projectId}/import/workflow`,
-        payload: {
-          ...workflowImportPayload({
-            nodeId: 'node_invalid_defaults',
-            modelDefaults: {
-              text: 'import-text-model-next',
-              image: 'model_not_in_catalog',
-            },
-          }),
-          expectedRevision: 1,
-        },
-      });
-
-      expect(invalid.statusCode).toBe(400);
-      expect(invalid.json()).toMatchObject({
-        code: 'model_unavailable',
-        requestId: expect.any(String),
-      });
-      const currentDefaults = await importApp.inject({
-        method: 'GET',
-        url: `/v1/projects/${projectId}/models/defaults`,
-      });
-      expect(currentDefaults.json()).toEqual({
-        defaults: {
-          image: 'import-image-model',
-          text: 'import-text-model',
-        },
-      });
-      const currentCanvas = await importApp.inject({
-        method: 'GET',
-        url: `/v1/projects/${projectId}/canvas`,
-      });
-      expect(currentCanvas.json().canvas).toMatchObject({
-        revision: 1,
-        nodes: [{ id: importedNodeId }],
-      });
-    } finally {
-      await importApp.close();
-    }
-  });
 });
 
 describe('run request prompt endpoints', () => {
@@ -1772,7 +1618,7 @@ describe('run endpoints', () => {
     }
   });
 
-  it('does not block a priced run on local cost policy settings', async () => {
+  it('does not block a run when legacy local cost settings are present', async () => {
     vi.stubEnv('MAX_RUN_COST', '1.00');
     vi.stubEnv('RUN_COST_CURRENCY', 'USD');
     const settingsStore = new MemoryAiSettingsStore('cost-policy-test-secret');
@@ -1781,7 +1627,6 @@ describe('run endpoints', () => {
         id: 'priced-image',
         name: 'Priced image',
         mediaTypes: ['image'],
-        price: { currency: 'USD', perRun: '1.01' },
         refreshedAt: new Date().toISOString(),
       },
     ]);

@@ -1,78 +1,38 @@
+# 源码开发的数据库与队列；对象存储只使用外部 R2，New API 另行部署。
+name: multimodal-canvas-dev
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-multimodal_canvas}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-canvas}
+      POSTGRES_USER: ${POSTGRES_USER:-canvas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?开发库必须配置 POSTGRES_PASSWORD}
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 5s
-      timeout: 5s
-      retries: 12
+      timeout: 3s
+      retries: 20
     ports:
-      - '${POSTGRES_HOST_PORT:-5432}:5432'
+      - '127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432'
     volumes:
       - multimodal_canvas_postgres:/var/lib/postgresql/data
-
   redis:
     image: redis:7-alpine
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 5s
-      retries: 12
-    ports:
-      - '${REDIS_HOST_PORT:-6379}:6379'
-
-  minio:
-    image: quay.io/minio/minio:RELEASE.2024-07-04T14-25-45Z
-    command: server /data --console-address ':9001'
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:9000/minio/health/live']
-      interval: 2s
-      timeout: 5s
-      retries: 30
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    ports:
-      - '${MINIO_API_HOST_PORT:-9000}:9000'
-      - '${MINIO_CONSOLE_HOST_PORT:-9001}:9001'
-    volumes:
-      - multimodal_canvas_minio:/data
-
-  # Creates the development bucket once MinIO accepts authenticated requests.
-  # This is intentionally a one-shot service and never touches external S3.
-  minio-init:
-    image: quay.io/minio/mc:RELEASE.2024-07-03T20-17-25Z
-    depends_on:
-      minio:
-        condition: service_healthy
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MINIO_BUCKET: ${S3_BUCKET:-multimodal-canvas-dev}
-      MINIO_INIT_MAX_ATTEMPTS: ${MINIO_INIT_MAX_ATTEMPTS:-60}
-    entrypoint:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?开发队列必须配置 REDIS_PASSWORD}
+    command:
       - /bin/sh
       - -ec
-    command:
-      - |
-        attempt=0
-        max_attempts="$${MINIO_INIT_MAX_ATTEMPTS}"
-        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
-          attempt=$$((attempt + 1))
-          if [ "$${attempt}" -ge "$${max_attempts}" ]; then
-            echo "MinIO did not become ready after $${attempt} attempts" >&2
-            exit 1
-          fi
-          sleep 1
-        done
-        mc mb --ignore-existing "local/$${MINIO_BUCKET}"
-        mc stat "local/$${MINIO_BUCKET}"
-    restart: 'no'
-
+      - 'exec redis-server --requirepass "$${REDIS_PASSWORD}" --appendonly yes'
+    healthcheck:
+      test: ['CMD-SHELL', 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - '127.0.0.1:${REDIS_HOST_PORT:-6379}:6379'
+    volumes:
+      - multimodal_canvas_redis:/data
 volumes:
   multimodal_canvas_postgres:
-  multimodal_canvas_minio:
+  multimodal_canvas_redis:

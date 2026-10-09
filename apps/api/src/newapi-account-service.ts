@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { Prisma, PrismaClient, type NewApiIdentity, type NewApiGroupBinding } from '@prisma/client';
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 import {
-  isRetiredImage2proVideoModel,
   runSnapshotSchema,
   type MediaType,
   type NewApiExecutionAuthority,
@@ -775,11 +774,7 @@ export class NewApiAccountService {
       throw new NewApiAccountError('credential_not_found', '分组模型不存在或不属于当前账号', 404);
     return groups.flatMap((group) =>
       parseCatalog(group.catalog)
-        .filter(
-          (model) =>
-            !isRetiredImage2proVideoModel(model.id) &&
-            (!mediaType || model.media_type === mediaType),
-        )
+        .filter((model) => !mediaType || model.media_type === mediaType)
         .map((model) => ({
           id: model.id,
           name: model.name ?? model.id,
@@ -787,16 +782,9 @@ export class NewApiAccountService {
           credentialId: group.credentialId ?? undefined,
           group: group.group,
           contract: model.contract,
-          available:
-            group.status === 'active' &&
-            model.available &&
-            supportsCatalogContract(model.contract, model.media_type),
+          available: group.status === 'active' && model.available,
           unavailableReason:
-            group.status !== 'active'
-              ? (group.error ?? '分组尚未同步')
-              : !supportsCatalogContract(model.contract, model.media_type)
-                ? '该模型的生成协议尚未适配'
-                : model.unavailable_reason,
+            group.status !== 'active' ? (group.error ?? '分组尚未同步') : model.unavailable_reason,
           capabilities: {
             ...model.capabilities,
             ...(model.input_media_types ? { mentionMediaTypes: model.input_media_types } : {}),
@@ -868,36 +856,30 @@ export class NewApiAccountService {
       const binding = await this.validateGroup(userId, reference.credentialId);
       const modelAlias =
         nodeId === snapshot.targetNodeId ? snapshot.modelAlias : node.data.modelAlias;
-      const model = (await this.models(userId, node.data.mediaType, reference.credentialId)).find(
-        (entry) => entry.id === modelAlias,
-      );
-      if (
-        !model?.available ||
-        !model.contract ||
-        binding.credential!.version !== reference.credentialVersion
-      )
-        throw new NewApiAccountError(
-          'model_unavailable',
-          '分组、模型或凭据版本已变化，请重新选择',
-          409,
-        );
-      const parameters =
-        nodeId === snapshot.targetNodeId ? snapshot.parameters : (node.data.parameters ?? {});
-      if (parameters.n !== undefined && parameters.n !== 1)
-        throw new NewApiAccountError('quantity_unsupported', '当前每次生成只支持交付一个结果');
+      if (!modelAlias || binding.credential!.version !== reference.credentialVersion)
+        throw new NewApiAccountError('credential_changed', '分组凭据版本已变化，请重新选择', 409);
+      const model = parseCatalog(binding.catalog).find((entry) => entry.id === modelAlias);
+      const defaultContract =
+        node.data.mediaType === 'video'
+          ? (process.env.NEW_API_VIDEO_CONTRACT ?? 'newapi-video-v1')
+          : node.data.mediaType === 'image'
+            ? 'openai-images'
+            : node.data.mediaType === 'audio'
+              ? 'openai-audio'
+              : 'openai-chat-completions';
       executionBindings[nodeId] = {
         credentialId: reference.credentialId,
         credentialVersion: reference.credentialVersion,
-        modelAlias: model.id,
+        modelAlias,
         mediaType: node.data.mediaType,
-        contract: model.contract,
+        contract: model?.contract ?? defaultContract,
         authority: authority(binding.identity, binding),
       };
     }
     if (!executionBindings[snapshot.targetNodeId])
       throw new NewApiAccountError(
         'execution_authorization_required',
-        '请先选择本人可用的分组模型',
+        '请先选择本人可用的分组凭据',
         403,
       );
     return runSnapshotSchema.parse({ ...snapshot, executionBindings });
@@ -1402,19 +1384,4 @@ function loginReturnPath(value: string | undefined, webUrl: string): string {
 function parseCatalog(value: unknown) {
   const parsed = accountCatalogSchema.safeParse(value);
   return parsed.success ? parsed.data.models : [];
-}
-
-/** 目录发现不等于协议适配，只开放当前 Provider 已实现的媒体合同。 */
-function supportsCatalogContract(
-  contract: string | undefined,
-  mediaType: MediaType | undefined,
-): boolean {
-  if (!contract || !mediaType) return false;
-  const supported: Record<MediaType, readonly string[]> = {
-    text: ['openai-chat-completions'],
-    image: ['openai-images'],
-    audio: ['openai-audio'],
-    video: ['newapi-video-v1', 'newapi-unified-v1', 'legacy-v1'],
-  };
-  return supported[mediaType].includes(contract);
 }

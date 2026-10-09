@@ -45,7 +45,7 @@ describe('节点模型记忆', () => {
     expect(readNodeModelPreference('user-a', 'text', 'generate', models)).toBeUndefined();
   });
 
-  it('模型被移除、来源被禁用或不再支持当前媒体时不自动选中', () => {
+  it('模型被移除时不自动选中，目录媒体分类不限制用户偏好', () => {
     writeNodeModelPreference('user-a', 'image', 'generate', {
       modelAlias: 'model-a',
       credentialId: 'provider-a',
@@ -56,7 +56,7 @@ describe('节点模型记忆', () => {
       readNodeModelPreference('user-a', 'image', 'generate', [
         { ...models[0], mediaTypes: ['video'] },
       ]),
-    ).toBeUndefined();
+    ).toEqual({ modelAlias: 'model-a', credentialId: 'provider-a' });
   });
 
   it('后一次选择覆盖前一次，清空后不再恢复模型', () => {

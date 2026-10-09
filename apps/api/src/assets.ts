@@ -39,7 +39,7 @@ export interface BlobStore {
   ): Promise<string>;
 }
 
-/** S3-compatible object storage adapter (works with MinIO in development). */
+/** S3-compatible object storage adapter (works with R2 in development). */
 export class S3BlobStore implements BlobStore {
   private readonly client: S3Client;
 

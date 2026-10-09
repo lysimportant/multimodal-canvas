@@ -393,7 +393,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('真实 BullMQ 的确定性创建 400
             restartedPrisma.runSendIntent.deleteMany({ where: { runId } }),
             restartedPrisma.runOutbox.deleteMany({ where: { runId } }),
             restartedPrisma.executionAuthorization.deleteMany({ where: { runId } }),
-            restartedPrisma.usageLedger.deleteMany({ where: { runId: databaseRunId } }),
             restartedPrisma.run.deleteMany({ where: { id: databaseRunId, userId, projectId } }),
             restartedPrisma.project.deleteMany({ where: { id: projectId, ownerId: userId } }),
             restartedPrisma.user.deleteMany({ where: { id: userId } }),

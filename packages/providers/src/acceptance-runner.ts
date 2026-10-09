@@ -16,7 +16,7 @@ export type AcceptanceReport = {
   requestCount: number;
   requestIdDigests: string[];
   outputKind?: string;
-  usage?: { amount?: number | string; currency?: string; counters: Record<string, number> };
+  usage?: { counters: Record<string, number> };
 };
 
 /** 必需配置为空时仅返回字段名，不打印配置值。 */
@@ -31,7 +31,7 @@ const requiredAcceptanceFields = [
  * 执行一次已授权的标准 NewAPI 生成，永不自动重试或下载返回 URL。
  * @param environment 显式提供的验收配置；授权短语必须精确匹配。
  * @param fetchImpl 可注入的传输，测试只能使用本地替身；配置校验前绝不调用。
- * @returns 脱敏关联记录；blocked 未发送请求，failed 不代表供应商未受理或未计费。
+ * @returns 脱敏关联记录；blocked 未发送请求，failed 不代表供应商未受理。
  */
 export async function runProviderAcceptance(
   environment: AcceptanceEnvironment,
@@ -135,7 +135,7 @@ export async function runProviderAcceptance(
       outputKind: execution.output.kind,
       ...(execution.usage
         ? {
-            usage: { amount: execution.usage.amount, currency: execution.usage.currency, counters },
+            usage: { counters },
           }
         : {}),
     };

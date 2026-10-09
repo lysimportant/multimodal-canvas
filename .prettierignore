@@ -5,7 +5,6 @@ coverage
 test-results
 pnpm-lock.yaml
 AGENTS.md
-README.md
 prisma
 apps/api/.data
 apps/web/.data

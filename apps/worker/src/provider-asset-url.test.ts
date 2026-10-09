@@ -41,7 +41,7 @@ describe('本站 Provider 素材地址', () => {
     'https://localhost.',
     'http://canvas.example.com',
     'https://10.0.0.1',
-    'https://minio:9000',
+    'https://objects.internal:9000',
     'https://user:pass@canvas.example.com',
     'https://canvas.example.com?redirect=other',
     'https://canvas.example.com#fragment',

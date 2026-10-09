@@ -19,8 +19,7 @@ import {
 } from '@multimodal-canvas/domain';
 import { Prisma, PrismaClient, type RunStatus as PrismaRunStatus } from '@prisma/client';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const AMOUNT_PATTERN = /^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$/;
-const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+
 const MAX_PERSISTED_PROVIDER_PAYLOAD_DEPTH = 4;
 const MAX_PERSISTED_PROVIDER_PAYLOAD_KEYS = 64;
 const MAX_PERSISTED_PROVIDER_PAYLOAD_ITEMS = 32;
@@ -31,8 +30,7 @@ const SENSITIVE_PROVIDER_KEY =
   /(?:authorization|proxy[-_ ]?authorization|x[-_ ]?api[-_ ]?key|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|token|secret|password|credential|cookie|session)/i;
 const URL_PROVIDER_KEY = /(?:url|uri|href|location|download)/i;
 
-export type RunPersistenceErrorCode =
-  'invalid_uuid' | 'invalid_amount' | 'invalid_currency' | 'invalid_run';
+export type RunPersistenceErrorCode = 'invalid_uuid' | 'invalid_run';
 
 export class RunPersistenceError extends Error {
   constructor(
@@ -61,8 +59,7 @@ export type EnsureRunPersistenceInput = {
   userId?: string;
   retryOf?: string;
   idempotencyKey?: string;
-  cost?: string | number;
-  costCurrency?: string;
+
   providerJob?: ProviderJob;
   error?: string;
   /** API 幂等发布仅补建快照，不把已有运行回退为 queued。 */
@@ -76,22 +73,6 @@ export type UpdateRunPersistenceInput = {
   providerJob?: ProviderJob;
   result?: RunResult;
   error?: string;
-};
-
-export type UsageLedgerPersistenceInput = {
-  /** Optional database Run.id, not the BullMQ/API run identifier. */
-  runId?: string;
-  /** Optional database User.id. */
-  userId?: string;
-  /** Provider's stable job identifier, when the provider reports one. */
-  providerJobId?: string;
-  /** Provider webhook/event identifier, when the provider reports one. */
-  eventId?: string;
-  /** Usage event kind (for example, generation or completion). */
-  kind?: string;
-  amount: number | string;
-  currency?: string;
-  metadata?: Record<string, unknown>;
 };
 
 /**
@@ -143,17 +124,14 @@ export interface RequestPromptStore {
   ): Promise<RequestPromptRecord | undefined>;
 }
 
-type PersistenceClient = Pick<
-  PrismaClient,
-  'run' | 'providerJob' | 'usageLedger' | 'runRequestPrompt'
->;
+type PersistenceClient = Pick<PrismaClient, 'run' | 'providerJob' | 'runRequestPrompt'>;
 
 /**
- * Minimal persistence boundary for provider jobs and usage records.
+ * Minimal persistence boundary for provider jobs and run records.
  *
  * BullMQ identifiers are intentionally not coerced into UUIDs. Callers must
  * resolve the API run identifier to the database Run.id before persisting a
- * provider job or usage entry.
+ * provider job.
  */
 export class PrismaRunPersistence {
   constructor(private readonly prisma: PersistenceClient) {}
@@ -310,8 +288,7 @@ export class PrismaRunPersistence {
     if (!Number.isInteger(attempt) || attempt < 1) {
       throw new RunPersistenceError('invalid_run', 'run attempt must be a positive integer');
     }
-    const cost = input.cost === undefined ? undefined : normalizeAmount(input.cost);
-    const costCurrency = input.costCurrency ? normalizeCurrency(input.costCurrency) : undefined;
+
     const errorMessage = sanitizePersistedError(input.error);
 
     const inputRows = snapshot.inputs.map((runInput) => ({
@@ -333,8 +310,7 @@ export class PrismaRunPersistence {
       snapshot: snapshot as Prisma.InputJsonValue,
       parameters: snapshot.parameters as Prisma.InputJsonValue,
       attempt,
-      ...(cost !== undefined ? { cost } : {}),
-      ...(costCurrency ? { costCurrency } : {}),
+
       ...(input.retryOf ? { retryOf: databaseRunId(input.retryOf) } : {}),
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       ...(errorMessage ? { error: { message: errorMessage } as Prisma.InputJsonValue } : {}),
@@ -349,8 +325,7 @@ export class PrismaRunPersistence {
         : {
             status,
             attempt,
-            ...(cost !== undefined ? { cost } : {}),
-            ...(costCurrency ? { costCurrency } : {}),
+
             ...(input.retryOf ? { retryOf: databaseRunId(input.retryOf) } : {}),
             ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
             ...(errorMessage ? { error: { message: errorMessage } as Prisma.InputJsonValue } : {}),
@@ -427,52 +402,6 @@ export class PrismaRunPersistence {
         update,
       });
     }
-  }
-
-  async recordUsage(input: UsageLedgerPersistenceInput) {
-    const runId = input.runId ? requireUuid(input.runId, 'runId') : undefined;
-    const explicitUserId = input.userId ? requireUuid(input.userId, 'userId') : undefined;
-    const linkedRun =
-      !explicitUserId && runId && typeof this.prisma.run.findUnique === 'function'
-        ? await this.prisma.run.findUnique({ where: { id: runId }, select: { userId: true } })
-        : undefined;
-    const userId = explicitUserId ?? linkedRun?.userId ?? undefined;
-    const amount = normalizeAmount(input.amount);
-    const currency = normalizeCurrency(input.currency);
-    const metadata = input.metadata;
-    const providerJobId = normalizeUsageIdentity(input.providerJobId ?? metadata?.providerJobId);
-    const eventId = normalizeUsageIdentity(input.eventId ?? metadata?.eventId);
-    const kind = normalizeUsageKind(input.kind ?? metadata?.kind);
-    const idempotencyKey = stableUsageLedgerIdempotencyKey({ providerJobId, eventId, kind });
-    const data = {
-      ...(runId ? { runId } : {}),
-      ...(userId ? { userId } : {}),
-      ...(providerJobId ? { providerJobId } : {}),
-      ...(eventId ? { eventId } : {}),
-      ...(kind ? { kind } : {}),
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-      amount,
-      currency,
-      ...(metadata ? { metadata: metadata as Prisma.InputJsonValue } : {}),
-    };
-
-    // Legacy callers that do not provide a provider/event identity retain the
-    // append-only create behavior. Identified usage is immutable and uses a
-    // unique key so provider retries cannot create a second charge.
-    if (!idempotencyKey) {
-      return this.prisma.usageLedger.create({ data });
-    }
-
-    return this.prisma.usageLedger.upsert({
-      where: { idempotencyKey },
-      create: {
-        id: stableUsageLedgerId(idempotencyKey),
-        ...data,
-      },
-      // A duplicate provider event must return the original immutable ledger
-      // row, even if a retry carries different usage values.
-      update: {},
-    });
   }
 }
 
@@ -786,31 +715,14 @@ function requireUuid(
 /** Stable UUID for a BullMQ/API run identifier. */
 export function databaseRunId(externalRunId: string): string {
   if (UUID_PATTERN.test(externalRunId)) return externalRunId;
-  const digest = createHash('sha256').update(`multimodal-canvas:run:${externalRunId}`).digest('hex');
+  const digest = createHash('sha256')
+    .update(`multimodal-canvas:run:${externalRunId}`)
+    .digest('hex');
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
 function toPrismaRunStatus(status: RunStatus): PrismaRunStatus {
   return status.toUpperCase() as PrismaRunStatus;
-}
-
-function normalizeAmount(value: number | string): string {
-  const raw = typeof value === 'number' ? String(value) : value.trim();
-  if (!AMOUNT_PATTERN.test(raw)) {
-    throw new RunPersistenceError(
-      'invalid_amount',
-      'usage amount must fit Decimal(18,6) and use a plain decimal string',
-    );
-  }
-  return raw;
-}
-
-function normalizeCurrency(value: string | undefined): string {
-  const currency = (value ?? 'USD').trim().toUpperCase();
-  if (!CURRENCY_PATTERN.test(currency)) {
-    throw new RunPersistenceError('invalid_currency', 'usage currency must be a 3-letter code');
-  }
-  return currency;
 }
 
 function parseDate(value: string, field: string): Date {
@@ -826,54 +738,4 @@ export function stableProviderJobId(provider: string, providerJobId: string): st
     .digest('hex');
   const hex = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
   return hex;
-}
-
-type UsageIdentity = {
-  providerJobId?: string;
-  eventId?: string;
-  kind?: string;
-};
-
-/**
- * Returns a stable, opaque unique key for a provider usage event.
- *
- * Provider job identity wins over event identity because a single provider
- * job may be delivered through more than one transport. Event identity is a
- * fallback for providers that do not expose a durable job id. The kind keeps
- * separately billable event types independent while still allowing an id
- * without a kind for legacy integrations.
- */
-export function stableUsageLedgerIdempotencyKey(identity: UsageIdentity): string | undefined {
-  const providerJobId = normalizeUsageIdentity(identity.providerJobId);
-  const eventId = normalizeUsageIdentity(identity.eventId);
-  const kind = normalizeUsageKind(identity.kind) ?? '';
-  const source = providerJobId
-    ? `providerJobId:${providerJobId}`
-    : eventId
-      ? `eventId:${eventId}`
-      : undefined;
-  if (!source) return undefined;
-
-  return createHash('sha256')
-    .update(`multimodal-canvas:usage-ledger:v1:${source}\u0000kind:${kind}`)
-    .digest('hex');
-}
-
-/** Stable UUID primary key used for identified usage rows. */
-export function stableUsageLedgerId(idempotencyKey: string): string {
-  const digest = createHash('sha256')
-    .update(`multimodal-canvas:usage-ledger-id:${idempotencyKey}`)
-    .digest('hex');
-  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
-function normalizeUsageIdentity(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeUsageKind(value: unknown): string | undefined {
-  const normalized = normalizeUsageIdentity(value);
-  return normalized?.toLowerCase();
 }

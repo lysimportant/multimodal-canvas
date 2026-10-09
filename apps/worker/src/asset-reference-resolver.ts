@@ -413,13 +413,6 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     const consumer = snapshot.nodes.find((node) => node.id === consumerNodeId);
     const modelAlias =
       consumerNodeId === snapshot.targetNodeId ? snapshot.modelAlias : consumer?.data.modelAlias;
-    const maxBytes =
-      consumer?.data.mediaType === 'video' && resolved.mediaType !== 'text'
-        ? image2proVideoContractForModel(modelAlias)?.mediaMaxBytes?.[resolved.mediaType]
-        : undefined;
-    if (maxBytes !== undefined && resolved.sizeBytes > maxBytes) {
-      throw new Error('Image2Pro 冻结参考素材超过模型的单文件大小上限');
-    }
     const policy = providerAssetUrlPolicy(snapshot, consumerNodeId, resolved.mediaType);
     if (policy === 'data') return resolved.dataUrl;
     const signer = this.blobStore.createProviderGetUrl;
@@ -793,41 +786,7 @@ function providerAssetUrlPolicy(
   mediaType: MediaType,
 ): 'data' | 'preferred' | 'required' {
   const consumer = snapshot.nodes.find((node) => node.id === consumerNodeId);
-  if (consumer?.data.mediaType !== 'video' || mediaType === 'text') return 'data';
-  const modelAlias =
-    consumerNodeId === snapshot.targetNodeId
-      ? snapshot.modelAlias
-      : consumer.data.modelAlias?.trim();
-  if (!modelAlias) return 'data';
-  if (moonVideoContractForModel(modelAlias) || yuanliuVideoContractForModel(modelAlias)) {
-    return 'required';
-  }
-  if (
-    modelAlias === 'seedance-2-0-official' ||
-    modelAlias === 'seedance-2-0-fast-official' ||
-    modelAlias === 'seedance-2-0-mini-official'
-  ) {
-    return 'required';
-  }
-  const family = videoFamilyForModel(modelAlias);
-  if (family === 'moon-minimax-h3') return 'required';
-  if (family === 'wan3' && (mediaType === 'video' || mediaType === 'audio')) return 'required';
-  if (
-    (family === 'seedance-2' || family === 'seedance-2.5' || family === 'image2pro') &&
-    mediaType === 'video'
-  ) {
-    return 'required';
-  }
-  if (
-    family === 'minimax-h3' ||
-    family === 'wan3' ||
-    family === 'seedance-2' ||
-    family === 'seedance-2.5' ||
-    family === 'image2pro'
-  ) {
-    return 'preferred';
-  }
-  return 'data';
+  return consumer?.data.mediaType === 'video' && mediaType !== 'text' ? 'preferred' : 'data';
 }
 
 /** 只读取选中 AssetVersion 元数据中的正有限时长。 */

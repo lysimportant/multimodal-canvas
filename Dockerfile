@@ -41,7 +41,7 @@ FROM base AS initialize
 COPY scripts/docker/init.mjs /app/init.mjs
 CMD ["node", "init.mjs"]
 
-# 迁移只使用新 Compose 项目专用数据库，保留正式迁移历史，不执行 db push/reset。
+# 迁移使用 runtime 注入的本地或外部 PostgreSQL，保留历史，不执行 db push/reset。
 FROM build AS migrate
 COPY scripts/docker/runtime.mjs scripts/docker/run.mjs /workspace/docker/
 ENV NODE_ENV=production

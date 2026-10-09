@@ -57,7 +57,7 @@ export type PromptSkillPanelProps = {
   promptDocument: PromptDocument;
   /** 未设置时不默认选择技能。 */
   skillId?: string;
-  /** 可选目录；只展示具备文字能力的模型，缺省使用服务端默认值。 */
+  /** 可选模型目录；不按媒体能力过滤，缺省使用服务端默认值。 */
   models?: ModelEntry[];
   /** 共享内置与自定义技能目录；缺省使用内置目录。 */
   skills?: readonly PromptSkill[];
@@ -173,7 +173,7 @@ function PromptSkillPanelSession({
     ),
   ];
   const skillAvailable = skill !== undefined && skill.enabled !== false;
-  const textModels = models.filter((model) => model.mediaTypes.includes('text'));
+  const textModels = models;
   const selectedModel = textModels.find((model) => modelIdentity(model) === modelKey);
   const modelOptions = [
     { value: 'default', label: '默认文字模型' },
@@ -183,7 +183,6 @@ function PromptSkillPanelSession({
       description: model.group ?? model.credentialLabel,
       trailingLabel: model.group ?? model.credentialLabel,
       groupLabel: model.group ?? model.credentialLabel ?? '文字模型',
-      disabled: Boolean(model.availability && model.availability !== 'available'),
     })),
   ];
   const draft = pending?.draft;
@@ -365,12 +364,15 @@ function PromptSkillPanelSession({
         void execute(saved);
         return;
       }
+      const modelIdentity = modelKey === 'default' ? undefined : (JSON.parse(modelKey) as unknown);
       if (
-        modelKey !== 'default' &&
-        (!selectedModel ||
-          (selectedModel.availability && selectedModel.availability !== 'available'))
+        modelIdentity !== undefined &&
+        (!Array.isArray(modelIdentity) ||
+          typeof modelIdentity[0] !== 'string' ||
+          (modelIdentity[1] !== null && typeof modelIdentity[1] !== 'string'))
       )
-        throw new Error('所选文字模型已不可用');
+        throw new Error('模型身份格式无效');
+      const chosenModel = modelIdentity as [string, string | null] | undefined;
       const request: PromptOptimizationRequest = {
         projectId,
         nodeId,
@@ -379,10 +381,10 @@ function PromptSkillPanelSession({
         skillVersion: skill.version,
         promptDocument: inputDocument.data,
         idempotencyKey: crypto.randomUUID(),
-        ...(selectedModel
+        ...(chosenModel
           ? {
-              modelAlias: selectedModel.id,
-              credentialId: selectedModel.credentialId,
+              modelAlias: chosenModel[0],
+              ...(chosenModel[1] ? { credentialId: chosenModel[1] } : {}),
             }
           : {}),
       };

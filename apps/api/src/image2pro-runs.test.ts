@@ -184,7 +184,7 @@ async function fixture(modelAlias: string, references: boolean, invalidQuality =
 
 describe('Image2Pro HTTP 运行合同', () => {
   it.each(['node', 'document'] as const)(
-    'MAX 非空 %s 正文与 prompt 连线冲突时零 Run、零 Provider 请求',
+    'MAX 非空 %s 正文与 prompt 连线同时发送，由 New API 决定如何处理',
     async (source) => {
       const context = await fixture('无限制-Flash-MAX-Video', false);
       if (source === 'document')
@@ -218,10 +218,13 @@ describe('Image2Pro HTTP 运行合同', () => {
         payload: { projectId: context.project.id },
         headers: { authorization: `Bearer ${context.session.accessToken}` },
       });
-      expect(submitted.statusCode, submitted.body).toBe(400);
-      expect(submitted.json()).toMatchObject({ code: 'INPUT_ROLE_CONFLICT' });
-      expect(await context.runService.listByProject(context.project.id)).toEqual([]);
-      expect(context.fetchImpl).not.toHaveBeenCalled();
+      expect(submitted.statusCode, submitted.body).toBe(202);
+      const run = await completedRun(context.runService, submitted.json().run.id);
+      expect(run.status, JSON.stringify(run.error)).toBe('succeeded');
+      expect(context.fetchImpl).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(String(context.fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
+        model: '无限制-Flash-MAX-Video',
+      });
     },
   );
 
@@ -304,6 +307,8 @@ describe('Image2Pro HTTP 运行合同', () => {
   it.each(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'])(
     '%s 文生视频和图片提及均使用标准视频路径与公共任务 ID',
     async (modelAlias) => {
+      vi.stubEnv('CANVAS_WEB_URL', 'https://canvas.example.com');
+      vi.stubEnv('ASSET_ACCESS_URL_SECRET', 'synthetic-image2pro-asset-secret');
       for (const references of [false, true]) {
         const context = await fixture(modelAlias, references);
         const submitted = await context.app.inject({
@@ -324,7 +329,9 @@ describe('Image2Pro HTTP 运行合同', () => {
         if (references)
           expect(body.content).toContainEqual({
             type: 'image_url',
-            image_url: { url: `data:image/png;base64,${context.frozenImage.toString('base64')}` },
+            image_url: {
+              url: expect.stringContaining('https://canvas.example.com/v1/provider-assets/'),
+            },
             role: 'reference_image',
           });
         expect(run.providerJob).toMatchObject({
@@ -336,100 +343,11 @@ describe('Image2Pro HTTP 运行合同', () => {
     },
   );
 
-  it('不支持的旧质量必须先移除，不能在真实 POST 时静默忽略', async () => {
-    const context = await fixture('Seedance2.0 0.9r', true, true);
-    const submitted = await context.app.inject({
-      method: 'POST',
-      url: '/v1/nodes/video-target/runs',
-      payload: { projectId: context.project.id },
-      headers: { authorization: `Bearer ${context.session.accessToken}` },
-    });
-    expect(submitted.statusCode, submitted.body).toBe(400);
-    expect(submitted.body).toContain('quality');
-    expect(context.fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it.each(
-    ['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'].flatMap((modelAlias) =>
-      (['video', 'audio'] as const).map((mediaType) => ({ modelAlias, mediaType })),
-    ),
-  )(
-    '$modelAlias 冻结 $mediaType 提及时长非法时，零 Run、零 POST',
-    async ({ modelAlias, mediaType }) => {
-      for (const durations of [[1.99], [15.01], [8, 8]]) {
-        const context = await fixture(modelAlias, true);
-        const blocks = context.canvas.nodes[0]!.data.promptDocument!.blocks;
-        for (const [index, durationSeconds] of durations.entries()) {
-          const asset = await context.assetStore.create({
-            ownerId: context.session.user.id,
-            projectId: context.project.id,
-            name: `${mediaType}-${index}`,
-            mediaType,
-            mimeType: mediaType === 'video' ? 'video/mp4' : 'audio/mpeg',
-            content: Buffer.from(`frozen-${mediaType}-${index}`),
-            metadata: { durationSeconds },
-          });
-          // 最新版本合法不能覆盖用户明确选择的旧版本时长。
-          await context.assetStore.createVersion(asset.id, {
-            content: Buffer.from('newer-valid-media'),
-            metadata: { durationSeconds: 2 },
-          });
-          blocks.push({
-            type: 'mention',
-            mentionId: `media-${index}`,
-            assetId: asset.id,
-            assetVersion: 1,
-            mediaType,
-            label: '参考素材',
-          });
-        }
-        await context.projectStore.updateCanvas(context.project.id, context.canvas);
-        const submitted = await context.app.inject({
-          method: 'POST',
-          url: '/v1/nodes/video-target/runs',
-          payload: { projectId: context.project.id },
-          headers: { authorization: `Bearer ${context.session.accessToken}` },
-        });
-        expect(submitted.statusCode, submitted.body).toBe(400);
-        expect(submitted.json()).toMatchObject({ code: 'UNSUPPORTED_INPUT_COMBINATION' });
-        expect(submitted.body).toContain(
-          durations.length > 1 ? '累计时长不能超过 15 秒' : '单段时长必须为 2 至 15 秒',
-        );
-        expect(await context.runService.listByProject(context.project.id)).toEqual([]);
-        expect(context.fetchImpl).not.toHaveBeenCalled();
-      }
-    },
-  );
-
-  it.each([
-    { parameters: { duration: 13 } },
-    { parameters: { duration: 5.5 } },
-    { parameters: { duration: 5, resolution: '1080p' } },
-    { parameters: { duration: 5, generate_audio: false } },
-    { parameters: { duration: 5, watermark: false } },
-    { parameters: { duration: 5, return_last_frame: false } },
-    { parameters: { duration: 5, ratio: 'adaptive' } },
-    { parameters: { duration: 5 }, prompt: '' },
-    { parameters: { duration: 5 }, prompt: 'x'.repeat(7001) },
-  ])('MAX 非法参数或文本 %# 在创建 Run 前明确拒绝', async ({ parameters, prompt }) => {
-    const context = await fixture('无限制-Flash-MAX-Video', false);
-    context.canvas.nodes[0]!.data.parameters = parameters;
-    if (prompt !== undefined) context.canvas.nodes[0]!.data.prompt = prompt;
-    await context.projectStore.updateCanvas(context.project.id, context.canvas);
-    const submitted = await context.app.inject({
-      method: 'POST',
-      url: '/v1/nodes/video-target/runs',
-      payload: { projectId: context.project.id },
-      headers: { authorization: `Bearer ${context.session.accessToken}` },
-    });
-    expect(submitted.statusCode, submitted.body).toBe(400);
-    expect(await context.runService.listByProject(context.project.id)).toEqual([]);
-    expect(context.fetchImpl).not.toHaveBeenCalled();
-  });
-
   it.each(['audio', 'video'] as const)(
     'MAX 内存 API 水合纯 %s 参考的冻结版本，保持公开任务与历史元数据',
     async (mediaType) => {
+      vi.stubEnv('CANVAS_WEB_URL', 'https://canvas.example.com');
+      vi.stubEnv('ASSET_ACCESS_URL_SECRET', 'synthetic-image2pro-asset-secret');
       const context = await fixture('无限制-Flash-MAX-Video', false);
       const content = Buffer.from(`h3-frozen-${mediaType}-v1`);
       const mimeType = mediaType === 'video' ? 'video/mp4' : 'audio/mpeg';
@@ -482,7 +400,9 @@ describe('Image2Pro HTTP 运行合同', () => {
       });
       expect(body.content).toContainEqual({
         type: `${mediaType}_url`,
-        [`${mediaType}_url`]: { url: `data:${mimeType};base64,${content.toString('base64')}` },
+        [`${mediaType}_url`]: {
+          url: expect.stringContaining('https://canvas.example.com/v1/provider-assets/'),
+        },
         role: `reference_${mediaType}`,
       });
       expect(run.snapshot.promptMentions).toContainEqual(
@@ -492,59 +412,9 @@ describe('Image2Pro HTTP 运行合同', () => {
       expect(context.fetchImpl.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET']);
     },
   );
-
-  it.each(['无限制-Flash-中配-Video'])(
-    '%s 在 API 保存 Run 前拒绝，不发送 Provider 请求',
-    async (modelAlias) => {
-      const context = await fixture(modelAlias, false);
-      const submitted = await context.app.inject({
-        method: 'POST',
-        url: '/v1/nodes/video-target/runs',
-        payload: { projectId: context.project.id },
-        headers: { authorization: `Bearer ${context.session.accessToken}` },
-      });
-      expect(submitted.statusCode, submitted.body).toBe(400);
-      expect(submitted.json()).toMatchObject({ code: 'model_unavailable' });
-      expect(submitted.body).toContain(modelAlias);
-      expect(await context.runService.listByProject(context.project.id)).toEqual([]);
-      expect(context.fetchImpl).not.toHaveBeenCalled();
-    },
-  );
 });
 
 describe('Yuan HTTP 运行合同', () => {
-  it.each([
-    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: {}, prompt: 'Create a scene.' },
-    { modelAlias: 'Yuan-Seedance-2.0-HD', parameters: { duration: 6 }, prompt: 'Create a scene.' },
-    {
-      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
-      parameters: { duration: 5, generate_audio: false },
-      prompt: 'Create a scene.',
-    },
-    { modelAlias: 'Yuan-Seedance-2.5-LJ-Full', parameters: { duration: 5 }, prompt: '' },
-    { modelAlias: 'Yuan-Seedance-2.5-LW', parameters: { duration: 5 }, prompt: 'Create a scene.' },
-    { modelAlias: 'yuan-seedance-2.5-lj', parameters: { duration: 5 }, prompt: 'Create a scene.' },
-  ])(
-    '$modelAlias 非法冻结参数或未适配名称 %# 为零 Run、零外发',
-    async ({ modelAlias, parameters, prompt }) => {
-      const context = await fixture(modelAlias, false);
-      const target = context.canvas.nodes[0]!.data;
-      target.parameters = parameters;
-      target.prompt = prompt;
-      if (modelAlias.includes('LW') || modelAlias.startsWith('yuan-')) delete target.videoMode;
-      await context.projectStore.updateCanvas(context.project.id, context.canvas);
-      const submitted = await context.app.inject({
-        method: 'POST',
-        url: '/v1/nodes/video-target/runs',
-        payload: { projectId: context.project.id },
-        headers: { authorization: `Bearer ${context.session.accessToken}` },
-      });
-      expect(submitted.statusCode, submitted.body).toBe(400);
-      expect(await context.runService.listByProject(context.project.id)).toEqual([]);
-      expect(context.fetchImpl).not.toHaveBeenCalled();
-    },
-  );
-
   it('普通混合参考使用被冻结版本的本站签名 URL，公开任务查询与持久记录不含签名', async () => {
     const secret = 'synthetic-yuan-asset-signing-secret';
     vi.stubEnv('CANVAS_WEB_URL', 'https://canvas.example.com');

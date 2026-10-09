@@ -249,6 +249,9 @@ let createFailure: string | null;
 let saveFailure: string | null;
 let projectRuns: RunRecord[];
 let currentRun: RunRecord | null;
+/** 能力开放合同测试使用的动态运行响应，按节点身份回显已提交参数。 */
+let dynamicRuns: Map<string, RunRecord>;
+let dynamicRunSequence: number;
 
 /** 按真实 URL 和方法提供最小后端合同；未声明请求直接使测试失败。 */
 function installApi() {
@@ -289,12 +292,47 @@ function installApi() {
     }
     if (name.endsWith('/runs') && method === 'GET') return json({ runs: projectRuns });
     if (name === '/v1/nodes/image-node/runs' && method === 'POST') {
-      if (!currentRun) throw new Error('测试未准备新的运行记录');
-      return json({ run: currentRun }, 202);
+      if (currentRun) return json({ run: currentRun }, 202);
+    }
+    const nodeRunMatch = /^\/v1\/nodes\/([^/]+)\/runs$/.exec(name);
+    if (nodeRunMatch && method === 'POST') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      const targetNodeId = decodeURIComponent(nodeRunMatch[1]!);
+      const modelAlias = typeof body.modelAlias === 'string' ? body.modelAlias : 'dynamic-model';
+      const parameters =
+        body.parameters && typeof body.parameters === 'object'
+          ? (body.parameters as Record<string, unknown>)
+          : {};
+      const run = runRecord({
+        id: `dynamic-run-${++dynamicRunSequence}`,
+        projectId: project.id,
+        targetNodeId,
+        status: 'succeeded',
+        progress: 100,
+        modelAlias,
+        error: undefined,
+        snapshot: {
+          projectId: project.id,
+          canvasRevision: canvas.revision,
+          targetNodeId,
+          modelAlias,
+          parameters,
+          submittedAt: project.createdAt,
+          nodes: structuredClone(canvas.nodes),
+          edges: structuredClone(canvas.edges),
+          inputs: [],
+        },
+      });
+      dynamicRuns.set(run.id, run);
+      return json({ run }, 202);
     }
     if (name === '/v1/runs/' + currentRun?.id && method === 'GET') {
-      if (!currentRun) throw new Error('测试未准备新的运行记录');
-      return json({ run: currentRun });
+      if (currentRun) return json({ run: currentRun });
+    }
+    const dynamicRunMatch = /^\/v1\/runs\/([^/]+)$/.exec(name);
+    if (dynamicRunMatch && method === 'GET') {
+      const run = dynamicRuns.get(dynamicRunMatch[1]!);
+      if (run) return json({ run });
     }
     if (name.includes('/export/'))
       return new Response('export-fixture', {
@@ -355,6 +393,8 @@ beforeEach(() => {
   saveFailure = null;
   projectRuns = [];
   currentRun = null;
+  dynamicRuns = new Map();
+  dynamicRunSequence = 0;
   installApi();
 });
 afterEach(() => {
@@ -2090,20 +2130,22 @@ describe('App 组件库迁移', () => {
 });
 
 describe('App 节点参数提交', () => {
-  it('新建沿用的旧图片参数冲突时显示错误，不添加节点或发起运行', async () => {
+  it('新建图片节点不因旧节点参数冲突失败，并保留旧节点参数', async () => {
     const node = imageNode('image-node', 'image-model');
     node.data.parameters = { quality: '4k', aspectRatio: '9:16', size: '1024x1024' };
     canvas.nodes = [node];
     await renderCanvas(1);
     act(() => view.canvas!.onAddGenerateNode('image'));
-    expect(screen.getByText(/图片参数.*冲突/)).toBeInTheDocument();
-    expect(view.canvas!.nodes).toHaveLength(1);
-    expect(canvas.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+    await waitFor(() => expect(view.canvas!.nodes).toHaveLength(2));
+    expect(view.canvas!.nodes.find((entry) => entry.id === node.id)?.data.parameters).toEqual(
+      node.data.parameters,
+    );
+    expect(canvas.nodes).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
   });
 
   it.each(['sameNode', 'newNode'] as const)(
-    '不支持的音色在 %s 入口提前拒绝且保留历史值',
+    '未知音色在 %s 入口允许提交且保留历史值',
     async (target) => {
       const node: CanvasDocument['nodes'][number] = {
         ...emptyNode('image-node'),
@@ -2115,56 +2157,93 @@ describe('App 节点参数提交', () => {
           modelAlias: 'test-tts',
           prompt: 'Read the sample.',
           assetId: 'existing-audio',
+          contentUrl: '/v1/assets/existing-audio/content',
           parameters: { voice: 'custom voice', response_format: 'wav' },
         },
       };
       canvas.nodes = [node];
       await renderCanvas(0);
       await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!, target));
-      expect(screen.getByText(/当前接口不支持此音色/)).toBeInTheDocument();
-      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
-      expect(view.canvas!.nodes).toHaveLength(1);
-      expect(view.canvas!.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+      const requests = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'POST' && /\/v1\/nodes\/[^/]+\/runs$/.test(String(url)),
+      );
+      expect(requests).toHaveLength(1);
+      const [url, init] = requests[0]!;
+      if (target === 'sameNode') expect(String(url)).toContain(`/v1/nodes/${node.id}/runs`);
+      else expect(String(url)).not.toContain(`/v1/nodes/${node.id}/runs`);
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        projectId: project.id,
+        modelAlias: 'test-tts',
+        parameters: {
+          voice: 'custom voice',
+          response_format: 'wav',
+          prompt: 'Read the sample.',
+        },
+      });
+      expect(view.canvas!.nodes).toHaveLength(target === 'sameNode' ? 1 : 2);
+      expect(view.canvas!.nodes.find((entry) => entry.id === node.id)?.data.parameters).toEqual(
+        node.data.parameters,
+      );
     },
   );
 
   it.each(['sameNode', 'newNode'] as const)(
-    '图片尺寸冲突时 %s 入口不创建任务或新节点',
+    '图片尺寸参数冲突时 %s 入口仍允许提交并保留原值',
     async (target) => {
       const node = imageNode('image-node', 'image-model');
       node.data = {
         ...node.data,
         prompt: 'Change the lighting.',
         assetId: asset.id,
+        contentUrl: asset.contentUrl,
         parameters: { quality: '4k', aspectRatio: '9:16', size: '1024x1024' },
       };
       canvas.nodes = [node];
       await renderCanvas(0);
       await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!, target));
-      expect(screen.getByText(/图片参数.*冲突/)).toBeInTheDocument();
-      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
-      expect(view.canvas!.nodes).toHaveLength(1);
-      expect(canvas.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+      const requests = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'POST' && /\/v1\/nodes\/[^/]+\/runs$/.test(String(url)),
+      );
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(String(requests[0]![1]!.body))).toMatchObject({
+        projectId: project.id,
+        modelAlias: 'image-model',
+        parameters: { size: '1024x1024', prompt: 'Change the lighting.' },
+      });
+      expect(view.canvas!.nodes).toHaveLength(target === 'sameNode' ? 1 : 2);
+      expect(view.canvas!.nodes.find((entry) => entry.id === node.id)?.data.parameters).toEqual(
+        node.data.parameters,
+      );
     },
   );
 
   it.each(['sameNode', 'newNode'] as const)(
-    '已知图片模型不支持的尺寸在 %s 入口按冻结模型拒绝',
+    '未知图片模型的尺寸在 %s 入口允许提交并保留原值',
     async (target) => {
       const node = imageNode('image-node', 'gpt-image-2.5-sunburst');
       node.data = {
         ...node.data,
         prompt: 'Change the lighting.',
         assetId: asset.id,
+        contentUrl: asset.contentUrl,
         parameters: { quality: '4k', aspectRatio: '1:1' },
       };
       canvas.nodes = [node];
       await renderCanvas(0);
       await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!, target));
-      expect(screen.getByText(/总像素范围/)).toBeInTheDocument();
-      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
-      expect(view.canvas!.nodes).toHaveLength(1);
-      expect(view.canvas!.nodes[0]!.data.parameters).toEqual(node.data.parameters);
+      const requests = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'POST' && /\/v1\/nodes\/[^/]+\/runs$/.test(String(url)),
+      );
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(String(requests[0]![1]!.body))).toMatchObject({
+        projectId: project.id,
+        modelAlias: 'gpt-image-2.5-sunburst',
+        parameters: { size: '3840x3840', prompt: 'Change the lighting.' },
+      });
+      expect(view.canvas!.nodes).toHaveLength(target === 'sameNode' ? 1 : 2);
+      expect(view.canvas!.nodes.find((entry) => entry.id === node.id)?.data.parameters).toEqual(
+        node.data.parameters,
+      );
     },
   );
 

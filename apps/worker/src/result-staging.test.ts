@@ -76,9 +76,6 @@ function execution(): ProviderExecution {
       updatedAt: '2026-09-24T00:01:00.000Z',
     },
     usage: {
-      amount: '0.012345',
-      currency: 'USD',
-      userId: 'tenant-user',
       metadata: { tokens: 13, receipt: { private: 'synthetic-usage-secret' } },
     },
   };

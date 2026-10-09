@@ -2124,22 +2124,22 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     await user.click(within(videoEditor).getByRole('combobox', { name: /^生成模式：/ }));
     await user.click(screen.getByRole('option', { name: /全能参考/ }));
 
-    // 图片不能接到视频的 audioTrack 端口，连接应被静默拒绝。
+    // 视频输入角色由上游能力判断，画布保留图片到 audioTrack 的连线。
     await user.click(handleFor(imageNode, 'output:image'));
     await user.click(handleFor(videoNode, 'input:audioTrack'));
-    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(0);
+    await waitFor(() => expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1));
 
-    // 图片角色参考是合法连线，随后反向连线会形成循环依赖。
+    // 图片角色参考同样保留，随后反向连线会形成循环依赖。
     await user.click(handleFor(imageNode, 'output:image'));
     await user.click(handleFor(videoNode, 'input:character'));
-    await waitFor(() => expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1));
+    await waitFor(() => expect(screen.queryAllByTestId('flow-edge')).toHaveLength(2));
 
     await user.click(handleFor(videoNode, 'output:video'));
     await user.click(handleFor(imageNode, 'input:content'));
     expect(
       screen.getAllByRole('alert').some((item) => item.textContent?.includes('不能创建循环依赖')),
     ).toBe(true);
-    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(1);
+    expect(screen.queryAllByTestId('flow-edge')).toHaveLength(2);
   });
 
   it('从图片节点拖线到空白处可创建图生图节点并连上内容口', async () => {

@@ -178,26 +178,9 @@ describe.each([false, true])('image output parameters (edit=%s)', (edit) => {
     expect(body).not.toHaveProperty('aspect_ratio');
     expect(body).not.toHaveProperty('resolution');
   });
-
-  it.each([
-    { size: '1024x1024', quality: '4k', aspectRatio: '9:16' },
-    { size: '1024x1536', aspectRatio: '16:9' },
-    { resolution: '8k', aspectRatio: '9:16' },
-    { resolution: '4k', aspectRatio: '0:16' },
-    { quality: '4k', resolution: '2k' },
-  ])('rejects conflicting or invalid image dimensions before POST: %j', async (parameters) => {
-    const { provider, fetchImpl } = imageProvider();
-    await expect(
-      provider.execute({ snapshot: imageSnapshot(parameters, edit) }),
-    ).rejects.toMatchObject({
-      code: 'INVALID_PROVIDER_PARAMETER',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
 });
 
-describe.each([false, true])('known image model boundaries (edit=%s)', (edit) => {
+describe.each([false, true])('image model parameters (edit=%s)', (edit) => {
   it.each(['9:16', '16:9', '21:9'])(
     'sends supported UHD %s through the exact model',
     async (aspectRatio) => {
@@ -216,38 +199,9 @@ describe.each([false, true])('known image model boundaries (edit=%s)', (edit) =>
       );
     },
   );
-
-  it.each([
-    { resolution: '4k', aspectRatio: '1:1' },
-    { resolution: '3k', aspectRatio: '1:1' },
-    { resolution: '1k', aspectRatio: '9:16' },
-    { size: '1200x700' },
-    { size: '4096x2160' },
-  ])(
-    'rejects known model size violations before creating or sending records: %j',
-    async (parameters) => {
-      const { provider, fetchImpl } = imageProvider();
-      const onRequestPrompt = vi.fn();
-      await expect(
-        provider.execute({ snapshot: imageSnapshot(parameters, edit), onRequestPrompt }),
-      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onRequestPrompt).not.toHaveBeenCalled();
-    },
-  );
 });
 
 describe('frozen image edit size declarations', () => {
-  it('compares the resolved pixels with the declared sizes before upload', async () => {
-    const { provider, fetchImpl } = imageProvider();
-    const snapshot = imageSnapshot({ quality: '4k', aspectRatio: '9:16' }, true);
-    snapshot.imageEditCapability = { declared: true, parameters: ['size'], sizes: ['1024x1024'] };
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-      code: 'IMAGE_EDIT_SIZE_UNSUPPORTED',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
   it('accepts equivalent canonical size and resolution without sending aliases', async () => {
     const { provider, fetchImpl } = imageProvider();
     const snapshot = imageSnapshot(
@@ -267,18 +221,5 @@ describe('frozen image edit size declarations', () => {
     expect(body.has('aspect_ratio')).toBe(false);
     expect(body.has('resolution')).toBe(false);
     expect(fetchImpl).toHaveBeenCalledOnce();
-  });
-});
-
-describe('fixed-size image models reject automatic dimensions', () => {
-  it.each(['dall-e-2', 'dall-e-3'])('rejects auto for %s before POST', async (modelAlias) => {
-    const { provider, fetchImpl } = imageProvider();
-    const snapshot = imageSnapshot({ size: 'auto' });
-    snapshot.modelAlias = modelAlias;
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-      code: 'INVALID_PROVIDER_PARAMETER',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

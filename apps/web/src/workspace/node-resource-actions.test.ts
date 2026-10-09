@@ -127,7 +127,7 @@ describe('attachUploadedNodeResource', () => {
     expect(duplicate.data).toBe(result.data);
   });
 
-  it('缺少版本、归档或超过 40 项时拒绝添加并保留原数据', () => {
+  it('缺少版本或归档时拒绝添加，引用数量不限制已有资料', () => {
     const destination = target();
     expect(() =>
       attachUploadedNodeResource(destination, [destination], [], assets, {
@@ -151,9 +151,10 @@ describe('attachUploadedNodeResource', () => {
       attached: true,
     }));
     const before = structuredClone(destination);
-    expect(() =>
-      attachUploadedNodeResource(destination, [destination], [], assets, uploaded),
-    ).toThrow(/40/);
+    const result = attachUploadedNodeResource(destination, [destination], [], assets, uploaded);
+    expect(result.data.resourceRefs).toHaveLength(41);
+    expect(result.data.resourceRefs?.slice(0, 40)).toEqual(before.data.resourceRefs);
+    expect(result.data.resourceRefs?.[40]).toMatchObject({ assetId: uploaded.id, assetVersion: 3 });
     expect(destination).toEqual(before);
   });
 });
@@ -631,12 +632,13 @@ describe('addNodeResourceReference', () => {
     expect(video.data.promptDocument).toBeUndefined();
   });
 
-  it('无媒体输入的文生视频可切换全能参考，不删除原有连线', () => {
+  it('文生视频追加参考资料保留用户模式，不删除原有连线', () => {
     const video = target();
     video.data.videoMode = 'text_to_video';
     const next = addNodeResourceReference([source('a'), video], [], assets, 'video', 'a');
-    expect(next.nodes[1].data.videoMode).toBe('omni_reference');
+    expect(next.nodes[1].data.videoMode).toBe('text_to_video');
     expect(next.edges).toHaveLength(1);
+    expect(next.edges[0].targetHandle).toBe('input:referenceImage');
   });
 
   it('不为新参考资源静默删除或改变已有首尾帧角色', () => {
@@ -649,9 +651,21 @@ describe('addNodeResourceReference', () => {
       sourceHandle: 'output:image',
       targetHandle: 'input:firstFrame',
     };
-    expect(() =>
-      addNodeResourceReference([source('a'), source('b'), video], [edge], assets, 'video', 'b'),
-    ).toThrow('首尾帧');
+    const result = addNodeResourceReference(
+      [source('a'), source('b'), video],
+      [edge],
+      assets,
+      'video',
+      'b',
+    );
+    expect(result.edges[0]).toEqual(edge);
+    expect(result.edges[1]).toMatchObject({ source: 'b', targetHandle: 'input:referenceImage' });
+    expect(result.nodes[2].data.videoMode).toBe('first_last_frame');
+    expect(result.nodes[2].data.resourceRefs).toEqual([
+      expect.objectContaining({ assetId: 'a', assetVersion: 1 }),
+      expect.objectContaining({ assetId: 'b', assetVersion: 1, attached: true }),
+    ]);
+    expect(result.nodes[2].data.resourceRefs?.[0].attached).toBeUndefined();
     expect(edge.targetHandle).toBe('input:firstFrame');
     expect(video.data.videoMode).toBe('first_last_frame');
   });
@@ -722,7 +736,7 @@ describe('旧引用与视频模式边界', () => {
   });
 
   it.each(['firstFrame', 'lastFrame'] as const)(
-    '拒绝把合法首尾帧的已连接 %s 再添加为 mention',
+    '点选已有 %s 保留首尾帧角色，不转成通用参考或重复连线',
     (role) => {
       const video = target();
       video.data.videoMode = 'first_last_frame';
@@ -744,15 +758,23 @@ describe('旧引用与视频模式边界', () => {
         },
       ];
       const before = structuredClone({ nodes, edges });
-      expect(() =>
-        addNodeResourceReference(nodes, edges, assets, 'video', role === 'firstFrame' ? 'a' : 'b'),
-      ).toThrow('原帧连线和生成模式未改变');
+      const result = addNodeResourceReference(
+        nodes,
+        edges,
+        assets,
+        'video',
+        role === 'firstFrame' ? 'a' : 'b',
+      );
+      expect(result.edges).toEqual(edges);
+      expect(result.nodes[2].data.videoMode).toBe('first_last_frame');
+      expect(result.nodes[2].data.resourceRefs).toHaveLength(2);
+      expect(result.nodes[2].data.resourceRefs?.every((ref) => !ref.attached)).toBe(true);
       expect({ nodes, edges }).toEqual(before);
     },
   );
 
   it.each(['text_to_video', 'first_last_frame', 'omni_reference'] as const)(
-    '%s 点选文字来源明确拒绝不支持的 mention，不更改模式或原有连线',
+    '%s 点选文字来源保存冻结资料，不更改模式或原有连线',
     (videoMode) => {
       const video = target();
       video.data.videoMode = videoMode;
@@ -780,9 +802,18 @@ describe('旧引用与视频模式边界', () => {
             ]
           : [];
       const before = structuredClone({ nodes, edges });
-      expect(() => addNodeResourceReference(nodes, edges, assets, 'video', 'text')).toThrow(
-        '文字资源提及',
+      const result = addNodeResourceReference(nodes, edges, assets, 'video', 'text');
+      expect(result.nodes[3].data.videoMode).toBe(videoMode);
+      expect(result.nodes[3].data.resourceRefs).toContainEqual(
+        expect.objectContaining({
+          assetId: 'text',
+          assetVersion: 1,
+          mediaType: 'text',
+          attached: true,
+        }),
       );
+      expect(result.edges.slice(0, edges.length)).toEqual(edges);
+      expect(result.edges.at(-1)).toMatchObject({ source: 'text', targetHandle: 'input:prompt' });
       expect({ nodes, edges }).toEqual(before);
     },
   );

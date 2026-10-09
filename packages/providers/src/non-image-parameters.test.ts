@@ -101,6 +101,113 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
   return JSON.parse(String(init?.body)) as Record<string, unknown>;
 }
 
+describe('开放的 New API 请求参数', () => {
+  it.each(['text', 'image', 'audio'] as const)(
+    '%s 保留自定义模型、数量、扩展字段与显式假值',
+    async (mediaType) => {
+      const parameters = {
+        n: 12,
+        stream: false,
+        custom: { enabled: false, seed: 0 },
+        ...(mediaType === 'audio'
+          ? { voice: 'custom-voice', speed: 8, response_format: 'vendor-audio' }
+          : mediaType === 'image'
+            ? { size: '8192x8192', quality: 'vendor-quality' }
+            : { temperature: 2.5 }),
+      };
+      const snapshot = snapshotFor(
+        mediaType === 'image' ? 'text' : mediaType,
+        parameters,
+        'future/custom-model',
+      );
+      snapshot.nodes[0]!.type = mediaType;
+      snapshot.nodes[0]!.data.mediaType = mediaType;
+      const response =
+        mediaType === 'text'
+          ? jsonResponse({
+              choices: [{ message: { content: 'received' } }],
+              usage: { cost: '12.3', currency: 'USD', tokens: 8 },
+            })
+          : mediaType === 'image'
+            ? jsonResponse({ data: [{ b64_json: Buffer.from('image-output').toString('base64') }] })
+            : new Response(new Uint8Array([1, 2, 3]), {
+                headers: { 'content-type': 'audio/mpeg' },
+              });
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+      const execution = await standardProvider(fetchImpl).execute({ snapshot });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(requestBody(fetchImpl.mock.calls[0]![1])).toMatchObject({
+        ...parameters,
+        model: 'future/custom-model',
+      });
+      if (mediaType === 'text')
+        expect(execution.usage).toEqual({ metadata: { cost: '12.3', currency: 'USD', tokens: 8 } });
+    },
+  );
+
+  it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
+    '%s 透传浮点时长、任意比例及混合引用，不预拒未知模型',
+    async (contract) => {
+      const parameters = {
+        duration: 37.25,
+        resolution: '8K',
+        aspectRatio: '32:9',
+        n: 4,
+        stream: false,
+        vendor_flag: { enabled: false, seed: 0 },
+      };
+      const snapshot = snapshotFor('video', parameters, 'future/video-model');
+      snapshot.nodes[0]!.data.videoMode = 'first_frame';
+      snapshot.inputs = (
+        [
+          ['firstFrame', 'image'],
+          ['firstFrame', 'image'],
+          ['content', 'video'],
+          ['audioTrack', 'audio'],
+        ] as const
+      ).map(([role, mediaType], sortOrder) => ({
+        nodeId: `source-${sortOrder}`,
+        role,
+        sortOrder,
+        sourceAssetId: `asset-${sortOrder}`,
+        sourceAssetVersion: 2,
+        snapshot: {
+          id: `source-${sortOrder}`,
+          type: mediaType,
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Frozen source',
+            mode: 'source',
+            mediaType,
+            contentUrl: `https://assets.example/source-${sortOrder}`,
+            mimeType: `${mediaType}/synthetic`,
+          },
+        },
+      }));
+      const harness = videoHarness(contract);
+      await harness.provider.execute({ snapshot, onProviderJob: harness.onProviderJob });
+      expect(harness.fetchImpl).toHaveBeenCalledTimes(2);
+      const body = requestBody(harness.fetchImpl.mock.calls[0]![1]);
+      expect(body).toMatchObject({
+        model: 'future/video-model',
+        duration: 37.25,
+        resolution: '8K',
+        aspect_ratio: '32:9',
+        n: 4,
+        stream: false,
+        vendor_flag: { enabled: false, seed: 0 },
+      });
+      const serialized = JSON.stringify(body);
+      for (let index = 0; index < 4; index += 1)
+        expect(serialized).toContain(`https://assets.example/source-${index}`);
+      expect(snapshot.parameters).toEqual(parameters);
+      expect(harness.onProviderJob.mock.calls[0]![0]).toMatchObject({
+        payload: { phase: 'submitting', modelAlias: 'future/video-model' },
+      });
+    },
+  );
+});
+
 describe('非图片参数的出站字段', () => {
   it('文本保留采样、长度、惩罚、随机种子和格式，推理别名只生成一个字段', async () => {
     const fetchImpl = vi
@@ -172,19 +279,6 @@ describe('非图片参数的出站字段', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['language', 'seed', 'temperature', 'volume', 'pitch'])(
-    'TTS 未接通的 %s 不会被静默丢弃或擅自透传',
-    async (parameter) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      await expect(
-        standardProvider(fetchImpl).execute({
-          snapshot: snapshotFor('audio', { voice: 'nova', [parameter]: 'unverified' }),
-        }),
-      ).rejects.toMatchObject({ code: 'UNSUPPORTED_PROVIDER_PARAMETER', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-    },
-  );
-
   it.each(['legacy-v1', 'newapi-video-v1'] as const)(
     '%s 保留时长、分辨率、像素尺寸、质量和比例的别名值',
     async (contract) => {
@@ -222,13 +316,29 @@ describe('非图片参数的出站字段', () => {
     { size: '1280x720', videoSize: '720x1280' },
     { quality: 'high', videoQuality: 'low' },
     { aspect_ratio: '16:9', aspectRatio: '9:16' },
-  ])('视频冲突别名在写入发送意图和 POST 之前失败 %#', async (parameters) => {
+  ])('视频冲突别名由显式字段优先并交给上游处理 %#', async (parameters) => {
     const { provider, fetchImpl, onProviderJob } = videoHarness('newapi-video-v1');
-    await expect(
-      provider.execute({ snapshot: snapshotFor('video', parameters), onProviderJob }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
+    await provider.execute({ snapshot: snapshotFor('video', parameters), onProviderJob });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(onProviderJob).toHaveBeenCalled();
+    const body = requestBody(fetchImpl.mock.calls[0]?.[1]);
+    expect(body).toMatchObject({
+      model: 'synthetic-video',
+      prompt: 'Describe a calm coastal scene.',
+    });
+    if ('duration' in parameters) expect(body).toMatchObject({ duration: 8, seconds: '8' });
+    if ('resolution' in parameters)
+      expect(body).toMatchObject({ resolution: parameters.resolution });
+    if ('size' in parameters) expect(body).toMatchObject({ size: parameters.videoSize });
+    if ('quality' in parameters) expect(body).toMatchObject({ quality: parameters.videoQuality });
+    if ('aspect_ratio' in parameters)
+      expect(body).toMatchObject({ aspect_ratio: parameters.aspect_ratio });
+    const aliases = ['videoResolution', 'videoSize', 'videoQuality', 'aspectRatio'];
+    if (!('duration' in parameters)) aliases.push('seconds');
+    for (const alias of aliases) {
+      expect(body).not.toHaveProperty(alias);
+    }
   });
 
   it('统一视频合同保留小数时长、显式宽高、帧率和零随机种子', async () => {
@@ -250,25 +360,6 @@ describe('非图片参数的出站字段', () => {
       prompt: 'Describe a calm coastal scene.',
       ...parameters,
     });
-  });
-
-  it.each(
-    (['legacy-v1', 'newapi-video-v1'] as const).flatMap((contract) =>
-      ['seed', 'audio', 'generate_audio', 'audio_enabled', 'negative_prompt'].map((parameter) => ({
-        contract,
-        parameter,
-      })),
-    ),
-  )('$contract 未确认的 $parameter 在 POST 前明确拒绝', async ({ contract, parameter }) => {
-    const { provider, fetchImpl, onProviderJob } = videoHarness(contract);
-    await expect(
-      provider.execute({
-        snapshot: snapshotFor('video', { [parameter]: 1 }),
-        onProviderJob,
-      }),
-    ).rejects.toMatchObject({ code: 'UNSUPPORTED_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -340,36 +431,6 @@ describe('非图片参数的出站字段', () => {
 
 describe('Moon H3 必填时长', () => {
   it.each([
-    {},
-    { duration: undefined, seconds: undefined, durationSeconds: undefined },
-    ...['duration', 'seconds', 'durationSeconds'].flatMap((alias) =>
-      ['', '   ', null].map((value) => ({ [alias]: value })),
-    ),
-    { duration: '', seconds: '10' },
-  ])('缺失或空时长在请求记录和 POST 前失败 %#', async (durationParameters) => {
-    const { provider, fetchImpl, onProviderJob } = videoHarness('newapi-video-v1');
-    const snapshot = snapshotFor(
-      'video',
-      { resolution: '480p', aspectRatio: '16:9', ...durationParameters },
-      'minimax-h3',
-    );
-    const before = structuredClone(snapshot);
-    const onRequestPrompt = vi.fn();
-    await expect(
-      provider.execute({
-        snapshot,
-        onProviderJob,
-        onRequestPrompt,
-        runId: 'moon-duration-test-run',
-      }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-    expect(onRequestPrompt).not.toHaveBeenCalled();
-    expect(snapshot).toEqual(before);
-  });
-
-  it.each([
     { duration: 10 },
     { duration: ' 10 ' },
     { seconds: '10' },
@@ -416,22 +477,6 @@ describe('Moon H3 必填时长', () => {
     expect(body).not.toHaveProperty('seconds');
     expect(snapshot).toEqual(before);
   });
-
-  it.each(['legacy-v1', 'newapi-unified-v1'] as const)(
-    'Moon H3 在 %s 下仍按原合同拒绝，不被必填时长错误覆盖',
-    async (contract) => {
-      const { provider, fetchImpl, onProviderJob } = videoHarness(contract);
-      const snapshot = snapshotFor('video', {}, 'minimax-h3');
-      const before = structuredClone(snapshot);
-      await expect(provider.execute({ snapshot, onProviderJob })).rejects.toMatchObject({
-        code: 'VIDEO_CONTRACT_UNSUPPORTED',
-        retryable: false,
-      });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-      expect(snapshot).toEqual(before);
-    },
-  );
 });
 
 describe('非图片参数的别名与单项输出兼容', () => {
@@ -519,28 +564,6 @@ describe('非图片参数的别名与单项输出兼容', () => {
 });
 
 describe('非图片参数的静默覆盖与未实现输出回归', () => {
-  it.each([
-    { n: 2 },
-    { n: 0 },
-    { n: 1.5 },
-    { n: '1' },
-    { n: null },
-    { stream: true },
-    { stream: 'false' },
-    { stream: 0 },
-    { stream: null },
-  ])('文本不能发送当前归档不支持的输出参数 %#', async (parameters) => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        jsonResponse({ choices: [{ message: { content: 'Synthetic text' } }] }),
-      );
-    await expect(
-      standardProvider(fetchImpl).execute({ snapshot: snapshotFor('text', parameters) }),
-    ).rejects.toMatchObject({ code: 'UNSUPPORTED_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
   it('文本推理强度别名冲突不能静默覆写供应商字段', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -550,24 +573,6 @@ describe('非图片参数的静默覆盖与未实现输出回归', () => {
     await expect(
       standardProvider(fetchImpl).execute({
         snapshot: snapshotFor('text', { inferenceStrength: 'high', reasoning_effort: 'low' }),
-      }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it('TTS prompt 与 input 不同时在 POST 前拒绝而不是丢弃 input', async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(new Uint8Array([0, 1]), { headers: { 'content-type': 'audio/mpeg' } }),
-      );
-    await expect(
-      standardProvider(fetchImpl).execute({
-        snapshot: snapshotFor('audio', {
-          voice: 'nova',
-          prompt: 'Read north.',
-          input: 'Read south.',
-        }),
       }),
     ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -608,13 +613,22 @@ describe('显式推理参数类型不会被别名吞掉', () => {
     ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
-  it.each([null, false, 42])('推理强度别名类型 %j 非法时不静默丢弃', async (inferenceStrength) => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      standardProvider(fetchImpl).execute({ snapshot: snapshotFor('text', { inferenceStrength }) }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
+  it.each([null, false, 42])(
+    '推理强度别名类型 %j 不阻断请求，保留原生消息合同',
+    async (inferenceStrength) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'Synthetic text' } }] }));
+      await standardProvider(fetchImpl).execute({
+        snapshot: snapshotFor('text', { inferenceStrength }),
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(requestBody(fetchImpl.mock.calls[0]?.[1])).toEqual({
+        model: 'synthetic-text',
+        messages: [{ role: 'user', content: 'Describe a calm coastal scene.' }],
+      });
+    },
+  );
   it('单独的原生 null 保持原合同，不擅自改成 high', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

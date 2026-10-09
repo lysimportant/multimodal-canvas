@@ -5,4 +5,3 @@ docker/Caddyfile text eol=lf
 docker/*.Caddyfile text eol=lf
 docker/*.caddy text eol=lf
 docker/*.sources text eol=lf
-*.cmd text eol=crlf

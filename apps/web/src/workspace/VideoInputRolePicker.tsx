@@ -67,7 +67,7 @@ export function VideoInputRolePicker({
                 <p className="canvas-context-menu-label">
                   {videoMode === 'first_last_frame'
                     ? '首尾帧模式只区分起始画面和结束画面。'
-                    : '未取证的角色仍可连线保存；真实运行前不支持会明确失败。'}
+                    : '选择素材用途；模型是否支持由 New API / 上游判断。'}
                 </p>
               </>
             ),

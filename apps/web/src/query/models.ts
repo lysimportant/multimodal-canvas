@@ -84,7 +84,7 @@ const customGroupMediaLabels: Record<'text' | 'image' | 'audio' | 'video', strin
 
 /**
  * 按自定义 API 配置拉取模型列表，通过后端代理避免暴露 API Key。
- * 返回的模型 mediaTypes 只包含对应的单一媒体类型，确保模型只注入到正确的节点选择器。
+ * 模型保留所配置连接的媒体来源标记；Canvas 选择器不依据该标记限制模型。
  *
  * @param group 媒体类型、连接配置。
  * @param signal 取消信号。
@@ -110,7 +110,8 @@ export async function fetchCustomGroupModels(
   const label = customGroupMediaLabels[group.mediaType];
   return raw.map((m) => ({
     id: typeof m === 'object' && m !== null ? String((m as { id?: unknown }).id ?? '') : String(m),
-    name: typeof m === 'object' && m !== null ? String((m as { id?: unknown }).id ?? '') : String(m),
+    name:
+      typeof m === 'object' && m !== null ? String((m as { id?: unknown }).id ?? '') : String(m),
     mediaTypes: [group.mediaType] as [typeof group.mediaType],
     group: `自定义·${label}`,
     credentialId: `custom:${group.mediaType}`,
@@ -126,7 +127,10 @@ export async function fetchCustomGroupModels(
  * @param config 四个媒体类型的配置字典。
  */
 export function useCustomGroupsModelQuery(
-  config: Record<'text' | 'image' | 'audio' | 'video', { baseUrl: string; apiKey: string; enabled: boolean }>,
+  config: Record<
+    'text' | 'image' | 'audio' | 'video',
+    { baseUrl: string; apiKey: string; enabled: boolean }
+  >,
 ) {
   const mediaTypes = ['text', 'image', 'audio', 'video'] as const;
   return useQueries({
@@ -135,7 +139,10 @@ export function useCustomGroupsModelQuery(
       .map((mt) => ({
         queryKey: ['custom-api-models', mt, config[mt].baseUrl, config[mt].apiKey],
         queryFn: ({ signal }: { signal?: AbortSignal }) =>
-          fetchCustomGroupModels({ mediaType: mt, baseUrl: config[mt].baseUrl, apiKey: config[mt].apiKey }, signal),
+          fetchCustomGroupModels(
+            { mediaType: mt, baseUrl: config[mt].baseUrl, apiKey: config[mt].apiKey },
+            signal,
+          ),
         staleTime: 5 * 60 * 1000,
         retry: false,
       })),

@@ -25,7 +25,7 @@ describe('Provider 超时合同', () => {
 });
 
 describe('New API 模型目录规范化', () => {
-  it('无媒体声明时按 Image2Pro 精确合同识别，不开放相近 Seedance 名称', () => {
+  it('无媒体声明时保留目录推断结果，不替未知名称套用精确合同', () => {
     const models = normalizeModelsPayload({
       data: [
         { id: '无限制-Flash-中配-Video' },
@@ -34,15 +34,21 @@ describe('New API 模型目录规范化', () => {
         { id: 'Seedance2.0 0.9r-other' },
       ],
     });
-    expect(models.map((model) => model.mediaTypes)).toEqual([['video'], ['video'], ['text']]);
+    expect(models.map((model) => model.mediaTypes)).toEqual([
+      ['video'],
+      ['video'],
+      ['video'],
+      ['text'],
+    ]);
     expect(models.map((model) => model.id)).toEqual([
+      '无限制-Flash-中配-Video',
       '无限制-Flash-MAX-Video',
       'Seedance2.0 0.9r',
       'Seedance2.0 0.9r-other',
     ]);
   });
 
-  it('退役 Flash 中配不因目录声明媒体或能力重新开放', () => {
+  it('退役 Flash 中配保留上游目录声明，不由 Canvas 侧二次屏蔽', () => {
     expect(
       normalizeModelsPayload({
         data: ['无限制-Flash-中配-Video'].map((id) => ({
@@ -51,10 +57,16 @@ describe('New API 模型目录规范化', () => {
           capabilities: { duration: [5], resolution: ['720p'] },
         })),
       }),
-    ).toEqual([]);
+    ).toMatchObject([
+      {
+        id: '无限制-Flash-中配-Video',
+        mediaTypes: ['video', 'text'],
+        capabilities: { duration: [5], resolution: ['720p'] },
+      },
+    ]);
   });
 
-  it('合并同名模型的媒体类型、能力、限制和价格', () => {
+  it('合并同名模型的媒体类型、能力和限制，保留开放目录字段', () => {
     const models = normalizeModelsPayload({
       data: [
         {
@@ -79,7 +91,6 @@ describe('New API 模型目录规范化', () => {
       mediaTypes: ['image', 'text', 'audio'],
       capabilities: { streaming: true },
       limitations: { maxWidth: 2048 },
-      price: { perRun: '0.01', currency: 'USD' },
     });
     expect(models.find((model) => model.id === 'text-only')?.mediaTypes).toEqual(['text']);
   });
@@ -137,19 +148,16 @@ describe('New API 模型目录规范化', () => {
     { capabilities: { reasoning_effort: ['low'] } },
     { capabilities: { reasoning_effort: ['LOW', ' low '] } },
     { capabilities: { reasoning_effort: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] } },
-  ])('补齐 GPT-5.6 文本模型缺失或占位的推理强度', ({ capabilities }) => {
+  ])('保留 GPT-5.6 上游推理强度声明，不在目录侧补齐能力', ({ capabilities }) => {
     const [model] = normalizeModelsPayload({
       data: [{ id: 'gpt-5.6-sol', type: 'chat', capabilities }],
     });
 
-    expect(model?.capabilities?.reasoning_effort).toEqual([
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultra',
-    ]);
+    expect(model?.capabilities?.reasoning_effort).toEqual(
+      capabilities && 'reasoning_effort' in capabilities
+        ? capabilities.reasoning_effort
+        : undefined,
+    );
   });
 
   it('保留 GPT-5.6 完整声明以及非 GPT 模型的上游声明', () => {
@@ -193,7 +201,7 @@ describe('New API 模型目录规范化', () => {
     });
 
     expect(models[0]?.capabilities).toEqual({
-      reasoning_effort: ['medium', 'high'],
+      reasoning_effort: ['low'],
       streaming: true,
     });
   });

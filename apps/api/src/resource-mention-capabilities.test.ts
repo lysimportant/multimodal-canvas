@@ -60,20 +60,6 @@ describe('resource mention capability preflight', () => {
     expect(JSON.stringify(result)).not.toContain('data:');
   });
 
-  it('文字节点的显式空模式列表和零上限在 Mock 中同样生效', () => {
-    const result = checkResourceMentionCapabilities({
-      ...base,
-      node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
-      model: { capabilities: { mentionMediaTypes: [], modes: [], maxMentions: 0 } },
-      allowMockPreview: true,
-    });
-    expect(result.simulated).toBe(true);
-    expect(result.issues.map((issue) => issue.code)).toEqual([
-      'RESOURCE_MENTION_MODE_UNSUPPORTED',
-      'RESOURCE_MENTION_COUNT_EXCEEDED',
-    ]);
-  });
-
   it.each([
     undefined,
     { mediaTypes: ['text'] as const },
@@ -92,31 +78,6 @@ describe('resource mention capability preflight', () => {
     expect(result).toEqual({ issues: [], simulated: false });
   });
 
-  it('文字节点仍遵守明确的角色、混合媒体和引用数量限制', () => {
-    const result = checkResourceMentionCapabilities({
-      ...base,
-      node: { id: 'node-text', data: { mediaType: 'text', mode: 'generate' } },
-      model: {
-        capabilities: {
-          mention_media_types: ['image', 'audio'],
-          semantic_roles: [],
-          max_mentions: 1,
-          supports_mixed_mentions: false,
-        },
-      },
-      mentions: [
-        { ...base.mentions[0], semanticRole: 'reference' },
-        { ...base.mentions[0], mentionId: 'm-audio', mediaType: 'audio', blockOrder: 2 },
-      ],
-    });
-    expect(result.issues.map((issue) => issue.code)).toEqual([
-      'RESOURCE_MENTION_ROLE_UNSUPPORTED',
-      'RESOURCE_MENTION_COUNT_EXCEEDED',
-      'RESOURCE_MENTION_MIXED_UNSUPPORTED',
-      'RESOURCE_MENTION_MIXED_UNSUPPORTED',
-    ]);
-  });
-
   it('图片引用的角色和数量声明缺省时允许兼容编辑接口处理', () => {
     const result = checkResourceMentionCapabilities({
       ...base,
@@ -128,28 +89,6 @@ describe('resource mention capability preflight', () => {
     });
     expect(result).toEqual({ issues: [], simulated: false });
   });
-
-  it.each([
-    { capabilities: { maxMentions: 0 }, code: 'RESOURCE_MENTION_COUNT_EXCEEDED' },
-    { capabilities: { modes: [] }, code: 'RESOURCE_MENTION_MODE_UNSUPPORTED' },
-  ])('图片兼容路径仍遵守显式限制 $code', ({ capabilities, code }) => {
-    const result = checkResourceMentionCapabilities({ ...base, model: { capabilities } });
-    expect(result.issues).toEqual([expect.objectContaining({ code })]);
-  });
-
-  it.each(['text', 'audio', 'video'] as const)(
-    '图片生成不把 %s 提及当作图片编辑输入',
-    (mediaType) => {
-      const result = checkResourceMentionCapabilities({
-        ...base,
-        model: { capabilities: { mentionMediaTypes: [mediaType] } },
-        mentions: [{ ...base.mentions[0], mediaType }],
-      });
-      expect(result.issues).toEqual([
-        expect.objectContaining({ code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED' }),
-      ]);
-    },
-  );
 
   it('allows explicitly marked mock preview when capability is unknown', () => {
     expect(checkResourceMentionCapabilities({ ...base, allowMockPreview: true })).toEqual({
@@ -165,42 +104,6 @@ describe('resource mention capability preflight', () => {
       model: { capabilities: { mediaTypes: ['image'] } },
     });
     expect(result).toEqual({ issues: [], simulated: true });
-  });
-
-  it('validates media, roles, count, mode, and mixed-media combinations', () => {
-    const result = checkResourceMentionCapabilities({
-      ...base,
-      node: { id: 'node-image', data: { mediaType: 'image', mode: 'generate' } },
-      mentions: [
-        base.mentions[0],
-        {
-          ...base.mentions[0],
-          mentionId: 'm-audio',
-          assetId: 'asset-audio',
-          mediaType: 'audio',
-          semanticRole: 'characterVoice',
-        },
-      ],
-      model: {
-        capabilities: {
-          mentionMediaTypes: ['image'],
-          semanticRoles: ['style'],
-          maxMentions: 1,
-          supportsMixedMentions: false,
-          modes: ['source'],
-        },
-      },
-    });
-    expect(result.issues.map((issue) => issue.code)).toEqual(
-      expect.arrayContaining([
-        'RESOURCE_MENTION_MODE_UNSUPPORTED',
-        'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
-        'RESOURCE_MENTION_ROLE_UNSUPPORTED',
-        'RESOURCE_MENTION_COUNT_EXCEEDED',
-        'RESOURCE_MENTION_MIXED_UNSUPPORTED',
-      ]),
-    );
-    expect(result.issues.every((issue) => issue.requestId === 'req-1')).toBe(true);
   });
 
   it('accepts a fully declared compatible single-media request', () => {

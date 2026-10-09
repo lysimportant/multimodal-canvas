@@ -133,54 +133,6 @@ describe('Provider 本地契约验收', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it.each(['image', 'audio', 'video'] as const)(
-    '%s 不透传或丢弃未知参考参数',
-    async (mediaType) => {
-      for (const parameter of [
-        'reference_images',
-        'referenceImages',
-        'negative_prompt',
-        'last_frame',
-        'audio_track',
-      ]) {
-        const fetchImpl = vi.fn<typeof fetch>();
-        const options = {
-          baseUrl: 'https://newapi.example/v1',
-          apiKey: 'synthetic-local',
-          fetchImpl,
-        };
-        const provider =
-          mediaType === 'video' ? new NewApiVideoProvider(options) : new NewApiProvider(options);
-        const snapshot = snapshotFor(mediaType);
-        snapshot.parameters[parameter] = [
-          'https://assets.example/one.png',
-          'https://assets.example/two.png',
-        ];
-        await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-          code: 'UNSUPPORTED_PROVIDER_PARAMETER',
-          retryable: false,
-        });
-        expect(fetchImpl).not.toHaveBeenCalled();
-      }
-    },
-  );
-
-  it('不把多张图片请求静默改为单张', async () => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    const provider = new NewApiProvider({
-      baseUrl: 'https://newapi.example/v1',
-      apiKey: 'synthetic-local',
-      fetchImpl,
-    });
-    const snapshot = snapshotFor('image');
-    snapshot.parameters.n = 2;
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-      code: 'UNSUPPORTED_PROVIDER_PARAMETER',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
   it.each(['create', 'poll', 'download'] as const)(
     '视频 %s 响应体超时有界且不重新创建任务',
     async (phase) => {
@@ -484,8 +436,12 @@ describe('Provider 本地契约验收', () => {
     { speed: '1' },
     { response_format: 'ogg' },
     { input: 'a'.repeat(4097) },
-  ])('TTS 非法配置在发送前失败 %#', async (parameters) => {
-    const fetchImpl = vi.fn<typeof fetch>();
+  ])('TTS 参数交给上游判断，Provider 不在发送前收紧值 %#', async (parameters) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(new Uint8Array([0, 1]), { headers: { 'content-type': 'audio/mpeg' } }),
+      );
     const provider = new NewApiProvider({
       baseUrl: 'https://newapi.example/v1',
       apiKey: 'synthetic-local',
@@ -493,34 +449,14 @@ describe('Provider 本地契约验收', () => {
     });
     const snapshot = snapshotFor('audio');
     snapshot.parameters = { ...snapshot.parameters, ...parameters };
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-      code: 'INVALID_PROVIDER_PARAMETER',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await provider.execute({ snapshot });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parameters)) {
+      if (value === undefined) expect(body).not.toHaveProperty(key);
+      else expect(body[key]).toEqual(Number.isNaN(value) ? null : value);
+    }
   });
-
-  it.each(['image', 'audio', 'video'] as const)(
-    '%s 对未知参数显式失败且不回显内容',
-    async (mediaType) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      const options = {
-        baseUrl: 'https://newapi.example/v1',
-        apiKey: 'synthetic-local',
-        fetchImpl,
-      };
-      const provider =
-        mediaType === 'video' ? new NewApiVideoProvider(options) : new NewApiProvider(options);
-      const snapshot = snapshotFor(mediaType);
-      snapshot.parameters.vendor_unknown = 'private prompt';
-      await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-        code: 'UNSUPPORTED_PROVIDER_PARAMETER',
-        retryable: false,
-        message: `New API ${mediaType} 尚不支持参数：vendor_unknown`,
-      });
-      expect(fetchImpl).not.toHaveBeenCalled();
-    },
-  );
 
   it.each(['image', 'audio'] as const)('%s 多项响应不能只归档第一项', async (mediaType) => {
     const fetchImpl = vi
@@ -560,28 +496,6 @@ describe('Provider 本地契约验收', () => {
       }
     },
   );
-
-  it.each([
-    { mediaType: 'image' as const, parameters: { imageSize: '1024x1024', size: '1536x1024' } },
-    {
-      mediaType: 'image' as const,
-      parameters: { background: 'transparent', output_format: 'jpeg' },
-    },
-    { mediaType: 'video' as const, parameters: { duration: 5, seconds: '8' } },
-    { mediaType: 'video' as const, parameters: { duration: -1 } },
-  ])('拒绝矛盾参数及无效时长 %#', async ({ mediaType, parameters }) => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    const options = { baseUrl: 'https://newapi.example/v1', apiKey: 'synthetic-local', fetchImpl };
-    const provider =
-      mediaType === 'video' ? new NewApiVideoProvider(options) : new NewApiProvider(options);
-    const snapshot = snapshotFor(mediaType);
-    snapshot.parameters = parameters;
-    await expect(provider.execute({ snapshot })).rejects.toMatchObject({
-      code: 'INVALID_PROVIDER_PARAMETER',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
 
   it('冻结首帧内容损坏时拒绝创建新任务', async () => {
     const fetchImpl = vi.fn<typeof fetch>();

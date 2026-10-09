@@ -58,7 +58,7 @@ describe('复刻节点集成数据', () => {
     expect(recreationGenerationIssue({ ...next, parameters: { duration: 5 } })).toContain('时长');
     expect(recreationGenerationIssue(data)).toBeUndefined();
   });
-  it('非整秒分析仍完整保存，但当前生成接口不能静默省略或取整时长', () => {
+  it('非整秒分析完整保存和提交，不省略或取整时长', () => {
     const fractional = {
       ...config,
       analysis: {
@@ -73,7 +73,7 @@ describe('复刻节点集成数据', () => {
     const next = applyVideoRecreationConfig(data, fractional);
     expect(next.parameters?.duration).toBe(8.5);
     expect(next.prompt).toContain('Full observed duration: 8.5 seconds');
-    expect(recreationGenerationIssue(next)).toContain('仅支持整秒');
+    expect(recreationGenerationIssue(next)).toBeUndefined();
   });
   it('画布往返保留工作流，节点外框尺寸不受分析文字影响', () => {
     const canvas = canvasDocumentSchema.parse({

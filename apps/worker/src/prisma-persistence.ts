@@ -463,56 +463,6 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
       return parsed.success ? [parsed.data] : [];
     });
   }
-
-  async recordUsage(input: {
-    runId?: string;
-    userId?: string;
-    providerJobId?: string;
-    eventId?: string;
-    kind?: string;
-    amount: number | string;
-    currency?: string;
-    metadata?: Record<string, unknown>;
-  }) {
-    const runId = input.runId ? databaseRunId(input.runId) : undefined;
-    const linkedRun =
-      !input.userId && runId
-        ? await this.prisma.run.findUnique({ where: { id: runId }, select: { userId: true } })
-        : undefined;
-    const metadata = input.metadata;
-    const providerJobId = normalizeUsageIdentity(input.providerJobId ?? metadata?.providerJobId);
-    const eventId = normalizeUsageIdentity(input.eventId ?? metadata?.eventId);
-    const kind = normalizeUsageKind(input.kind ?? metadata?.kind);
-    const idempotencyKey = stableUsageLedgerIdempotencyKey({ providerJobId, eventId, kind });
-    const data = {
-      ...(runId ? { runId } : {}),
-      ...(input.userId && UUID_PATTERN.test(input.userId)
-        ? { userId: input.userId }
-        : linkedRun?.userId
-          ? { userId: linkedRun.userId }
-          : {}),
-      ...(providerJobId ? { providerJobId } : {}),
-      ...(eventId ? { eventId } : {}),
-      ...(kind ? { kind } : {}),
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-      amount: String(input.amount),
-      currency: (input.currency ?? 'USD').toUpperCase(),
-      ...(metadata ? { metadata: metadata as Prisma.InputJsonValue } : {}),
-    };
-
-    if (!idempotencyKey) {
-      return this.prisma.usageLedger.create({ data });
-    }
-
-    return this.prisma.usageLedger.upsert({
-      where: { idempotencyKey },
-      create: {
-        id: stableUsageLedgerId(idempotencyKey),
-        ...data,
-      },
-      update: {},
-    });
-  }
 }
 
 /**
@@ -613,44 +563,4 @@ function stableProviderJobId(provider: string, providerJobId: string): string {
     .update(`multimodal-canvas:provider-job:${provider}:${providerJobId}`)
     .digest('hex');
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
-type UsageIdentity = {
-  providerJobId?: string;
-  eventId?: string;
-  kind?: string;
-};
-
-export function stableUsageLedgerIdempotencyKey(identity: UsageIdentity): string | undefined {
-  const providerJobId = normalizeUsageIdentity(identity.providerJobId);
-  const eventId = normalizeUsageIdentity(identity.eventId);
-  const kind = normalizeUsageKind(identity.kind) ?? '';
-  const source = providerJobId
-    ? `providerJobId:${providerJobId}`
-    : eventId
-      ? `eventId:${eventId}`
-      : undefined;
-  if (!source) return undefined;
-
-  return createHash('sha256')
-    .update(`multimodal-canvas:usage-ledger:v1:${source}\u0000kind:${kind}`)
-    .digest('hex');
-}
-
-export function stableUsageLedgerId(idempotencyKey: string): string {
-  const digest = createHash('sha256')
-    .update(`multimodal-canvas:usage-ledger-id:${idempotencyKey}`)
-    .digest('hex');
-  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
-function normalizeUsageIdentity(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeUsageKind(value: unknown): string | undefined {
-  const normalized = normalizeUsageIdentity(value);
-  return normalized?.toLowerCase();
 }

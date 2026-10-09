@@ -259,7 +259,7 @@ export function isUnadaptedYuanliuVideoModel(modelAlias?: string): boolean {
   );
 }
 
-/** 源流参数错误；只显示字段与约束，不回显用户参数或参考地址。 */
+/** 源流参数错误；保留给旧调用方，不用于 Canvas 能力门禁。 */
 export class YuanliuVideoParameterError extends Error {
   /**
    * @param parameter 有问题的参数或同义字段组。
@@ -280,101 +280,37 @@ export class YuanliuVideoParameterError extends Error {
 
 /** 解析后的源流参数；duration 必须显式提供，不补写或更改冻结参数。 */
 export type YuanliuVideoParameters = {
-  seconds: number;
-  resolution: string;
-  aspectRatio: string;
+  seconds?: unknown;
+  resolution?: unknown;
+  aspectRatio?: unknown;
 };
 
 /**
- * 校验精确型号参数并归一画布同义字段，媒体仍来自受授权冻结输入。
+ * 归一画布同义字段，媒体仍来自受授权冻结输入；能力与取值交给上游判断。
  * @param parameters 节点或冻结 Run 的参数；必须显式指定 duration/seconds/durationSeconds。
  * @param modelAlias 已适配展示别名或上游 ID。
- * @returns 整秒时长、清晰度与比例；清晰度和比例缺省为 720p、16:9，不修改输入。
- * @throws YuanliuVideoParameterError 未知字段、别名冲突、缺失时长或违反型号约束。
+ * @returns 已提供的时长、清晰度与比例；缺失值保持缺失，不臆造供应商默认值。
  */
 export function resolveYuanliuVideoParameters(
   parameters: Readonly<Record<string, unknown>>,
   modelAlias: string,
 ): YuanliuVideoParameters {
-  const contract = yuanliuVideoContractForModel(modelAlias);
-  if (!contract) {
-    throw new YuanliuVideoParameterError(
-      'model',
-      '尚不支持此精确型号',
-      'UNSUPPORTED_PROVIDER_PARAMETER',
-    );
-  }
-  for (const [key, value] of Object.entries(parameters)) {
-    if (value !== undefined && !contract.parameterKeys.includes(key)) {
-      throw new YuanliuVideoParameterError(
-        key,
-        '尚不支持，请明确移除后重试',
-        'UNSUPPORTED_PROVIDER_PARAMETER',
-      );
+  const read = (keys: string[], fallback?: unknown): unknown => {
+    for (const key of keys) {
+      if (parameters[key] !== undefined) return parameters[key];
     }
-  }
-  if (
-    parameters.prompt !== undefined &&
-    (typeof parameters.prompt !== 'string' ||
-      Array.from(parameters.prompt).length > contract.maxPromptLength)
-  ) {
-    throw new YuanliuVideoParameterError(
-      'prompt',
-      `必须为不超过 ${contract.maxPromptLength} 字符的字符串`,
-    );
-  }
-  const durations = ['duration', 'seconds', 'durationSeconds'].flatMap((key) => {
-    const value = parameters[key];
-    if (value === undefined) return [];
-    if (
-      (typeof value !== 'number' && typeof value !== 'string') ||
-      (typeof value === 'string' && !/^\d+$/.test(value)) ||
-      !Number.isSafeInteger(Number(value)) ||
-      Number(value) < contract.duration.min ||
-      Number(value) > contract.duration.max ||
-      (contract.duration.values && !contract.duration.values.includes(Number(value)))
-    ) {
-      const range =
-        contract.duration.values?.join('、') ??
-        `${contract.duration.min} 至 ${contract.duration.max}`;
-      throw new YuanliuVideoParameterError(key, `必须为 ${range} 秒的整数；不支持自动时长`);
-    }
-    return [Number(value)];
-  });
-  if (!durations.length) throw new YuanliuVideoParameterError('duration', '必须显式指定秒数');
-  if (new Set(durations).size > 1) {
-    throw new YuanliuVideoParameterError('duration/seconds/durationSeconds', '别名值冲突');
-  }
-  const resolutions = ['resolution', 'video_resolution', 'videoResolution', 'size'].flatMap(
-    (key) => {
-      const value = parameters[key];
-      if (value === undefined) return [];
-      if (typeof value !== 'string' || !contract.resolutions.includes(value.toLowerCase())) {
-        throw new YuanliuVideoParameterError(key, `仅支持 ${contract.resolutions.join('、')}`);
-      }
-      return [value.toLowerCase()];
-    },
-  );
-  if (new Set(resolutions).size > 1) {
-    throw new YuanliuVideoParameterError(
-      'resolution/video_resolution/videoResolution/size',
-      '别名值冲突',
-    );
-  }
-  const ratios = ['aspectRatio', 'aspect_ratio', 'ratio'].flatMap((key) => {
-    const value = parameters[key];
-    if (value === undefined) return [];
-    if (typeof value !== 'string' || !contract.aspectRatios.includes(value)) {
-      throw new YuanliuVideoParameterError(key, `仅支持 ${contract.aspectRatios.join('、')}`);
-    }
-    return [value];
-  });
-  if (new Set(ratios).size > 1) {
-    throw new YuanliuVideoParameterError('aspectRatio/aspect_ratio/ratio', '别名值冲突');
-  }
+    return fallback;
+  };
+  const rawSeconds = read(['duration', 'seconds', 'durationSeconds']);
+  const resolution = read(['resolution', 'video_resolution', 'videoResolution']);
+  const aspectRatio = read(['aspectRatio', 'aspect_ratio', 'ratio']);
+  const normalizedSeconds =
+    typeof rawSeconds === 'string' && /^[-+]?\d+(?:\.\d+)?$/.test(rawSeconds.trim())
+      ? Number(rawSeconds)
+      : rawSeconds;
   return {
-    seconds: durations[0]!,
-    resolution: resolutions[0] ?? contract.defaultResolution,
-    aspectRatio: ratios[0] ?? '16:9',
+    ...(normalizedSeconds !== undefined ? { seconds: normalizedSeconds } : {}),
+    ...(resolution !== undefined ? { resolution } : {}),
+    ...(aspectRatio !== undefined ? { aspectRatio } : {}),
   };
 }

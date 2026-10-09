@@ -1,6 +1,5 @@
 import {
   image2proVideoContractForModel,
-  isRetiredImage2proVideoModel,
   type MediaType,
   type ModelSelection,
 } from '@multimodal-canvas/domain';
@@ -35,7 +34,6 @@ export type ModelCatalogEntry = {
   credentialId?: string;
   capabilities?: Record<string, unknown>;
   limitations?: Record<string, unknown>;
-  price?: Record<string, unknown>;
   refreshedAt: string;
   /** 本人 New API 原始分组与执行合同，同名模型跨组保持独立。 */
   group?: string;
@@ -149,10 +147,6 @@ export function normalizeProviderTimeout(
   return timeoutMs;
 }
 
-const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-const LEGACY_GPT_56_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-const GPT_56_TEXT_MODEL_ALIAS_PATTERN = /^gpt-5\.6(?:$|[-_.])/;
-
 /**
  * 规范化 OpenAI `{ data: [...] }` 与常见网关模型目录。
  *
@@ -186,9 +180,6 @@ export function normalizeModelsPayload(payload: unknown): ModelCatalogEntry[] {
       ...(model.limitations || existing.limitations
         ? { limitations: { ...(existing.limitations ?? {}), ...(model.limitations ?? {}) } }
         : {}),
-      ...(model.price || existing.price
-        ? { price: { ...(existing.price ?? {}), ...(model.price ?? {}) } }
-        : {}),
       refreshedAt: model.refreshedAt,
     });
   }
@@ -210,80 +201,18 @@ function mergeModelCapabilities(
   existing: Record<string, unknown> | undefined,
   incoming: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-  if (!existing && !incoming) {
-    return normalizeReasoningEffortCapabilities(modelAlias, mediaTypes, undefined);
-  }
-  const merged = { ...(existing ?? {}), ...(incoming ?? {}) };
-  const existingEffort = existing?.reasoning_effort;
-  const incomingEffort = incoming?.reasoning_effort;
-  if (
-    existingEffort !== undefined &&
-    existingEffort !== null &&
-    (isLowOnlyReasoningEffort(incomingEffort) || isGpt56ReasoningEffortFallback(incomingEffort))
-  ) {
-    merged.reasoning_effort = existingEffort;
-  }
-  return normalizeReasoningEffortCapabilities(modelAlias, mediaTypes, merged);
-}
-
-function normalizeReasoningEffortCapabilities(
-  modelAlias: string,
-  mediaTypes: MediaType[],
-  capabilities: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!mediaTypes.includes('text')) return capabilities;
-  if (!GPT_56_TEXT_MODEL_ALIAS_PATTERN.test(modelAlias.trim().toLowerCase())) return capabilities;
-  const declared = capabilities?.reasoning_effort;
-  const shouldFill =
-    !capabilities ||
-    declared === undefined ||
-    declared === null ||
-    isLowOnlyReasoningEffort(declared) ||
-    isLegacyGpt56ReasoningEffortFallback(declared);
-  if (!shouldFill) return capabilities;
-  return {
-    ...(capabilities ?? {}),
-    reasoning_effort: [...GPT_56_REASONING_EFFORTS],
-  };
-}
-
-function isLowOnlyReasoningEffort(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.every((item) => typeof item === 'string' && item.trim().toLowerCase() === 'low')
-  );
-}
-
-function isGpt56ReasoningEffortFallback(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length === GPT_56_REASONING_EFFORTS.length &&
-    value.every((item, index) => item === GPT_56_REASONING_EFFORTS[index])
-  );
-}
-
-function isLegacyGpt56ReasoningEffortFallback(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length === LEGACY_GPT_56_REASONING_EFFORTS.length &&
-    value.every((item, index) => item === LEGACY_GPT_56_REASONING_EFFORTS[index])
-  );
+  return existing || incoming ? { ...(existing ?? {}), ...(incoming ?? {}) } : undefined;
 }
 
 function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEntry | undefined {
   if (!isRecord(candidate)) return undefined;
   const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
   if (!id) return undefined;
-  if (isRetiredImage2proVideoModel(id)) return undefined;
   const explicitMediaTypes = extractMediaTypes(candidate);
   const inferredMediaTypes =
     explicitMediaTypes.length > 0 ? explicitMediaTypes : inferMediaTypes(id);
   const mediaTypes: MediaType[] = inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text'];
-  const capabilities = normalizeReasoningEffortCapabilities(
-    id,
-    mediaTypes,
-    isRecord(candidate.capabilities) ? candidate.capabilities : undefined,
-  );
+  const capabilities = isRecord(candidate.capabilities) ? candidate.capabilities : undefined;
   return {
     id,
     name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : id,
@@ -296,11 +225,6 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
         : isRecord(candidate.constraints)
           ? { limitations: candidate.constraints }
           : {}),
-    ...(isRecord(candidate.price)
-      ? { price: candidate.price }
-      : isRecord(candidate.pricing)
-        ? { price: candidate.pricing }
-        : {}),
     refreshedAt,
   };
 }

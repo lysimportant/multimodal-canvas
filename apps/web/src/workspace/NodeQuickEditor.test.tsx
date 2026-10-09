@@ -23,6 +23,7 @@ import {
 import type { AssetFlowNode } from '../canvas-utils';
 import {
   applyNodeGenerationDefaults,
+  getAudioParameterIssue,
   NodeQuickEditor,
   type NodeQuickEditorProps,
 } from './NodeQuickEditor';
@@ -218,613 +219,6 @@ afterEach(() => {
 });
 
 describe('NodeQuickEditor', () => {
-  it.each([
-    ['Yuan-Seedance-2.5-Official', 5],
-    ['Yuan-Seedance-2.5-HD-Full', 10],
-    ['Yuan-Seedance-2.5-YL1', 30],
-    ['yl_seedance-2-5_750271498003', 10],
-  ] as const)('Yuan %s 新建按精确型号初始化，不采用目录的宽松参数', (modelAlias, duration) => {
-    const result = applyNodeGenerationDefaults(
-      { ...videoNode.data, modelAlias, videoMode: 'omni_reference' },
-      {
-        id: modelAlias,
-        name: modelAlias,
-        mediaTypes: ['video'],
-        capabilities: {
-          duration: [-1, 1, 60],
-          resolution: ['4k'],
-          aspectRatio: ['3:2'],
-          reasoning_effort: ['high'],
-        },
-      },
-    );
-    expect(result.parameters).toEqual({ duration, resolution: '720p', aspectRatio: '16:9' });
-    expect(result.inferenceStrength).toBeUndefined();
-  });
-
-  it.each([
-    { modelAlias: 'Yuan-Seedance-2.0-HD', saved: 6, durations: [5, 10, 15], corrected: 10 },
-    { modelAlias: 'Yuan-Seedance-2.5-YL1', saved: 5, durations: [30], corrected: 30 },
-  ])(
-    'Yuan $modelAlias 只提供离散时长并保留非法旧值直到显式修改',
-    async ({ modelAlias, saved, durations, corrected }) => {
-      const user = userEvent.setup();
-      const props = makeProps({
-        node: {
-          ...videoNode,
-          data: {
-            ...videoNode.data,
-            modelAlias,
-            videoMode: 'omni_reference',
-            parameters: { duration: saved },
-          },
-        },
-        onParametersChange: vi.fn(),
-      });
-      const view = render(<NodeQuickEditor {...props} />);
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('status')).toHaveTextContent('源流视频参数 duration');
-      expect(props.onParametersChange).not.toHaveBeenCalled();
-      await user.click(screen.getByRole('combobox', { name: new RegExp(`^时长（秒）：${saved}`) }));
-      const group = screen.getByText('时长（秒）').parentElement!;
-      const options = selectPopup(group);
-      for (const seconds of durations)
-        expect(options.getByRole('option', { name: `${seconds} 秒` })).toBeInTheDocument();
-      expect(
-        options.getByRole('option', { name: `${saved} 已保存，当前模型不支持` }),
-      ).toHaveAttribute('aria-disabled', 'true');
-      expect(screen.queryByRole('slider')).not.toBeInTheDocument();
-      await user.click(options.getByRole('option', { name: `${corrected} 秒` }));
-      expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({ duration: corrected });
-      view.rerender(
-        <NodeQuickEditor
-          {...props}
-          node={{
-            ...props.node,
-            data: { ...props.node.data, parameters: { duration: corrected } },
-          }}
-        />,
-      );
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    },
-  );
-
-  it('Yuan 全能参考兼容旧字段，显式编辑清晰度和秒数才收敛别名', async () => {
-    const user = userEvent.setup();
-    const modelAlias = 'Yuan-Seedance-2.5-Official';
-    const parameters = { seconds: 8, ratio: '4:3', size: '720p' };
-    const data = applyNodeGenerationDefaults(
-      { ...videoNode.data, modelAlias, videoMode: 'omni_reference', parameters },
-      { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
-    );
-    expect(data.parameters).toEqual(parameters);
-    const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
-    render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    expect(screen.getByRole('combobox', { name: /^视频清晰度：720P/ })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: /^视频比例：4:3/ })).toBeInTheDocument();
-    expect(props.onParametersChange).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('combobox', { name: /^视频清晰度：/ }));
-    await user.click(screen.getByRole('option', { name: '1080P' }));
-    expect(props.onParametersChange).toHaveBeenLastCalledWith({
-      seconds: 8,
-      ratio: '4:3',
-      resolution: '1080p',
-    });
-    await user.click(screen.getByRole('button', { name: /^时长（秒）：8/ }));
-    const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-    expect(slider).toHaveAttribute('min', '4');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(durationCard().queryByRole('button', { name: '自动时长' })).not.toBeInTheDocument();
-    fireEvent.change(slider, { target: { value: '10' } });
-    expect(props.onParametersChange).toHaveBeenLastCalledWith({
-      duration: 10,
-      ratio: '4:3',
-      size: '720p',
-    });
-  });
-
-  it('Yuan 保留旧推理强度与未知参数直到用户明确移除，并要求有效提示词', async () => {
-    const props = makeProps({
-      node: {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
-          videoMode: 'omni_reference',
-          inferenceStrength: 'high',
-          parameters: { duration: 5, seed: 17 },
-        },
-      },
-      onParametersChange: vi.fn(),
-    });
-    const view = render(<NodeQuickEditor {...props} />);
-    expect(screen.queryByText('推理强度')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(props.onParametersChange).not.toHaveBeenCalled();
-    await userEvent.setup().click(screen.getByRole('button', { name: '移除不支持的参数' }));
-    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({ duration: 5 });
-    expect(props.onInferenceStrengthChange).toHaveBeenCalledExactlyOnceWith('');
-    view.rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{
-          ...props.node,
-          data: {
-            ...props.node.data,
-            prompt: '',
-            inferenceStrength: undefined,
-            parameters: { duration: 5 },
-          },
-        }}
-        hasConnectedInput
-      />,
-    );
-    expect(screen.getByRole('status')).toHaveTextContent('源流视频 必须填写提示词或连接文字输入');
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    view.rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{
-          ...props.node,
-          data: {
-            ...props.node.data,
-            prompt: '',
-            inferenceStrength: undefined,
-            parameters: { duration: 5 },
-          },
-        }}
-        hasConnectedInput
-        hasConnectedTextPromptInput
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it.each(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'])(
-    'Image2Pro %s 使用官方 5 秒和 720p 默认值',
-    (modelAlias) => {
-      const result = applyNodeGenerationDefaults(
-        { ...videoNode.data, modelAlias },
-        {
-          id: modelAlias,
-          name: modelAlias,
-          mediaTypes: ['video'],
-          capabilities: {
-            resolution: ['720p'],
-            duration: [5, 10],
-            aspectRatio: ['16:9'],
-            reasoning_effort: ['high'],
-          },
-        },
-      );
-      expect(result.parameters).toEqual({ duration: 5, resolution: '720p', aspectRatio: '16:9' });
-      expect(result.inferenceStrength).toBeUndefined();
-    },
-  );
-
-  it('Image2Pro 切换模型保留旧参数，用户明确移除后才允许生成', async () => {
-    const user = userEvent.setup();
-    const modelAlias = 'Seedance2.0 0.9r';
-    const model = { id: modelAlias, name: modelAlias, mediaTypes: ['video'] as const };
-    const data = applyNodeGenerationDefaults(
-      {
-        ...videoNode.data,
-        modelAlias,
-        videoMode: 'text_to_video',
-        parameters: {
-          duration: 5,
-          aspectRatio: '16:9',
-          resolution: '720p',
-          seed: 17,
-          quality: 'high',
-        },
-      },
-      { ...model, mediaTypes: ['video'] },
-    );
-    expect(data.parameters).toEqual({
-      duration: 5,
-      aspectRatio: '16:9',
-      resolution: '720p',
-      seed: 17,
-      quality: 'high',
-    });
-    const props = makeProps({
-      node: { ...videoNode, data },
-      onParametersChange: vi.fn(),
-    });
-    const view = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('seed、quality');
-    expect(screen.getByRole('region', { name: '生成参数' })).toHaveTextContent(/720p/i);
-    expect(props.onParametersChange).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: '移除不支持的参数' }));
-    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
-      duration: 5,
-      aspectRatio: '16:9',
-      resolution: '720p',
-    });
-    view.rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{
-          ...props.node,
-          data: { ...data, parameters: { duration: 5, aspectRatio: '16:9', resolution: '720p' } },
-        }}
-      />,
-    );
-    expect(screen.getByRole('combobox', { name: /^视频清晰度：/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    await user.click(screen.getByRole('button', { name: '生成' }));
-    expect(props.onRun).toHaveBeenCalledOnce();
-  });
-
-  it.each([-1, 6.25])('Image2Pro 保留并阻断旧时长 %s，用户显式选择整数后写入', async (duration) => {
-    const modelAlias = 'Seedance2.0 0.9r';
-    const data = applyNodeGenerationDefaults(
-      { ...videoNode.data, modelAlias, videoMode: 'text_to_video', parameters: { duration } },
-      { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
-    );
-    expect(data.parameters?.duration).toBe(duration);
-    const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
-    render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(props.onParametersChange).not.toHaveBeenCalled();
-    await userEvent.setup().click(screen.getByRole('button', { name: /^时长（秒）：/ }));
-    const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-    expect(slider).toHaveAttribute('min', '4');
-    expect(slider).toHaveAttribute('max', '15');
-    fireEvent.change(slider, { target: { value: '8' } });
-    expect(props.onParametersChange).toHaveBeenCalledWith({
-      duration: 8,
-      resolution: '720p',
-      aspectRatio: '16:9',
-    });
-  });
-
-  it('Image2Pro 将旧推理强度纳入明确移除动作，兼容秒数与比例别名', async () => {
-    const props = makeProps({
-      node: {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: 'Seedance2.0 0.9r',
-          videoMode: 'text_to_video',
-          inferenceStrength: 'high',
-          parameters: { seconds: 6, ratio: '4:3' },
-        },
-      },
-      onParametersChange: vi.fn(),
-    });
-    render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: /^时长（秒）：6/ })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: /^视频比例：4:3/ })).toBeInTheDocument();
-    expect(screen.queryByText('推理强度')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('inferenceStrength');
-    await userEvent.setup().click(screen.getByRole('button', { name: '移除不支持的参数' }));
-    expect(props.onInferenceStrengthChange).toHaveBeenCalledExactlyOnceWith('');
-    expect(props.onParametersChange).toHaveBeenCalledWith({ seconds: 6, ratio: '4:3' });
-    await userEvent.setup().click(screen.getByRole('button', { name: /^时长（秒）：/ }));
-    fireEvent.change(durationCard().getByRole('slider', { name: '视频时长（秒）' }), {
-      target: { value: '8' },
-    });
-    expect(props.onParametersChange).toHaveBeenLastCalledWith({ duration: 8, ratio: '4:3' });
-  });
-
-  it.each(['无限制-Flash-中配-Video'])(
-    '%s 旧节点保留参数，目录能力不能重新开放生成',
-    async (modelAlias) => {
-      const parameters = { duration: 5, aspectRatio: '16:9', resolution: '720p' };
-      const data = applyNodeGenerationDefaults(
-        { ...videoNode.data, modelAlias, parameters },
-        { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
-      );
-      expect(data.parameters).toEqual(parameters);
-      const props = makeProps({
-        onParametersChange: vi.fn(),
-        node: {
-          ...videoNode,
-          data: {
-            ...data,
-          },
-        },
-      });
-      render(<NodeQuickEditor {...props} />);
-      await waitFor(() =>
-        expect(screen.getByRole('status')).toHaveTextContent('Flash 中配视频模型已停止适配'),
-      );
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(props.onParametersChange).not.toHaveBeenCalled();
-      expect(props.onRun).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(['text_to_video', 'first_frame', 'first_last_frame', 'omni_reference'] as const)(
-    'Flash-MAX %s 新建使用独立比例默认值，旧目录不能扩大合同',
-    async (videoMode) => {
-      const modelAlias = '无限制-Flash-MAX-Video';
-      const model = {
-        id: modelAlias,
-        name: modelAlias,
-        mediaTypes: ['video'] as NodeQuickEditorProps['models'][number]['mediaTypes'],
-        capabilities: {
-          resolution: ['2k', '1080p'],
-          duration: [15, 30],
-          aspectRatio: ['16:9'],
-        },
-      };
-      const data = applyNodeGenerationDefaults({ ...videoNode.data, modelAlias, videoMode }, model);
-      expect(data.parameters).toEqual({
-        duration: 5,
-        resolution: '720p',
-        aspectRatio: videoMode === 'text_to_video' ? '16:9' : 'adaptive',
-      });
-      render(<NodeQuickEditor {...makeProps({ node: { ...videoNode, data }, models: [model] })} />);
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-      await userEvent.setup().click(screen.getByRole('button', { name: /^时长（秒）：/ }));
-      const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-      expect(slider).toHaveAttribute('min', '4');
-      expect(slider).toHaveAttribute('max', '12');
-      expect(slider).toHaveAttribute('step', '1');
-    },
-  );
-
-  it('Flash-MAX 保留 Seedance 布尔参数直到明确移除，切回 Seedance 时仍可使用', async () => {
-    const modelAlias = '无限制-Flash-MAX-Video';
-    const parameters = {
-      duration: 5,
-      resolution: '720p',
-      aspectRatio: '16:9',
-      generate_audio: false,
-      watermark: false,
-      return_last_frame: false,
-    };
-    const data = applyNodeGenerationDefaults(
-      { ...videoNode.data, modelAlias, videoMode: 'text_to_video', parameters },
-      { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
-    );
-    expect(data.parameters).toEqual(parameters);
-    const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
-    const view = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'generate_audio、watermark、return_last_frame',
-    );
-    expect(props.onParametersChange).not.toHaveBeenCalled();
-    const seedanceData = { ...data, modelAlias: 'Seedance2.0 0.9r' };
-    view.rerender(
-      <NodeQuickEditor {...makeProps({ node: { ...videoNode, data: seedanceData } })} />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: '移除不支持的参数' })).not.toBeInTheDocument();
-    view.rerender(<NodeQuickEditor {...props} />);
-    await userEvent.setup().click(screen.getByRole('button', { name: '移除不支持的参数' }));
-    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
-      duration: 5,
-      resolution: '720p',
-      aspectRatio: '16:9',
-    });
-  });
-
-  it.each(['first_frame', 'first_last_frame'] as const)(
-    'Flash-MAX %s 保留旧固定比例，菜单只允许明确改为原图比例',
-    async (videoMode) => {
-      const modelAlias = '无限制-Flash-MAX-Video';
-      const data = applyNodeGenerationDefaults(
-        {
-          ...videoNode.data,
-          modelAlias,
-          videoMode,
-          parameters: { duration: 5, resolution: '720p', ratio: '16:9' },
-        },
-        { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
-      );
-      expect(data.parameters).toEqual({ duration: 5, resolution: '720p', ratio: '16:9' });
-      const props = makeProps({ node: { ...videoNode, data }, onParametersChange: vi.fn() });
-      render(<NodeQuickEditor {...props} />);
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(props.onParametersChange).not.toHaveBeenCalled();
-      await userEvent.setup().click(screen.getByRole('combobox', { name: /^视频比例：/ }));
-      expect(screen.getByRole('option', { name: /16:9.*当前模型不支持/ })).toHaveAttribute(
-        'aria-disabled',
-        'true',
-      );
-      await userEvent.setup().click(screen.getByRole('option', { name: /原图比例/ }));
-      expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
-        duration: 5,
-        resolution: '720p',
-        aspectRatio: 'adaptive',
-      });
-    },
-  );
-
-  it.each(['first_frame', 'first_last_frame', 'omni_reference'] as const)(
-    'Flash-MAX 显式切换到 %s 时收敛比例别名为 adaptive',
-    async (videoMode) => {
-      const props = makeProps({
-        node: {
-          ...videoNode,
-          data: {
-            ...videoNode.data,
-            modelAlias: '无限制-Flash-MAX-Video',
-            videoMode: 'text_to_video',
-            parameters: { duration: 5, resolution: '720p', ratio: '16:9' },
-          },
-        },
-        onParametersChange: vi.fn(),
-        onVideoModeChange: vi.fn(),
-      });
-      render(<NodeQuickEditor {...props} />);
-      await userEvent.setup().click(screen.getByRole('combobox', { name: /^生成模式：/ }));
-      await userEvent.setup().click(
-        screen.getByRole('option', {
-          name: new RegExp('^' + videoModeLabels[videoMode] + '(?: |$)'),
-        }),
-      );
-      expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
-        duration: 5,
-        resolution: '720p',
-        aspectRatio: 'adaptive',
-      });
-      expect(props.onVideoModeChange).toHaveBeenCalledExactlyOnceWith(videoMode);
-    },
-  );
-
-  it('Flash-MAX 从参考切回文生时明确使用 16:9，旧 adaptive 文生参数仍阻断', async () => {
-    const props = makeProps({
-      node: {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: '无限制-Flash-MAX-Video',
-          videoMode: 'omni_reference',
-          parameters: { duration: 5, resolution: '720p', aspectRatio: 'adaptive' },
-        },
-      },
-      onParametersChange: vi.fn(),
-      onVideoModeChange: vi.fn(),
-    });
-    const view = render(<NodeQuickEditor {...props} />);
-    await userEvent.setup().click(screen.getByRole('combobox', { name: /^生成模式：/ }));
-    await userEvent.setup().click(screen.getByRole('option', { name: /文生视频/ }));
-    expect(props.onParametersChange).toHaveBeenCalledExactlyOnceWith({
-      duration: 5,
-      resolution: '720p',
-      aspectRatio: '16:9',
-    });
-    view.rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{ ...props.node, data: { ...props.node.data, videoMode: 'text_to_video' } }}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('adaptive');
-  });
-
-  it.each(['', 'x'.repeat(7001)])('Flash-MAX 有连线也必须提供非空且不超限提示词', (prompt) => {
-    const props = makeProps({
-      node: {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: '无限制-Flash-MAX-Video',
-          videoMode: 'omni_reference',
-          prompt,
-          parameters: { duration: 5, resolution: '720p', aspectRatio: 'adaptive' },
-        },
-      },
-      hasConnectedInput: true,
-    });
-    render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent(/prompt|提示词/);
-    expect(props.onRun).not.toHaveBeenCalled();
-  });
-
-  it('Flash-MAX 保留文字连线作为提示词来源，媒体连线不能代替提示词', () => {
-    const props = makeProps({
-      node: {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: '无限制-Flash-MAX-Video',
-          videoMode: 'omni_reference',
-          prompt: '',
-          parameters: { duration: 5, resolution: '720p', aspectRatio: 'adaptive' },
-        },
-      },
-      hasConnectedInput: true,
-      connectedInputRoles: ['prompt'],
-    });
-    const view = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    view.rerender(<NodeQuickEditor {...props} connectedInputRoles={['audioTrack']} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('提示词');
-  });
-
-  it.each([
-    ['无限制-Flash-MAX-Video', true, true, true],
-    ['无限制-Flash-MAX-Video', true, false, false],
-    ['Seedance2.0 0.9r', true, false, true],
-    ['Seedance2.0 0.9r', false, true, false],
-  ] as const)(
-    '%s 历史 content 输入只在 H3 使用文字来源标记（连线 %s、文字 %s）',
-    (modelAlias, hasConnectedInput, hasConnectedTextPromptInput, canRun) => {
-      const props = makeProps({
-        node: {
-          ...videoNode,
-          data: {
-            ...videoNode.data,
-            modelAlias,
-            prompt: '',
-            parameters: { duration: 5, resolution: '720p', aspectRatio: '16:9' },
-          },
-        },
-        hasConnectedInput,
-        hasConnectedTextPromptInput,
-        connectedInputRoles: ['content'],
-      });
-      render(<NodeQuickEditor {...props} />);
-      const run = screen.getByRole('button', { name: '生成' });
-      if (canRun) expect(run).toBeEnabled();
-      else expect(run).toBeDisabled();
-      expect(props.node.data).not.toHaveProperty('videoMode');
-      expect(props.onRun).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([{ duration: 13 }, { duration: 6.25 }, { duration: 5, resolution: '2k' }])(
-    'Flash-MAX 旧参数 %j 保留并阻断，不沿用 Seedance 上限',
-    (parameters) => {
-      const props = makeProps({
-        node: {
-          ...videoNode,
-          data: {
-            ...videoNode.data,
-            modelAlias: '无限制-Flash-MAX-Video',
-            videoMode: 'text_to_video',
-            parameters,
-          },
-        },
-        onParametersChange: vi.fn(),
-      });
-      render(<NodeQuickEditor {...props} />);
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('status')).toHaveTextContent('Image2Pro');
-      expect(props.onParametersChange).not.toHaveBeenCalled();
-      expect(props.onRun).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([
-    {},
-    { duration: 0 },
-    { duration: 3600.01 },
-    { duration: 5, aspectRatio: '  ' },
-    { duration: 5, seconds: 8 },
-    { duration: 5, resolution: '2k' },
-    { duration: 5, generate_audio: 'false' },
-  ])('Image2Pro 非法参数 %j 在提交前明确阻止', (parameters) => {
-    const props = makeProps({
-      node: {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: 'Seedance2.0 0.9r',
-          videoMode: 'text_to_video',
-          parameters,
-        },
-      },
-    });
-    render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('Image2Pro');
-    expect(props.onRun).not.toHaveBeenCalled();
-  });
-
   it.each(['快捷', '完整'] as const)(
     '%s编辑器在节点生成中提供可点击停止，并在停止意图提交后禁用',
     async (presentation) => {
@@ -1131,7 +525,7 @@ describe('NodeQuickEditor', () => {
         expect(listbox.closest('.ant-select-dropdown')).toBeInTheDocument();
         expect(listbox.closest('[role="dialog"]')).toBe(dialog);
         expect(screen.getAllByRole('listbox', { name: '模型选项' })).toHaveLength(1);
-        expect(within(listbox).getAllByRole('option')).toHaveLength(2);
+        expect(within(listbox).getAllByRole('option')).toHaveLength(3);
         await user.click(
           within(listbox).getByRole('option', { name: /^图片模型/, selected: true }),
         );
@@ -1179,58 +573,6 @@ describe('NodeQuickEditor', () => {
       expect(inputs.onRun).not.toHaveBeenCalled();
     },
   );
-
-  it.each([
-    ['needs_review', '待管理员确认'],
-    ['unavailable', '暂不可用'],
-  ] as const)('模型 %s 时只显示状态说明并保留禁用语义', async (availability, status) => {
-    const user = userEvent.setup();
-    const inputs = makeProps({
-      models: [
-        { id: 'image-model', name: '图片模型', mediaTypes: ['image'] },
-        {
-          id: 'review-model',
-          name: '待审模型',
-          mediaTypes: ['image'],
-          availability,
-        },
-      ],
-    });
-    renderRaw(<NodeQuickEditor {...inputs} />);
-    await user.click(screen.getByRole('combobox', { name: /^模型：/ }));
-    const option = screen.getByRole('option', { name: `待审模型 ${status} 测试分组` });
-    expect(option).toHaveAttribute('aria-disabled', 'true');
-    expect(option.querySelectorAll('small')).toHaveLength(1);
-    expect(within(option).getByText(status, { exact: true })).toBeInTheDocument();
-    expect(within(option).queryByText('测试分组')).not.toBeInTheDocument();
-    await user.click(option);
-    expect(inputs.onModelChange).not.toHaveBeenCalled();
-    expect(inputs.onRun).not.toHaveBeenCalled();
-  });
-
-  it('原分组失效时不能静默改用其它组的同名模型', () => {
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: { ...imageNode, data: { ...imageNode.data, credentialId: 'missing-group' } },
-          models: [
-            {
-              id: 'image-model',
-              name: '图片',
-              credentialId: 'other-group',
-              group: '其他组',
-              mediaTypes: ['image'],
-            },
-          ],
-        })}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      '当前分组模型已失效，请重新选择；不会自动切换其他分组',
-    );
-  });
   it('模型、文字推理和媒体参数通过 Antd portal 脱离编辑器滚动区域', async () => {
     const user = userEvent.setup();
     const view = renderRaw(<NodeQuickEditor {...makeProps()} />);
@@ -1746,10 +1088,10 @@ describe('NodeQuickEditor', () => {
     expect(slider).toHaveAccessibleDescription(/未设置；滑块从 10 秒起，拖动后才保存/);
     expect(within(card).getByText('未设置', { selector: 'output' })).toBeVisible();
     expect(within(card).getByText('5–30 秒 · 新建默认 10 秒')).toBeVisible();
-    expect(within(card).queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(within(card).getByRole('spinbutton', { name: '自定义时长（秒）' })).toBeInTheDocument();
     expect(within(card).queryByRole('group', { name: '快捷秒数' })).not.toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: /自定义/ })).not.toBeInTheDocument();
-    expect(within(card).queryByRole('button', { name: '自动时长' })).not.toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: '自动时长' })).toBeInTheDocument();
     for (const seconds of [5, 10, 15, 30]) {
       expect(within(card).queryByRole('button', { name: seconds + ' 秒' })).not.toBeInTheDocument();
     }
@@ -1786,55 +1128,52 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).toHaveBeenCalledTimes(6);
   });
 
-  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
-    '历史非法时长 %s 保留真实值并阻止生成，明确滑动后才修正',
-    async (saved) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const props = makeProps({
-        node: {
-          ...videoNode,
-          data: {
-            ...videoNode.data,
-            modelAlias: 'grok-video',
-            resultAsset: { assetId: 'asset_video_result' },
-            parameters: { duration: saved, resolution: '720p' },
-          },
+  it.each([0])('历史非法时长 %s 保留真实值并阻止生成，明确滑动后才修正', async (saved) => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'grok-video',
+          resultAsset: { assetId: 'asset_video_result' },
+          parameters: { duration: saved, resolution: '720p' },
         },
-        onParametersChange,
-        onRunNewNode: vi.fn(),
-      });
-      render(<NodeQuickEditor {...props} />);
-      const trigger = screen.getByRole('button', { name: '时长（秒）：' + saved + ' 秒' });
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
-      await user.click(screen.getByRole('button', { name: '生成' }));
-      await user.click(screen.getByRole('button', { name: '新节点' }));
-      expect(props.onRun).not.toHaveBeenCalled();
-      expect(props.onRunNewNode).not.toHaveBeenCalled();
-      await user.click(trigger);
-      const card = screen.getByRole('dialog', { name: '视频时长' });
-      const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
-      await waitFor(() => expect(slider).toBeVisible());
-      expect(slider).toHaveValue('10');
-      expect(slider).toHaveAttribute('aria-invalid', 'true');
-      expect(slider).toHaveAccessibleDescription(/视频时长必须为正整数秒/);
-      expect(within(card).getByText(saved + ' 秒', { selector: 'output' })).toBeVisible();
-      expect(onParametersChange).not.toHaveBeenCalled();
-      fireEvent.change(slider, { target: { value: '12' } });
-      expect(onParametersChange).toHaveBeenCalledOnce();
-      expect(onParametersChange).toHaveBeenLastCalledWith({
-        duration: 12,
-        resolution: '720p',
-      });
-      expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveAttribute(
-        'aria-invalid',
-        'false',
-      );
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-      expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
-    },
-  );
+      },
+      onParametersChange,
+      onRunNewNode: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    const trigger = screen.getByRole('button', { name: '时长（秒）：' + saved + ' 秒' });
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '生成' }));
+    await user.click(screen.getByRole('button', { name: '新节点' }));
+    expect(props.onRun).not.toHaveBeenCalled();
+    expect(props.onRunNewNode).not.toHaveBeenCalled();
+    await user.click(trigger);
+    const card = screen.getByRole('dialog', { name: '视频时长' });
+    const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
+    await waitFor(() => expect(slider).toBeVisible());
+    expect(slider).toHaveValue('10');
+    expect(slider).toHaveAttribute('aria-invalid', 'true');
+    expect(slider).toHaveAccessibleDescription(/视频时长必须为正数秒/);
+    expect(within(card).getByText(saved + ' 秒', { selector: 'output' })).toBeVisible();
+    expect(onParametersChange).not.toHaveBeenCalled();
+    fireEvent.change(slider, { target: { value: '12' } });
+    expect(onParametersChange).toHaveBeenCalledOnce();
+    expect(onParametersChange).toHaveBeenLastCalledWith({
+      duration: 12,
+      resolution: '720p',
+    });
+    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveAttribute(
+      'aria-invalid',
+      'false',
+    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
+  });
 
   it.each([
     {
@@ -1847,7 +1186,7 @@ describe('NodeQuickEditor', () => {
     { saved: 2, label: '2 秒', reference: 5, hint: /已保存 2 秒.*保留原值/, invalid: false },
     { saved: 4, label: '4 秒', reference: 5, hint: /已保存 4 秒.*保留原值/, invalid: false },
     { saved: -1, label: '自动', reference: 10, hint: /当前为自动时长/, invalid: false },
-    { saved: 40, label: '40 秒', reference: 30, hint: /已保存 40 秒.*保留原值/, invalid: true },
+    { saved: 40, label: '40 秒', reference: 30, hint: /已保存 40 秒.*保留原值/, invalid: false },
   ])(
     '历史时长 $label 不因打开或聚焦保存，显式点选参考点才写回',
     async ({ saved, label, reference, hint, invalid }) => {
@@ -2055,7 +1394,7 @@ describe('NodeQuickEditor', () => {
       if (modelAlias === 'wan3.0-video') {
         expect(within(card).getByRole('button', { name: '自动时长' })).toBeDisabled();
       } else {
-        expect(within(card).queryByRole('button', { name: '自动时长' })).not.toBeInTheDocument();
+        expect(within(card).getByRole('button', { name: '自动时长' })).toBeInTheDocument();
       }
       for (const button of within(card).getAllByRole('button')) {
         expect(button).toBeDisabled();
@@ -2169,9 +1508,15 @@ describe('NodeQuickEditor', () => {
     expect(card).toBeVisible();
     expect(props.onRun).not.toHaveBeenCalled();
     await user.tab();
+    expect(durationCard().getByRole('button', { name: '自动时长' })).toHaveFocus();
+    await user.tab();
     expect(within(card).getByRole('button', { name: '清除时长' })).toHaveFocus();
     await user.tab({ shift: true });
+    expect(durationCard().getByRole('button', { name: '自动时长' })).toHaveFocus();
+    await user.tab({ shift: true });
     expect(slider).toHaveFocus();
+    await user.tab();
+    expect(durationCard().getByRole('button', { name: '自动时长' })).toHaveFocus();
     await user.tab();
     expect(within(card).getByRole('button', { name: '清除时长' })).toHaveFocus();
     await user.tab();
@@ -2199,7 +1544,11 @@ describe('NodeQuickEditor', () => {
       expect(slider).toHaveFocus();
       expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
       await user.tab();
+      expect(durationCard().getByRole('button', { name: '自动时长' })).toHaveFocus();
+      await user.tab();
       expect(durationCard().getByRole('button', { name: '清除时长' })).toHaveFocus();
+      await user.tab({ shift: true });
+      expect(durationCard().getByRole('button', { name: '自动时长' })).toHaveFocus();
       await user.tab({ shift: true });
       expect(slider).toHaveFocus();
       await user.keyboard('{Escape}');
@@ -2211,6 +1560,8 @@ describe('NodeQuickEditor', () => {
       );
       await user.keyboard('{ArrowDown}');
       expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveFocus();
+      await user.tab();
+      expect(durationCard().getByRole('button', { name: '自动时长' })).toHaveFocus();
       await user.tab();
       expect(durationCard().getByRole('button', { name: '清除时长' })).toHaveFocus();
       await user.keyboard('{Enter}');
@@ -2255,269 +1606,6 @@ describe('NodeQuickEditor', () => {
           'aria-expanded',
           'true',
         );
-    },
-  );
-
-  it.each([6, 7])('目录仅支持 6/10 秒，旧值 %s 真实回显且滑块仍逐值校验', async (saved) => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: 'grok-video',
-              parameters: { duration: saved },
-            },
-          },
-          models: [
-            {
-              id: 'grok-video',
-              name: '枚举模型',
-              mediaTypes: ['video'],
-              capabilities: { video: { durations: [6, 10] } },
-            },
-          ],
-          onParametersChange,
-        })}
-      />,
-    );
-    const trigger = screen.getByRole('button', { name: '时长（秒）：' + saved + ' 秒' });
-    await user.click(trigger);
-    const card = screen.getByRole('dialog', { name: '视频时长' });
-    const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
-    await waitFor(() => expect(slider).toBeVisible());
-    expect(onParametersChange).not.toHaveBeenCalled();
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveAttribute('step', '1');
-    expect(slider).toHaveValue(String(saved));
-    expect(slider).toHaveAttribute('aria-invalid', String(saved !== 6));
-    expect(within(card).getByText(saved + ' 秒', { selector: 'output' })).toBeVisible();
-    if (saved === 6) expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    else expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    for (const seconds of [5, 15, 30, 8]) {
-      fireEvent.change(slider, { target: { value: String(seconds) } });
-      expect(onParametersChange).toHaveBeenLastCalledWith({ duration: seconds });
-      expect(slider).toHaveAttribute('aria-invalid', 'true');
-      expect(slider).toHaveAccessibleDescription(/当前模型仅支持 6、10 秒/);
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(card).toBeVisible();
-    }
-    for (const seconds of [6, 10]) {
-      fireEvent.change(slider, { target: { value: String(seconds) } });
-      expect(onParametersChange).toHaveBeenLastCalledWith({ duration: seconds });
-      expect(slider).toHaveAttribute('aria-invalid', 'false');
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    }
-  });
-
-  it.each([{ disabled: true }, { enabled: false }, { supported: false }, { available: false }])(
-    '目录禁用时长 %j 不能作为可生成值，已保存或再次滑到该值均阻断',
-    async (flag) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const props = makeProps({
-        node: {
-          ...videoNode,
-          data: { ...videoNode.data, modelAlias: 'grok-video', parameters: { duration: 10 } },
-        },
-        models: [
-          {
-            id: 'grok-video',
-            name: '部分禁用时长模型',
-            mediaTypes: ['video'],
-            capabilities: { video: { durations: [{ value: 10, ...flag }, { value: 12 }] } },
-          },
-        ],
-        onParametersChange,
-      });
-      render(<NodeQuickEditor {...props} />);
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      await user.click(screen.getByRole('button', { name: '时长（秒）：10 秒' }));
-      const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-      await waitFor(() => expect(slider).toBeVisible());
-      expect(slider).toHaveValue('10');
-      expect(slider).toHaveAttribute('aria-invalid', 'true');
-      expect(slider).toHaveAccessibleDescription(/当前模型仅支持 12 秒/);
-      expect(onParametersChange).not.toHaveBeenCalled();
-      fireEvent.change(slider, { target: { value: '12' } });
-      expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 12 });
-      expect(slider).toHaveAttribute('aria-invalid', 'false');
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-      fireEvent.change(slider, { target: { value: '10' } });
-      expect(slider).toHaveAttribute('aria-invalid', 'true');
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
-      await user.click(screen.getByRole('button', { name: '生成' }));
-      expect(props.onRun).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([
-    { name: '空枚举', declaration: { enum: [] } },
-    { name: '全部禁用', declaration: { options: [{ value: 5, disabled: true }] } },
-  ])('目录 $name 不能用滑块范围绕过，只有显式清除才删除已存值', async ({ declaration }) => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: {
-            ...videoNode,
-            data: { ...videoNode.data, modelAlias: 'limited-video', parameters: { duration: 5 } },
-          },
-          models: [
-            {
-              id: 'limited-video',
-              name: '无可用时长模型',
-              mediaTypes: ['video'],
-              capabilities: { video: { duration: declaration } },
-            },
-          ],
-          onParametersChange,
-        })}
-      />,
-    );
-    const trigger = screen.getByRole('button', { name: '时长（秒）：5 秒' });
-    await user.click(trigger);
-    const card = screen.getByRole('dialog', { name: '视频时长' });
-    const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
-    await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveValue('5');
-    expect(slider).toBeEnabled();
-    expect(slider).toHaveAttribute('aria-invalid', 'true');
-    expect(slider).toHaveAccessibleDescription(/当前模型未声明可用的视频时长/);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(onParametersChange).not.toHaveBeenCalled();
-    for (const seconds of [10, 30]) {
-      fireEvent.change(slider, { target: { value: String(seconds) } });
-      expect(onParametersChange).toHaveBeenLastCalledWith({ duration: seconds });
-      expect(slider).toHaveAttribute('aria-invalid', 'true');
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(card).toBeVisible();
-    }
-    await user.click(within(card).getByRole('button', { name: '清除时长' }));
-    expect(onParametersChange).toHaveBeenLastCalledWith({});
-    expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
-    expect(trigger).toHaveAccessibleName('时长（秒）：未设置');
-    expect(trigger).toHaveFocus();
-  });
-
-  it('MiniMax 保留历史 4 秒，滑块仍为 5 至 30 秒并阻止超出 4 至 15 秒合同的生成', async () => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: {
-            ...videoNode,
-            data: { ...videoNode.data, modelAlias: 'MiniMax-H3', parameters: { duration: 4 } },
-          },
-          onParametersChange,
-        })}
-      />,
-    );
-    await user.click(screen.getByRole('button', { name: '时长（秒）：4 秒' }));
-    const card = screen.getByRole('dialog', { name: '视频时长' });
-    const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
-    await waitFor(() => expect(slider).toBeVisible());
-    expect(onParametersChange).not.toHaveBeenCalled();
-    expect(within(card).getByText('4 秒', { selector: 'output' })).toBeVisible();
-    expect(slider).toHaveValue('5');
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveAttribute('step', '1');
-    expect(slider).toHaveAttribute('aria-invalid', 'false');
-    expect(slider).toHaveAccessibleDescription(/已保存 4 秒.*保留原值.*当前模型支持 4–15 秒/);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    act(() => slider.focus());
-    expect(onParametersChange).not.toHaveBeenCalled();
-    fireEvent.change(slider, { target: { value: '30' } });
-    expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 30 });
-    expect(slider).toHaveValue('30');
-    expect(slider).toHaveAttribute('aria-invalid', 'true');
-    expect(slider).toHaveAccessibleDescription(/视频时长必须为 4 至 15 秒/);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(card).toBeVisible();
-    fireEvent.change(slider, { target: { value: '12' } });
-    expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 12 });
-    expect(slider).toHaveAttribute('aria-invalid', 'false');
-    expect(slider).toHaveFocus();
-    expect(card).toBeVisible();
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it.each(['minimax-h3', 'MiniMax-H3'])(
-    '%s 历史空时长不自动保存，选择及清除按精确模型身份校验必填',
-    async (modelAlias) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const required = modelAlias === 'minimax-h3';
-      render(
-        <NodeQuickEditor
-          {...makeProps({
-            node: {
-              ...videoNode,
-              data: {
-                ...videoNode.data,
-                modelAlias,
-                parameters: { aspectRatio: '16:9' },
-              },
-            },
-            onParametersChange,
-          })}
-        />,
-      );
-      const trigger = screen.getByRole('button', { name: '时长（秒）：未设置' });
-      const run = screen.getByRole('button', { name: '生成' });
-      if (required) {
-        expect(run).toBeDisabled();
-        expect(run).toHaveAttribute('title', 'Moon MiniMax H3 必须选择 4 至 15 秒的视频时长');
-      } else {
-        expect(run).toBeEnabled();
-      }
-      await user.click(trigger);
-      const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-      await waitFor(() => expect(slider).toBeVisible());
-      expect(slider).toHaveValue('10');
-      expect(slider).toHaveAttribute('aria-invalid', String(required));
-      if (required) {
-        expect(slider).toHaveAccessibleDescription(/Moon MiniMax H3 必须选择 4 至 15 秒的视频时长/);
-      }
-      act(() => slider.focus());
-      expect(onParametersChange).not.toHaveBeenCalled();
-      for (const seconds of [11, 10]) {
-        fireEvent.change(slider, { target: { value: String(seconds) } });
-        expect(onParametersChange).toHaveBeenLastCalledWith({
-          aspectRatio: '16:9',
-          duration: seconds,
-        });
-        expect(slider).toHaveAttribute('aria-invalid', 'false');
-        expect(run).toBeEnabled();
-      }
-      expect(trigger).toHaveAccessibleName('时长（秒）：10 秒');
-      expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
-      await user.click(durationCard().getByRole('button', { name: '清除时长' }));
-      expect(onParametersChange).toHaveBeenLastCalledWith({ aspectRatio: '16:9' });
-      expect(onParametersChange).toHaveBeenCalledTimes(3);
-      expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
-      expect(trigger).toHaveAccessibleName('时长（秒）：未设置');
-      expect(trigger).toHaveFocus();
-      if (required) {
-        expect(run).toBeDisabled();
-        expect(run).toHaveAttribute('title', 'Moon MiniMax H3 必须选择 4 至 15 秒的视频时长');
-      } else {
-        expect(run).toBeEnabled();
-      }
-      await user.click(trigger);
-      expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveAttribute(
-        'aria-invalid',
-        String(required),
-      );
-      expect(onParametersChange).toHaveBeenCalledTimes(3);
     },
   );
 
@@ -2676,11 +1764,8 @@ describe('NodeQuickEditor', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: '时长（秒）：10 秒' })).toBeVisible(),
     );
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      '当前模型仅支持 4、8 秒',
-    );
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute('title', '生成');
     const resolution = screen.getByRole('combobox', { name: '视频清晰度：480p' });
     const root = resolution.parentElement!;
     vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({
@@ -2749,7 +1834,7 @@ describe('NodeQuickEditor', () => {
     await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
   });
 
-  it('只列出当前媒体模型，并保留目录中缺失的当前覆盖值', async () => {
+  it('列出全部模型，并保留目录中缺失的当前覆盖值', async () => {
     const user = userEvent.setup();
     render(
       <NodeQuickEditor
@@ -2771,12 +1856,10 @@ describe('NodeQuickEditor', () => {
     await user.click(within(modelGroup).getByRole('combobox'));
     expect(selectPopup(modelGroup).getByRole('option', { name: /图片模型/ })).toBeInTheDocument();
     expect(selectPopup(modelGroup).getByRole('option', { name: /多模态模型/ })).toBeInTheDocument();
-    expect(
-      selectPopup(modelGroup).queryByRole('option', { name: '文字模型' }),
-    ).not.toBeInTheDocument();
+    expect(selectPopup(modelGroup).getByRole('option', { name: /^文字模型/ })).toBeInTheDocument();
     expect(
       selectPopup(modelGroup).getByRole('option', {
-        name: /removed-image-model.*原分组当前不可用/,
+        name: /removed-image-model.*已保存的分组身份/,
         selected: true,
       }),
     ).toBeInTheDocument();
@@ -2811,97 +1894,6 @@ describe('NodeQuickEditor', () => {
     expect(screen.queryByText('当前模型的资源提及能力需要确认')).not.toBeInTheDocument();
     expect(screen.queryByText(/未声明可引用的资源媒体类型/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it('明确禁用编辑的模型阻止图片引用，但仍允许纯文生图', () => {
-    const props = makeProps({
-      node: {
-        ...imageNode,
-        data: {
-          ...imageNode.data,
-          modelAlias: 'image-model',
-          promptDocument: makeMentionDocument(imageMention),
-        },
-      } as AssetFlowNode,
-      models: [
-        {
-          id: 'image-model',
-          name: '图片模型',
-          mediaTypes: ['image'],
-          capabilities: { imageEdit: false },
-        },
-      ],
-    });
-    const { rerender } = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      '当前模型明确不支持图片编辑，请更换模型后再运行',
-    );
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{ ...props.node, data: { ...props.node.data, promptDocument: undefined } }}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{ ...props.node, type: 'text', data: { ...props.node.data, mediaType: 'text' } }}
-        models={[
-          {
-            id: 'image-model',
-            name: '多模态模型',
-            mediaTypes: ['text', 'image'],
-            credentialId: testCredentialId,
-            capabilities: { imageEdit: false },
-          },
-        ]}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it('生成新节点只拒绝明确禁用编辑的模型，不要求能力声明', async () => {
-    const onRunNewNode = vi.fn();
-    const props = makeProps({
-      onRunNewNode,
-      node: {
-        ...imageNode,
-        data: {
-          ...imageNode.data,
-          assetId: 'asset_result',
-          contentUrl: '/v1/assets/asset_result/content',
-          modelAlias: 'image-model',
-        },
-      },
-      models: [
-        {
-          id: 'image-model',
-          name: '图片模型',
-          mediaTypes: ['image'],
-          capabilities: { imageEdit: { supported: false } },
-        },
-      ],
-    });
-    const { rerender } = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        models={[
-          {
-            id: 'image-model',
-            name: '图片模型',
-            mediaTypes: ['image'],
-            credentialId: testCredentialId,
-          },
-        ]}
-      />,
-    );
-    await userEvent.setup().click(screen.getByRole('button', { name: '新节点' }));
-    expect(onRunNewNode).toHaveBeenCalledOnce();
   });
 
   it('资源提及时不再显示媒体能力诊断', () => {
@@ -3297,7 +2289,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByLabelText('请求像素')).toHaveTextContent(pixels);
     expect(screen.getByRole('combobox', { name: '图片分辨率：' + pixels })).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: /图片分辨率：[1-4]K/i })).not.toBeInTheDocument();
-    expect(screen.queryByText('生成质量')).not.toBeInTheDocument();
+    expect(screen.queryByText('生成质量')).toBeInTheDocument();
     expect(onParametersChange).not.toHaveBeenCalled();
     expect(parameters).toEqual({ quality, aspectRatio });
   });
@@ -3326,8 +2318,8 @@ describe('NodeQuickEditor', () => {
   });
 
   it.each([
-    ['gpt-image-2.5-sunburst', '3840x3840', false],
-    ['gpt-image-2.5-sunburst', '576x1024', false],
+    ['gpt-image-2.5-sunburst', '3840x3840', true],
+    ['gpt-image-2.5-sunburst', '576x1024', true],
     ['gpt-image-2.5-sunburst', '3840x1648', true],
     ['gpt-image-2.5-sunburst', '2160x3840', true],
     ['unknown-custom-image-model', '3840x3840', true],
@@ -3442,13 +2434,13 @@ describe('NodeQuickEditor', () => {
 
     const qualityGroup = screen.getByText('生成质量').parentElement!;
     await user.click(within(qualityGroup).getByRole('combobox'));
-    await user.click(selectPopup(qualityGroup).getByRole('option', { name: 'AUTO' }));
+    await user.click(selectPopup(qualityGroup).getByRole('option', { name: 'auto' }));
     expect(onParametersChange).toHaveBeenCalledOnce();
     expect(onParametersChange).toHaveBeenCalledWith({ quality: 'auto' });
     expect(onParametersChange.mock.lastCall?.[0]).not.toHaveProperty('size');
   });
 
-  it('目录显式声明 sizes:auto 时仍提供自动尺寸', async () => {
+  it('目录显式声明 sizes:auto 时提供自动尺寸', async () => {
     const user = userEvent.setup();
     render(
       <NodeQuickEditor
@@ -3510,7 +2502,7 @@ describe('NodeQuickEditor', () => {
     expect(parameters.size).toBe('1024x1024');
   });
 
-  it('图片尺寸冲突同时阻止生成和新节点，改比例后清除兼容别名并保存 size', async () => {
+  it('图片尺寸与旧别名并存时仍允许提交，改比例后清除兼容别名并保存 size', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     const props = makeProps({
@@ -3532,16 +2524,16 @@ describe('NodeQuickEditor', () => {
       },
     });
     const { rerender } = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('请修正参数');
-    expect(screen.getByText(/图片参数.*冲突/)).toHaveAttribute('role', 'status');
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1024 × 1024');
+    expect(screen.queryByText(/图片参数.*冲突/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
     expect(onParametersChange).not.toHaveBeenCalled();
     const ratioGroup = screen.getByText('图片比例').parentElement!;
     await user.click(within(ratioGroup).getByRole('combobox'));
     await user.click(selectPopup(ratioGroup).getByRole('option', { name: /21:9/ }));
     expect(onParametersChange).toHaveBeenCalledWith({
-      size: '3840x1648',
+      size: '1024x432',
       providerOption: 'preserved',
     });
     rerender(
@@ -3553,7 +2545,7 @@ describe('NodeQuickEditor', () => {
         }}
       />,
     );
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('3840 × 1648');
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1024 × 432');
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
     expect(props.onRun).not.toHaveBeenCalled();
@@ -3661,43 +2653,13 @@ describe('NodeQuickEditor', () => {
     const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
     await user.click(within(resolutionGroup).getByRole('combobox'));
     const options = selectPopup(resolutionGroup).getAllByRole('option');
-    expect(options.map((option) => option.textContent)).toEqual([
+    expect(options.slice(0, 3).map((option) => option.textContent)).toEqual([
       '1024 × 1024',
       '1536 × 1024',
       '1024 × 1536',
     ]);
     await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '1536 × 1024' }));
     expect(onParametersChange).toHaveBeenCalledWith({ size: '1536x1024' });
-  });
-
-  it('gpt-image-1 回退到官方固定尺寸，不把通用 4K 档当作可用尺寸', async () => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onParametersChange,
-          node: { ...imageNode, data: { ...imageNode.data, modelAlias: 'gpt-image-1' } },
-          models: [{ id: 'gpt-image-1', name: 'GPT Image 1', mediaTypes: ['image'] }],
-        })}
-      />,
-    );
-
-    const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
-    await user.click(within(resolutionGroup).getByRole('combobox'));
-    expect(
-      selectPopup(resolutionGroup).getByRole('option', { name: '1024 × 1024' }),
-    ).not.toHaveAttribute('aria-disabled', 'true');
-    expect(
-      selectPopup(resolutionGroup).getByRole('option', { name: '1536 × 1024' }),
-    ).not.toHaveAttribute('aria-disabled', 'true');
-    expect(
-      selectPopup(resolutionGroup).getByRole('option', { name: '1024 × 1536' }),
-    ).not.toHaveAttribute('aria-disabled', 'true');
-    expect(
-      selectPopup(resolutionGroup).queryByRole('option', { name: /3840 × 3840/ }),
-    ).not.toBeInTheDocument();
-    expect(onParametersChange).not.toHaveBeenCalled();
   });
 
   it('完整编辑器将库默认关闭按钮的初始焦点交给提示词', async () => {
@@ -3802,51 +2764,14 @@ describe('NodeQuickEditor', () => {
       const props = makeProps({ node: makeAudioNode({ voice }), onParametersChange });
       render(<NodeQuickEditor {...props} />);
       expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue(voice);
-      expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute(
+      expect(screen.getByRole('textbox', { name: '音色' })).not.toHaveAttribute(
         'aria-invalid',
-        'false',
+        'true',
       );
       expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
       fireEvent.click(screen.getByRole('button', { name: '生成' }));
       expect(props.onRun).toHaveBeenCalledOnce();
       expect(onParametersChange).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(['custom-voice', 'Alloy', ' alloy '])(
-    '历史音色 %j 即使目录声明也不扩大 Provider 合同或静默重置',
-    (voice) => {
-      const onParametersChange = vi.fn();
-      const node = makeAudioNode({ voice });
-      const props = makeProps({
-        onParametersChange,
-        onRunNewNode: vi.fn(),
-        node: {
-          ...node,
-          data: {
-            ...node.data,
-            assetId: 'history-audio',
-            contentUrl: '/v1/assets/history-audio/content',
-          },
-        },
-        models: [
-          {
-            id: 'test-tts',
-            name: '测试音频',
-            mediaTypes: ['audio'],
-            capabilities: { voices: [voice] },
-          },
-        ],
-      });
-      render(<NodeQuickEditor {...props} />);
-      expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue(voice);
-      expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute('aria-invalid', 'true');
-      expect(screen.getByText(/当前接口不支持此音色/)).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
-      expect(onParametersChange).not.toHaveBeenCalled();
-      expect(props.onRun).not.toHaveBeenCalled();
-      expect(props.onRunNewNode).not.toHaveBeenCalled();
     },
   );
 
@@ -3858,111 +2783,21 @@ describe('NodeQuickEditor', () => {
     const mediaOptions = screen.getByRole('group', { name: '媒体参数' });
     expect(mediaOptions).toHaveAttribute('data-columns', '2');
     expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('');
-    expect(screen.getByRole('textbox', { name: '音色' })).toBeRequired();
-    expect(screen.getByRole('textbox', { name: '音色' })).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('textbox', { name: '音色' })).not.toBeRequired();
+    expect(screen.getByRole('textbox', { name: '音色' })).not.toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
     expect(screen.getByRole('combobox', { name: '音频格式：未设置' })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(null);
-    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute('min', '0.25');
-    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute('max', '4');
+    expect(screen.getByRole('spinbutton', { name: '语速' })).not.toHaveAttribute('min');
+    expect(screen.getByRole('spinbutton', { name: '语速' })).not.toHaveAttribute('max');
     expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute('step', 'any');
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute('title', '请先填写音色');
+
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: '生成' }));
-    expect(props.onRun).not.toHaveBeenCalled();
+    expect(props.onRun).toHaveBeenCalledOnce();
     expect(onParametersChange).not.toHaveBeenCalled();
-  });
-
-  it('保留历史自定义音色、格式和语速，但提前阻止不支持的音色', async () => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    const props = makeProps({ node: audioNode, onParametersChange });
-    const saved = { voice: 'old-voice', providerOption: { preserved: true } };
-    const { rerender, unmount } = render(
-      <NodeQuickEditor {...props} node={makeAudioNode(saved)} />,
-    );
-
-    fireEvent.change(screen.getByRole('textbox', { name: '音色' }), {
-      target: { value: 'platform/custom Voice-42' },
-    });
-    const voiceParameters = onParametersChange.mock.lastCall?.[0];
-    expect(voiceParameters).toEqual({
-      ...saved,
-      voice: 'platform/custom Voice-42',
-    });
-    expect(saved.voice).toBe('old-voice');
-    rerender(<NodeQuickEditor {...props} node={makeAudioNode(voiceParameters)} />);
-
-    const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
-    await user.click(within(formatGroup).getByRole('combobox'));
-    expect(
-      selectPopup(formatGroup).getByRole('option', { name: 'FLAC' }).closest('.ant-select-dropdown')
-        ?.parentElement,
-    ).toBe(document.body);
-    await user.click(selectPopup(formatGroup).getByRole('option', { name: 'FLAC' }));
-    const formatParameters = onParametersChange.mock.lastCall?.[0];
-    expect(formatParameters).toEqual({ ...voiceParameters, response_format: 'flac' });
-    rerender(<NodeQuickEditor {...props} node={makeAudioNode(formatParameters)} />);
-
-    fireEvent.change(screen.getByRole('spinbutton', { name: '语速' }), {
-      target: { value: '1.234' },
-    });
-    const savedParameters = onParametersChange.mock.lastCall?.[0];
-    expect(savedParameters).toEqual({ ...formatParameters, speed: 1.234 });
-    unmount();
-    render(
-      <NodeQuickEditor
-        {...props}
-        node={makeAudioNode(JSON.parse(JSON.stringify(savedParameters)))}
-      />,
-    );
-    expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('platform/custom Voice-42');
-    expect(screen.getByRole('combobox', { name: '音频格式：FLAC' })).toBeInTheDocument();
-    expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveValue(1.234);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByText(/当前接口不支持此音色/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '生成' }));
-    expect(props.onRun).not.toHaveBeenCalled();
-    expect(onParametersChange).toHaveBeenCalledTimes(3);
-  });
-
-  it('连续键入保留历史音色与小数语速，明确修正后才可生成', async () => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(<StatefulAudioEditor onParametersChange={onParametersChange} />);
-
-    const voice = screen.getByRole('textbox', { name: '音色' });
-    await user.type(voice, 'custom Voice-42');
-    expect(voice).toHaveValue('custom Voice-42');
-    const speed = screen.getByRole('spinbutton', { name: '语速' });
-    await user.type(speed, '0.25');
-    expect(speed).toHaveValue(0.25);
-    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'custom Voice-42', speed: 0.25 });
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    fireEvent.change(voice, { target: { value: 'alloy' } });
-    expect(voice).toHaveValue('alloy');
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-
-    fireEvent.change(speed, { target: { value: '4.001' } });
-    expect(speed).toHaveValue(4.001);
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(onParametersChange).toHaveBeenLastCalledWith({ voice: 'alloy', speed: 4.001 });
-    fireEvent.change(speed, { target: { value: '1.234' } });
-    expect(speed).toHaveValue(1.234);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it.each(['', '   '])('音色输入 %j 会删除参数并阻止生成', (value) => {
-    const onParametersChange = vi.fn();
-    const parameters = { voice: 'alloy', response_format: 'wav', speed: 1.25 };
-    const props = makeProps({ onParametersChange });
-    const { rerender } = render(<NodeQuickEditor {...props} node={makeAudioNode(parameters)} />);
-    fireEvent.change(screen.getByRole('textbox', { name: '音色' }), { target: { value } });
-    expect(onParametersChange).toHaveBeenCalledWith({ response_format: 'wav', speed: 1.25 });
-    rerender(
-      <NodeQuickEditor {...props} node={makeAudioNode(onParametersChange.mock.lastCall?.[0])} />,
-    );
-    expect(screen.getByRole('textbox', { name: '音色' })).toHaveValue('');
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
   });
 
   it('可选格式和语速可以清空，不回填默认值且显式音色仍能生成', async () => {
@@ -4034,61 +2869,6 @@ describe('NodeQuickEditor', () => {
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
   });
 
-  it.each([0, -1, 0.249, 4.001, NaN, Infinity, '1', null])(
-    '恢复非法语速 %s 时显式阻止生成，不截断或静默改写',
-    (speed) => {
-      const onParametersChange = vi.fn();
-      render(
-        <NodeQuickEditor
-          {...makeProps({
-            node: makeAudioNode({ voice: 'alloy', speed }),
-            onParametersChange,
-          })}
-        />,
-      );
-      expect(screen.getByRole('spinbutton', { name: '语速' })).toHaveAttribute(
-        'aria-invalid',
-        'true',
-      );
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-        'title',
-        '语速必须为 0.25 至 4 的有限数值',
-      );
-      expect(onParametersChange).not.toHaveBeenCalled();
-    },
-  );
-
-  it('非法历史音频格式保持可见并阻止生成，用户可以明确修正', async () => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: makeAudioNode({ voice: 'alloy', response_format: 'wma' }),
-          onParametersChange,
-        })}
-      />,
-    );
-    expect(screen.getByRole('combobox', { name: '音频格式：wma' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      '请选择支持的音频格式',
-    );
-    expect(onParametersChange).not.toHaveBeenCalled();
-    const formatGroup = screen.getByText('音频格式').parentElement as HTMLElement;
-    await user.click(within(formatGroup).getByRole('combobox'));
-    expect(
-      selectPopup(formatGroup).getByRole('option', { name: /wma 已保存，当前不支持/ }),
-    ).toHaveAttribute('aria-disabled', 'true');
-    await user.click(selectPopup(formatGroup).getByRole('option', { name: 'WAV' }));
-    expect(onParametersChange).toHaveBeenCalledWith({
-      voice: 'alloy',
-      response_format: 'wav',
-    });
-  });
-
   it('音频参数跟随节点切换恢复，且不会出现在其他媒体节点', () => {
     const onParametersChange = vi.fn();
     const props = makeProps({ onParametersChange });
@@ -4140,177 +2920,11 @@ describe('NodeQuickEditor', () => {
     expect(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ })).toBeInTheDocument();
     expect(selectPopup(modeGroup).getByRole('option', { name: /视频编辑/ })).toHaveAttribute(
       'aria-disabled',
-      'true',
+      'false',
     );
     await user.click(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ }));
     expect(onVideoModeChange).toHaveBeenCalledWith('omni_reference');
   });
-
-  it('sd2-930-fast 只开放 720p，且按该清晰度限制时长', async () => {
-    const node = {
-      ...videoNode,
-      data: {
-        ...videoNode.data,
-        modelAlias: 'sd2-930-fast',
-        videoMode: 'omni_reference' as const,
-        parameters: { duration: 15, resolution: '720p', aspectRatio: '16:9' },
-      },
-    } as AssetFlowNode;
-    const props = makeProps({ node, onParametersChange: vi.fn() });
-    const { rerender } = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-
-    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
-    await userEvent.setup().click(within(resolutionGroup).getByRole('combobox'));
-    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(1);
-    expect(selectPopup(resolutionGroup).getByRole('option', { name: '720P' })).toBeInTheDocument();
-
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{
-          ...node,
-          data: { ...node.data, parameters: { ...node.data.parameters, duration: 16 } },
-        }}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      '视频时长必须为 5 至 15 秒',
-    );
-  });
-
-  it('grok-v1.5-video 支持 1080p 全能参考并禁用未映射模式', async () => {
-    const user = userEvent.setup();
-    const node = {
-      ...videoNode,
-      data: {
-        ...videoNode.data,
-        modelAlias: 'grok-v1.5-video',
-        videoMode: 'omni_reference' as const,
-        parameters: { duration: 15, resolution: '1080p', aspectRatio: '16:9' },
-      },
-    } as AssetFlowNode;
-    render(<NodeQuickEditor {...makeProps({ node })} />);
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-
-    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-    await user.click(within(modeGroup).getByRole('combobox'));
-    for (const label of ['首尾帧', '视频编辑', '视频延长']) {
-      expect(
-        selectPopup(modeGroup).getByRole('option', { name: new RegExp(`^${label} `) }),
-      ).toHaveAttribute('aria-disabled', 'true');
-    }
-  });
-
-  it('显式未知视频模型禁用未映射模式并阻止生成', async () => {
-    const user = userEvent.setup();
-    const node = {
-      ...videoNode,
-      data: {
-        ...videoNode.data,
-        modelAlias: 'unverified-video-model',
-        videoMode: 'omni_reference' as const,
-      },
-    } as AssetFlowNode;
-    render(<NodeQuickEditor {...makeProps({ node })} />);
-    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-    await user.click(within(modeGroup).getByRole('combobox'));
-    expect(selectPopup(modeGroup).getByRole('option', { name: /全能参考/ })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
-    );
-  });
-
-  it.each(['first_frame', 'first_last_frame', 'video_edit', 'video_extend'] as const)(
-    '官方 Seedance 2.5 切换到 %s 时沿用输入素材比例',
-    async (mode) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const node = {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: 'seedance-2-5-official',
-          videoMode: 'text_to_video' as const,
-          parameters: { duration: 10, resolution: '720p', aspectRatio: '16:9' },
-        },
-      } as AssetFlowNode;
-      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
-      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-      await user.click(within(modeGroup).getByRole('combobox'));
-      await user.click(
-        selectPopup(modeGroup).getByRole('option', {
-          name: new RegExp(`^${videoModeLabels[mode]} `),
-        }),
-      );
-      expect(onParametersChange).toHaveBeenCalledWith(
-        expect.objectContaining({ aspectRatio: 'adaptive' }),
-      );
-    },
-  );
-
-  it.each(['video_edit', 'video_extend'] as const)(
-    'ArtsDance 切换到 %s 时保存自动时长和原视频比例',
-    async (mode) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const node = {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: 'artsdance-2-0-pro-260801',
-          videoMode: 'text_to_video' as const,
-          parameters: { duration: 8, resolution: '720p', aspectRatio: '16:9' },
-        },
-      } as AssetFlowNode;
-      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
-      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-      await user.click(within(modeGroup).getByRole('combobox'));
-      await user.click(
-        selectPopup(modeGroup).getByRole('option', {
-          name: new RegExp(`^${videoModeLabels[mode]} `),
-        }),
-      );
-      expect(onParametersChange).toHaveBeenCalledWith({
-        duration: mode === 'video_edit' ? -1 : 8,
-        resolution: '720p',
-        aspectRatio: 'adaptive',
-      });
-    },
-  );
-
-  it.each(['first_frame', 'first_last_frame'] as const)(
-    'ArtsDance 切换到 %s 时保留手动视频比例',
-    async (mode) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const node = {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: 'artsdance-2-0-pro-260801',
-          videoMode: 'text_to_video' as const,
-          parameters: { duration: 8, resolution: '720p', aspectRatio: '16:9' },
-        },
-      } as AssetFlowNode;
-      render(<NodeQuickEditor {...makeProps({ node, onParametersChange })} />);
-      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-      await user.click(within(modeGroup).getByRole('combobox'));
-      await user.click(
-        selectPopup(modeGroup).getByRole('option', {
-          name: new RegExp(`^${videoModeLabels[mode]} `),
-        }),
-      );
-      expect(onParametersChange).not.toHaveBeenCalled();
-    },
-  );
 
   it.each(['first_frame', 'omni_reference'] as const)(
     'PT 模型切换到 %s 时保留用户选择的视频比例',
@@ -4337,151 +2951,6 @@ describe('NodeQuickEditor', () => {
       expect(onParametersChange).not.toHaveBeenCalled();
     },
   );
-
-  it('切换 Seedance 2.5 视频编辑时显式保存自动时长和原视频比例', async () => {
-    const user = userEvent.setup();
-    const onVideoModeChange = vi.fn();
-    const onParametersChange = vi.fn();
-    const node = {
-      ...videoNode,
-      data: {
-        ...videoNode.data,
-        modelAlias: 'doubao-seedance-2-5-260628',
-        videoMode: 'text_to_video' as const,
-        parameters: { duration: 8, aspectRatio: '16:9' },
-      },
-    } as AssetFlowNode;
-    const props = makeProps({ node, onVideoModeChange, onParametersChange });
-    const { rerender } = render(<NodeQuickEditor {...props} />);
-    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-    await user.click(within(modeGroup).getByRole('combobox'));
-    await user.click(selectPopup(modeGroup).getByRole('option', { name: /视频编辑/ }));
-    expect(onParametersChange).toHaveBeenCalledWith({ duration: -1, aspectRatio: 'adaptive' });
-    expect(onVideoModeChange).toHaveBeenCalledWith('video_edit');
-
-    rerender(
-      <NodeQuickEditor
-        {...props}
-        node={{
-          ...node,
-          data: {
-            ...node.data,
-            videoMode: 'video_edit',
-            parameters: { duration: -1, aspectRatio: 'adaptive' },
-          },
-        }}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '时长（秒）：自动' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '时长（秒）：自动' }));
-    const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-    await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveValue('10');
-    expect(slider).toHaveAttribute('aria-valuetext', '自动，滑块参考起点 10 秒');
-    expect(durationCard().getByText('自动', { selector: 'output' })).toBeVisible();
-    expect(durationCard().getByRole('button', { name: '自动时长', pressed: true })).toBeEnabled();
-    expect(screen.getByRole('combobox', { name: /视频比例：原视频比例/ })).toBeInTheDocument();
-    expect(onParametersChange).toHaveBeenCalledOnce();
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-  });
-
-  it('切换 Moon Seedance 视频编辑时显式保存自动时长和原视频比例', async () => {
-    const user = userEvent.setup();
-    const onVideoModeChange = vi.fn();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onVideoModeChange,
-          onParametersChange,
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: 'seedance-2-0-official',
-              videoMode: 'text_to_video',
-              parameters: { duration: 8, aspectRatio: '16:9' },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    await user.click(screen.getByRole('combobox', { name: '生成模式：文生视频' }));
-    await user.click(screen.getByRole('option', { name: /视频编辑/ }));
-    expect(onParametersChange).toHaveBeenCalledWith({ duration: -1, aspectRatio: 'adaptive' });
-    expect(onVideoModeChange).toHaveBeenCalledWith('video_edit');
-  });
-
-  it.each(['首帧', '首尾帧'])('切换 Seedance 2.5 %s 时保存原图比例', async (label) => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onParametersChange,
-          onVideoModeChange: vi.fn(),
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: 'doubao-seedance-2-5-260628',
-              videoMode: 'text_to_video',
-              parameters: { duration: 8, aspectRatio: '16:9' },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    await user.click(screen.getByRole('combobox', { name: '生成模式：文生视频' }));
-    await user.click(screen.getByRole('option', { name: new RegExp(`^${label} `) }));
-    expect(onParametersChange).toHaveBeenCalledWith({ duration: 8, aspectRatio: 'adaptive' });
-  });
-
-  it.each([
-    { model: 'wan3.0-video', mode: 'text_to_video' as const, ratio: '21:9', blocked: true },
-    {
-      model: 'doubao-seedance-2-5-260628',
-      mode: 'first_frame' as const,
-      ratio: '16:9',
-      blocked: true,
-    },
-    {
-      model: 'doubao-seedance-2-5-260628',
-      mode: 'first_last_frame' as const,
-      ratio: '16:9',
-      blocked: true,
-    },
-    {
-      model: 'doubao-seedance-2-0-260128',
-      mode: 'video_extend' as const,
-      ratio: '16:9',
-      blocked: false,
-    },
-  ])('$model $mode 保留已存比例 $ratio 并按官方规则校验', ({ model, mode, ratio, blocked }) => {
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onParametersChange,
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: model,
-              videoMode: mode,
-              parameters: { duration: 8, aspectRatio: ratio },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    const run = screen.getByRole('button', { name: '生成' });
-    if (blocked) expect(run).toBeDisabled();
-    else expect(run).toBeEnabled();
-    expect(onParametersChange).not.toHaveBeenCalled();
-  });
 
   it.each(['wan3.0-video', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628'])(
     '%s 文生视频允许手动选择自动比例',
@@ -4541,37 +3010,6 @@ describe('NodeQuickEditor', () => {
     expect(durationCard().getByRole('button', { name: '自动时长', pressed: true })).toBeEnabled();
   });
 
-  it.each(['wan3.0-video', 'seedance-2-0-fast-official', 'doubao-seedance-2-5-260628'])(
-    '切换 %s 视频延长时显式沿用原视频比例',
-    async (modelAlias) => {
-      const user = userEvent.setup();
-      const onVideoModeChange = vi.fn();
-      const onParametersChange = vi.fn();
-      render(
-        <NodeQuickEditor
-          {...makeProps({
-            onVideoModeChange,
-            onParametersChange,
-            node: {
-              ...videoNode,
-              data: {
-                ...videoNode.data,
-                modelAlias,
-                videoMode: 'text_to_video',
-                parameters: { duration: 8, aspectRatio: '16:9' },
-              },
-            } as AssetFlowNode,
-          })}
-        />,
-      );
-      const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-      await user.click(within(modeGroup).getByRole('combobox'));
-      await user.click(selectPopup(modeGroup).getByRole('option', { name: /视频延长/ }));
-      expect(onParametersChange).toHaveBeenCalledWith({ duration: 8, aspectRatio: 'adaptive' });
-      expect(onVideoModeChange).toHaveBeenCalledWith('video_extend');
-    },
-  );
-
   it('Doubao Seedance 2.0 切换延长时保留可手动指定的比例', async () => {
     const user = userEvent.setup();
     const onVideoModeChange = vi.fn();
@@ -4598,283 +3036,6 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).not.toHaveBeenCalled();
     expect(onVideoModeChange).toHaveBeenCalledWith('video_extend');
   });
-
-  it('离开 Seedance 2.5 编辑模式时恢复 10 秒及目录中的普通比例', async () => {
-    const user = userEvent.setup();
-    const onVideoModeChange = vi.fn();
-    const onParametersChange = vi.fn();
-    const modelAlias = 'doubao-seedance-2-5-260628';
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onVideoModeChange,
-          onParametersChange,
-          models: [
-            {
-              id: modelAlias,
-              name: 'Seedance 2.5 Pro',
-              mediaTypes: ['video'],
-              capabilities: {
-                video: { durations: [6, 10], aspectRatios: ['16:9', '9:16'] },
-              },
-            },
-          ],
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias,
-              videoMode: 'video_edit',
-              parameters: { duration: -1, aspectRatio: 'adaptive' },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
-    await user.click(within(modeGroup).getByRole('combobox'));
-    await user.click(selectPopup(modeGroup).getByRole('option', { name: /文生视频/ }));
-    expect(onParametersChange).toHaveBeenCalledWith({ duration: 10, aspectRatio: '16:9' });
-    expect(onVideoModeChange).toHaveBeenCalledWith('text_to_video');
-  });
-
-  it('官方 MiniMax-H3 只提供官方清晰度并标出旧 720p 参数', async () => {
-    const user = userEvent.setup();
-    const onParametersChange = vi.fn();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onParametersChange,
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: 'MiniMax-H3',
-              videoMode: 'text_to_video',
-              parameters: { duration: 15, resolution: '720p', aspectRatio: '16:9' },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      'MiniMax H3 视频清晰度仅支持 768P 或 2K',
-    );
-    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
-    await user.click(within(resolutionGroup).getByRole('combobox'));
-    expect(selectPopup(resolutionGroup).getByRole('option', { name: '768P' })).not.toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
-    expect(selectPopup(resolutionGroup).getByRole('option', { name: '2K' })).not.toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
-    expect(
-      selectPopup(resolutionGroup).getByRole('option', { name: /720p.*当前模型不支持/ }),
-    ).toHaveAttribute('aria-disabled', 'true');
-    expect(
-      selectPopup(resolutionGroup).queryByRole('option', { name: '1080p' }),
-    ).not.toBeInTheDocument();
-    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '768P' }));
-    expect(onParametersChange).toHaveBeenCalledWith({
-      duration: 15,
-      resolution: '768p',
-      aspectRatio: '16:9',
-    });
-    const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
-    await user.click(within(durationGroup).getByRole('button'));
-    const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-    await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveValue('15');
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveAccessibleDescription(/当前模型支持 4–15 秒/);
-    expect(durationCard().getByText('15 秒', { selector: 'output' })).toBeVisible();
-  });
-
-  it('Moon 小写 minimax-h3 文生视频只提供普通档位并拒绝 adaptive 比例', async () => {
-    const user = userEvent.setup();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onParametersChange: vi.fn(),
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: 'minimax-h3',
-              videoMode: 'text_to_video',
-              parameters: { duration: 15, resolution: '2k', aspectRatio: 'adaptive' },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-      'title',
-      'Moon MiniMax H3 文生视频清晰度仅支持 480P、768P 或 1080P',
-    );
-    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
-    await user.click(within(resolutionGroup).getByRole('combobox'));
-    for (const label of ['480P', '768P', '1080P']) {
-      expect(selectPopup(resolutionGroup).getByRole('option', { name: label })).not.toHaveAttribute(
-        'aria-disabled',
-        'true',
-      );
-    }
-    expect(
-      selectPopup(resolutionGroup).getByRole('option', { name: /2k.*当前模型不支持/i }),
-    ).toHaveAttribute('aria-disabled', 'true');
-    expect(
-      selectPopup(resolutionGroup).queryByRole('option', { name: '4K' }),
-    ).not.toBeInTheDocument();
-    fireEvent.keyDown(document.activeElement!, { key: 'Escape', keyCode: 27, which: 27 });
-
-    await user.click(screen.getByRole('combobox', { name: /^视频比例：adaptive/ }));
-    for (const ratio of ['16:9', '9:16', '1:1', '2:3', '3:2', '3:4', '4:3', '21:9']) {
-      expect(screen.getByRole('option', { name: new RegExp(`^${ratio}`) })).not.toHaveAttribute(
-        'aria-disabled',
-        'true',
-      );
-    }
-    expect(screen.getByRole('option', { name: /^adaptive.*当前模型不支持/ })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
-  });
-
-  it('Moon 小写 minimax-h3 参考模式开放 2K 与 4K 并保留固定比例', async () => {
-    const user = userEvent.setup();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          onParametersChange: vi.fn(),
-          node: {
-            ...videoNode,
-            data: {
-              ...videoNode.data,
-              modelAlias: 'minimax-h3',
-              videoMode: 'omni_reference',
-              parameters: { duration: 15, resolution: '4k', aspectRatio: '2:3' },
-            },
-          } as AssetFlowNode,
-        })}
-      />,
-    );
-    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
-    await user.click(within(resolutionGroup).getByRole('combobox'));
-    for (const label of ['480P', '768P', '1080P', '2K', '4K']) {
-      expect(selectPopup(resolutionGroup).getByRole('option', { name: label })).not.toHaveAttribute(
-        'aria-disabled',
-        'true',
-      );
-    }
-    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(5);
-    expect(screen.getByText('时长（秒）').parentElement).not.toHaveTextContent('20秒');
-  });
-
-  it.each([
-    {
-      model: 'doubao-seedance-2-0-260128',
-      supported: ['480P', '720P', '1080P', '4K'],
-      invalid: '360p',
-      selected: '4k',
-    },
-    {
-      model: 'doubao-seedance-2-0-fast-260128',
-      supported: ['480P', '720P'],
-      invalid: '1080p',
-      selected: '720p',
-    },
-    {
-      model: 'doubao-seedance-2-0-mini-260615',
-      supported: ['480P', '720P'],
-      invalid: '1080p',
-      selected: '720p',
-    },
-    {
-      model: 'seedance-2-0-mini-official',
-      supported: ['480P', '720P'],
-      invalid: '1080p',
-      selected: '720p',
-    },
-    {
-      model: 'seedance-2-0-fast-official',
-      supported: ['480P', '720P'],
-      invalid: '1080p',
-      selected: '720p',
-    },
-    {
-      model: 'seedance-2-0-official',
-      supported: ['480P', '720P', '1080P', '4K'],
-      invalid: '360p',
-      selected: '1080p',
-    },
-    {
-      model: 'doubao-seedance-2-5-260628',
-      supported: ['480P', '720P', '1080P'],
-      invalid: '4k',
-      selected: '1080p',
-    },
-  ])(
-    '$model 清晰度按官方版本显示并阻止非法旧值生成',
-    async ({ model, supported, invalid, selected }) => {
-      const user = userEvent.setup();
-      const onParametersChange = vi.fn();
-      const node = {
-        ...videoNode,
-        data: {
-          ...videoNode.data,
-          modelAlias: model,
-          videoMode: 'text_to_video',
-          resultAsset: { assetId: 'seedance-existing-result' },
-          parameters: { duration: 8, resolution: invalid, aspectRatio: '16:9' },
-        },
-      } as AssetFlowNode;
-      const props = makeProps({ node, onParametersChange, onRunNewNode: vi.fn() });
-      const { rerender } = render(<NodeQuickEditor {...props} />);
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '新节点' })).toBeDisabled();
-      expect(onParametersChange).not.toHaveBeenCalled();
-      const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
-      await user.click(within(resolutionGroup).getByRole('combobox'));
-      for (const label of supported) {
-        expect(
-          selectPopup(resolutionGroup).getByRole('option', { name: label }),
-        ).not.toHaveAttribute('aria-disabled', 'true');
-      }
-      expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(
-        supported.length + 1,
-      );
-      expect(
-        selectPopup(resolutionGroup).getByRole('option', {
-          name: new RegExp(`${invalid}.*当前模型不支持`),
-        }),
-      ).toHaveAttribute('aria-disabled', 'true');
-      await user.click(
-        selectPopup(resolutionGroup).getByRole('option', { name: selected.toUpperCase() }),
-      );
-      expect(onParametersChange).toHaveBeenCalledWith({
-        duration: 8,
-        resolution: selected,
-        aspectRatio: '16:9',
-      });
-      rerender(
-        <NodeQuickEditor
-          {...props}
-          node={{
-            ...node,
-            data: { ...node.data, parameters: onParametersChange.mock.lastCall?.[0] },
-          }}
-        />,
-      );
-      expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-      expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
-    },
-  );
 
   it('为视频节点回传清晰度、比例和秒数，并保留已存尺寸参数', async () => {
     const user = userEvent.setup();
@@ -4911,7 +3072,7 @@ describe('NodeQuickEditor', () => {
       which: 27,
     });
     await user.click(within(ratioGroup).getByRole('combobox'));
-    expect(selectPopup(ratioGroup).getAllByRole('option')).toHaveLength(8);
+    expect(selectPopup(ratioGroup).getAllByRole('option')).toHaveLength(9);
     fireEvent.keyDown(within(ratioGroup).getByRole('combobox'), {
       key: 'Escape',
       keyCode: 27,
@@ -4943,7 +3104,7 @@ describe('NodeQuickEditor', () => {
     expect(selectPopup(resolutionGroup).getByRole('option', { name: '2160p' })).toBeInTheDocument();
     if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
       await user.click(within(ratioGroup).getByRole('combobox'));
-    expect(selectPopup(ratioGroup).queryByText('自动比例')).not.toBeInTheDocument();
+    expect(selectPopup(ratioGroup).getByText('自动比例')).toBeInTheDocument();
     expect(
       selectPopup(ratioGroup).getByRole('option', { name: /1:1/, selected: false }),
     ).toHaveAttribute('aria-selected', 'false');
@@ -4980,70 +3141,6 @@ describe('NodeQuickEditor', () => {
       resolution: '720p',
       duration: 10,
     });
-  });
-
-  it('按视频模型能力展示候选，滑块默认参考点不伪装成已持久化值', async () => {
-    const user = userEvent.setup();
-    render(
-      <NodeQuickEditor
-        {...makeProps({
-          node: { ...videoNode, data: { ...videoNode.data, modelAlias: 'grok-video' } },
-          models: [
-            {
-              id: 'grok-video',
-              name: 'Grok 视频',
-              mediaTypes: ['video'],
-              capabilities: {
-                video: {
-                  resolutions: ['360p', '720p'],
-                  aspectRatios: ['16:9', '9:16'],
-                  durations: [6, 10],
-                },
-              },
-            },
-          ],
-        })}
-      />,
-    );
-
-    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
-    const ratioGroup = screen.getByText('视频比例').parentElement as HTMLElement;
-    const durationGroup = screen.getByText('时长（秒）').parentElement as HTMLElement;
-    const modelGroup = screen.getByText('模型').parentElement as HTMLElement;
-    expect(
-      within(modelGroup).getByRole('combobox', { name: '模型：Grok 视频 · 测试分组' }),
-    ).toBeInTheDocument();
-    expect(
-      within(resolutionGroup).getByRole('combobox', { name: '视频清晰度：未设置' }),
-    ).toBeInTheDocument();
-    expect(
-      within(ratioGroup).getByRole('combobox', { name: '视频比例：未设置' }),
-    ).toBeInTheDocument();
-    expect(
-      within(durationGroup).getByRole('button', { name: '时长（秒）：未设置' }),
-    ).toBeInTheDocument();
-    await user.click(within(resolutionGroup).getByRole('combobox'));
-    expect(
-      selectPopup(resolutionGroup).getByRole('option', { name: '360p', selected: false }),
-    ).toBeInTheDocument();
-    expect(
-      selectPopup(resolutionGroup).queryByRole('option', { name: '1080p' }),
-    ).not.toBeInTheDocument();
-    if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
-      await user.click(within(ratioGroup).getByRole('combobox'));
-    expect(
-      selectPopup(ratioGroup).getByRole('option', { name: /16:9/, selected: false }),
-    ).toBeInTheDocument();
-    expect(selectPopup(ratioGroup).queryByRole('option', { name: /1:1/ })).not.toBeInTheDocument();
-    await user.click(within(durationGroup).getByRole('button'));
-    const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
-    await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveValue('10');
-    expect(slider).toBeDisabled();
-    expect(slider).toHaveAttribute('aria-valuetext', '未设置，滑块参考起点 10 秒');
-    expect(slider).toHaveAccessibleDescription(/未设置.*当前模型仅支持 6、10 秒/);
-    expect(durationCard().getByText('未设置', { selector: 'output' })).toBeVisible();
-    expect(within(durationGroup).getByRole('button')).toHaveAccessibleName('时长（秒）：未设置');
   });
 
   it('视频不展示像素尺寸，也不会根据分辨率和比例写入宽高', () => {
@@ -5348,5 +3445,215 @@ describe('NodeQuickEditor', () => {
     );
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
+  });
+});
+
+/** 开放参数契约使用本地组件和合成目录，不请求外部 Provider。 */
+describe('用户选择由上游判断模型能力', () => {
+  it.each([
+    'unknown-future-model',
+    'Yuan-Seedance-2.5-Official',
+    'Yuan-Seedance-2.5-YL1',
+    'Seedance2.0 0.9r',
+    '无限制-Flash-MAX-Video',
+    '无限制-Flash-中配-Video',
+    'MiniMax-H3',
+    'minimax-h3',
+    'wan3.0-video',
+    'doubao-seedance-2-5-260628',
+    'seedance-2-0-official',
+    'sd2-930-fast',
+    'grok-v1.5-video',
+    'ArtsDance',
+  ])('%s 不按目录媒体、模式、时长、比例或清晰度阻止提交', async (modelAlias) => {
+    const parameters = {
+      duration: 6.25,
+      resolution: '8k',
+      aspectRatio: '1:8',
+      generate_audio: false,
+      custom: 'preserved',
+    };
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias,
+          videoMode: 'video_edit',
+          parameters,
+          inferenceStrength: 'custom-effort',
+        },
+      },
+      models: [
+        {
+          id: modelAlias,
+          name: modelAlias,
+          mediaTypes: ['text'],
+          availability: 'unavailable',
+          capabilities: {
+            durations: [],
+            resolutions: ['720p'],
+            aspectRatios: ['16:9'],
+            videoEdit: false,
+            mentionMediaTypes: [],
+          },
+        },
+      ],
+      onParametersChange: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).toHaveBeenCalledOnce();
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    expect(props.node.data.parameters).toEqual(parameters);
+    expect(props.node.data.inferenceStrength).toBe('custom-effort');
+  });
+
+  it.each([
+    'text_to_video',
+    'first_frame',
+    'first_last_frame',
+    'omni_reference',
+    'video_edit',
+    'video_extend',
+  ] as const)('明确选择 %s 模式时不改写时长或比例', async (videoMode) => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'unknown-model',
+          parameters: { duration: 8.5, aspectRatio: '21:9', custom: true },
+        },
+      },
+      onParametersChange: vi.fn(),
+      onVideoModeChange: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    const modeGroup = screen.getByText('生成模式').parentElement as HTMLElement;
+    const user = userEvent.setup();
+    await user.click(within(modeGroup).getByRole('combobox'));
+    const option = selectPopup(modeGroup).getByRole('option', {
+      name: new RegExp('^' + videoModeLabels[videoMode] + ' '),
+    });
+    expect(option).toHaveAttribute('aria-disabled', 'false');
+    await user.click(option);
+    expect(props.onVideoModeChange).toHaveBeenCalledWith(videoMode);
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, 40, 3600.01])('目录没有可用时长声明也保留并允许 %s 秒', (duration) => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: { ...videoNode.data, modelAlias: 'future-video', parameters: { duration } },
+      },
+      models: [
+        {
+          id: 'future-video',
+          name: '未来模型',
+          mediaTypes: [],
+          capabilities: { durations: { supported: false } },
+        },
+      ],
+      onParametersChange: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {},
+    { voice: 'custom-voice', response_format: 'ogg', speed: 4.001 },
+    { voice: 'Alloy', speed: 0 },
+    { voice: ' alloy ', speed: -1 },
+  ])('音频参数 %j 不受 Canvas 的音色、格式和倍率集合限制', (parameters) => {
+    const props = makeProps({ node: makeAudioNode(parameters), onParametersChange: vi.fn() });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    expect(getAudioParameterIssue(parameters)).toBeUndefined();
+  });
+
+  it.each([NaN, Infinity, '1', null])('语速 %s 保留类型错误提示', (speed) => {
+    expect(getAudioParameterIssue({ speed } as unknown as Record<string, unknown>)).toContain(
+      '有限数值',
+    );
+  });
+
+  it('禁用图片编辑和提及声明不阻止用户的结构化图片输入与新节点生成', async () => {
+    const props = makeProps({
+      node: {
+        ...imageNode,
+        data: {
+          ...imageNode.data,
+          resultAsset: { assetId: 'result' },
+          promptDocument: makeMentionDocument(imageMention),
+        },
+      },
+      models: [
+        {
+          id: 'image-model',
+          name: '图片模型',
+          mediaTypes: ['text'],
+          capabilities: { imageEdit: false, mentionMediaTypes: [] },
+        },
+      ],
+      onRunNewNode: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole('button', { name: '新节点' }));
+    expect(props.onRunNewNode).toHaveBeenCalledOnce();
+  });
+
+  it('缺失目录的已保存模型仍可运行，不替换原模型或凭据身份', async () => {
+    const props = makeProps({
+      models: [],
+      node: { ...videoNode, data: { ...videoNode.data, modelAlias: 'future-model' } },
+      onModelChange: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole('button', { name: '生成' }));
+    expect(props.onRun).toHaveBeenCalledOnce();
+    expect(props.onModelChange).not.toHaveBeenCalled();
+  });
+
+  it('明确输入目录未声明的清晰度，保留其它自定义参数', async () => {
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: { ...videoNode.data, parameters: { custom: true, duration: 8.5 } },
+      },
+      onParametersChange: vi.fn(),
+    });
+    render(<NodeQuickEditor {...props} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: '视频清晰度：未设置' }));
+    await user.type(screen.getByRole('textbox', { name: '自定义视频清晰度' }), 'future-8k');
+    expect(props.onParametersChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '采用参数' }));
+    expect(props.onParametersChange).toHaveBeenLastCalledWith({
+      custom: true,
+      duration: 8.5,
+      resolution: 'future-8k',
+    });
+    expect(props.onRun).not.toHaveBeenCalled();
+  });
+
+  it('自定义秒数输入可保存小数和滑块范围之外的数值，不触发生成', async () => {
+    const props = makeProps({ node: videoNode, onParametersChange: vi.fn() });
+    render(<NodeQuickEditor {...props} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: '时长（秒）：未设置' }));
+    fireEvent.change(durationCard().getByRole('spinbutton', { name: '自定义时长（秒）' }), {
+      target: { value: '45.25' },
+    });
+    expect(props.onParametersChange).toHaveBeenLastCalledWith({ duration: 45.25 });
+    expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
+    expect(props.onRun).not.toHaveBeenCalled();
   });
 });

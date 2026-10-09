@@ -97,70 +97,7 @@ describe('图片修改运行边界', () => {
     vi.unstubAllEnvs();
   });
 
-  it.each([
-    {
-      name: '明确禁用图片编辑',
-      capability: false,
-      issueCode: 'IMAGE_EDIT_CAPABILITY_UNSUPPORTED',
-      reason: 'capability_unsupported',
-    },
-    {
-      name: '声明非法图片上限',
-      capability: { maxImages: 0 },
-      issueCode: 'IMAGE_EDIT_CAPABILITY_INVALID',
-      reason: 'capability_invalid',
-    },
-  ])(
-    '目录$name时在创建 Run 前失败，且不调用 Provider',
-    async ({ capability, issueCode, reason }) => {
-      const assetStore = new MemoryAssetStore();
-      const projectStore = new MemoryProjectStore();
-      const settingsStore = new MemoryAiSettingsStore('image-edit-unsupported');
-      settingsStore.replaceModels([imageModel('image-edit-v1', { imageEdit: capability })]);
-      const project = await projectStore.create({ name: '未声明能力' });
-      const source = await assetStore.create({
-        projectId: project.id,
-        name: 'source.png',
-        mediaType: 'image',
-        mimeType: 'image/png',
-        content: Buffer.from('image-bytes'),
-      });
-      await projectStore.updateCanvas(project.id, imageEditCanvas(source.id));
-      const executor = vi.fn(async (_request: RunExecutorRequest) => ({
-        provider: 'mock',
-        summary: 'should not run',
-        targetNodeId: 'node_edit',
-        mediaType: 'image' as const,
-        inputCount: 1,
-      }));
-      const runService = new MemoryRunService({ executor });
-      const app = buildApp({ logger: false, assetStore, projectStore, settingsStore, runService });
-      apps.push(app);
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/v1/nodes/node_edit/runs',
-        payload: { projectId: project.id },
-      });
-
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({
-        code: 'IMAGE_EDIT_UNSUPPORTED',
-        issues: [
-          {
-            code: issueCode,
-            reason,
-            nodeId: 'node_edit',
-            modelAlias: 'image-edit-v1',
-          },
-        ],
-      });
-      expect(executor).not.toHaveBeenCalled();
-      expect(await runService.listByProject(project.id)).toEqual([]);
-    },
-  );
-
-  it('声明支持时冻结能力与来源版本，来源节点保持原资产', async () => {
+  it('即使目录声明能力也不在 Canvas 冻结模型限制，只冻结来源版本', async () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();
     const settingsStore = new MemoryAiSettingsStore('image-edit-supported');
@@ -195,15 +132,8 @@ describe('图片修改运行边界', () => {
 
     expect(response.statusCode).toBe(202);
     const internalRun = await runService.get(response.json().run.id);
-    expect(internalRun?.snapshot.imageEditCapability).toEqual({
-      declared: true,
-      maxImages: 4,
-      mimeTypes: ['image/png'],
-      parameters: ['size'],
-    });
-    expect(internalRun?.snapshot.nodeImageEditCapabilities).toEqual({
-      node_edit: { declared: true, maxImages: 4, mimeTypes: ['image/png'], parameters: ['size'] },
-    });
+    expect(internalRun?.snapshot.imageEditCapability).toBeUndefined();
+    expect(internalRun?.snapshot.nodeImageEditCapabilities).toBeUndefined();
     const sourceNode = internalRun?.snapshot.nodes.find((node) => node.id === 'node_source');
     expect(sourceNode?.data.assetId).toBe(source.id);
     expect(sourceNode?.data.contentUrl).toBe(
@@ -325,79 +255,5 @@ describe('图片修改运行边界', () => {
     const savedCanvas = await projectStore.getCanvas(project.id);
     expect(savedCanvas?.nodes).toHaveLength(2);
     expect(savedCanvas?.edges).toHaveLength(1);
-  });
-
-  it.each([true, false])('逐个执行节点检查编辑模型，支持状态为 %s', async (supported) => {
-    const assetStore = new MemoryAssetStore();
-    const projectStore = new MemoryProjectStore();
-    const settingsStore = new MemoryAiSettingsStore('image-edit-workflow');
-    settingsStore.replaceModels([
-      imageModel('image-edit-v1', { imageEdit: { supported, mimeTypes: ['image/png'] } }),
-      imageModel('image-target-v1', { imageEdit: { supported: true, mimeTypes: ['image/jpeg'] } }),
-    ]);
-    const project = await projectStore.create({ name: '按节点编辑能力' });
-    const source = await assetStore.create({
-      projectId: project.id,
-      name: 'source.png',
-      mediaType: 'image',
-      mimeType: 'image/png',
-      content: Buffer.from('image'),
-    });
-    const canvas = imageEditCanvas(source.id);
-    canvas.nodes.push({
-      id: 'node_target',
-      type: 'image',
-      position: { x: 896, y: 0 },
-      data: {
-        label: '下游图片',
-        mediaType: 'image',
-        mode: 'generate',
-        modelAlias: 'image-target-v1',
-        prompt: 'Change the background.',
-      },
-    });
-    canvas.edges.push({
-      id: 'edit_target',
-      sourceNodeId: 'node_edit',
-      sourceHandle: 'output:image',
-      targetNodeId: 'node_target',
-      targetHandle: 'input:referenceImage',
-      order: 0,
-    });
-    await projectStore.updateCanvas(project.id, canvas);
-    const runService = new MemoryRunService({ stepDelayMs: 0 });
-    const app = buildApp({ logger: false, assetStore, projectStore, settingsStore, runService });
-    apps.push(app);
-    const response = await app.inject({
-      method: 'POST',
-      url: '/v1/nodes/node_target/runs',
-      payload: { projectId: project.id },
-    });
-    if (!supported) {
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({
-        code: 'IMAGE_EDIT_UNSUPPORTED',
-        issues: [
-          {
-            nodeId: 'node_edit',
-            modelAlias: 'image-edit-v1',
-            code: 'IMAGE_EDIT_CAPABILITY_UNSUPPORTED',
-          },
-        ],
-      });
-      expect(await runService.listByProject(project.id)).toEqual([]);
-      return;
-    }
-    expect(response.statusCode).toBe(202);
-    const run = await runService.get(response.json().run.id);
-    expect(run?.snapshot.nodeImageEditCapabilities).toEqual({
-      node_edit: { declared: true, maxImages: 1, mimeTypes: ['image/png'] },
-      node_target: { declared: true, maxImages: 1, mimeTypes: ['image/jpeg'] },
-    });
-    expect(run?.snapshot.imageEditCapability).toEqual({
-      declared: true,
-      maxImages: 1,
-      mimeTypes: ['image/jpeg'],
-    });
   });
 });

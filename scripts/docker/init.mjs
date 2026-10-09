@@ -24,7 +24,7 @@ const destination = join(root, 'secrets');
 /** 派生卷仅在 initializer 可写；文件路径保持各服务现有的 /run/multimodal/secrets 契约。 */
 const viewRoot = '/run/multimodal-views';
 
-/** 本机锁定镜像的 UID/GID 与最小文件白名单；MinIO/mc 的默认入口使用 root。 */
+/** 固定镜像的 UID/GID 与最小文件白名单，不向数据库和 Redis 发布应用签名密钥。 */
 export const SECRET_VIEWS = {
   app: { uid: 1000, gid: 1000, files: ['runtime.json', 'ca.crt'] },
   postgres: { uid: 70, gid: 70, files: ['postgres-password'] },
@@ -33,12 +33,6 @@ export const SECRET_VIEWS = {
     gid: 1000,
     files: ['redis-password', 'redis.conf', 'ca.crt', 'redis/public.crt', 'redis/private.key'],
   },
-  minio: {
-    uid: 0,
-    gid: 0,
-    files: ['minio-password', 'ca.crt', 'minio/public.crt', 'minio/private.key'],
-  },
-  storage: { uid: 0, gid: 0, files: ['minio-password', 's3-password', 'ca.crt'] },
 };
 
 /** canonical 缺失时只允许全新空视图；已有派生内容必须先恢复源卷，禁止生成替代密钥。 */
@@ -102,9 +96,9 @@ async function validateViewEntries(directory, allowed, prefix = '') {
 }
 
 /**
- * 从 canonical 卷恢复五个服务视图；仅补齐缺失文件，内容不一致即失败且不覆盖。
+ * 从 canonical 卷恢复三个服务视图；仅补齐缺失文件，内容不一致即失败且不覆盖。
  * @param {string} source 已校验的 canonical secrets 目录。
- * @param {string} views 五个派生卷的父目录。
+ * @param {string} views 三个派生卷的父目录。
  * @param {{ setOwner?: typeof chown }} options 测试可注入所有者操作；生产默认真实 chown。
  * @returns {Promise<void>} 全部视图内容一致且权限为目录 0700、文件 0400 后完成。
  * @throws {Error} 内容冲突、额外文件、符号链接或权限/文件操作失败时终止。
@@ -175,11 +169,7 @@ export async function validateSecrets(directory) {
     'ca.key',
     'postgres-password',
     'redis-password',
-    'minio-password',
-    's3-password',
     'ca.crt',
-    'minio/public.crt',
-    'minio/private.key',
     'redis/public.crt',
     'redis/private.key',
     'redis.conf',
@@ -188,12 +178,12 @@ export async function validateSecrets(directory) {
     if (!content?.length) throw new Error(`Empty or missing secret file: ${name}`);
   }
   const configuration = JSON.parse(await readFile(join(directory, 'runtime.json'), 'utf8'));
-  for (const name of ['postgres', 'redis', 's3', 'jwt', 'encryption', 'webhook']) {
+  for (const name of ['postgres', 'redis', 'jwt', 'encryption', 'webhook']) {
     if (!/^[a-f0-9]{64}$/.test(configuration[name] ?? '')) {
       throw new Error(`Invalid secret field: ${name}`);
     }
   }
-  for (const name of ['postgres', 'redis', 's3']) {
+  for (const name of ['postgres', 'redis']) {
     if ((await readFile(join(directory, `${name}-password`), 'utf8')) !== configuration[name]) {
       throw new Error(`Inconsistent secret field: ${name}`);
     }
@@ -229,18 +219,15 @@ async function initialize() {
   const staging = join(root, `initializing-${randomBytes(8).toString('hex')}`);
   await mkdir(staging, { mode: 0o700 });
   const configuration = Object.fromEntries(
-    ['postgres', 'redis', 's3', 'jwt', 'encryption', 'webhook'].map((name) => [
+    ['postgres', 'redis', 'jwt', 'encryption', 'webhook'].map((name) => [
       name,
       randomBytes(32).toString('hex'),
     ]),
   );
-  const minioPassword = randomBytes(32).toString('hex');
   await writeFile(join(staging, 'runtime.json'), JSON.stringify(configuration), { mode: 0o400 });
   for (const [name, value] of Object.entries({
     'postgres-password': configuration.postgres,
     'redis-password': configuration.redis,
-    'minio-password': minioPassword,
-    's3-password': configuration.s3,
   })) {
     await writeFile(join(staging, name), value, { mode: 0o400 });
   }
@@ -263,7 +250,7 @@ async function initialize() {
     'basicConstraints=critical,CA:TRUE',
   ]);
   await chmod(join(staging, 'ca.key'), 0o600);
-  for (const name of ['redis', 'minio']) {
+  for (const name of ['redis']) {
     const directory = join(staging, name);
     await mkdir(directory, { mode: 0o700 });
     const key = join(directory, 'private.key');

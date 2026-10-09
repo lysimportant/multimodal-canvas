@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
  * 真实栈图片编辑验收（一次性手动入口）。
  *
  * 与 smoke.spec.ts 不同，本文件不 Mock `/v1/**`：它直接使用运行中的 compose 栈、
- * 真实 Postgres/MinIO、真实 Provider 凭据。仅在操作者显式授权计费后手动运行，
+ * 真实 Postgres/R2、真实 Provider 凭据。仅在操作者显式授权上游请求后手动运行，
  * 每次运行最多产生一次 `/v1/images/edits` 请求，不自动重试。
  *
  * 运行方式：
@@ -139,7 +139,7 @@ test.describe('真实栈图片编辑验收', () => {
       .first()
       .click();
     await expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
-    // 这里只创建原图引用，填写新节点的修改要求后才执行唯一一次计费 POST。
+    // 这里只创建原图引用，填写新节点的修改要求后才执行唯一一次上游 POST。
     await sourceNode.getByRole('button', { name: `修改图片：${fileName}` }).click();
     const editNode = page.locator('.react-flow__node[data-id^="node_image_generate"]');
     await expect(editNode).toHaveCount(1, { timeout: 30_000 });

@@ -133,7 +133,7 @@ describe('Worker production startup configuration', () => {
   it('requires credentials when a custom S3 endpoint is configured', () => {
     const issues = validateWorkerStartupConfiguration({
       ...productionEnvironment,
-      S3_ENDPOINT: 'https://minio.example.com',
+      S3_ENDPOINT: 'https://objects.example.com',
       S3_ACCESS_KEY: '',
       S3_SECRET_KEY: '',
     });
@@ -177,8 +177,8 @@ describe('Worker production startup configuration', () => {
     'http://objects.example.com',
     'https://localhost:9000',
     'https://localhost.:9000',
-    'https://minio:9000',
-    'https://minio.:9000',
+    'https://objects.internal:9000',
+    'https://objects.internal.:9000',
     'https://objects.local.',
     'https://10.0.0.8',
     'https://192.168.1.8',

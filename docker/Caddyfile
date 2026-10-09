@@ -1,4 +1,4 @@
-# 本地 HTTPS 不自动修改证书信任；公网 server profile 使用真实域名自动申请证书。
+# 公网 server profile 使用真实域名自动申请证书；不修改主机证书信任。
 {
 	skip_install_trust
 	import /etc/caddy/logging.caddy

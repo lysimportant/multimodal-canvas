@@ -27,7 +27,7 @@ import { withLocalResourceReferences } from './local-resource-references';
 import { withConnectedImageResults } from './connected-image-results';
 import { withConnectedTextInputs } from './connected-text-inputs';
 import { RunImageParameterError, validateRunImageParameters } from './run-image-parameters';
-import { RunVideoInputError, validateRunVideoInputs } from './run-image2pro-video';
+import { ExecutionError } from '@multimodal-canvas/execution';
 import {
   createRunSnapshot,
   getRunSnapshotIncludedNodeIds,
@@ -68,9 +68,6 @@ import {
   type RunCredentialReference,
   type RunRecord,
   type RunResultAsset,
-  unabsorbedVideoPromptMentionMessage,
-  unabsorbedVideoPromptMentions,
-  videoModeForPromptMentions,
 } from '@multimodal-canvas/domain';
 import { z } from 'zod';
 import {
@@ -121,10 +118,7 @@ import {
   checkImageEditCapabilities,
   type ImageEditCapabilityDiagnostic,
 } from './image-edit-capabilities';
-import {
-  checkResourceMentionCapabilities,
-  type ResourceMentionCapabilityDiagnostic,
-} from './resource-mention-capabilities';
+import type { ResourceMentionCapabilityDiagnostic } from './resource-mention-capabilities';
 import { importWorkflowExport, WorkflowImportError } from './workflow-import';
 import { resolveS3DownloadMode, type S3DownloadMode } from './upload-transport';
 import { resolveApiProxyTrust } from './proxy-trust';
@@ -319,7 +313,7 @@ const promptOptimizationBodySchema = z
   })
   .strict();
 
-/** 报价只能进入会创建收费子调用的固定路由，不接受查询串、跳转或通用 API 代理。 */
+/** 生成提交只能进入明确的写入路由，不接受查询串、跳转或通用 API 代理。 */
 function isGenerationSubmissionPath(path: string): boolean {
   return /^\/v1\/(?:nodes\/[^/?#]+\/runs|assets\/[^/?#]+\/versions\/\d+\/reverse-prompts|projects\/[^/?#]+\/prompt-optimizations|runs\/[^/?#]+\/(?:retry|recover))$/.test(
     path,
@@ -513,162 +507,17 @@ async function validateProjectModelDefaults(input: {
   /** 限定时，所有默认模型都必须属于该凭据自己的目录，禁止绑定其他凭据。 */
   credentialScope?: string;
 }): Promise<void> {
-  const credentials = await Promise.resolve(input.settingsStore.listCredentials());
-  if (input.credentialScope && !credentials.some((entry) => entry.id === input.credentialScope)) {
-    throw new AiCredentialNotFoundError(input.credentialScope);
-  }
-  const catalogCache = new Map<string, Promise<ModelCatalogEntry[]>>();
-  const getCatalog = (mediaType: MediaType, credentialId?: string) => {
-    const key = `${credentialId ?? 'active'}\0${mediaType}`;
-    const cached = catalogCache.get(key);
-    if (cached) return cached;
-    const pending = Promise.resolve(input.settingsStore.listModels(mediaType, credentialId));
-    catalogCache.set(key, pending);
-    return pending;
-  };
-
   for (const mediaType of mediaTypes) {
-    if (!Object.prototype.hasOwnProperty.call(input.defaults, mediaType)) continue;
     const configured = input.defaults[mediaType];
-    if (configured === null || configured === undefined) continue;
-
+    if (configured == null) continue;
     const selection = typeof configured === 'string' ? { modelAlias: configured } : configured;
-    const alias = selection.modelAlias.trim();
-    const credentialId = selection.credentialId?.trim();
-    if (!alias) {
-      throw new AiSettingsError('model_unavailable', `未配置可用的 ${mediaType} 项目默认模型`);
-    }
-    if (input.requireCredentialReferences && !credentialId && !input.credentialScope) {
-      throw new AiSettingsError('model_unavailable', `模型 ${alias} 需要重新选择本人分组`);
-    }
-
-    if (alias === `mock-${mediaType}` && !credentialId && input.allowVirtualMockModels) {
-      continue;
-    }
-    if (alias.startsWith('mock-')) {
-      throw new AiSettingsError(
-        'model_unavailable',
-        `模型 ${alias} 不能作为 ${mediaType} 的生产项目默认模型`,
-      );
-    }
-
-    if (credentialId) {
-      if (input.credentialScope && credentialId !== input.credentialScope) {
-        throw new AiSettingsError('model_unavailable', `模型 ${alias} 不能绑定到其他 API Key`);
-      }
-      if (!(await Promise.resolve(input.settingsStore.hasCredential(credentialId)))) {
-        throw new AiCredentialNotFoundError(credentialId);
-      }
-      const catalog = await getCatalog(mediaType, credentialId);
-      const model = catalog.find(
-        (candidate) =>
-          candidate.id === alias &&
-          candidate.mediaTypes.includes(mediaType) &&
-          (!candidate.credentialId || candidate.credentialId === credentialId),
-      );
-      if (!model) {
-        throw new AiSettingsError(
-          'model_unavailable',
-          `模型 ${alias} 不支持 ${mediaType} 媒体类型或未绑定到指定 API Key`,
-        );
-      }
-      if (input.requireCredentialReferences) {
-        await requireCredentialReference(input.settingsStore, credentialId, alias);
-      }
-      continue;
-    }
-
-    if (input.credentialScope) {
-      const catalog = await getCatalog(mediaType, input.credentialScope);
-      const model = catalog.find(
-        (candidate) =>
-          candidate.id === alias &&
-          candidate.mediaTypes.includes(mediaType) &&
-          (!candidate.credentialId || candidate.credentialId === input.credentialScope),
-      );
-      if (!model) {
-        throw new AiSettingsError(
-          'model_unavailable',
-          `模型 ${alias} 不支持 ${mediaType} 媒体类型或不在该 API Key 的模型目录中`,
-        );
-      }
-      if (input.requireCredentialReferences) {
-        await requireCredentialReference(input.settingsStore, input.credentialScope, alias);
-      }
-      continue;
-    }
-
-    if (input.unboundCredentialScope === 'active') {
-      const activeReference = await Promise.resolve(input.settingsStore.getCredentialReference());
-      if (activeReference.credentialId) {
-        const catalog = await getCatalog(mediaType, activeReference.credentialId);
-        const model = catalog.find(
-          (candidate) =>
-            candidate.id === alias &&
-            candidate.mediaTypes.includes(mediaType) &&
-            (!candidate.credentialId || candidate.credentialId === activeReference.credentialId),
-        );
-        if (!model) {
-          throw new AiSettingsError(
-            'model_unavailable',
-            `模型 ${alias} 不支持 ${mediaType} 媒体类型或不在当前 API Key 的模型目录中`,
-          );
-        }
-        if (input.requireCredentialReferences) {
-          await requireCredentialReference(
-            input.settingsStore,
-            activeReference.credentialId,
-            alias,
-          );
-        }
-        continue;
-      }
-    }
-
-    const unscopedCatalog = await getCatalog(mediaType);
-    const credentialMatches = new Map<string, ModelCatalogEntry>();
-    await Promise.all(
-      credentials.map(async (credential) => {
-        const catalog = await getCatalog(mediaType, credential.id);
-        const model = catalog.find(
-          (candidate) =>
-            candidate.id === alias &&
-            candidate.mediaTypes.includes(mediaType) &&
-            (!candidate.credentialId || candidate.credentialId === credential.id),
-        );
-        if (model) credentialMatches.set(credential.id, model);
-      }),
-    );
-
-    if (credentialMatches.size > 1) {
-      throw new AiSettingsError(
-        'model_unavailable',
-        `模型 ${alias} 在多个 API Key 中存在，请明确指定 credentialId`,
-      );
-    }
-    if (credentialMatches.size === 1) {
-      if (input.requireCredentialReferences) {
-        await requireCredentialReference(
-          input.settingsStore,
-          [...credentialMatches.keys()][0],
-          alias,
-        );
-      }
-      continue;
-    }
-
-    const legacyModel = unscopedCatalog.find(
-      (candidate) => candidate.id === alias && !candidate.credentialId,
-    );
-    if (!legacyModel || !legacyModel.mediaTypes.includes(mediaType)) {
-      throw new AiSettingsError(
-        'model_unavailable',
-        `模型 ${alias} 不支持 ${mediaType} 媒体类型或不在模型目录中`,
-      );
-    }
-    if (input.requireCredentialReferences) {
-      await requireCredentialReference(input.settingsStore, undefined, alias);
-    }
+    const credentialId = selection.credentialId ?? input.credentialScope;
+    if (input.credentialScope && credentialId !== input.credentialScope)
+      throw new AiSettingsError('model_unavailable', '默认模型不能绑定到其他 API Key');
+    if (credentialId && !(await Promise.resolve(input.settingsStore.hasCredential(credentialId))))
+      throw new AiCredentialNotFoundError(credentialId);
+    if (input.requireCredentialReferences)
+      await requireCredentialReference(input.settingsStore, credentialId, selection.modelAlias);
   }
 }
 
@@ -843,12 +692,6 @@ async function resolveRunNodeModels(input: {
     );
     const virtualMockModel =
       input.allowVirtualMockModels && !nodeCredentialId && alias === `mock-${mediaType}`;
-    if ((!model || model.available === false) && !virtualMockModel) {
-      throw new AiSettingsError(
-        'model_unavailable',
-        `模型 ${alias} 不支持 ${mediaType} 媒体类型（节点 ${node.id}）`,
-      );
-    }
 
     nodeModelAliases[node.id] = alias;
     nodeModels[node.id] = model;
@@ -1225,63 +1068,10 @@ function validateRunPromptMentionCapabilities(input: {
   requestId: string;
   allowMockPreview: boolean;
 }): ResourceMentionCapabilityDiagnostic[] {
-  if (input.frozenPromptMentions.length === 0) return [];
-  const included = getRunSnapshotIncludedNodeIds(input.canvas, input.targetNodeId);
-  const byNode = new Map<string, FrozenPromptMention[]>();
-  for (const mention of input.frozenPromptMentions) {
-    const nodeId = mention.nodeId ?? input.targetNodeId;
-    const list = byNode.get(nodeId) ?? [];
-    list.push(mention);
-    byNode.set(nodeId, list);
-  }
-  const diagnostics: ResourceMentionCapabilityDiagnostic[] = [];
-  for (const [nodeId, mentions] of byNode) {
-    if (!included.has(nodeId)) continue;
-    const node = input.canvas.nodes.find((candidate) => candidate.id === nodeId);
-    if (!node || isRunAssetSource(node, input.targetNodeId)) continue;
-    const modelAlias = input.nodeModelAliases[nodeId] ?? node.data.modelAlias ?? 'unknown-model';
-    const result = checkResourceMentionCapabilities({
-      node: { id: node.id, data: { mediaType: node.data.mediaType, mode: node.data.mode } },
-      modelAlias,
-      model: input.nodeModels[nodeId],
-      mentions: [...mentions].sort((left, right) => left.blockOrder - right.blockOrder),
-      requestId: input.requestId,
-      allowMockPreview: input.allowMockPreview,
-    });
-    diagnostics.push(...result.issues);
-    if (result.issues.length > 0) continue;
-    const remaining = unabsorbedVideoPromptMentions(node.data, mentions, modelAlias);
-    if (remaining.length === 0) continue;
-    if (
-      (node.data.mediaType === 'video' || node.data.mediaType === 'audio') &&
-      node.data.mode === 'generate' &&
-      !input.allowMockPreview
-    ) {
-      for (const mention of remaining) {
-        diagnostics.push({
-          code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
-          reason: 'media_unsupported',
-          message:
-            node.data.mediaType === 'audio'
-              ? '当前项目的音频生成适配器仅接通文本朗读，尚未接通资源提及输入'
-              : unabsorbedVideoPromptMentionMessage(
-                  mention.mediaType,
-                  videoModeForPromptMentions(node.data.videoMode, true),
-                  modelAlias,
-                ),
-          requestId: input.requestId,
-          nodeId: node.id,
-          mentionId: mention.mentionId,
-          assetId: mention.assetId,
-          mediaType: mention.mediaType,
-          ...(mention.semanticRole ? { semanticRole: mention.semanticRole } : {}),
-          modelAlias,
-        });
-      }
-      continue;
-    }
-  }
-  return diagnostics;
+  // 模型能力、媒体组合与资源提及映射由 New API / 上游适配器决定；Canvas
+  // 只冻结已授权的资源版本，不重复做能力门禁。
+  void input;
+  return [];
 }
 
 /**
@@ -1347,8 +1137,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
-    if (
-      error instanceof NewApiAccountError)
+    if (error instanceof ExecutionError) {
+      const status =
+        error.code === 'authorization_required' || error.code === 'authorization_revoked'
+          ? 403
+          : 409;
+      return reply.code(status).send({ code: error.code, error: error.message });
+    }
+    if (error instanceof NewApiAccountError)
       return reply.code(error.status).send({ code: error.code, error: error.message });
     if (error instanceof RateLimitUnavailableError) {
       request.log.warn({ requestId: request.id }, 'global rate limiter unavailable');
@@ -1883,28 +1679,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
 
-  /** 生成必须由已验证账号发起；旧报价和商品身份不能进入新的执行链路。 */
+  /** 生成必须由已验证账号发起；模型与执行授权由 New API 管理。 */
   app.addHook('preHandler', async (request) => {
     if (request.method === 'POST' && isGenerationSubmissionPath(request.url.split('?')[0]!)) {
       if (options.newApiAccount && !requestSessions.has(request))
         throw new NewApiAccountError('authentication_required', '请使用 New API 登录', 401);
-      const body = request.body as Record<string, unknown> | undefined;
-      if (
-        body?.quoteId !== undefined ||
-        body?.quoteOnly !== undefined ||
-        body?.platformModelId !== undefined
-      )
-        throw new NewApiAccountError(
-          'legacy_submission_retired',
-          '旧报价和平台模型已失效，请刷新并重新选择分组模型',
-          409,
-        );
-      if (body?.automatic === true)
-        throw new NewApiAccountError(
-          'automatic_generation_disabled',
-          '请手动发起反推，旧自动报价提醒已退出',
-          400,
-        );
     }
   });
 
@@ -3255,7 +3034,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           });
           return reply.code(202).send({ optimization: publicPromptOptimization(run) });
         } catch (error) {
-          if (error instanceof NewApiAccountError) throw error;
+          if (error instanceof NewApiAccountError || error instanceof ExecutionError) throw error;
           if (
             error instanceof ResourceMentionFreezeError ||
             error instanceof ResourceMentionCapabilityError
@@ -3586,7 +3365,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         frozenNodeImageEditCapabilities,
         ...(credential ?? {}),
       });
-      validateRunVideoInputs(snapshot);
       if (options.newApiAccount)
         snapshot = await options.newApiAccount.freeze(
           requestSessions.get(request)!.user.id,
@@ -3612,14 +3390,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       );
       return reply.code(202).send({ run: toPublicRunRecord(run) });
     } catch (error) {
-      if (error instanceof RunVideoInputError) {
-        return reply.code(400).send({
-          error: error.message,
-          code: error.code,
-          nodeId: error.nodeId,
-          issues: error.issues,
-        });
-      }
       if (error instanceof RunImageParameterError) {
         return reply.code(400).send({
           error: error.message,
@@ -3727,7 +3497,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (!fields.success)
         throw new NewApiAccountError(
           'invalid_retry_request',
-          '重试不接受修改原任务身份或报价',
+          '重试不接受修改原任务身份或执行参数',
           400,
         );
       const previous = await runService.get(request.params.runId);

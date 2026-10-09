@@ -109,6 +109,7 @@ describe('PrismaWorkerExecutionAuthorization', () => {
   it('以持久授权为准拒绝队列伪造的 userId', async () => {
     const { frozen, execution, prisma } = fixture();
     const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
       prisma as never,
     );
     await expect(authorization.authorizeRun('run-1', frozen, 'other-user')).rejects.toMatchObject({
@@ -120,6 +121,7 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     const { frozen, execution, prisma } = fixture();
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -142,6 +144,7 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     const { frozen, execution, prisma } = fixture('revision-2');
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -152,12 +155,50 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     expect(verifyUpstream).not.toHaveBeenCalled();
   });
 
-  it('上游分组已移除时拒绝旧队列任务，不再调用上游授权', async () => {
+  it('凭据属于其他用户时拒绝发送，不调用上游授权', async () => {
+    const { frozen, execution, prisma } = fixture();
+    const credential = await prisma.aiCredential.findUnique();
+    prisma.aiCredential.findUnique.mockResolvedValue({ ...credential, ownerId: 'other-user' });
+    const verifyUpstream = vi.fn(async () => undefined);
+    const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
+      prisma as never,
+      verifyUpstream,
+    );
+
+    await expect(authorization.authorizeNode('run-1', 'target', frozen)).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    expect(verifyUpstream).not.toHaveBeenCalled();
+  });
+
+  it('分组授权属于其他用户时拒绝发送，不调用上游授权', async () => {
+    const { frozen, execution, prisma } = fixture();
+    const group = await prisma.newApiGroupBinding.findFirst();
+    prisma.newApiGroupBinding.findFirst.mockResolvedValue({
+      ...group,
+      identity: { ...group.identity, userId: 'other-user' },
+    });
+    const verifyUpstream = vi.fn(async () => undefined);
+    const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
+      prisma as never,
+      verifyUpstream,
+    );
+
+    await expect(authorization.authorizeNode('run-1', 'target', frozen)).rejects.toMatchObject({
+      code: 'authorization_revoked',
+    });
+    expect(verifyUpstream).not.toHaveBeenCalled();
+  });
+
+  it('上游分组已移除时拒绝旧队列任务，不调用上游授权', async () => {
     const { frozen, execution, prisma } = fixture();
     const group = await prisma.newApiGroupBinding.findFirst();
     prisma.newApiGroupBinding.findFirst.mockResolvedValue({ ...group, status: 'removed' });
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -172,6 +213,7 @@ describe('PrismaWorkerExecutionAuthorization', () => {
     const { frozen, execution, prisma } = fixture('revision-1', 'credential-2');
     const verifyUpstream = vi.fn(async () => undefined);
     const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
       prisma as never,
       verifyUpstream,
     );
@@ -190,6 +232,7 @@ describe('Worker 暂存回执委托', () => {
       const { frozen, execution, prisma } = fixture();
       const verifyUpstream = vi.fn(async () => undefined);
       const authorization = new PrismaWorkerExecutionAuthorization(
+        execution as never,
         prisma as never,
         verifyUpstream,
       );
@@ -220,6 +263,7 @@ describe('Worker 暂存回执委托', () => {
       const error = new Error('synthetic conflict');
       execution[method].mockRejectedValueOnce(error);
       const authorization = new PrismaWorkerExecutionAuthorization(
+        execution as never,
         prisma as never,
       );
       await expect(

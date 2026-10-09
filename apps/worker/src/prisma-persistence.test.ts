@@ -15,14 +15,11 @@ import {
 import {
   databaseRunId,
   stableRequestPromptRecordId,
-  stableUsageLedgerId,
-  stableUsageLedgerIdempotencyKey,
   WorkerPrismaRunPersistence,
 } from './prisma-persistence';
 
 const runId = 'run_worker_usage_1';
 const databaseId = databaseRunId(runId);
-const userId = '123e4567-e89b-12d3-a456-426614174001';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -102,127 +99,6 @@ describe('Worker 节点超时设置', () => {
     await expect(
       persistence.getProviderTimeoutMs({ credentialId: 'credential-a' }),
     ).rejects.toThrow('Provider timeout');
-  });
-});
-
-function createPersistence() {
-  const prisma = {
-    $disconnect: vi.fn(async () => undefined),
-    run: {
-      findUnique: vi.fn(async () => ({ userId })),
-    },
-    usageLedger: {
-      create: vi.fn(async (args) => ({ id: 'usage-legacy', ...args.data })),
-      upsert: vi.fn(async (args) => ({ ...args.create })),
-    },
-  };
-
-  return {
-    prisma,
-    persistence: new WorkerPrismaRunPersistence(prisma as never),
-  };
-}
-
-describe('WorkerPrismaRunPersistence usage idempotency', () => {
-  it('upserts provider-job usage using the API-compatible stable key', async () => {
-    const { prisma, persistence } = createPersistence();
-    const idempotencyKey = '363c44bf65719b8a23f8316e489eec80a637dbc4014c4cc194dc19a3f72c2cd9';
-
-    expect(
-      stableUsageLedgerIdempotencyKey({
-        providerJobId: ' job-1 ',
-        eventId: 'event-is-secondary',
-        kind: 'Generation',
-      }),
-    ).toBe(idempotencyKey);
-    expect(stableUsageLedgerId(idempotencyKey)).toBe('67ff9807-c1fb-4627-a177-eb9ea70f21e4');
-
-    await persistence.recordUsage({
-      runId,
-      providerJobId: ' job-1 ',
-      eventId: 'event-is-secondary',
-      kind: 'Generation',
-      amount: '0.125000',
-      currency: 'usd',
-      metadata: { requestId: 'request-1' },
-    });
-
-    expect(prisma.usageLedger.upsert).toHaveBeenCalledWith({
-      where: { idempotencyKey },
-      create: {
-        id: '67ff9807-c1fb-4627-a177-eb9ea70f21e4',
-        runId: databaseId,
-        userId,
-        providerJobId: 'job-1',
-        eventId: 'event-is-secondary',
-        kind: 'generation',
-        idempotencyKey,
-        amount: '0.125000',
-        currency: 'USD',
-        metadata: { requestId: 'request-1' },
-      },
-      update: {},
-    });
-    expect(prisma.usageLedger.create).not.toHaveBeenCalled();
-  });
-
-  it('falls back to event identity extracted from metadata', async () => {
-    const { prisma, persistence } = createPersistence();
-    const idempotencyKey = 'd566736acb54c907b328d8b0f836add5c705507b92251da7e0eef83781d121a0';
-
-    await persistence.recordUsage({
-      amount: 2,
-      metadata: { eventId: ' evt-42 ', kind: 'Completion', prompt_tokens: 12 },
-    });
-
-    expect(prisma.usageLedger.upsert).toHaveBeenCalledWith({
-      where: { idempotencyKey },
-      create: expect.objectContaining({
-        eventId: 'evt-42',
-        kind: 'completion',
-        idempotencyKey,
-        amount: '2',
-        currency: 'USD',
-      }),
-      update: {},
-    });
-    expect(prisma.run.findUnique).not.toHaveBeenCalled();
-    expect(prisma.usageLedger.create).not.toHaveBeenCalled();
-  });
-
-  it('keeps usage without a provider or event identity append-only', async () => {
-    const { prisma, persistence } = createPersistence();
-
-    await persistence.recordUsage({
-      runId,
-      amount: '0.500000',
-      metadata: { prompt_tokens: 4 },
-    });
-
-    expect(prisma.usageLedger.create).toHaveBeenCalledWith({
-      data: {
-        runId: databaseId,
-        userId,
-        amount: '0.500000',
-        currency: 'USD',
-        metadata: { prompt_tokens: 4 },
-      },
-    });
-    expect(prisma.usageLedger.upsert).not.toHaveBeenCalled();
-  });
-
-  it('keeps kind-specific usage events distinct and prefers provider-job identity', () => {
-    expect(stableUsageLedgerIdempotencyKey({})).toBeUndefined();
-    expect(stableUsageLedgerIdempotencyKey({ eventId: 'event-1', kind: 'start' })).not.toBe(
-      stableUsageLedgerIdempotencyKey({ eventId: 'event-1', kind: 'complete' }),
-    );
-    expect(
-      stableUsageLedgerIdempotencyKey({
-        providerJobId: 'job-1',
-        eventId: 'event-1',
-        kind: 'complete',
-      }),
-    ).toBe(stableUsageLedgerIdempotencyKey({ providerJobId: 'job-1', kind: 'complete' }));
   });
 });
 

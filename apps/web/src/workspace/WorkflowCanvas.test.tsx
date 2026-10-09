@@ -917,9 +917,9 @@ describe('WorkflowCanvas context menu', () => {
 
   it.each([
     ['无限制-Flash-MAX-Video', 'text', 'prompt', true, true],
-    ['无限制-Flash-MAX-Video', 'video', 'content', false, false],
-    ['无限制-Flash-MAX-Video', 'audio', 'audioTrack', false, false],
-    ['无限制-Flash-MAX-Video', 'text', 'audioTrack', false, false],
+    ['无限制-Flash-MAX-Video', 'video', 'content', false, true],
+    ['无限制-Flash-MAX-Video', 'audio', 'audioTrack', false, true],
+    ['无限制-Flash-MAX-Video', 'text', 'audioTrack', false, true],
     ['Seedance2.0 0.9r', 'video', 'content', false, true],
   ] as const)(
     '%s 的 %s→%s 连线按来源媒体派生文字输入 %s，生成许可 %s',

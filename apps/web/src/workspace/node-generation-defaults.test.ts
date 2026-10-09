@@ -162,7 +162,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual({ duration: 10 });
   });
 
-  it('官方 MiniMax-H3 使用 10 秒和合同清晰度，并清理其他家族的自动参数', () => {
+  it('切换 MiniMax-H3 时保留已保存自动时长与比例', () => {
     const original = {
       ...data('video'),
       modelAlias: 'MiniMax-H3',
@@ -173,7 +173,7 @@ describe('applyNodeGenerationDefaults', () => {
       name: 'MiniMax H3',
       mediaTypes: ['video'],
     });
-    expect(configured.parameters).toEqual({ custom: true, resolution: '768p', duration: 10 });
+    expect(configured.parameters).toEqual(original.parameters);
     expect(original.parameters).toEqual({
       duration: -1,
       aspectRatio: 'adaptive',
@@ -181,7 +181,7 @@ describe('applyNodeGenerationDefaults', () => {
     });
   });
 
-  it('Moon 小写 minimax-h3 在文生模式使用普通档位和固定比例默认值', () => {
+  it('切换 Moon minimax-h3 文生模式不改写已保存自动参数', () => {
     const original = {
       ...data('video'),
       modelAlias: 'minimax-h3',
@@ -193,12 +193,7 @@ describe('applyNodeGenerationDefaults', () => {
       name: 'Moon MiniMax H3',
       mediaTypes: ['video'],
     });
-    expect(configured.parameters).toEqual({
-      custom: true,
-      resolution: '480p',
-      aspectRatio: '16:9',
-      duration: 10,
-    });
+    expect(configured.parameters).toEqual(original.parameters);
     expect(original.parameters).toEqual({
       duration: -1,
       aspectRatio: 'adaptive',
@@ -216,14 +211,13 @@ describe('applyNodeGenerationDefaults', () => {
       { id: 'wan3.0-video', name: 'Moon Wan3', mediaTypes: ['video'] },
     );
     expect(configured.parameters).toEqual({
-      resolution: '480p',
       aspectRatio: 'adaptive',
       duration: -1,
     });
   });
 
   it.each(['doubao-seedance-2-5-260628', 'seedance-2-0-official'])(
-    '%s 视频编辑仍使用强制自动时长，不能被 10 秒默认值覆盖',
+    '%s 未设置时长时采用编辑默认 10 秒，不强制改为自动',
     (modelAlias) => {
       const configured = applyNodeGenerationDefaults(
         {
@@ -234,7 +228,7 @@ describe('applyNodeGenerationDefaults', () => {
         },
         { id: modelAlias, name: modelAlias, mediaTypes: ['video'] },
       );
-      expect(configured.parameters?.duration).toBe(-1);
+      expect(configured.parameters?.duration).toBe(10);
       expect(configured.parameters?.aspectRatio).toBe('adaptive');
     },
   );
@@ -246,7 +240,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).not.toHaveProperty('speed');
   });
 
-  it('模型限制音频格式时只从实际支持项选择，空枚举不回退到通用格式', () => {
+  it('目录音频格式建议不限制通用格式默认值', () => {
     expect(
       applyNodeGenerationDefaults(
         data('audio'),
@@ -270,7 +264,7 @@ describe('applyNodeGenerationDefaults', () => {
           audio: { response_formats: [] },
         }),
       ).parameters,
-    ).toEqual({});
+    ).toEqual({ response_format: 'mp3' });
   });
 
   it('GPT 已确认推理档位使用 high，并保留单项目录的声明值', () => {

@@ -138,7 +138,7 @@ describe('Skill 工作台模型辅助升级', () => {
       target: { value: '补齐输出格式，保留 {{character}}。' },
     });
     await user.click(screen.getByRole('combobox', { name: '优化模型' }));
-    expect(screen.queryByRole('option', { name: /图片模型/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /图片模型/ })).toBeInTheDocument();
     await user.click(screen.getByRole('option', { name: /文字模型.*分组乙/ }));
     await user.click(screen.getByRole('button', { name: '生成升级预览' }));
     await screen.findByRole('group', { name: 'Skill 升级预览' });

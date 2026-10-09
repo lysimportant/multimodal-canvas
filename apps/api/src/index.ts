@@ -1,6 +1,7 @@
 import { buildApp } from './app';
 import { FilePromptSkillStore, PrismaPromptSkillStore } from './prompt-skill-store';
 import { PrismaClient } from '@prisma/client';
+import { PrismaExecutionService } from '@multimodal-canvas/execution';
 
 import { createCredentialEncryptionKeyringFromEnvironment } from '@multimodal-canvas/credential-crypto';
 import { NewApiAccountClient } from './newapi-account-client';
@@ -107,6 +108,7 @@ const runService = useMemoryRunService
       ...(runExecutor ? { executor: runExecutor } : {}),
     })
   : new BullMqRunService({
+      execution: new PrismaExecutionService(prisma),
       connection: redisConnectionFromUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
       ...(process.env.RUN_QUEUE_NAME?.trim()
         ? { queueName: process.env.RUN_QUEUE_NAME.trim() }

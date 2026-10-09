@@ -1,4 +1,4 @@
-# Windows / Linux 共用正式运行配置；HTTPS 入口按需启用，不要求预先提供域名。
+# 默认 PostgreSQL、TLS Redis 和外部 R2；New API 必须独立部署。
 name: multimodal-canvas-app
 
 x-logging: &bounded-logging
@@ -9,34 +9,36 @@ x-logging: &bounded-logging
 
 x-runtime-environment: &runtime-environment
   NODE_ENV: production
-  NODE_EXTRA_CA_CERTS: /run/multimodal/secrets/ca.crt
   API_HOST: 0.0.0.0
   API_PORT: '3000'
-  # API 不发布端口；Caddy 直接转发，只信任最近一跳。
   API_TRUST_PROXY_HOPS: '1'
   RUN_SERVICE: bullmq
-  # 新授权队列与旧钱包 Worker 隔离；旧版本不得消费此队列。
-  RUN_QUEUE_NAME: ${MC_RUN_QUEUE_NAME:-canvas-accounts-v1}
+  RUN_QUEUE_NAME: ${RUN_QUEUE_NAME:-canvas-accounts-v1}
   WORKER_PROVIDER: newapi
-  WORKER_CONCURRENCY: ${MC_WORKER_CONCURRENCY-20}
-  S3_ENDPOINT: https://minio:9000
-  # 默认走 CANVAS_WEB_URL 的本站签名素材接口；仅已有公网 S3 的部署需要此覆盖项。
-  S3_PROVIDER_ENDPOINT: ${MC_S3_PROVIDER_ENDPOINT:-}
-  S3_BUCKET: canvas
-  S3_REGION: us-east-1
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-20}
+  S3_ENDPOINT: ${S3_ENDPOINT:?必须配置 Cloudflare R2 S3_ENDPOINT}
+  S3_BUCKET: ${S3_BUCKET:?必须配置已有 R2 S3_BUCKET}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?必须配置 R2 S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?必须配置 R2 S3_SECRET_KEY}
+  S3_REGION: auto
   S3_UPLOAD_MODE: proxy
   S3_DOWNLOAD_MODE: proxy
+  S3_PROVIDER_ENDPOINT: ${S3_PROVIDER_ENDPOINT:-}
+  AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+  AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
   FFMPEG_ENABLED: 'true'
   FFPROBE_ENABLED: 'true'
-  NEW_API_VIDEO_CONTRACT: ${MC_VIDEO_CONTRACT:-newapi-video-v1}
-  NEW_API_ISSUER: ${MC_NEW_API_ISSUER:-}
-  NEW_API_CLIENT_ID: ${MC_NEW_API_CLIENT_ID:-canvas}
-  NEW_API_INSTANCE_ID: ${MC_NEW_API_INSTANCE_ID:-main}
-  NEW_API_REDIRECT_URI: ${MC_NEW_API_REDIRECT_URI:-${MC_PUBLIC_ORIGIN:-http://localhost:${MC_HTTP_PORT:-8080}}/v1/auth/newapi/callback}
-  CANVAS_WEB_URL: ${MC_PUBLIC_ORIGIN:-http://localhost:${MC_HTTP_PORT:-8080}}
-  NEW_API_ADMIN_USER_IDS: ${MC_NEW_API_ADMIN_USER_IDS:-}
-  # 本机入口与 API 同源，默认不开放跨域；服务器仅允许显式 HTTPS 来源。
-  CORS_ORIGIN: ${MC_PUBLIC_ORIGIN:-}
+  NODE_EXTRA_CA_CERTS: /run/multimodal/secrets/ca.crt
+  NEW_API_ISSUER: ${NEW_API_ISSUER:?必须配置独立 New API 的 NEW_API_ISSUER}
+  NEW_API_CLIENT_ID: ${NEW_API_CLIENT_ID:-canvas}
+  NEW_API_INSTANCE_ID: ${NEW_API_INSTANCE_ID:-main}
+  NEW_API_CLIENT_SECRET: ${NEW_API_CLIENT_SECRET:-}
+  NEW_API_REDIRECT_URI: ${NEW_API_REDIRECT_URI:-${CANVAS_WEB_URL:-http://localhost:${MC_HTTP_PORT:-8080}}/v1/auth/newapi/callback}
+  CANVAS_WEB_URL: ${CANVAS_WEB_URL:-http://localhost:${MC_HTTP_PORT:-8080}}
+  # 同源网关不需要 CORS；跨源客户端必须显式提供 HTTPS origin。
+  CORS_ORIGIN: ${CORS_ORIGIN:-}
+  NEW_API_ADMIN_USER_IDS: ${NEW_API_ADMIN_USER_IDS:-}
+  NEW_API_VIDEO_CONTRACT: ${NEW_API_VIDEO_CONTRACT:-newapi-video-v1}
   API_RATE_LIMIT_REDIS_ENABLED: 'true'
   API_RATE_LIMIT_PER_MINUTE: '600'
 
@@ -63,14 +65,12 @@ services:
       - app_secrets:/run/multimodal-views/app
       - postgres_secrets:/run/multimodal-views/postgres
       - redis_secrets:/run/multimodal-views/redis
-      - minio_secrets:/run/multimodal-views/minio
-      - storage_secrets:/run/multimodal-views/storage
     restart: 'no'
+    logging: *bounded-logging
 
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    logging: *bounded-logging
     environment:
       POSTGRES_DB: canvas
       POSTGRES_USER: canvas
@@ -86,11 +86,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    logging: *bounded-logging
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    logging: *bounded-logging
     command: ['redis-server', '/run/multimodal/secrets/redis.conf']
     volumes:
       - redis:/data
@@ -105,63 +105,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-
-  minio:
-    image: quay.io/minio/minio:RELEASE.2024-07-04T14-25-45Z
-    restart: unless-stopped
     logging: *bounded-logging
-    command:
-      [
-        'server',
-        '/data',
-        '--certs-dir',
-        '/run/multimodal/secrets/minio',
-        '--console-address',
-        ':9001',
-      ]
-    environment:
-      MINIO_ROOT_USER: canvas-root
-      MINIO_ROOT_PASSWORD_FILE: /run/multimodal/secrets/minio-password
-    volumes:
-      - minio:/data
-      - minio_secrets:/run/multimodal:ro
-    depends_on:
-      initialize:
-        condition: service_completed_successfully
-    healthcheck:
-      test:
-        [
-          'CMD',
-          'curl',
-          '--fail',
-          '--cacert',
-          '/run/multimodal/secrets/ca.crt',
-          'https://localhost:9000/minio/health/ready',
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  storage-init:
-    image: quay.io/minio/mc:RELEASE.2024-07-03T20-17-25Z
-    restart: 'no'
-    environment:
-      SSL_CERT_FILE: /run/multimodal/secrets/ca.crt
-    volumes:
-      - storage_secrets:/run/multimodal:ro
-    tmpfs:
-      - /tmp
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: ['/bin/sh', '-ec']
-    command:
-      - |
-        mc --config-dir /tmp/mc alias set local https://minio:9000 canvas-root "$$(cat /run/multimodal/secrets/minio-password)" >/dev/null
-        mc --config-dir /tmp/mc mb --ignore-existing local/canvas
-        mc --config-dir /tmp/mc admin user add local canvas-app "$$(cat /run/multimodal/secrets/s3-password)" >/dev/null
-        mc --config-dir /tmp/mc admin policy attach local readwrite --user canvas-app >/dev/null
-        mc --config-dir /tmp/mc stat local/canvas
 
   migrate:
     <<: *runtime
@@ -176,18 +120,12 @@ services:
 
   api:
     <<: *runtime
-    # 可选客户端密钥由私有文件注入，文件中仅填写 NEW_API_CLIENT_SECRET。
-    env_file:
-      - path: ${MC_ACCOUNT_ENV_FILE:-.env.newapi}
-        required: false
     image: multimodal-canvas-api:local
     build:
       context: .
       target: api
     depends_on:
       migrate:
-        condition: service_completed_successfully
-      storage-init:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
@@ -230,7 +168,8 @@ services:
         condition: service_healthy
     logging: *bounded-logging
 
-  gateway: &gateway
+  # 公网部署可启用 server profile；域名与 CANVAS_WEB_URL 必须一致。
+  gateway:
     image: caddy:2.10.2-alpine
     profiles: ['server']
     restart: unless-stopped
@@ -256,30 +195,12 @@ services:
       retries: 18
     logging: *bounded-logging
 
-  gateway-local:
-    <<: *gateway
-    profiles: ['local-https']
-    environment:
-      MC_DOMAIN: 'localhost, :443'
-    ports:
-      - '127.0.0.1:${MC_HTTPS_PORT:-8443}:443'
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./docker/logging.caddy:/etc/caddy/logging.caddy:ro
-      - local_gateway_data:/data
-      - local_gateway_config:/config
-
 volumes:
   secrets:
   app_secrets:
   postgres_secrets:
   redis_secrets:
-  minio_secrets:
-  storage_secrets:
   postgres:
   redis:
-  minio:
   gateway_data:
   gateway_config:
-  local_gateway_data:
-  local_gateway_config:

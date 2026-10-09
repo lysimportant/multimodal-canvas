@@ -8,7 +8,6 @@ import type {
   RunSnapshot,
 } from '@multimodal-canvas/domain';
 import {
-  describeVideoInputMedia,
   NewApiProvider,
   NewApiVideoProvider,
   resolveProviderMentions,
@@ -600,9 +599,7 @@ describe('视频参考资源显式顺序', () => {
       ['alpha', 1, 'character', 3],
       ['alpha', 1, 'referenceImage', 4],
     ]);
-    expect(describeVideoInputMedia(snapshot)).toEqual(
-      expected.map((item) => ({ type: item.type.replace('_url', ''), role: item.role })),
-    );
+
     expect(snapshot).toEqual(before);
   });
 

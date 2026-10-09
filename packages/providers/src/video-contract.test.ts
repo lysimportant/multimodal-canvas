@@ -619,26 +619,6 @@ describe('New API 官方统一视频合同', () => {
   });
 
   it.each([
-    { seconds: 5 },
-    { resolution: '480p' },
-    { size: '640x480' },
-    { quality: 'high' },
-    { aspectRatio: '4:3' },
-    { metadata: { negative_prompt: 'unsupported' } },
-    { input_reference: 'file' },
-    { n: 2 },
-    { response_format: 'b64_json' },
-  ])('未确认或无法完整归档的参数 %# 在 POST 前失败', async (parameters) => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    const onProviderJob = vi.fn();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot: videoSnapshot(parameters), onProviderJob }),
-    ).rejects.toMatchObject({ code: 'UNSUPPORTED_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-  });
-
-  it.each([
     { duration: 0 },
     { duration: Infinity },
     { duration: '5' },
@@ -648,15 +628,24 @@ describe('New API 官方统一视频合同', () => {
     { seed: Number.MAX_SAFE_INTEGER + 1 },
     { user: 12 },
     { prompt: ' ' },
-  ])('非法通用参数 %# 不隐式转换或丢弃', async (parameters) => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(fetchImpl).execute({
-        snapshot: videoSnapshot(parameters),
-        onProviderJob: vi.fn(),
-      }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
+  ])('通用参数由上游判断，Provider 不在本地隐式转换或拒绝 %#', async (parameters) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ task_id: 'task-1', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse(completed));
+    const onProviderJob = vi.fn();
+    await providerFor(fetchImpl).execute({
+      snapshot: videoSnapshot(parameters),
+      onProviderJob,
+    });
+
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    const serializedParameters = JSON.parse(JSON.stringify(parameters)) as Record<string, unknown>;
+    delete serializedParameters.prompt;
+    expect(body).toMatchObject(serializedParameters);
+    expect(body.prompt).toBe('A camera move');
+    expect(onProviderJob).toHaveBeenCalled();
   });
 
   it.each([

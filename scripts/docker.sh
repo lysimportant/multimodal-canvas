@@ -1,92 +1,74 @@
 #!/usr/bin/env bash
-# Linux/macOS Compose 运维入口：https 使用内部 CA，server 模式要求显式 HTTPS 域名。
-# 用法：bash scripts/docker.sh [start|https|server|build|stop|status|admin EXTERNAL_USER_ID]
-# 不安装全局软件、不改系统代理、不删除卷；任何失败均返回非零。
-# 环境隔离只适用于脚本子进程；拒绝 source，避免改变调用者的环境及 shell 选项。
+# Linux/macOS 运维入口；仅加载显式私有配置，不写环境文件、不删除卷。
+# build 仅构建；start 启动并执行 migrate deploy；--neon 选择外部数据库，--server 启用 HTTPS。
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
-  printf '%s\n' 'Run this script with bash instead of sourcing it.' >&2
+  printf '%s\n' '请使用 bash 运行本脚本，不要 source。' >&2
   return 1
 fi
 set -euo pipefail
-
-# profile 只由 action 决定，显式环境变量仍可配置端口；普通 Compose CLI 不受影响。
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 unset COMPOSE_PROFILES COMPOSE_ENV_FILES
-export COMPOSE_DISABLE_ENV_FILE=true
+export COMPOSE_DISABLE_ENV_FILE=1
 
-# 校验十进制 TCP 端口；$1 为变量名，$2 为端口值，范围为 1..65535。
-# 非法值返回非零，仅输出变量名，不回显环境变量内容或执行 Compose。
-validate_port() {
-  local name="$1" value="$2"
-  [[ "$value" =~ ^[1-9][0-9]{0,4}$ ]] && (( value <= 65535 )) || {
-    printf '%s must be an integer from 1 to 65535.\n' "$name" >&2
-    return 1
-  }
-}
-
-# 仅对启动动作增加端口校验，不改变查询和停止的既有行为。
 action="${1:-start}"
-case "$action" in
-  start|https|server)
-    export MC_HTTP_PORT="${MC_HTTP_PORT:-8080}"
-    validate_port MC_HTTP_PORT "$MC_HTTP_PORT"
-    ;;
-esac
-if [[ "$action" == https ]]; then
-  export MC_HTTPS_PORT="${MC_HTTPS_PORT:-8443}"
-  validate_port MC_HTTPS_PORT "$MC_HTTPS_PORT"
-  if (( MC_HTTPS_PORT == MC_HTTP_PORT )); then
-    printf '%s\n' 'MC_HTTPS_PORT must differ from MC_HTTP_PORT.' >&2
-    exit 1
-  fi
-fi
+if (( $# )); then shift; fi
+environment_file='.env.compose'
+neon=false
+server=false
+user_id=''
+while (( $# )); do
+  case "$1" in
+    --env-file) [[ $# -ge 2 ]] || exit 1; environment_file="$2"; shift 2 ;;
+    --neon) neon=true; shift ;;
+    --server) server=true; shift ;;
+    *)
+      if [[ "$action" == admin && -z "$user_id" && "$1" =~ ^[1-9][0-9]*$ ]]; then
+        user_id="$1"; shift
+      else
+        printf '%s\n' '用法：bash scripts/docker.sh [build|start|stop|status|admin ID] [--env-file PATH] [--neon] [--server]' >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+case "$action" in build|start|stop|status|admin) ;; *) printf '%s\n' '不支持的操作。' >&2; exit 1 ;; esac
+[[ -f "$environment_file" ]] || { printf '%s\n' '缺少配置，请复制 .env.compose.example 并填写 R2 与独立 New API。' >&2; exit 1; }
+[[ -z "${DOCKER_HOST:-}" ]] || { printf '%s\n' '拒绝 DOCKER_HOST 覆盖，请使用本机 Docker context。' >&2; exit 1; }
+docker_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+[[ "$docker_host" == unix:///* || "$docker_host" == npipe:////./pipe/* ]] || { printf '%s\n' '拒绝远程 Docker context。' >&2; exit 1; }
+[[ "$(docker info --format '{{.OSType}}')" == linux ]] || { printf '%s\n' '必须使用 Linux containers。' >&2; exit 1; }
 
-# 定位仓库，避免从其它工作目录误操作同名 Compose 栈。
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$root"
-command -v docker >/dev/null || { printf '%s\n' 'Docker is required.' >&2; exit 1; }
-docker compose version >/dev/null
-[[ "$(docker info --format '{{.OSType}}')" == linux ]] || {
-  printf '%s\n' 'This stack requires Linux containers.' >&2
-  exit 1
-}
-
-# 始终指定文件和项目，避免复用开发项目或环境中的 COMPOSE_FILE。
-compose=(docker compose -f "$root/compose.yaml" -p multimodal-canvas-app)
+compose=(docker compose --env-file "$environment_file" -p multimodal-canvas-app -f compose.yaml)
+if $neon; then compose+=(-f compose.neon.yaml); fi
+if $server || [[ "$action" == stop || "$action" == status ]]; then compose+=(--profile server); fi
+"${compose[@]}" config --quiet
 case "$action" in
-  start)
-    "${compose[@]}" up --detach --wait --wait-timeout 240
-    printf 'Web: http://localhost:%s\n' "$MC_HTTP_PORT"
-    ;;
-  https)
-    "${compose[@]}" --profile local-https up -d --wait --wait-timeout 240
-    printf 'Web: https://localhost:%s\n' "$MC_HTTPS_PORT"
-    printf '%s\n' 'TLS: this endpoint uses an internal CA; the operator must explicitly trust its certificate on each client.'
-    ;;
-  server)
-    : "${MC_DOMAIN:?Set MC_DOMAIN to the server public domain}"
-    [[ "$MC_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$ ]] || {
-      printf '%s\n' 'MC_DOMAIN must be a DNS name, without scheme, port or path.' >&2
-      exit 1
-    }
-    export MC_PUBLIC_ORIGIN="https://$MC_DOMAIN"
-    "${compose[@]}" --profile server up --detach --wait --wait-timeout 240
-    printf 'Web: https://%s\n' "$MC_DOMAIN"
-    ;;
   build)
     "${compose[@]}" build
+    printf '%s\n' '镜像构建完成，未启动服务或执行迁移。'
     ;;
-  stop)
-    "${compose[@]}" --profile server --profile local-https stop
+  start)
+    if $server; then
+      domain=''
+      public_origin=''
+      while IFS='=' read -r name value; do
+        case "$name" in
+          MC_DOMAIN) domain="$value" ;;
+          CANVAS_WEB_URL) public_origin="$value" ;;
+        esac
+      done < <("${compose[@]}" config --environment)
+      if [[ ! "$domain" =~ ^[A-Za-z0-9.-]+$ || "$public_origin" != "https://$domain" ]]; then
+        printf '%s\n' 'server 模式要求 MC_DOMAIN 与 HTTPS CANVAS_WEB_URL 一致。' >&2
+        exit 1
+      fi
+    fi
+    "${compose[@]}" up -d --build --wait --wait-timeout 180
+    "${compose[@]}" ps --all
     ;;
-  status)
-    "${compose[@]}" --profile server --profile local-https ps --all
-    ;;
+  stop) "${compose[@]}" stop; printf '%s\n' '服务已停止，数据和密钥卷保留。' ;;
+  status) "${compose[@]}" ps --all ;;
   admin)
-    [[ $# -eq 2 && -n "$2" ]] || { printf '%s\n' 'Usage: bash scripts/docker.sh admin EXTERNAL_USER_ID' >&2; exit 1; }
-    "${compose[@]}" exec -T api node docker/run.mjs admin "$2"
-    ;;
-  *)
-    printf '%s\n' 'Usage: bash scripts/docker.sh [start|https|server|build|stop|status|admin EXTERNAL_USER_ID]' >&2
-    exit 1
+    [[ -n "$user_id" ]] || { printf '%s\n' 'admin 必须明确提供 New API 不可变用户 ID。' >&2; exit 1; }
+    "${compose[@]}" exec -T api node docker/run.mjs admin "$user_id"
     ;;
 esac

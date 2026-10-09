@@ -143,7 +143,7 @@ describe('NodeHandles', () => {
     expect(container.querySelector('[data-handleid="output:image"]')).toBeInTheDocument();
   });
 
-  it('hides the left first-frame port in text_to_video mode', () => {
+  it('keeps the left first-frame role available through the semantic hit layer in text_to_video mode', () => {
     const { visible, semanticInputRoles } = getNodeHandleLayout('video', 'generate', {
       videoMode: 'text_to_video',
     });
@@ -153,7 +153,7 @@ describe('NodeHandles', () => {
       isConnectable: false,
     });
     expect(handlesBySide.get('top')?.id).toBe('input:prompt');
-    expect(semanticInputRoles).not.toContain('firstFrame');
+    expect(semanticInputRoles).toContain('firstFrame');
   });
 
   it('puts last frame on the bottom visible slot in first_last_frame mode', () => {
@@ -178,12 +178,11 @@ describe('NodeHandles', () => {
       isConnectable: true,
     });
     expect(semanticInputRoles).toEqual(expect.arrayContaining(['referenceImage']));
-    expect(semanticInputRoles).not.toContain('firstFrame');
-    expect(semanticInputRoles).not.toContain('content');
+    expect(semanticInputRoles).toEqual(expect.arrayContaining(['firstFrame', 'content']));
   });
 
   it.each(['omni_reference', 'video_edit', 'video_extend'] as const)(
-    '%s keeps reference media on the left and reserves the bottom only for a supported negative prompt',
+    '%s keeps reference media on the left and exposes the negative prompt role when declared',
     (videoMode) => {
       for (const modelAlias of ['wan3.0-video', 'doubao-seedance-2-5-260628']) {
         const layout = getNodeHandleLayout('video', 'generate', { videoMode, modelAlias });
@@ -194,11 +193,10 @@ describe('NodeHandles', () => {
         expect(layout.semanticInputRoles).toEqual(
           expect.arrayContaining(['referenceImage', 'content', 'audioTrack']),
         );
-        expect(layout.visible.find((handle) => handle.side === 'bottom')).toMatchObject(
-          modelAlias.startsWith('wan')
-            ? { id: 'input:negativePrompt', isConnectable: true }
-            : { id: 'visual:bottom', isConnectable: false },
-        );
+        expect(layout.visible.find((handle) => handle.side === 'bottom')).toMatchObject({
+          id: 'input:negativePrompt',
+          isConnectable: true,
+        });
       }
     },
   );
@@ -240,11 +238,10 @@ describe('连接点功能说明', () => {
     );
     expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
       'title',
-      expect.stringContaining('当前模式未启用'),
+      expect.stringContaining('负面提示词'),
     );
-    expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
+    expect(container.querySelector('[data-handle-side="bottom"]')).not.toHaveAttribute(
       'aria-disabled',
-      'true',
     );
   });
 });

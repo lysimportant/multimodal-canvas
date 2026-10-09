@@ -26,14 +26,15 @@ const configurationVariables = [
   'TEST_S3_BUCKET',
   'TEST_S3_ACCESS_KEY',
   'TEST_S3_SECRET_KEY',
+  'TEST_S3_PREFIX',
 ] as const;
 
-/** 验收配置只允许命名明确的本机测试设施。 */
+/** 数据库和 Redis 限本机；存储可显式使用专用 R2 测试 bucket。 */
 type EntryConfiguration = Record<(typeof configurationVariables)[number], string>;
 
 /**
  * 校验隔离依赖；错误只包含变量名，不输出 URL 或凭据。
- * @throws 缺配置、非回环服务、非测试资源或 Redis 默认数据库时拒绝运行。
+ * @throws 缺配置、非隔离数据库/队列、未确认 R2 或不安全对象前缀时拒绝运行。
  */
 function readConfiguration(environment: NodeJS.ProcessEnv): EntryConfiguration {
   const configuration = {} as EntryConfiguration;
@@ -45,7 +46,6 @@ function readConfiguration(environment: NodeJS.ProcessEnv): EntryConfiguration {
   for (const [name, protocol] of [
     ['TEST_DATABASE_URL', 'postgresql:'],
     ['TEST_REDIS_URL', 'redis:'],
-    ['TEST_S3_ENDPOINT', 'http:'],
   ] as const) {
     let endpoint: URL;
     try {
@@ -66,8 +66,41 @@ function readConfiguration(environment: NodeJS.ProcessEnv): EntryConfiguration {
       throw new Error('隔离入口验收 TEST_DATABASE_URL 必须使用 test/ci 数据库');
     }
   }
-  if (!/(?:^|[_-])(?:test|ci)(?:$|[_-])/i.test(configuration.TEST_S3_BUCKET)) {
-    throw new Error('隔离入口验收 TEST_S3_BUCKET 必须使用 test/ci bucket');
+  let storage: URL;
+  try {
+    storage = new URL(configuration.TEST_S3_ENDPOINT);
+  } catch {
+    throw new Error('隔离入口验收 TEST_S3_ENDPOINT 不是有效 URL');
+  }
+  const loopback = storage.protocol === 'http:' && storage.hostname === '127.0.0.1';
+  const isolatedR2 =
+    environment.TEST_S3_CONFIRMED_ISOLATED === 'true' &&
+    storage.protocol === 'https:' &&
+    storage.hostname.endsWith('.r2.cloudflarestorage.com') &&
+    configuration.TEST_S3_REGION === 'auto';
+  if (
+    (!loopback && !isolatedR2) ||
+    storage.username ||
+    storage.password ||
+    storage.search ||
+    storage.hash ||
+    storage.pathname !== '/' ||
+    (!loopback && storage.port)
+  ) {
+    throw new Error('隔离入口验收 TEST_S3_ENDPOINT 必须为回环服务或已确认的专用 HTTPS R2');
+  }
+  if (
+    !/(?:^|[_-])(?:test|ci|integration)(?:$|[_-])/i.test(configuration.TEST_S3_BUCKET) ||
+    environment.S3_BUCKET?.trim() === configuration.TEST_S3_BUCKET
+  ) {
+    throw new Error('隔离入口验收 TEST_S3_BUCKET 必须使用独立 test/ci/integration bucket');
+  }
+  if (
+    !/^(?:test|ci|integration)\/[A-Za-z0-9][A-Za-z0-9_-]*(?:\/[A-Za-z0-9][A-Za-z0-9_-]*)*$/.test(
+      configuration.TEST_S3_PREFIX,
+    )
+  ) {
+    throw new Error('隔离入口验收 TEST_S3_PREFIX 必须为独立测试路径，不允许空值或路径跳转');
   }
   return configuration;
 }
@@ -85,6 +118,7 @@ const syntheticConfiguration: EntryConfiguration = {
   TEST_S3_BUCKET: 'entry-ci',
   TEST_S3_ACCESS_KEY: 'synthetic-entry-access',
   TEST_S3_SECRET_KEY: 'synthetic-entry-secret',
+  TEST_S3_PREFIX: 'integration/entry-ci',
 };
 
 describe('生产入口验收隔离保护', () => {
@@ -102,6 +136,39 @@ describe('生产入口验收隔离保护', () => {
     ['TEST_S3_BUCKET', 'production'],
   ])('%s 拒绝非隔离目标', (name, value) => {
     expect(() => readConfiguration({ ...syntheticConfiguration, [name]: value })).toThrow(name);
+  });
+
+  it('显式确认的专用 R2 与测试前缀通过配置检查，不建立连接', () => {
+    expect(
+      readConfiguration({
+        ...syntheticConfiguration,
+        TEST_S3_ENDPOINT: 'https://synthetic.r2.cloudflarestorage.com',
+        TEST_S3_REGION: 'auto',
+        TEST_S3_CONFIRMED_ISOLATED: 'true',
+      }),
+    ).toMatchObject({ TEST_S3_PREFIX: 'integration/entry-ci' });
+  });
+
+  it.each([
+    { TEST_S3_CONFIRMED_ISOLATED: '' },
+    { TEST_S3_ENDPOINT: 'http://synthetic.r2.cloudflarestorage.com' },
+    { TEST_S3_ENDPOINT: 'https://storage.example.com' },
+    { TEST_S3_ENDPOINT: 'https://secret:password@synthetic.r2.cloudflarestorage.com' },
+    { TEST_S3_ENDPOINT: 'https://synthetic.r2.cloudflarestorage.com/bucket' },
+    { TEST_S3_REGION: 'us-east-1' },
+    { TEST_S3_PREFIX: 'integration' },
+    { TEST_S3_PREFIX: 'integration/../production' },
+    { S3_BUCKET: 'entry-ci' },
+  ])('R2 隔离条件缺失时阻断，不回显配置', (overrides) => {
+    expect(() =>
+      readConfiguration({
+        ...syntheticConfiguration,
+        TEST_S3_ENDPOINT: 'https://synthetic.r2.cloudflarestorage.com',
+        TEST_S3_REGION: 'auto',
+        TEST_S3_CONFIRMED_ISOLATED: 'true',
+        ...overrides,
+      }),
+    ).toThrow('TEST_S3_');
   });
 });
 
@@ -282,6 +349,8 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
       S3_REGION: configuration!.TEST_S3_REGION,
       S3_ACCESS_KEY: configuration!.TEST_S3_ACCESS_KEY,
       S3_SECRET_KEY: configuration!.TEST_S3_SECRET_KEY,
+      AWS_REQUEST_CHECKSUM_CALCULATION: 'WHEN_REQUIRED',
+      AWS_RESPONSE_CHECKSUM_VALIDATION: 'WHEN_REQUIRED',
       API_HOST: '127.0.0.1',
       API_PORT: String(apiPort),
       // 显式设置全部身份配置，阻止 Prisma 导入根 .env 中的本机认证值。
@@ -552,5 +621,7 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
     expect(apiLogs).not.toContain(bearerToken);
     expect(apiLogs).not.toContain('synthetic-entry-body-secret');
     expect(apiLogs).not.toContain('wrong-entry-token');
+    expect(apiLogs.includes(configuration!.TEST_S3_ACCESS_KEY)).toBe(false);
+    expect(apiLogs.includes(configuration!.TEST_S3_SECRET_KEY)).toBe(false);
   });
 });

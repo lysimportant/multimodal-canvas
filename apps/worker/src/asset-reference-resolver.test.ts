@@ -76,119 +76,6 @@ function createRunWorker(options: Parameters<typeof createAuthorizedTestRunWorke
 }
 
 describe('StoredAssetReferenceResolver', () => {
-  it.each([
-    { label: '合法原文', prompt: 'Write --duration 15 on the sign.', valid: true },
-    { label: '空白正文', prompt: ' ', valid: false },
-    { label: '超过 H3 字符上限', prompt: 'x'.repeat(7001), valid: false },
-  ])('H3 使用冻结 txt v1 的 $label，合法新版本不能代替旧版本', async ({ prompt, valid }) => {
-    const content = Buffer.from(prompt);
-    const newer = Buffer.from(valid ? 'x'.repeat(7001) : 'A valid newer prompt.');
-    const snapshot = referenceSnapshot({
-      sourceMediaType: 'text',
-      targetMediaType: 'video',
-      role: 'prompt',
-      assetId: textAssetId,
-      mimeType: 'text/plain',
-      modelAlias: '无限制-Flash-MAX-Video',
-      prompt: 'An old source generation instruction is not the frozen result.',
-    });
-    snapshot.inputs[0]!.sourceAssetVersion = 1;
-    snapshot.nodes[1]!.data.prompt = '';
-    snapshot.nodes[1]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: ' ' }] };
-    snapshot.nodes[1]!.data.videoMode = 'text_to_video';
-    snapshot.parameters = { duration: 5, resolution: '720p', ratio: '16:9' };
-    const { repository, blobStore } = fixtures({
-      assets: [asset(textAssetId, 'text', 'text/plain', newer, projectId, userId)],
-      versions: [
-        {
-          assetId: textAssetId,
-          version: 1,
-          sizeBytes: BigInt(content.byteLength),
-          contentKey: 'h3-text-v1',
-        },
-        {
-          assetId: textAssetId,
-          version: 2,
-          sizeBytes: BigInt(newer.byteLength),
-          contentKey: 'h3-text-v2',
-        },
-      ],
-      blobs: { 'h3-text-v1': content, 'h3-text-v2': newer },
-    });
-    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
-      snapshot,
-      { userId },
-    );
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ id: 'task-h3-text', status: 'queued' }))
-      .mockResolvedValueOnce(
-        Response.json({
-          id: 'task-h3-text',
-          status: 'completed',
-          url: 'https://cdn.example/h3.mp4',
-        }),
-      );
-    const provider = new NewApiVideoProvider({
-      baseUrl: 'https://newapi.example/v1',
-      apiKey: 'synthetic-h3-text-key',
-      videoContract: 'newapi-video-v1',
-      fetchImpl,
-      pollIntervalMs: 0,
-      maxPollAttempts: 1,
-    });
-    if (valid) {
-      await provider.execute({ snapshot: hydrated, onProviderJob: vi.fn() });
-      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).content).toEqual([
-        { type: 'text', text: prompt },
-      ]);
-    } else {
-      await expect(
-        provider.execute({ snapshot: hydrated, onProviderJob: vi.fn() }),
-      ).rejects.toMatchObject({ retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-    }
-    expect(repository.findVersion).toHaveBeenCalledExactlyOnceWith(textAssetId, 1);
-    expect(blobStore.get).toHaveBeenCalledExactlyOnceWith('h3-text-v1', content.byteLength + 1);
-    expect(JSON.stringify(snapshot)).not.toContain(';base64,');
-  });
-
-  it.each(['image', 'audio'] as const)(
-    'H3 冻结 %s 超过模型文件上限时不签发素材 URL',
-    async (mediaType) => {
-      const content = Buffer.alloc((mediaType === 'image' ? 30 : 15) * 1024 * 1024 + 1);
-      const mimeType = mediaType === 'image' ? 'image/png' : 'audio/wav';
-      const snapshot = referenceSnapshot({
-        sourceMediaType: mediaType,
-        targetMediaType: 'video',
-        role: mediaType === 'image' ? 'referenceImage' : 'audioTrack',
-        assetId: imageAssetId,
-        mimeType,
-        modelAlias: '无限制-Flash-MAX-Video',
-        contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
-      });
-      const { repository, blobStore } = fixtures({
-        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId, userId)],
-        versions: [
-          {
-            assetId: imageAssetId,
-            version: 2,
-            sizeBytes: BigInt(content.byteLength),
-            contentKey: 'h3-oversized-v2',
-          },
-        ],
-        blobs: { 'h3-oversized-v2': content },
-      });
-      const signer = vi.fn(async () => 'https://assets.example/frozen');
-      blobStore.createProviderGetUrl = signer;
-      await expect(
-        new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot, { userId }),
-      ).rejects.toThrow('单文件大小上限');
-      expect(repository.findVersion).toHaveBeenCalledWith(imageAssetId, 2);
-      expect(signer).not.toHaveBeenCalled();
-    },
-  );
-
   it.each(['Seedance2.0 0.9r', '无限制-Flash-MAX-Video'])(
     'Image2Pro %s 冻结图片经公共任务归档',
     async (modelAlias) => {
@@ -582,9 +469,9 @@ describe('StoredAssetReferenceResolver', () => {
 
   it('signs the frozen object key against the explicit public provider endpoint', async () => {
     const blobStore = new S3AssetReferenceBlobStore('canvas', {
-      endpoint: 'https://minio:9000',
+      endpoint: 'https://account.r2.cloudflarestorage.com',
       providerEndpoint: 'https://objects.example.com',
-      region: 'us-east-1',
+      region: 'auto',
       accessKeyId: 'synthetic-access-key',
       secretAccessKey: 'synthetic-secret-key',
       forcePathStyle: true,
@@ -604,59 +491,6 @@ describe('StoredAssetReferenceResolver', () => {
       expect(signed.searchParams.get('X-Amz-Expires')).toBe('3600');
       expect(signed.searchParams.get('response-content-type')).toBe('video/mp4');
       expect(signed.searchParams.get('X-Amz-Signature')).toMatch(/^[a-f0-9]{64}$/);
-    } finally {
-      await blobStore.close();
-    }
-  });
-
-  it('uses real S3 signer availability for preferred fallback and required transport failure', async () => {
-    const image = Buffer.from('preferred inline image');
-    const video = Buffer.from('required signed video');
-    const { repository } = fixtures({
-      assets: [
-        asset(imageAssetId, 'image', 'image/png', image, projectId),
-        asset(videoAssetId, 'video', 'video/mp4', video, projectId),
-      ],
-    });
-    const blobStore = new S3AssetReferenceBlobStore('canvas', {
-      endpoint: 'https://minio:9000',
-      region: 'us-east-1',
-      accessKeyId: 'synthetic-access-key',
-      secretAccessKey: 'synthetic-secret-key',
-      forcePathStyle: true,
-    });
-    vi.spyOn(blobStore, 'get').mockImplementation(async (key) =>
-      key === 'objects/image-current' ? image : key === 'objects/video-current' ? video : undefined,
-    );
-
-    try {
-      expect(blobStore.createProviderGetUrl).toBeUndefined();
-      const preferred = referenceSnapshot({
-        sourceMediaType: 'image',
-        targetMediaType: 'video',
-        role: 'referenceImage',
-        assetId: imageAssetId,
-        mimeType: 'image/png',
-        modelAlias: 'wan3.0-video',
-      });
-      const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
-        preferred,
-      );
-      expect(hydrated.inputs[0]?.snapshot.data.contentUrl).toBe(
-        `data:image/png;base64,${image.toString('base64')}`,
-      );
-
-      const required = referenceSnapshot({
-        sourceMediaType: 'video',
-        targetMediaType: 'video',
-        role: 'content',
-        assetId: videoAssetId,
-        mimeType: 'video/mp4',
-        modelAlias: 'wan3.0-video',
-      });
-      await expect(
-        new StoredAssetReferenceResolver(repository, blobStore).resolve(required),
-      ).rejects.toThrow('参考素材需要公网 HTTPS 访问');
     } finally {
       await blobStore.close();
     }
@@ -969,73 +803,6 @@ describe('StoredAssetReferenceResolver', () => {
     expect(snapshot).toEqual(original);
     expect(JSON.stringify(snapshot)).not.toContain('X-Amz-Signature');
   });
-
-  it.each([
-    { modelAlias: 'sd2-930-fast', mediaType: 'image' as const, role: 'referenceImage' as const },
-    {
-      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
-      mediaType: 'image' as const,
-      role: 'referenceImage' as const,
-    },
-    {
-      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
-      mediaType: 'video' as const,
-      role: 'content' as const,
-    },
-    {
-      modelAlias: 'Yuan-Seedance-2.5-LJ-Full',
-      mediaType: 'audio' as const,
-      role: 'audioTrack' as const,
-    },
-    { modelAlias: 'Seedance2.0 0.9r', mediaType: 'video' as const, role: 'content' as const },
-    { modelAlias: 'sd2.5-30-10-10', mediaType: 'video' as const, role: 'content' as const },
-    {
-      modelAlias: 'seedance2.0-9-3-3-PT',
-      mediaType: 'audio' as const,
-      role: 'audioTrack' as const,
-    },
-    {
-      modelAlias: 'seedance-2-5-official',
-      mediaType: 'image' as const,
-      role: 'firstFrame' as const,
-    },
-    { modelAlias: 'grok-v1.5-video', mediaType: 'image' as const, role: 'referenceImage' as const },
-    { modelAlias: 'wan3.0-video', mediaType: 'video' as const, role: 'content' as const },
-    {
-      modelAlias: 'minimax-h3',
-      mediaType: 'image' as const,
-      role: 'referenceImage' as const,
-    },
-    {
-      modelAlias: 'seedance-2-0-fast-official',
-      mediaType: 'audio' as const,
-      role: 'audioTrack' as const,
-    },
-  ])(
-    'fails before provider execution when required $modelAlias $mediaType transport has no signer',
-    async ({ modelAlias, mediaType, role }) => {
-      const content = Buffer.from(`${modelAlias} reference ${mediaType}`);
-      const mimeType =
-        mediaType === 'video' ? 'video/mp4' : mediaType === 'audio' ? 'audio/wav' : 'image/png';
-      const snapshot = referenceSnapshot({
-        sourceMediaType: mediaType,
-        targetMediaType: 'video',
-        role,
-        assetId: imageAssetId,
-        mimeType,
-        modelAlias,
-      });
-      const { repository, blobStore } = fixtures({
-        assets: [asset(imageAssetId, mediaType, mimeType, content, projectId)],
-        blobs: { [`objects/${mediaType}-current`]: content },
-      });
-
-      await expect(
-        new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
-      ).rejects.toThrow('参考素材需要公网 HTTPS 访问');
-      expect(blobStore.get).toHaveBeenCalledOnce();
-    },
-  );
 
   it('hydrates frozen inline prompt mentions in memory without mutating the durable snapshot', async () => {
     const content = Buffer.from('frozen image bytes');
@@ -1785,7 +1552,6 @@ describe('createRunWorker asset hydration boundary', () => {
       upsertProviderJob: vi.fn(async (_input: unknown) => undefined),
       upsertRequestPromptRecord: vi.fn(async (_input: unknown) => undefined),
       recordRequestPromptOutcome: vi.fn(async (_input: unknown) => undefined),
-      recordUsage: vi.fn(async (_input: unknown) => undefined),
     };
     const jobUpdates: unknown[] = [];
     const job: StubJob = {
@@ -1934,7 +1700,6 @@ describe('createRunWorker asset hydration boundary', () => {
         ...persistence.upsertProviderJob.mock.calls,
         ...persistence.upsertRequestPromptRecord.mock.calls,
         ...persistence.recordRequestPromptOutcome.mock.calls,
-        ...persistence.recordUsage.mock.calls,
       ],
     });
     expect(durable).not.toMatch(
@@ -2201,7 +1966,6 @@ describe('createRunWorker asset hydration boundary', () => {
           upsertRequestPromptRecord: capture,
           async recordRequestPromptOutcome() {},
           async upsertProviderJob() {},
-          async recordUsage() {},
           async updateRun() {},
         },
         resultArchiver: async () => ({
@@ -2827,7 +2591,6 @@ describe('createRunWorker asset hydration boundary', () => {
       assetReferenceResolver: resolver,
       persistence: {
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(input) {
           persistedRuns.push(input);
         },
@@ -2907,7 +2670,6 @@ describe('createRunWorker asset hydration boundary', () => {
         assetReferenceResolver: new StoredAssetReferenceResolver(repository, blobStore),
         persistence: {
           async upsertProviderJob() {},
-          async recordUsage() {},
           async updateRun(input) {
             persistedRuns.push(input);
           },

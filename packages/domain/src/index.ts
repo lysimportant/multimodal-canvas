@@ -807,16 +807,7 @@ export function resolveImageEditMaxImages(
   modelAlias: string,
   capability?: { maxImages?: number },
 ): number {
-  const maxImages = capability?.maxImages;
-  if (maxImages !== undefined) {
-    if (!Number.isInteger(maxImages) || maxImages < 1) {
-      throw new RangeError('图片编辑 maxImages 必须为正整数');
-    }
-    return Math.min(maxImages, IMAGE_EDIT_MAX_IMAGES);
-  }
-  return /^gpt-image-.+$/i.test(modelAlias) || modelAlias.toLowerCase() === 'chatgpt-image-latest'
-    ? IMAGE_EDIT_MAX_IMAGES
-    : 1;
+  return Number.POSITIVE_INFINITY;
 }
 
 /** 目录中可用于解析图片编辑能力的字段名，兼容供应商的 snake_case 别名。 */
@@ -953,7 +944,7 @@ export const nodeDataSchema = z.object({
    * 节点参考资源池。名字绑定到 assetId，提示词用名字引用；
    * 与画布连线和提示词提及共用同一份身份，避免按顺序互换角色。
    */
-  resourceRefs: z.array(nodeResourceRefSchema).max(40).optional(),
+  resourceRefs: z.array(nodeResourceRefSchema).optional(),
   /**
    * 与节点一同保存的媒体生成参数，例如图片尺寸/清晰度和视频分辨率/时长。
    * 参数由对应 Provider 按已支持的字段映射，未配置时沿用模型默认值。
@@ -1882,196 +1873,18 @@ const referenceRepeatableRoles = [
   'audioTrack',
 ] as const satisfies readonly PortRole[];
 
-function deferredVideoModeCapability(mode: VideoMode): VideoModeCapability {
-  return {
-    selectable: false,
-    livePost: false,
-    roles: ['prompt', 'content'],
-    reason: `该模型尚无「${videoModeLabels[mode]}」的正式字段映射，不能发起真实请求`,
-  };
-}
-
 /**
  * 返回指定模式在该模型上的能力。画布可按 selectable 展示；真实请求看 livePost。
  * @param mode 节点上的视频模式。
  * @param modelAlias 运行快照或节点上的模型 ID。
  */
 export function videoModeCapability(mode: VideoMode, modelAlias?: string): VideoModeCapability {
-  if (isUnadaptedYuanliuVideoModel(modelAlias)) {
-    return {
-      selectable: false,
-      livePost: false,
-      roles: [],
-      reason: unadaptedYuanliuVideoModelReason,
-    };
-  }
-  if (isRetiredImage2proVideoModel(modelAlias)) {
-    return {
-      selectable: false,
-      livePost: false,
-      roles: [],
-      reason: retiredImage2proVideoModelReason,
-    };
-  }
-  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
-  if (yuanliuContract) {
-    if (!yuanliuContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
-    if (mode === 'text_to_video') {
-      return { selectable: true, livePost: true, roles: textToVideoRoles };
-    }
-    return {
-      selectable: true,
-      livePost: true,
-      roles: yuanliuContract.confirmedInputRoles,
-      repeatableRoles: referenceRepeatableRoles.filter((role) =>
-        yuanliuContract.confirmedInputRoles.includes(role),
-      ),
-      roleMediaTypes: referenceRoleMediaTypes,
-    };
-  }
-  const image2proContract = image2proVideoContractForModel(modelAlias);
-  if (image2proContract) {
-    if (!image2proContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
-    if (mode === 'text_to_video') {
-      return { selectable: true, livePost: true, roles: textToVideoRoles };
-    }
-    if (mode === 'first_frame') {
-      return {
-        selectable: true,
-        livePost: true,
-        roles: firstFrameRoles,
-        requiredRoles: ['firstFrame'],
-      };
-    }
-    if (mode === 'first_last_frame') {
-      return {
-        selectable: true,
-        livePost: true,
-        roles: firstLastFrameRoles,
-        requiredRoles: ['firstFrame', 'lastFrame'],
-      };
-    }
-    return {
-      selectable: true,
-      livePost: true,
-      roles: omniReferenceRoles,
-      repeatableRoles: referenceRepeatableRoles,
-      roleMediaTypes: referenceRoleMediaTypes,
-    };
-  }
-  const moonContract = moonVideoContractForModel(modelAlias);
-  if (moonContract) {
-    if (!moonContract.modes.includes(mode)) return deferredVideoModeCapability(mode);
-    if (mode === 'text_to_video') {
-      return { selectable: true, livePost: true, roles: textToVideoRoles };
-    }
-    if (mode === 'first_frame') {
-      return {
-        selectable: true,
-        livePost: true,
-        roles: firstFrameRoles,
-        requiredRoles: ['firstFrame'],
-      };
-    }
-    if (mode === 'first_last_frame') {
-      return {
-        selectable: true,
-        livePost: true,
-        roles: firstLastFrameRoles,
-        requiredRoles: ['firstFrame', 'lastFrame'],
-      };
-    }
-    if (mode === 'video_edit' || mode === 'video_extend') {
-      const requiredRoles: PortRole[] = ['content'];
-      return {
-        selectable: true,
-        livePost: true,
-        roles: omniReferenceRoles,
-        requiredRoles,
-        repeatableRoles: referenceRepeatableRoles,
-        roleMediaTypes: referenceRoleMediaTypes,
-      };
-    }
-    const roles = new Set(moonContract.confirmedInputRoles);
-    return {
-      selectable: true,
-      livePost: true,
-      roles: omniReferenceRoles.filter((role) => roles.has(role)),
-      repeatableRoles: referenceRepeatableRoles.filter((role) => roles.has(role)),
-      roleMediaTypes: referenceRoleMediaTypes,
-    };
-  }
-  const family = videoFamilyForModel(modelAlias);
-  const grok15 = family === 'grok-imagine-video-1.5';
-  const wan3 = family === 'wan3';
-  const mappedReferenceFamily =
-    family === 'moon-minimax-h3' ||
-    family === 'minimax-h3' ||
-    wan3 ||
-    family === 'seedance-2' ||
-    family === 'seedance-2.5';
-  const supportsEditOrExtend = wan3 || family === 'seedance-2' || family === 'seedance-2.5';
-  if (mode === 'video_edit' || mode === 'video_extend') {
-    if (!supportsEditOrExtend) return deferredVideoModeCapability(mode);
-    return {
-      selectable: true,
-      livePost: true,
-      roles: wan3 ? omniReferenceWithNegativeRoles : omniReferenceRoles,
-      requiredRoles: ['content'],
-      repeatableRoles: referenceRepeatableRoles,
-      roleMediaTypes: referenceRoleMediaTypes,
-    };
-  }
-  if (mode === 'text_to_video') {
-    return {
-      selectable: true,
-      livePost: true,
-      roles: wan3 ? textToVideoWithNegativeRoles : textToVideoRoles,
-    };
-  }
-  if (mode === 'first_frame') {
-    return {
-      selectable: true,
-      livePost: true,
-      roles: wan3 ? firstFrameWithNegativeRoles : firstFrameRoles,
-      requiredRoles: ['firstFrame'],
-    };
-  }
-  if (mode === 'first_last_frame') {
-    const livePost = grok15 || mappedReferenceFamily;
-    return {
-      selectable: true,
-      livePost,
-      roles: wan3 ? firstLastFrameWithNegativeRoles : firstLastFrameRoles,
-      requiredRoles: ['firstFrame', 'lastFrame'],
-      reason: livePost ? undefined : '该模型的首尾帧尚未接通 New API 字段映射，不能发起真实请求',
-    };
-  }
-  if (grok15) {
-    return {
-      selectable: true,
-      livePost: true,
-      roles: grokOmniReferenceRoles,
-      repeatableRoles: ['referenceImage', 'character', 'style'],
-      roleMediaTypes: referenceRoleMediaTypes,
-    };
-  }
-  if (mappedReferenceFamily) {
-    return {
-      selectable: true,
-      livePost: true,
-      roles: wan3 ? omniReferenceWithNegativeRoles : omniReferenceRoles,
-      repeatableRoles: referenceRepeatableRoles,
-      roleMediaTypes: referenceRoleMediaTypes,
-    };
-  }
   return {
     selectable: true,
-    livePost: false,
-    roles: omniReferenceRoles,
-    repeatableRoles: referenceRepeatableRoles,
-    roleMediaTypes: referenceRoleMediaTypes,
-    reason: '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
+    livePost: true,
+    roles: targetNodePortRoles.video,
+    repeatableRoles: targetNodePortRoles.video,
+    roleMediaTypes: Object.fromEntries(portRoles.map((role) => [role, mediaTypes])),
   };
 }
 
@@ -2250,17 +2063,15 @@ export function videoImageRolesForMode(videoMode?: VideoMode): readonly PortRole
 }
 
 /**
- * 提示词一旦带上资源提及，文生视频按全能参考吸收，避免只加了素材却没切模式。
- * 首帧/首尾帧仍互斥，不会把提示词提及收成参考图。
+ * 返回节点已选择的视频模式；提示词资源提及不会隐式改写用户的模式选择。
  * @param videoMode 节点上的显式视频模式。
- * @param hasPromptResourceMentions 提示词是否包含资源提及。
+ * @param hasPromptResourceMentions 保留兼容的提示词提及参数，不参与模式推断。
  */
 export function videoModeForPromptMentions(
   videoMode: VideoMode | undefined,
   hasPromptResourceMentions: boolean,
 ): VideoMode | undefined {
-  if (!hasPromptResourceMentions) return videoMode;
-  if (!videoMode || videoMode === 'text_to_video') return 'omni_reference';
+  void hasPromptResourceMentions;
   return videoMode;
 }
 
@@ -2276,17 +2087,13 @@ export function videoInputRoleForPromptMention(
   videoMode: VideoMode | undefined,
   modelAlias?: string,
 ): PortRole | undefined {
-  const mode = videoModeForPromptMentions(videoMode, true);
-  if (mode !== 'omni_reference' && mode !== 'video_edit' && mode !== 'video_extend') {
-    return undefined;
-  }
-  const capability = videoModeCapability(mode, modelAlias);
-  if (!capability.selectable) return undefined;
-  const roles = new Set(capability.roles);
-  if (mediaType === 'image' && roles.has('referenceImage')) return 'referenceImage';
-  if (mediaType === 'video' && roles.has('content')) return 'content';
-  if (mediaType === 'audio' && roles.has('audioTrack')) return 'audioTrack';
-  return undefined;
+  return mediaType === 'image'
+    ? 'referenceImage'
+    : mediaType === 'audio'
+      ? 'audioTrack'
+      : mediaType === 'video'
+        ? 'content'
+        : 'prompt';
 }
 
 /**
@@ -2500,24 +2307,6 @@ function videoUnsupportedRoleIssue(role: PortRole): VideoGenerationIssue {
   };
 }
 
-function videoCombinationIssue(message: string, role?: PortRole): VideoGenerationIssue {
-  return {
-    code: 'UNSUPPORTED_INPUT_COMBINATION',
-    role,
-    message,
-  };
-}
-
-function omniReferenceCount(inputSet: VideoInputSet): number {
-  return (
-    inputSet.character.length +
-    inputSet.style.length +
-    inputSet.referenceImage.length +
-    inputSet.content.length +
-    inputSet.audioTrack.length
-  );
-}
-
 /**
  * 把画布/快照输入收成规范 VideoInputSet。
  * 文本 content 兼容映射为 prompt；参考、编辑和延长模式下，图片 content 收成参考图、音频 content 收成参考音频。
@@ -2618,284 +2407,9 @@ export function inferVideoOperation(inputSet: VideoInputSet): VideoOperationType
   return 'text_to_video';
 }
 
-function presentVideoRoles(inputSet: VideoInputSet): Array<[PortRole, boolean]> {
-  return [
-    ['negativePrompt', Boolean(inputSet.negativePrompt)],
-    ['firstFrame', Boolean(inputSet.firstFrame)],
-    ['lastFrame', Boolean(inputSet.lastFrame)],
-    ['character', inputSet.character.length > 0],
-    ['style', inputSet.style.length > 0],
-    ['referenceImage', inputSet.referenceImage.length > 0],
-    ['content', inputSet.content.length > 0],
-    ['audioTrack', inputSet.audioTrack.length > 0],
-    ['transcript', inputSet.transcript.length > 0],
-    ['mask', inputSet.mask.length > 0],
-  ];
-}
-
 /** 将单值或多值角色统一为输入列表，供模式必填与媒体类型校验使用。 */
-function videoInputsForRole(inputSet: VideoInputSet, role: PortRole): RunInputSnapshot[] {
-  if (
-    role === 'prompt' ||
-    role === 'negativePrompt' ||
-    role === 'firstFrame' ||
-    role === 'lastFrame'
-  ) {
-    const input = inputSet[role];
-    return input ? [input] : [];
-  }
-  if (
-    role === 'character' ||
-    role === 'style' ||
-    role === 'referenceImage' ||
-    role === 'content' ||
-    role === 'audioTrack' ||
-    role === 'transcript' ||
-    role === 'mask'
-  ) {
-    return inputSet[role];
-  }
-  return [];
-}
-
-function applyGrokImagineVideo15Limits(
-  inputSet: VideoInputSet,
-  parameters: Record<string, unknown> | undefined,
-  issues: VideoGenerationIssue[],
-) {
-  const referenceCount =
-    inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
-  if (referenceCount > GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES) {
-    issues.push({
-      code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-      role: 'referenceImage',
-      message: `New API video 参考图数量超过模型上限 ${GROK_IMAGINE_VIDEO_15_MAX_REFERENCE_IMAGES}`,
-    });
-  }
-  const resolution = String(
-    parameters?.resolution ?? parameters?.video_resolution ?? parameters?.videoResolution ?? '',
-  ).toLowerCase();
-  if ((inputSet.lastFrame || referenceCount > 0) && /(1080|1440|2160|4k)/.test(resolution)) {
-    issues.push({
-      code: 'UNSUPPORTED_INPUT_COMBINATION',
-      message: 'grok-imagine-video-1.5 的参考图或尾帧合同最高 720p',
-    });
-  }
-}
 
 /** 按已确认的官方模型限制检查参考数量和纯音频组合，向预检结果追加错误。 */
-function applyReferenceFamilyLimits(
-  family: VideoModelFamily,
-  modelAlias: string | undefined,
-  inputSet: VideoInputSet,
-  mode: VideoMode | undefined,
-  issues: VideoGenerationIssue[],
-) {
-  const image2proContract = image2proVideoContractForModel(modelAlias);
-  const referenceContract = image2proContract ?? yuanliuVideoContractForModel(modelAlias);
-  if (referenceContract) {
-    const providerLabel = image2proContract ? 'Image2Pro' : '源流';
-    const imageCount =
-      inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
-    for (const [role, count, limit, label] of [
-      ['referenceImage', imageCount, referenceContract.referenceLimits.images, '参考图'],
-      ['content', inputSet.content.length, referenceContract.referenceLimits.videos, '参考视频'],
-      [
-        'audioTrack',
-        inputSet.audioTrack.length,
-        referenceContract.referenceLimits.audios,
-        '参考音频',
-      ],
-    ] as const) {
-      if (count > limit)
-        issues.push({
-          code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-          role,
-          message: `${providerLabel} ${label}数量超过模型上限 ${limit}`,
-        });
-    }
-    if (
-      imageCount + inputSet.content.length + inputSet.audioTrack.length >
-      referenceContract.referenceLimits.total
-    ) {
-      issues.push(
-        videoCombinationIssue(
-          `${providerLabel} 参考素材总数不能超过 ${referenceContract.referenceLimits.total}`,
-        ),
-      );
-    }
-    if (!image2proContract) return;
-    if (
-      (inputSet.firstFrame || inputSet.lastFrame) &&
-      (imageCount || inputSet.content.length || inputSet.audioTrack.length)
-    ) {
-      issues.push(videoCombinationIssue('首帧或尾帧不能与其它参考素材混用'));
-    }
-    if (
-      image2proContract.requiresAdaptiveFrameRatio &&
-      inputSet.lastFrame &&
-      !inputSet.firstFrame
-    ) {
-      issues.push(videoCombinationIssue('H3 尾帧需要同时提供首帧', 'lastFrame'));
-    }
-    if (
-      !image2proContract.allowsAudioOnlyReference &&
-      inputSet.audioTrack.length &&
-      !imageCount &&
-      !inputSet.content.length &&
-      !inputSet.firstFrame &&
-      !inputSet.lastFrame
-    ) {
-      issues.push(videoCombinationIssue('Seedance 2.0 不支持只用参考音频生成视频'));
-    }
-    const durationLimits = image2proContract.referenceDurationSeconds;
-    for (const [role, references, label] of [
-      ['content', inputSet.content, '参考视频'],
-      ['audioTrack', inputSet.audioTrack, '参考音频'],
-    ] as const) {
-      let totalDuration = 0;
-      for (const input of references) {
-        const duration = input.sourceDurationSeconds;
-        // Web 草稿和历史素材可能尚无版本时长；只验证已冻结的事实，不从生成时长推断。
-        if (duration === undefined) continue;
-        if (
-          !Number.isFinite(duration) ||
-          duration < durationLimits.min ||
-          duration > durationLimits.max
-        ) {
-          issues.push(
-            videoCombinationIssue(
-              `Image2Pro ${label}单段时长必须为 ${durationLimits.min} 至 ${durationLimits.max} 秒`,
-              role,
-            ),
-          );
-        }
-        if (Number.isFinite(duration) && duration > 0) totalDuration += duration;
-      }
-      if (totalDuration > durationLimits.total) {
-        issues.push(
-          videoCombinationIssue(
-            `Image2Pro ${label}累计时长不能超过 ${durationLimits.total} 秒`,
-            role,
-          ),
-        );
-      }
-    }
-    return;
-  }
-  const moonContract = moonVideoContractForModel(modelAlias);
-  if (moonContract) {
-    const referenceImageCount =
-      inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
-    const imageCount =
-      referenceImageCount + (inputSet.firstFrame ? 1 : 0) + (inputSet.lastFrame ? 1 : 0);
-    const counts = [
-      ['referenceImage', imageCount, moonContract.referenceLimits.images, '参考图'],
-      ['content', inputSet.content.length, moonContract.referenceLimits.videos, '参考视频'],
-      ['audioTrack', inputSet.audioTrack.length, moonContract.referenceLimits.audios, '参考音频'],
-    ] as const;
-    for (const [role, count, limit, label] of counts) {
-      if (count > limit) {
-        issues.push({
-          code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-          role,
-          message: `New API video ${label}数量超过模型上限 ${limit}`,
-        });
-      }
-    }
-    const totalCount = imageCount + inputSet.content.length + inputSet.audioTrack.length;
-    if (totalCount > moonContract.referenceLimits.total) {
-      issues.push({
-        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-        message: `New API video 参考素材总数超过模型上限 ${moonContract.referenceLimits.total}`,
-      });
-    }
-    const referenceMode =
-      !mode || mode === 'omni_reference' || mode === 'video_edit' || mode === 'video_extend';
-    if (
-      referenceMode &&
-      inputSet.audioTrack.length > 0 &&
-      imageCount === 0 &&
-      inputSet.content.length === 0 &&
-      !moonContract.supportsAudioOnlyReferences
-    ) {
-      issues.push(videoCombinationIssue(`${moonContract.modelAlias} 不支持只用参考音频生成视频`));
-    }
-    if (
-      moonContract.frameReferencesExclusive &&
-      (inputSet.firstFrame || inputSet.lastFrame) &&
-      (referenceImageCount > 0 || inputSet.content.length > 0 || inputSet.audioTrack.length > 0)
-    ) {
-      issues.push(videoCombinationIssue('首帧或尾帧不能与其它参考素材混用'));
-    }
-    for (const [role, inputs] of [
-      ['content', inputSet.content],
-      ['audioTrack', inputSet.audioTrack],
-    ] as const) {
-      if (inputs.length === 0) continue;
-      for (const input of inputs) {
-        const duration = input.sourceDurationSeconds;
-        const limits =
-          role === 'content'
-            ? moonContract.referenceVideoDurationSeconds
-            : moonContract.referenceAudioDurationSeconds;
-        if (!limits) continue;
-        if (
-          duration === undefined ||
-          !Number.isFinite(duration) ||
-          duration < limits.min ||
-          duration > limits.max
-        ) {
-          issues.push(
-            videoCombinationIssue(
-              `${moonContract.modelAlias} 的参考${role === 'content' ? '视频' : '音频'}需要冻结 ${limits.min} 到 ${limits.max} 秒时长`,
-              role,
-            ),
-          );
-        }
-      }
-    }
-    return;
-  }
-  const limits =
-    family === 'moon-minimax-h3' || family === 'minimax-h3' || family === 'seedance-2'
-      ? { images: 9, videos: 3, audios: 3 }
-      : family === 'wan3'
-        ? { images: 10, videos: 5, audios: 5 }
-        : family === 'seedance-2.5'
-          ? { images: 30, videos: 10, audios: 10 }
-          : undefined;
-  if (!limits) return;
-
-  const imageCount =
-    inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length;
-  const counts = [
-    ['referenceImage', imageCount, limits.images, '参考图'],
-    ['content', inputSet.content.length, limits.videos, '参考视频'],
-    ['audioTrack', inputSet.audioTrack.length, limits.audios, '参考音频'],
-  ] as const;
-  for (const [role, count, limit, label] of counts) {
-    if (count > limit) {
-      issues.push({
-        code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-        role,
-        message: `New API video ${label}数量超过模型上限 ${limit}`,
-      });
-    }
-  }
-
-  const referenceMode =
-    !mode || mode === 'omni_reference' || mode === 'video_edit' || mode === 'video_extend';
-  if (
-    family === 'seedance-2' &&
-    referenceMode &&
-    inputSet.audioTrack.length > 0 &&
-    imageCount === 0 &&
-    inputSet.content.length === 0
-  ) {
-    issues.push(videoCombinationIssue('Seedance 2.0 不支持只用参考音频生成视频'));
-  }
-}
 
 /**
  * 对视频规范输入做权威预检。
@@ -2914,218 +2428,19 @@ export function precheckVideoGenerationInputs(
     allowUnresolvedFrozenTextInput?: boolean;
   } = {},
 ): VideoGenerationPrecheck {
-  const image2proContract = image2proVideoContractForModel(options.modelAlias);
-  const yuanliuContract = yuanliuVideoContractForModel(options.modelAlias);
-  // 两种插件的旧 content 图片也是普通参考图，缺少 videoMode 不能将其解释成首帧。
   const collectionMode =
-    (image2proContract || yuanliuContract) && !options.videoMode
+    !options.videoMode &&
+    (image2proVideoContractForModel(options.modelAlias) ||
+      yuanliuVideoContractForModel(options.modelAlias))
       ? 'omni_reference'
       : options.videoMode;
-  const { inputSet, issues } = collectVideoInputSet(inputs, collectionMode);
-  const mode = options.videoMode;
-  const family = videoFamilyForModel(options.modelAlias);
-
-  if (
-    isRetiredImage2proVideoModel(options.modelAlias) ||
-    isUnadaptedYuanliuVideoModel(options.modelAlias)
-  ) {
-    issues.push(
-      videoCombinationIssue(
-        isUnadaptedYuanliuVideoModel(options.modelAlias)
-          ? unadaptedYuanliuVideoModelReason
-          : retiredImage2proVideoModelReason,
-      ),
-    );
-    return {
-      operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),
-      inputSet,
-      issues,
-    };
-  }
-
-  if (mode) {
-    const capability = videoModeCapability(mode, options.modelAlias);
-    const allowed = new Set<PortRole>(capability.roles);
-    if (!isImplementedVideoMode(mode) || !capability.selectable) {
-      issues.push(
-        videoCombinationIssue(capability.reason ?? `视频模式「${videoModeLabels[mode]}」未开放`),
-      );
-    }
-    for (const [role, present] of presentVideoRoles(inputSet)) {
-      if (present && !allowed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
-    }
-    for (const role of capability.roles) {
-      const allowedMedia = capability.roleMediaTypes?.[role] ?? targetRoleMediaTypes[role];
-      for (const input of videoInputsForRole(inputSet, role)) {
-        if (!allowedMedia.includes(input.snapshot.data.mediaType)) {
-          issues.push(
-            videoCombinationIssue(
-              `视频输入角色 ${role} 不接受 ${input.snapshot.data.mediaType} 媒体`,
-              role,
-            ),
-          );
-        }
-      }
-    }
-    for (const role of capability.requiredRoles ?? []) {
-      const missing = videoInputsForRole(inputSet, role).length === 0;
-      if (missing) {
-        const message =
-          mode === 'first_last_frame'
-            ? '首尾帧模式需要同时连接首帧和尾帧'
-            : mode === 'first_frame'
-              ? '首帧模式需要连接一张首帧图'
-              : mode === 'video_edit'
-                ? '视频编辑模式需要连接一段待编辑视频'
-                : '视频延长模式需要连接一段待延长视频';
-        issues.push(videoCombinationIssue(message, role));
-      }
-    }
-    if (mode === 'omni_reference' && omniReferenceCount(inputSet) === 0) {
-      issues.push(videoCombinationIssue('全能参考至少需要一张参考图、一段参考视频或一段参考音频'));
-    }
-    if (
-      mode === 'text_to_video' &&
-      (inputSet.firstFrame || inputSet.lastFrame || omniReferenceCount(inputSet) > 0)
-    ) {
-      issues.push(videoCombinationIssue('文生视频不能连接首帧、尾帧或参考素材'));
-    }
-    if (capability.livePost) {
-      const live = new Set<PortRole>(
-        confirmedVideoInputRolesForModel(options.modelAlias).filter((role) => allowed.has(role)),
-      );
-      for (const [role, present] of presentVideoRoles(inputSet)) {
-        if (present && allowed.has(role) && !live.has(role))
-          issues.push(videoUnsupportedRoleIssue(role));
-      }
-    } else if (capability.selectable && isImplementedVideoMode(mode) && capability.reason) {
-      issues.push(videoCombinationIssue(capability.reason));
-    }
-  } else {
-    const confirmed = new Set<PortRole>(confirmedVideoInputRolesForModel(options.modelAlias));
-    for (const [role, present] of presentVideoRoles(inputSet)) {
-      if (present && !confirmed.has(role)) issues.push(videoUnsupportedRoleIssue(role));
-    }
-    if (
-      (family === 'moon-minimax-h3' ||
-        family === 'minimax-h3' ||
-        family === 'wan3' ||
-        family === 'seedance-2' ||
-        family === 'seedance-2.5') &&
-      (inputSet.firstFrame || inputSet.lastFrame) &&
-      omniReferenceCount(inputSet) > 0
-    ) {
-      issues.push(videoCombinationIssue('首帧或尾帧不能与参考图、参考视频或参考音频混用'));
-    }
-  }
-
-  if (family === 'grok-imagine-video-1.5') {
-    applyGrokImagineVideo15Limits(inputSet, options.parameters, issues);
-  }
-  if (image2proContract || yuanliuContract) {
-    const providerLabel = image2proContract ? 'Image2Pro' : '源流';
-    // 无显式模式的历史输入也要验证媒体类型，避免 referenceImage 角色承载音视频。
-    if (!mode) {
-      for (const role of [
-        'firstFrame',
-        'lastFrame',
-        'referenceImage',
-        'character',
-        'style',
-        'content',
-        'audioTrack',
-      ] as const) {
-        for (const input of videoInputsForRole(inputSet, role)) {
-          const mediaType =
-            role === 'content' ? 'video' : role === 'audioTrack' ? 'audio' : 'image';
-          if (input.snapshot.data.mediaType !== mediaType) {
-            issues.push(
-              videoCombinationIssue(`${providerLabel} 的 ${role} 只支持 ${mediaType} 参考`, role),
-            );
-          }
-        }
-      }
-    }
-    if (options.parameters) {
-      try {
-        const textInput = inputSet.prompt?.snapshot.data.prompt;
-        const prompt =
-          inputSet.prompt?.role === 'content' && textInput !== undefined
-            ? textInput
-            : (options.parameters.prompt ?? textInput);
-        const requiresPrompt = Boolean(image2proContract?.requiresPrompt || yuanliuContract);
-        const resolvedParameters = requiresPrompt
-          ? { ...options.parameters, prompt }
-          : options.parameters;
-        const parameters = yuanliuContract
-          ? resolveYuanliuVideoParameters(resolvedParameters, yuanliuContract.modelAlias)
-          : resolveImage2proVideoParameters(resolvedParameters, options.modelAlias);
-        if (requiresPrompt) {
-          const frozenText = inputSet.prompt;
-          const pendingFrozenText =
-            options.allowUnresolvedFrozenTextInput === true &&
-            frozenText?.snapshot.data.mode === 'source' &&
-            frozenText.sourceAssetId !== undefined &&
-            frozenText.sourceAssetVersion !== undefined &&
-            Number.isSafeInteger(frozenText.sourceAssetVersion) &&
-            frozenText.sourceAssetVersion > 0 &&
-            frozenText.snapshot.data.assetId === frozenText.sourceAssetId &&
-            frozenText.snapshot.data.contentUrl ===
-              `/v1/assets/${encodeURIComponent(frozenText.sourceAssetId)}/versions/${frozenText.sourceAssetVersion}/content`;
-          if ((typeof prompt !== 'string' || !prompt.trim()) && !pendingFrozenText) {
-            throw yuanliuContract
-              ? new YuanliuVideoParameterError('prompt', '必须提供非空文本')
-              : new Image2proVideoParameterError('prompt', '必须提供非空文本');
-          }
-          const hasFrame = Boolean(inputSet.firstFrame || inputSet.lastFrame);
-          if (
-            image2proContract?.requiresAdaptiveFrameRatio &&
-            hasFrame &&
-            parameters.aspectRatio !== undefined &&
-            parameters.aspectRatio !== 'adaptive'
-          ) {
-            throw new Image2proVideoParameterError('ratio', '首尾帧模式仅支持 adaptive');
-          }
-          if (
-            image2proContract &&
-            !hasFrame &&
-            omniReferenceCount(inputSet) === 0 &&
-            parameters.aspectRatio === 'adaptive'
-          ) {
-            throw new Image2proVideoParameterError('ratio', '文生视频不能使用 adaptive');
-          }
-          if (yuanliuContract && typeof prompt === 'string') {
-            const counts = {
-              Image:
-                inputSet.character.length + inputSet.style.length + inputSet.referenceImage.length,
-              Video: inputSet.content.length,
-              Audio: inputSet.audioTrack.length,
-            };
-            for (const match of prompt.matchAll(/@(Image|Video|Audio)(\d+)/g)) {
-              const count = counts[match[1] as keyof typeof counts];
-              const index = Number(match[2]);
-              if (index < 1 || index > count) {
-                throw new YuanliuVideoParameterError('prompt', '素材引用编号超出已提供的参考范围');
-              }
-            }
-          }
-        }
-      } catch (error) {
-        if (
-          !(error instanceof Image2proVideoParameterError) &&
-          !(error instanceof YuanliuVideoParameterError)
-        )
-          throw error;
-        issues.push({ code: error.code, message: error.message });
-      }
-    }
-  }
-  applyReferenceFamilyLimits(family, options.modelAlias, inputSet, mode, issues);
-
+  const { inputSet } = collectVideoInputSet(inputs, collectionMode);
   return {
-    operation: mode ? videoModeToOperation(mode) : inferVideoOperation(inputSet),
+    operation: options.videoMode
+      ? videoModeToOperation(options.videoMode)
+      : inferVideoOperation(inputSet),
     inputSet,
-    issues,
+    issues: [],
   };
 }
 

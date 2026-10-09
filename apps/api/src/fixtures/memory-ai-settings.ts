@@ -328,15 +328,10 @@ export class MemoryAiSettingsStore implements AiSettingsStoreLike {
     );
   }
 
-  /** 解析测试显式模型或默认模型，并校验已有目录的媒体能力。 */
+  /** 解析测试显式模型或默认模型，不根据目录媒体声明限制提交。 */
   resolveModel(mediaType: MediaType, requestedAlias?: string): string {
     const alias =
       requestedAlias ?? this.defaultModels[mediaType]?.modelAlias ?? `mock-${mediaType}`;
-    if (alias.startsWith('mock-')) return alias;
-    const catalog = this.listModels();
-    if (catalog.length > 0 && !this.listModels(mediaType).some((model) => model.id === alias)) {
-      throw new AiSettingsError('model_unavailable', `模型 ${alias} 不支持 ${mediaType} 媒体类型`);
-    }
     return alias;
   }
 

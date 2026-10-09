@@ -1,82 +1,109 @@
-/** Docker 运行时配置加载与依赖等待；真实密钥仅从只读卷进入子进程环境。 */
+/** Docker 生产环境加载与依赖等待；不读取仓库环境文件，也不输出连接串或密钥。 */
 import { readFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { connect as connectTls } from 'node:tls';
 import { setTimeout as delay } from 'node:timers/promises';
 
-/** 密钥目录由 Compose 挂载，不读取仓库 .env。 */
+/** API/Worker 只读密钥视图；Canonical 卷仅初始化容器可见。 */
 export const secretDirectory = '/run/multimodal/secrets';
 
-/**
- * 外部对象存储模式（compose.cloud.yaml 设置 MC_EXTERNAL_SERVICES=1）：S3_* 取自私有
- * env_file，不再指向本栈 minio。外部数据库需另行叠加 compose.cloud-db.yaml
- * （设置 MC_EXTERNAL_DATABASE=1 并读取 CLOUD_DATABASE_URL），否则仍使用本栈 postgres。
- */
-export const externalServices = process.env.MC_EXTERNAL_SERVICES === '1';
-export const externalDatabase = process.env.MC_EXTERNAL_DATABASE === '1';
-
-/**
- * 外部存储必需的变量：私有 env_file 使用 CLOUD_ 前缀，避免与 compose.yaml 固定的
- * S3_ENDPOINT 等 environment 项冲突（environment 优先于 env_file）。
- */
-const EXTERNAL_STORAGE_VARIABLES = [
-  'S3_ENDPOINT',
-  'S3_BUCKET',
-  'S3_REGION',
-  'S3_ACCESS_KEY',
-  'S3_SECRET_KEY',
-];
-
-/** 返回对象存储配置；外部模式缺项时只报告变量名，不输出取值。 */
-function storageEnvironment(secret) {
-  if (!externalServices) return { S3_ACCESS_KEY: 'canvas-app', S3_SECRET_KEY: secret.s3 };
-  const missing = EXTERNAL_STORAGE_VARIABLES.filter(
-    (name) => !process.env[`CLOUD_${name}`]?.trim(),
-  );
-  if (missing.length) {
-    const error = new Error(`Missing CLOUD_${missing.join(', CLOUD_')}`);
-    error.code = `MISSING_CLOUD_${missing[0]}`;
-    throw error;
-  }
-  return Object.fromEntries(
-    EXTERNAL_STORAGE_VARIABLES.map((name) => [name, process.env[`CLOUD_${name}`].trim()]),
-  );
+/** 返回只包含字段名称的配置错误，避免错误信息泄漏配置原值。 */
+function configurationError(variable) {
+  const error = new Error(`Invalid or missing runtime configuration: ${variable}`);
+  error.code = `INVALID_RUNTIME_${variable}`;
+  return error;
 }
 
-/** 返回本栈或外部数据库连接串；外部模式缺少连接串时拒绝启动。 */
-function databaseUrl(secret) {
-  if (!externalDatabase)
-    return `postgresql://canvas:${secret.postgres}@postgres:5432/canvas?schema=public`;
-  const url = process.env.CLOUD_DATABASE_URL?.trim();
-  if (!url) {
-    const error = new Error('Missing CLOUD_DATABASE_URL');
-    error.code = 'MISSING_CLOUD_DATABASE_URL';
-    throw error;
+/** 必须使用已有 R2 bucket 的 S3 API；不创建 bucket，也不允许改回本地对象存储。 */
+function storageEnvironment(environment) {
+  const storage = {};
+  for (const name of ['S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY', 'S3_SECRET_KEY']) {
+    const value = environment[name]?.trim();
+    if (!value) throw configurationError(name);
+    storage[name] = value;
   }
-  return url;
-}
-
-/** 返回经过校验的生产环境变量；密钥缺失或格式错误时直接拒绝启动。 */
-export async function runtimeEnvironment() {
-  const secret = JSON.parse(await readFile(`${secretDirectory}/runtime.json`, 'utf8'));
-  for (const name of ['postgres', 'redis', 's3', 'jwt', 'encryption', 'webhook']) {
-    if (!/^[a-f0-9]{64}$/.test(secret[name] ?? ''))
-      throw new Error(`Invalid secret field: ${name}`);
+  let endpoint;
+  try {
+    endpoint = new URL(storage.S3_ENDPOINT);
+  } catch {
+    throw configurationError('S3_ENDPOINT');
+  }
+  if (
+    endpoint.protocol !== 'https:' ||
+    !endpoint.hostname.endsWith('.r2.cloudflarestorage.com') ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.port ||
+    endpoint.search ||
+    endpoint.hash ||
+    endpoint.pathname !== '/'
+  ) {
+    throw configurationError('S3_ENDPOINT');
+  }
+  if (environment.S3_REGION && environment.S3_REGION !== 'auto') {
+    throw configurationError('S3_REGION');
   }
   return {
-    ...process.env,
-    NODE_ENV: 'production',
-    DATABASE_URL: databaseUrl(secret),
-    REDIS_URL: `rediss://:${secret.redis}@redis:6379/0`,
-    ...storageEnvironment(secret),
-    API_JWT_SECRET: secret.jwt,
-    AI_CREDENTIAL_ENCRYPTION_KEY: secret.encryption,
-    NEW_API_WEBHOOK_SECRET: secret.webhook,
-    NODE_EXTRA_CA_CERTS: `${secretDirectory}/ca.crt`,
+    ...storage,
+    S3_REGION: 'auto',
+    // R2 不支持 SDK 默认附加校验和，仅按操作合同启用。
+    AWS_REQUEST_CHECKSUM_CALCULATION: 'WHEN_REQUIRED',
+    AWS_RESPONSE_CHECKSUM_VALIDATION: 'WHEN_REQUIRED',
   };
 }
 
-/** 检查 TCP 或受系统 CA 校验的 TLS 握手；每次尝试最多等待三秒。 */
+/** 校验外部 PostgreSQL 连接串；未显式配置时使用本栈数据库和稳定随机口令。 */
+function databaseUrl(environment, secret) {
+  const value = environment.DATABASE_URL?.trim();
+  if (!value) return `postgresql://canvas:${secret.postgres}@postgres:5432/canvas?schema=public`;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'postgresql:' || !url.hostname || !url.pathname.slice(1)) {
+      throw configurationError('DATABASE_URL');
+    }
+    if (
+      url.hostname.endsWith('.neon.tech') &&
+      (url.hostname.includes('-pooler.') ||
+        !['require', 'verify-ca', 'verify-full'].includes(url.searchParams.get('sslmode')))
+    ) {
+      throw configurationError('DATABASE_URL');
+    }
+  } catch {
+    throw configurationError('DATABASE_URL');
+  }
+  return value;
+}
+
+/**
+ * 加载稳定密钥并生成 API、Worker 与 migrate 共用的生产环境。
+ * @param {{ environment?: NodeJS.ProcessEnv, directory?: string }} options 测试可使用合成环境和临时密钥目录。
+ * @returns {Promise<NodeJS.ProcessEnv>} 仅返回内存配置，不写入环境文件；R2 的 region 为 auto。
+ * @throws {Error} R2 配置、连接串或持久密钥缺失/损坏时拒绝启动，不生成替代密钥。
+ */
+export async function runtimeEnvironment({
+  environment = process.env,
+  directory = secretDirectory,
+} = {}) {
+  const secret = JSON.parse(await readFile(`${directory}/runtime.json`, 'utf8'));
+  for (const name of ['postgres', 'redis', 'jwt', 'encryption', 'webhook']) {
+    if (!/^[a-f0-9]{64}$/.test(secret[name] ?? '')) throw configurationError(name);
+  }
+  return {
+    ...environment,
+    NODE_ENV: 'production',
+    RUN_SERVICE: 'bullmq',
+    WORKER_PROVIDER: 'newapi',
+    DATABASE_URL: databaseUrl(environment, secret),
+    REDIS_URL: `rediss://:${secret.redis}@redis:6379/0`,
+    ...storageEnvironment(environment),
+    API_JWT_SECRET: secret.jwt,
+    AI_CREDENTIAL_ENCRYPTION_KEY: secret.encryption,
+    NEW_API_WEBHOOK_SECRET: secret.webhook,
+    NODE_EXTRA_CA_CERTS: `${directory}/ca.crt`,
+  };
+}
+
+/** 检查 TCP 或受可信 CA 校验的 TLS 握手；单次最多等待三秒，不发送业务请求。 */
 function probe(host, port, encrypted = false) {
   return new Promise((resolve, reject) => {
     const socket = encrypted
@@ -98,27 +125,21 @@ function probe(host, port, encrypted = false) {
   });
 }
 
-/** 等待本栈依赖就绪，超时后失败交给容器重启策略；不修改数据库或重发任务。 */
-export async function waitForDependencies(service) {
+/**
+ * 在正式进程启动前等待数据库、TLS Redis 和 API（仅 Worker）。
+ * @param {string} service api、worker 或 migrate；迁移仅依赖数据库。
+ * @param {NodeJS.ProcessEnv} environment runtimeEnvironment 返回的实际连接配置。
+ * @returns {Promise<void>} 依赖可达后完成；不迁移数据库、不创建任务、不请求 R2。
+ * @throws {Error} 三分钟内未就绪时失败，由 Compose 的重启策略决定后续处理。
+ */
+export async function waitForDependencies(service, environment) {
+  const database = new URL(environment.DATABASE_URL);
+  const redis = new URL(environment.REDIS_URL);
   const deadline = Date.now() + 180_000;
   while (true) {
     try {
-      if (externalDatabase) {
-        // 外部数据库只确认 TCP 可达；对象存储由 API 启动后的实际请求校验。
-        const database = new URL(process.env.CLOUD_DATABASE_URL);
-        await probe(database.hostname, Number(database.port || 5432));
-      } else {
-        await probe('postgres', 5432);
-      }
-      if (service !== 'migrate') {
-        await probe('redis', 6379, true);
-        if (!externalServices) {
-          const storage = await fetch('https://minio:9000/minio/health/ready', {
-            signal: AbortSignal.timeout(3000),
-          });
-          if (!storage.ok) throw new Error('Object store is not ready');
-        }
-      }
+      await probe(database.hostname, Number(database.port || 5432));
+      if (service !== 'migrate') await probe(redis.hostname, Number(redis.port || 6379), true);
       if (service === 'worker') {
         const api = await fetch('http://api:3000/health', { signal: AbortSignal.timeout(3000) });
         if (!api.ok) throw new Error('API is not ready');

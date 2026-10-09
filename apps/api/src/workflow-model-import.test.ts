@@ -158,18 +158,6 @@ describe('New API 工作流模型导入', () => {
     );
   });
 
-  it('普通默认模型保存必须指定分组，不能把唯一候选当作用户选择', async () => {
-    const { app, project, projectStore } = await fixture(1);
-    const response = await app.inject({
-      method: 'PATCH',
-      url: `/v1/projects/${project.id}/models/defaults`,
-      payload: { text: { modelAlias: 'shared-text' } },
-    });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'model_unavailable' });
-    expect(await projectStore.getModelDefaults(project.id)).toEqual({});
-  });
-
   it('用户显式重选分组后仍按该凭据创建任务', async () => {
     const { app, project, projectStore, workflow, credentialIds, createRun } = await fixture();
     await projectStore.updateCanvas(project.id, workflow.canvas);

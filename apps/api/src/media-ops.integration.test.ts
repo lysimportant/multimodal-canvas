@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FileSystemBlobStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { FfmpegMediaDerivativeGenerator, FfprobeMediaMetadataExtractor } from './media';
 
-/** 显式启用时必须连接回环隔离测试栈；不回退到 DATABASE_URL、S3_BUCKET 或仓库 .env。 */
+/** 显式启用时仅连接本机测试库和已确认的专用对象存储，不回退到生产变量。 */
 const enabled = process.env.MEDIA_OPS_INTEGRATION === 'true';
 const execFile = promisify(execFileCallback);
 
@@ -21,17 +21,162 @@ function required(name: string): string {
   return value;
 }
 
-/** 此验收仅允许本机隔离栈，禁止使用授权开关绕过生产连接保护。 */
-function isolatedUrl(value: string, database = false): void {
-  const url = new URL(value);
-  if (
-    !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
-    !(database ? ['postgresql:', 'postgres:'] : ['http:', 'https:']).includes(url.protocol) ||
-    (database && !/(test|ci)/i.test(url.pathname))
-  ) {
-    throw new Error('media acceptance requires isolated loopback test services');
+/** 数据库限制回环；R2 需明确隔离确认、测试 bucket 和独立对象前缀。 */
+type MediaConfiguration = Record<
+  | 'TEST_DATABASE_URL'
+  | 'TEST_S3_ENDPOINT'
+  | 'TEST_S3_BUCKET'
+  | 'TEST_S3_REGION'
+  | 'TEST_S3_ACCESS_KEY'
+  | 'TEST_S3_SECRET_KEY'
+  | 'TEST_S3_PREFIX',
+  string
+>;
+
+/**
+ * 检查真实媒体验收的目标边界，不建立连接。
+ * @param environment 显式 TEST_* 配置；不读取生产数据库、存储凭据或环境文件。
+ * @returns 通过检查的本机测试库和隔离对象存储配置。
+ * @throws Error 缺项、非回环测试库、未确认的外部 R2、生产 bucket 或不安全前缀时失败。
+ */
+function readConfiguration(environment: NodeJS.ProcessEnv): MediaConfiguration {
+  const configuration = {} as MediaConfiguration;
+  for (const name of [
+    'TEST_DATABASE_URL',
+    'TEST_S3_ENDPOINT',
+    'TEST_S3_BUCKET',
+    'TEST_S3_REGION',
+    'TEST_S3_ACCESS_KEY',
+    'TEST_S3_SECRET_KEY',
+    'TEST_S3_PREFIX',
+  ] as const) {
+    const value = environment[name]?.trim();
+    if (!value) throw new Error(`missing media acceptance configuration: ${name}`);
+    configuration[name] = value;
   }
+  let database: URL;
+  try {
+    database = new URL(configuration.TEST_DATABASE_URL);
+  } catch {
+    throw new Error('media acceptance requires a valid TEST_DATABASE_URL');
+  }
+  if (
+    !['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname) ||
+    !['postgresql:', 'postgres:'].includes(database.protocol) ||
+    !/(?:^|[_-])(?:test|ci)(?:$|[_-])/i.test(database.pathname.slice(1))
+  ) {
+    throw new Error(
+      'media acceptance TEST_DATABASE_URL requires an isolated loopback test database',
+    );
+  }
+  let storage: URL;
+  try {
+    storage = new URL(configuration.TEST_S3_ENDPOINT);
+  } catch {
+    throw new Error('media acceptance requires a valid TEST_S3_ENDPOINT');
+  }
+  const loopback =
+    ['http:', 'https:'].includes(storage.protocol) &&
+    ['127.0.0.1', 'localhost', '[::1]'].includes(storage.hostname);
+  const isolatedR2 =
+    environment.TEST_S3_CONFIRMED_ISOLATED === 'true' &&
+    storage.protocol === 'https:' &&
+    storage.hostname.endsWith('.r2.cloudflarestorage.com') &&
+    configuration.TEST_S3_REGION === 'auto';
+  if (
+    (!loopback && !isolatedR2) ||
+    storage.username ||
+    storage.password ||
+    storage.search ||
+    storage.hash ||
+    storage.pathname !== '/' ||
+    (!loopback && storage.port)
+  ) {
+    throw new Error(
+      'media acceptance TEST_S3_ENDPOINT requires loopback or confirmed test HTTPS R2',
+    );
+  }
+  if (
+    !/(?:^|[_-])(?:test|ci|integration)(?:$|[_-])/i.test(configuration.TEST_S3_BUCKET) ||
+    environment.S3_BUCKET?.trim() === configuration.TEST_S3_BUCKET
+  ) {
+    throw new Error(
+      'media acceptance TEST_S3_BUCKET requires a separate test/ci/integration bucket',
+    );
+  }
+  if (
+    !/^(?:test|ci|integration)\/[A-Za-z0-9][A-Za-z0-9_-]*(?:\/[A-Za-z0-9][A-Za-z0-9_-]*)*$/.test(
+      configuration.TEST_S3_PREFIX,
+    )
+  ) {
+    throw new Error('media acceptance TEST_S3_PREFIX requires an isolated path without traversal');
+  }
+  return configuration;
 }
+
+/** 不启用真实验收时只运行隔离保护测试，绝不连接数据库或对象存储。 */
+const configuration = enabled ? readConfiguration(process.env) : undefined;
+const syntheticConfiguration: MediaConfiguration = {
+  TEST_DATABASE_URL: 'postgresql://fixture:fixture@127.0.0.1/media_ci',
+  TEST_S3_ENDPOINT: 'http://127.0.0.1:9000',
+  TEST_S3_BUCKET: 'media-ci',
+  TEST_S3_REGION: 'us-east-1',
+  TEST_S3_ACCESS_KEY: 'synthetic-media-access',
+  TEST_S3_SECRET_KEY: 'synthetic-media-secret',
+  TEST_S3_PREFIX: 'integration/media-ci',
+};
+
+describe('媒体验收隔离保护', () => {
+  it('回环测试设施可通过配置检查，生产配置不能代替 TEST_*', () => {
+    expect(readConfiguration(syntheticConfiguration)).toEqual(syntheticConfiguration);
+    expect(() =>
+      readConfiguration({ DATABASE_URL: syntheticConfiguration.TEST_DATABASE_URL }),
+    ).toThrow('TEST_DATABASE_URL');
+  });
+
+  it('已确认的专用 R2 可通过检查，不建立连接', () => {
+    expect(
+      readConfiguration({
+        ...syntheticConfiguration,
+        TEST_S3_ENDPOINT: 'https://synthetic.eu.r2.cloudflarestorage.com',
+        TEST_S3_REGION: 'auto',
+        TEST_S3_CONFIRMED_ISOLATED: 'true',
+      }),
+    ).toMatchObject({ TEST_S3_PREFIX: 'integration/media-ci' });
+  });
+
+  it.each([
+    { TEST_S3_CONFIRMED_ISOLATED: '' },
+    { TEST_S3_ENDPOINT: 'http://synthetic.r2.cloudflarestorage.com' },
+    { TEST_S3_ENDPOINT: 'https://storage.example.com' },
+    { TEST_S3_ENDPOINT: 'https://secret:password@synthetic.r2.cloudflarestorage.com' },
+    { TEST_S3_ENDPOINT: 'https://synthetic.r2.cloudflarestorage.com/bucket' },
+    { TEST_S3_REGION: 'us-east-1' },
+    { TEST_S3_BUCKET: 'production' },
+    { S3_BUCKET: 'media-ci' },
+    { TEST_S3_PREFIX: 'integration' },
+    { TEST_S3_PREFIX: 'integration/../production' },
+  ])('未满足 R2 隔离条件时拒绝启动', (overrides) => {
+    expect(() =>
+      readConfiguration({
+        ...syntheticConfiguration,
+        TEST_S3_ENDPOINT: 'https://synthetic.r2.cloudflarestorage.com',
+        TEST_S3_REGION: 'auto',
+        TEST_S3_CONFIRMED_ISOLATED: 'true',
+        ...overrides,
+      }),
+    ).toThrow('TEST_S3_');
+  });
+
+  it('外部数据库即使命名为测试库也不能用于本套件', () => {
+    expect(() =>
+      readConfiguration({
+        ...syntheticConfiguration,
+        TEST_DATABASE_URL: 'postgresql://fixture:fixture@external.example.com/media_ci',
+      }),
+    ).toThrow('TEST_DATABASE_URL');
+  });
+});
 
 describe.skipIf(!enabled)('real media S3 and Prisma acceptance', () => {
   let prisma: PrismaClient;
@@ -42,17 +187,13 @@ describe.skipIf(!enabled)('real media S3 and Prisma acceptance', () => {
   let outputs: Record<string, any>;
   let storageOptions: Record<string, string | boolean>;
   const projectId = randomUUID();
-  const prefix = `media-ops-test/${randomUUID()}`;
+  const prefix = configuration ? `${configuration.TEST_S3_PREFIX}/media-ops/${randomUUID()}` : '';
   const writtenKeys = new Set<string>();
   const inputs = new Map<string, Buffer>();
 
   beforeAll(async () => {
-    const database = required('TEST_DATABASE_URL');
-    const endpoint = required('TEST_S3_ENDPOINT');
-    isolatedUrl(database, true);
-    isolatedUrl(endpoint);
-    if (!/(test|ci|integration)/i.test(required('TEST_S3_BUCKET')))
-      throw new Error('isolated test bucket required');
+    const database = configuration!.TEST_DATABASE_URL;
+    const endpoint = configuration!.TEST_S3_ENDPOINT;
     if (process.env.WORKER_PROVIDER !== 'mock')
       throw new Error('media acceptance requires mock Provider');
     storageOptions = {

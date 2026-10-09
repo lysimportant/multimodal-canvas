@@ -201,9 +201,9 @@ const BUILTIN_INSTRUCTION_ZH: Readonly<Record<string, readonly string[]>> = {
 /** 工作台受控开关；成功写入或手动刷新后通知父级失效共享目录缓存。 */
 export type SkillWorkbenchProps = {
   open: boolean;
-  /** 优化任务使用当前项目的身份与计费；无项目时仍可编辑 Skill，但不能调用模型。 */
+  /** 优化任务使用当前项目的身份；费用由 New API 处理；无项目时仍可编辑 Skill，但不能调用模型。 */
   projectId?: string;
-  /** 当前用户可用模型；优化面板只显示文字模型，保留精确分组和凭据身份。 */
+  /** 当前用户可用模型；优化面板不按媒体能力过滤模型，保留精确分组和凭据身份。 */
   models?: ModelEntry[];
   /** 可复用宿主的项目资源上传器；省略时使用现有资源上传端点。 */
   onUploadResource?: (file: File) => Promise<Asset>;
@@ -1073,7 +1073,7 @@ function SkillWorkbenchSession({
                         onApply={applyUpgrade}
                       />
                       <p className="skill-authoring-note">
-                        使用所选文字模型，可能产生费用。生成只创建独立优化任务，不修改画布，也不生成图片或视频。
+                        使用所选模型。生成只创建独立优化任务，不修改画布，也不生成图片或视频。
                       </p>
                       {builtin && (
                         <p className="skill-authoring-note">

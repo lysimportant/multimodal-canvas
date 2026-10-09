@@ -4,6 +4,8 @@ import {
   createGenerationConcurrencyStore,
   type GenerationConcurrencyStore,
 } from './generation-concurrency';
+import { ExecutionError, PrismaExecutionService } from '@multimodal-canvas/execution';
+import type { PrismaClient } from '@prisma/client';
 import {
   canTransitionRunStatus,
   getExecutionPromptDocument,
@@ -1511,6 +1513,7 @@ export class BullMqRunService implements RunService {
   }
   private readonly queue: Queue<RunJobData>;
   private readonly providerName: RunProviderName;
+  private readonly execution?: PrismaExecutionService;
   private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
     Partial<
       Pick<
@@ -1523,6 +1526,7 @@ export class BullMqRunService implements RunService {
     connection: ConnectionOptions;
     queueName?: string;
     providerName?: RunProviderName;
+    execution?: PrismaExecutionService;
     persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
       Partial<
         Pick<
@@ -1537,6 +1541,7 @@ export class BullMqRunService implements RunService {
     this.generationConcurrency = createGenerationConcurrencyStore(this.queue);
     this.providerName = options.providerName ?? 'mock';
     this.persistence = options.persistence;
+    this.execution = options.execution;
   }
 
   async create(snapshot: RunSnapshot, options: RunCreateOptions = {}): Promise<RunRecord> {
@@ -1687,6 +1692,21 @@ export class BullMqRunService implements RunService {
     if (previous.status !== 'failed' && previous.status !== 'cancelled') {
       throw new RunServiceError('invalid_state', 'only failed or cancelled runs can be retried');
     }
+    const usesExecution = hasExecutionAuthorization(previous.snapshot);
+    if (previous.provider === 'newapi' && !usesExecution) {
+      throw new ExecutionError(
+        'send_requires_review',
+        '历史 New API 任务只能恢复原请求或归档结果，禁止创建新的 Provider 请求',
+      );
+    }
+    if (usesExecution) {
+      if (!this.execution || !options.userId || options.userId !== previous.userId) {
+        throw new ExecutionError('authorization_required', '重试缺少当前用户的持久执行授权');
+      }
+      if (canResumeProviderJob(previous.providerJob)) {
+        throw new ExecutionError('send_requires_review', '历史上游任务仍可恢复，请先核实原调用');
+      }
+    }
     return this.enqueue(
       previous.snapshot,
       previous.attempt + 1,
@@ -1705,7 +1725,12 @@ export class BullMqRunService implements RunService {
       if (['succeeded', 'failed', 'cancelled'].includes(durableBeforeCancel.status)) {
         throw new RunServiceError('invalid_state', 'completed runs cannot be cancelled');
       }
-      await this.persistence?.updateRun?.({ runId, status: 'cancel_requested' });
+      if (this.execution) {
+        // 先持久化取消意图，再读取队列；历史任务无需依赖计费状态即可停止本地投递。
+        await this.execution.requestCancellation(runId);
+      } else {
+        await this.persistence?.updateRun?.({ runId, status: 'cancel_requested' });
+      }
     }
     const job = await this.queue.getJob(runId);
     if (!job) {
@@ -1749,12 +1774,22 @@ export class BullMqRunService implements RunService {
     userId?: string,
     previousProviderJob?: ProviderJob,
   ) {
+    const usesExecution = hasExecutionAuthorization(snapshot);
+    if (providerName === 'newapi' && !usesExecution) {
+      throw new ExecutionError('binding_required', 'New API 新任务缺少逐节点持久执行绑定');
+    }
+    if (usesExecution && (!this.execution || !userId)) {
+      throw new ExecutionError('authorization_required', '新任务缺少用户持久执行授权');
+    }
     const runId = idempotencyKey
       ? createIdempotentRunId(snapshot.projectId, idempotencyKey)
       : `run_${randomUUID()}`;
     const existing = await this.queue.getJob(runId);
     if (existing) {
       const existingData = runJobDataSchema.parse(existing.data);
+      if (usesExecution && existingData.userId !== userId) {
+        throw new ExecutionError('authorization_conflict', '请求身份已被另一用户使用');
+      }
       if (snapshotFingerprint(existingData.snapshot) !== snapshotFingerprint(snapshot)) {
         throw new RunServiceError(
           'idempotency_conflict',
@@ -1792,7 +1827,7 @@ export class BullMqRunService implements RunService {
       )
         return durable;
       snapshot = durable.snapshot;
-      // 凭据不代表执行模式；Provider 身份未落库时禁止猜测并发起可能收费的请求。
+      // 凭据不代表执行模式；Provider 身份未落库时禁止猜测并发起可能重复的请求。
       if (!durable.providerJob || !['mock', 'newapi'].includes(durable.providerJob.provider))
         throw new RunServiceError(
           'invalid_state',
@@ -1813,6 +1848,35 @@ export class BullMqRunService implements RunService {
         durable?.providerJob ?? createProviderJob(runId, providerName, now, previousProviderJob),
       cancelRequested: false,
     });
+    if (usesExecution && this.execution && userId) {
+      await this.execution.createSubmission({
+        runId,
+        userId,
+        snapshot,
+        payload: data,
+        queueName: this.queue.name,
+        attempt,
+        ...(retryOf ? { retryOf } : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
+      if (data.providerJob) {
+        await this.persistence?.upsertProviderJob?.({
+          runId: databaseRunId(runId),
+          providerJob: data.providerJob,
+          createOnly: true,
+        });
+      }
+      try {
+        await this.dispatchOutbox();
+      } catch {
+        /* 原子受理已完成；保留 outbox 供定时派发器按相同 runId 恢复。 */
+      }
+      const queued = await this.queue.getJob(runId).catch(() => undefined);
+      if (queued) return this.toRunRecord(queued);
+      const committed = await this.persistence?.getRun?.(runId);
+      if (committed) return { ...committed, id: runId };
+      throw new ExecutionError('authorization_conflict', '任务已受理，暂时无法读取');
+    }
     // Persist the immutable snapshot before publishing the queue message. If
     // PostgreSQL is unavailable, fail the request instead of creating a job
     // whose run history cannot be recovered after a restart.
@@ -1889,10 +1953,11 @@ export class BullMqRunService implements RunService {
    * @param runId 原任务编号，不创建新的 Run 或 attempt。
    * @param options 只读模式要求已验证的原视频平台任务身份。
    * @returns 原任务当前状态；成功派发只读恢复后可进入 queued。
-   * @throws {RunServiceError} 归属、快照或发送状态不允许恢复。
+   * @throws {ExecutionError | RunServiceError} 原授权、归属、快照或发送状态不允许恢复。
    */
   async recover(runId: string, options: RunRecoveryOptions = {}): Promise<RunRecord> {
-    if (!this.persistence?.getRun) {
+    runId = await this.resolveRunId(runId);
+    if (!this.execution || !this.persistence?.getRun) {
       throw new RunServiceError('invalid_state', '当前执行后端不支持持久任务恢复');
     }
     const durable = await this.persistence.getRun(runId);
@@ -1907,7 +1972,7 @@ export class BullMqRunService implements RunService {
         data.provider !== durable.provider ||
         snapshotFingerprint(data.snapshot) !== snapshotFingerprint(durable.snapshot)
       ) {
-        throw new RunServiceError('invalid_state', '队列任务与持久运行记录不一致');
+        throw new ExecutionError('authorization_conflict', '队列任务与持久运行记录不一致');
       }
       if (!options.retrieveOnly) {
         return this.withDurableRunFields(await this.toRunRecord(existing), durable);
@@ -1923,22 +1988,143 @@ export class BullMqRunService implements RunService {
         );
       }
     }
-    return { ...durable, id: runId };
+    // 失败 Job 和丢失 Job 都先复核冻结授权与发送证据，不能通过队列中的旧数据绕过。
+    if (
+      !(await this.execution.requestRecovery(runId, this.queue.name, Boolean(options.retrieveOnly)))
+    ) {
+      return { ...durable, id: runId };
+    }
+    await this.dispatchOutbox(runId);
+    return (await this.get(runId)) ?? { ...durable, id: runId };
   }
 
   /** 发布已原子受理的 outbox；指定 runId 时仅恢复该任务，不处理其他积压项。 */
-  async dispatchOutbox(_runId?: string): Promise<void> {
-    // execution 包已移除，outbox 派发不再需要；直接返回。
-    return;
+  async dispatchOutbox(runId?: string): Promise<void> {
+    const outboxStore = this.outboxStore();
+    if (!outboxStore) return;
+    const pending = await outboxStore.runOutbox.findMany({
+      where: { publishedAt: null, queueName: this.queue.name, ...(runId ? { runId } : {}) },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+    });
+    for (const candidate of pending) {
+      try {
+        await outboxStore.$transaction(async (transaction) => {
+          // 与恢复受理、发送意图共用 Run 锁；旧派发列表不能覆盖新的只读负载。
+          await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${candidate.runId}, 0))`;
+          const entry = await transaction.runOutbox.findUniqueOrThrow({
+            where: { id: candidate.id },
+          });
+          if (entry.publishedAt || entry.queueName !== this.queue.name) return;
+          const data = runJobDataSchema.parse(entry.payload);
+          const existing = await this.queue.getJob(entry.runId);
+          let existingData = existing ? runJobDataSchema.parse(existing.data) : undefined;
+          if (
+            existingData &&
+            (existingData.runId !== data.runId ||
+              existingData.userId !== data.userId ||
+              existingData.attempt !== data.attempt ||
+              existingData.provider !== data.provider ||
+              existingData.retryOf !== data.retryOf ||
+              existingData.idempotencyKey !== data.idempotencyKey ||
+              snapshotFingerprint(existingData.snapshot) !== snapshotFingerprint(data.snapshot))
+          ) {
+            throw new ExecutionError('authorization_conflict', 'outbox 与队列任务身份或快照不一致');
+          }
+          const durable = await this.persistence?.getRun?.(entry.runId);
+          if (durable?.status === 'cancel_requested' || durable?.status === 'cancelled')
+            data.cancelRequested = true;
+          if (existing) {
+            const state = await existing.getState();
+            // 正在执行或待执行的 Job 可能已经被 Worker 读取，不在此时升级为只读。
+            // 保留 outbox 待它失败后再派发，避免恢复请求意外触发新的创建调用。
+            if (data.retrieveOnly && state !== 'failed' && state !== 'completed') return;
+            existingData ??= runJobDataSchema.parse(existing.data);
+            // outbox 中的恢复标志必须传给已经存在的 Job；否则恢复请求和
+            // 并发派发相撞时，Worker 仍会按普通生成路径再次 POST。
+            const mergedData = runJobDataSchema.parse({
+              ...existingData,
+              ...(data.cancelRequested ? { cancelRequested: true } : {}),
+              ...(data.retrieveOnly && state === 'failed' ? { retrieveOnly: true } : {}),
+            });
+            if (
+              mergedData.cancelRequested !== existingData.cancelRequested ||
+              mergedData.retrieveOnly !== existingData.retrieveOnly
+            ) {
+              await existing.updateData(mergedData);
+              existingData = mergedData;
+            }
+            // 已核验的只读恢复复用同一个 BullMQ ID；普通 outbox 不重试失败 Job。
+            if (data.retrieveOnly && state === 'failed') {
+              let retried = false;
+              try {
+                await existing.retry('failed');
+                retried = true;
+              } catch (error) {
+                // 并发派发可能已经先将同一个只读 Job 重新入队；其余失败仍保留 outbox。
+                const currentState = await existing.getState();
+                if (
+                  !['waiting', 'active', 'delayed', 'completed'].includes(currentState) ||
+                  !runJobDataSchema.parse(existing.data).retrieveOnly
+                ) {
+                  throw error;
+                }
+              }
+              if (retried) {
+                const resumedState = await existing.getState();
+                if (resumedState === 'waiting' || resumedState === 'delayed') {
+                  await existing.updateProgress({
+                    status: 'queued',
+                    progress: 0,
+                    updatedAt: new Date().toISOString(),
+                  });
+                }
+              }
+            }
+          } else {
+            await this.queue.add('run', data, {
+              jobId: entry.runId,
+              // 使用同一运行恢复已归档结果与发送状态；Worker 的发送意图阻止重复生成。
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2_000 },
+              removeOnComplete: false,
+              removeOnFail: false,
+            });
+          }
+          const latest = await transaction.runOutbox.findUniqueOrThrow({
+            where: { id: entry.id },
+          });
+          if (runJobDataSchema.parse(latest.payload).cancelRequested) {
+            const published = await this.queue.getJob(entry.runId);
+            if (published)
+              await published.updateData({
+                ...runJobDataSchema.parse(published.data),
+                cancelRequested: true,
+              });
+          }
+          await transaction.runOutbox.update({
+            where: { id: entry.id },
+            data: { publishedAt: new Date(), attempts: { increment: 1 }, lastError: null },
+          });
+        });
+      } catch (error) {
+        await outboxStore.runOutbox.update({
+          where: { id: candidate.id },
+          data: { attempts: { increment: 1 }, lastError: 'queue_publish_failed' },
+        });
+        throw error;
+      }
+    }
   }
 
-  /** 返回原始运行身份，不再依赖执行服务。 */
+  /** 从中性执行授权恢复 API 与 BullMQ 共用的运行身份。 */
   private async resolveRunId(runId: string): Promise<string> {
-    return runId;
+    return (await this.execution?.resolveRunId(runId)) ?? runId;
   }
 
-  private outboxStore(): undefined {
-    return undefined;
+  /** RunOutbox 是通用运行设施，由中性执行服务提供可靠投递存储。 */
+  private outboxStore(): Pick<PrismaClient, 'runOutbox' | '$transaction'> | undefined {
+    return this.execution?.prisma;
   }
 
   private async toRunRecord(job: Job<RunJobData>): Promise<RunRecord> {
@@ -2037,6 +2223,10 @@ function retryIdempotencyKey(runId: string, attempt: number): string {
   return `retry:${digest}:${attempt}`;
 }
 
+/** 新模式只能由逐节点中性授权进入；空对象不能伪装成已授权运行。 */
+function hasExecutionAuthorization(snapshot: RunSnapshot): boolean {
+  return Object.keys(snapshot.executionBindings ?? {}).length > 0;
+}
 
 export function snapshotFingerprint(snapshot: RunSnapshot): string {
   return createHash('sha256').update(runSnapshotFingerprintMaterial(snapshot)).digest('hex');

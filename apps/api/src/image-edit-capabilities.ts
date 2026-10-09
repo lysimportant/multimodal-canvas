@@ -128,26 +128,6 @@ export function checkImageEditCapabilities(input: {
   if (!source && !incomingEditEdge && !hasImageInput && !hasImageMention) return { issues: [] };
 
   const issues: ImageEditCapabilityDiagnostic[] = [];
-  const capability = resolveImageEditCapability(input.model);
-  const frozenCapability = toFrozenCapability(input.modelAlias, capability);
-  if (capability.invalidMaxImages) {
-    issues.push(
-      diagnostic(input, source, {
-        code: 'IMAGE_EDIT_CAPABILITY_INVALID',
-        reason: 'capability_invalid',
-        message: `模型 ${input.modelAlias} 的图片编辑 maxImages 声明必须为正整数`,
-      }),
-    );
-  }
-  if (capability.unsupported) {
-    issues.push(
-      diagnostic(input, source, {
-        code: 'IMAGE_EDIT_CAPABILITY_UNSUPPORTED',
-        reason: 'capability_unsupported',
-        message: `模型 ${input.modelAlias} 已明确声明不支持图片编辑`,
-      }),
-    );
-  }
 
   if (source && !incomingEditEdge) {
     issues.push(
@@ -199,43 +179,16 @@ export function checkImageEditCapabilities(input: {
 
   return {
     issues,
-    ...(frozenCapability ? { frozenCapability } : {}),
+
     ...(source ? { source } : {}),
   };
 }
 
 /** 合并目录限制并区分编辑能力未知与明确禁用。 */
-function resolveImageEditCapability(
-  model: ImageEditCapabilityModel | undefined,
-): ReturnType<typeof imageEditCapability> {
-  const capabilities = mergeCapabilityRecords(model?.capabilities, model?.limitations);
-  return imageEditCapability({ capabilities });
-}
 
 /** 显式 capabilities 优先于 limitations；无声明时不生成默认限制。 */
-function mergeCapabilityRecords(
-  capabilities: Record<string, unknown> | undefined,
-  limitations: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!capabilities && !limitations) return undefined;
-  // limitations 先展开，显式 capabilities 覆盖；与资源提及预检保持同一优先级。
-  return { ...(limitations ?? {}), ...(capabilities ?? {}) };
-}
 
 /** 仅冻结已声明的编辑限制，未知能力保持缺省以兼容旧模型目录。 */
-function toFrozenCapability(
-  modelAlias: string,
-  capability: ReturnType<typeof imageEditCapability>,
-): FrozenImageEditCapability | undefined {
-  if (!capability.declared || capability.invalidMaxImages) return undefined;
-  return {
-    declared: true,
-    maxImages: resolveImageEditMaxImages(modelAlias, capability),
-    ...(capability.mimeTypes ? { mimeTypes: [...capability.mimeTypes] } : {}),
-    ...(capability.sizes ? { sizes: [...capability.sizes] } : {}),
-    ...(capability.parameters ? { parameters: [...capability.parameters] } : {}),
-  };
-}
 
 /** 生成不含媒体内容和凭据的节点级诊断。 */
 function diagnostic(

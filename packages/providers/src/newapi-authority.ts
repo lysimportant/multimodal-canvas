@@ -55,22 +55,6 @@ export async function verifyNewApiExecutionAuthority(input: {
     managed.auto_groups.includes('神秘分组')
   )
     throw new Error('New API 令牌、实际分组或权限修订已变化');
-
-  const catalog = await readAuthorityResponse(
-    input.fetchImpl ?? fetch,
-    `${origin}/v1/canvas/catalog`,
-    input.apiKey,
-  );
-  const models = Array.isArray(catalog.models)
-    ? catalog.models.map(record).filter((model) => model.id === input.binding.modelAlias)
-    : [];
-  if (
-    models.length !== 1 ||
-    models[0]!.available !== true ||
-    models[0]!.media_type !== input.binding.mediaType ||
-    models[0]!.contract !== input.binding.contract
-  )
-    throw new Error('New API 精确模型或输入协议已变化');
 }
 
 /** 仅接收对象字段，坏响应不会被转换成可用权限。 */

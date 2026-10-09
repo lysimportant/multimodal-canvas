@@ -330,7 +330,7 @@ function normalizeIdentity(value: unknown): ResultStagingIdentity {
   };
 }
 
-/** 校验结果、节点和媒体输出，并恢复费用与供应商任务元数据，不把错误详情向外传播。 */
+/** 校验结果、节点和媒体输出，并恢复供应商任务元数据，不把错误详情向外传播。 */
 function validateExecution(
   value: unknown,
   identity: ResultStagingIdentity,
@@ -401,22 +401,11 @@ function validateExecution(
     const candidate = value.usage;
     if (
       !isRecord(candidate) ||
-      (candidate.amount !== undefined &&
-        typeof candidate.amount !== 'string' &&
-        !(typeof candidate.amount === 'number' && Number.isFinite(candidate.amount))) ||
-      (candidate.currency !== undefined && typeof candidate.currency !== 'string') ||
-      (candidate.userId !== undefined && typeof candidate.userId !== 'string') ||
+      Object.keys(candidate).some((key) => key !== 'metadata') ||
       (candidate.metadata !== undefined && !isRecord(candidate.metadata))
     )
       throw new ResultStagingError('invalid_execution');
-    usage = {
-      ...(candidate.amount !== undefined ? { amount: candidate.amount as number | string } : {}),
-      ...(candidate.currency !== undefined ? { currency: candidate.currency } : {}),
-      ...(candidate.userId !== undefined ? { userId: candidate.userId } : {}),
-      ...(candidate.metadata !== undefined
-        ? { metadata: candidate.metadata as Record<string, unknown> }
-        : {}),
-    };
+    usage = candidate.metadata ? { metadata: candidate.metadata as Record<string, unknown> } : {};
   }
   return {
     result: result.data,

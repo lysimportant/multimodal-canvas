@@ -250,7 +250,7 @@ describe('XfyunTtsProvider', () => {
         nodeId: 'audio',
         attempt: 1,
         requestIdentity: 'WS /v2/tts#1',
-        provider: 'xfyun',
+        provider: 'newapi',
         modelAlias: 'xfyun',
         mediaType: 'audio',
         format: 'plain',

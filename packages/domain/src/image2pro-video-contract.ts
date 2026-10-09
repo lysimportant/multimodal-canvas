@@ -1,6 +1,6 @@
 import type { PortRole, VideoMode } from './index.js';
 
-/** Image2Pro 精确型号合同；接口地址与按秒计费仍由 Image2Pro 网关承接。 */
+/** Image2Pro 协议元数据；能力与费用由 New API / 上游决定。 */
 export type Image2proVideoModelContract = {
   /** 模型目录中的精确 ID；大小写或后缀不同的名称不自动适配。 */
   modelAlias: string;
@@ -177,8 +177,8 @@ export class Image2proVideoParameterError extends Error {
 
 /** 解析后的官方参数；旧小数时长明确拒绝，比例缺省由 Provider 根据视觉参考选择。 */
 export type Image2proVideoParameters = {
-  seconds: number;
-  resolution: string;
+  seconds?: unknown;
+  resolution?: unknown;
   aspectRatio?: string;
   generate_audio?: boolean;
   watermark?: boolean;
@@ -186,119 +186,44 @@ export type Image2proVideoParameters = {
 };
 
 /**
- * 校验 Image2Pro 参数并归一画布历史别名，不修改原参数或丢弃不支持字段。
+ * 归一 Image2Pro 参数别名，不在 Canvas 侧判断模型能力或取值范围。
  * @param parameters 节点或冻结 Run 的参数；duration/seconds/durationSeconds 至少提供一个。
  * @param modelAlias 精确型号；省略时保持原 Seedance 参数调用兼容，不推断未知名称。
- * @returns 整数秒数、清晰度、可选比例及保留显式 false 的布尔开关，供 Web 预检、API 与 Provider 共用。
- * @throws Image2proVideoParameterError 未知字段、别名冲突、缺少时长或类型/范围非法。
+ * @returns 已提供的别名值和布尔开关；缺失值保持缺失，未知参数由调用方继续透传。
  */
 export function resolveImage2proVideoParameters(
   parameters: Readonly<Record<string, unknown>>,
   modelAlias = 'Seedance2.0 0.9r',
 ): Image2proVideoParameters {
-  const contract = image2proVideoContractForModel(modelAlias);
-  if (!contract) {
-    throw new Image2proVideoParameterError(
-      'model',
-      '尚不支持此精确型号',
-      'UNSUPPORTED_PROVIDER_PARAMETER',
-    );
-  }
-  for (const [key, value] of Object.entries(parameters)) {
-    if (value !== undefined && !contract.parameterKeys.includes(key)) {
-      throw new Image2proVideoParameterError(
-        key,
-        '尚不支持，请明确移除后重试',
-        'UNSUPPORTED_PROVIDER_PARAMETER',
-      );
+  const read = (keys: string[], fallback?: unknown): unknown => {
+    for (const key of keys) {
+      if (parameters[key] !== undefined) return parameters[key];
     }
-  }
-  if (
-    parameters.prompt !== undefined &&
-    (typeof parameters.prompt !== 'string' || parameters.prompt.length > contract.maxPromptLength)
-  ) {
-    throw new Image2proVideoParameterError(
-      'prompt',
-      `必须为不超过 ${contract.maxPromptLength} 字符的字符串`,
-    );
-  }
-  if (
-    contract.modelAlias === 'Seedance2.0 0.9r' &&
-    typeof parameters.prompt === 'string' &&
-    /(?:^|\s)--(?:duration|dur|frames|resolution|rs|ratio|rt|seed|camera_fixed|cf|watermark|wm)\b/i.test(
-      parameters.prompt,
-    )
-  ) {
-    throw new Image2proVideoParameterError(
-      'prompt',
-      '不能包含覆盖生成参数的 -- 标记，请使用明确参数字段',
-    );
-  }
-  const durations = ['duration', 'seconds', 'durationSeconds'].flatMap((key) => {
-    const value = parameters[key];
-    if (value === undefined) return [];
-    if (
-      (typeof value !== 'number' && typeof value !== 'string') ||
-      (typeof value === 'string' && !/^\d+(?:\.\d+)?$/.test(value.trim())) ||
-      !Number.isSafeInteger(Number(value)) ||
-      Number(value) < contract.duration.min ||
-      Number(value) > contract.duration.max
-    ) {
-      throw new Image2proVideoParameterError(
-        key,
-        `必须为 ${contract.duration.min} 至 ${contract.duration.max} 秒的整数；暂不支持自动时长`,
-      );
-    }
-    return [Number(value)];
-  });
-  if (!durations.length) {
-    throw new Image2proVideoParameterError('duration', '必须显式指定秒数');
-  }
-  if (new Set(durations).size > 1) {
-    throw new Image2proVideoParameterError('duration/seconds/durationSeconds', '别名值冲突');
-  }
-  const ratios = ['aspectRatio', 'aspect_ratio', 'ratio'].flatMap((key) => {
-    const value = parameters[key];
-    if (value === undefined) return [];
-    if (typeof value !== 'string' || !contract.aspectRatios.includes(value)) {
-      throw new Image2proVideoParameterError(
-        key,
-        '仅支持 21:9、16:9、4:3、1:1、3:4、9:16 或 adaptive',
-      );
-    }
-    return [value];
-  });
-  if (new Set(ratios).size > 1) {
-    throw new Image2proVideoParameterError('aspectRatio/aspect_ratio/ratio', '别名值冲突');
-  }
-  const resolutions = ['resolution', 'video_resolution', 'videoResolution'].flatMap((key) => {
-    const value = parameters[key];
-    if (value === undefined) return [];
-    if (typeof value !== 'string' || !contract.resolutions.includes(value.toLowerCase())) {
-      throw new Image2proVideoParameterError(key, `仅支持 ${contract.resolutions.join('、')}`);
-    }
-    return [value.toLowerCase()];
-  });
-  if (new Set(resolutions).size > 1) {
-    throw new Image2proVideoParameterError(
-      'resolution/video_resolution/videoResolution',
-      '别名值冲突',
-    );
-  }
-  const flags: Pick<
-    Image2proVideoParameters,
-    'generate_audio' | 'watermark' | 'return_last_frame'
-  > = {};
-  for (const key of ['generate_audio', 'watermark', 'return_last_frame'] as const) {
-    const value = parameters[key];
-    if (value === undefined) continue;
-    if (typeof value !== 'boolean') throw new Image2proVideoParameterError(key, '必须为布尔值');
-    flags[key] = value;
-  }
+    return fallback;
+  };
+  const rawSeconds = read(['duration', 'seconds', 'durationSeconds']);
+  const rawResolutionValue = read(['resolution', 'video_resolution', 'videoResolution'], '720p');
+  const resolution =
+    typeof rawResolutionValue === 'string'
+      ? rawResolutionValue.trim().toLowerCase()
+      : rawResolutionValue;
+  const aspectRatio = read(['aspectRatio', 'aspect_ratio', 'ratio']);
+  const normalizedSeconds =
+    typeof rawSeconds === 'string' && /^[-+]?\d+(?:\.\d+)?$/.test(rawSeconds.trim())
+      ? Number(rawSeconds)
+      : rawSeconds;
+  const normalizedResolution =
+    typeof resolution === 'string' && /^\d+k$/i.test(resolution.trim())
+      ? resolution.trim().toLowerCase()
+      : resolution;
   return {
-    seconds: durations[0]!,
-    resolution: resolutions[0] ?? contract.defaultResolution,
-    ...(ratios.length ? { aspectRatio: ratios[0] } : {}),
-    ...flags,
+    ...(normalizedSeconds !== undefined ? { seconds: normalizedSeconds } : {}),
+    ...(normalizedResolution !== undefined ? { resolution: normalizedResolution } : {}),
+    ...(aspectRatio !== undefined ? { aspectRatio: String(aspectRatio) } : {}),
+    ...Object.fromEntries(
+      ['generate_audio', 'watermark', 'return_last_frame']
+        .filter((key) => parameters[key] !== undefined)
+        .map((key) => [key, parameters[key]]),
+    ),
   };
 }

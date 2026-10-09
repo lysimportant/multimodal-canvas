@@ -797,52 +797,6 @@ describe('独立 Skill 提示词优化 API', () => {
     expect(ctx.executor).not.toHaveBeenCalled();
   });
 
-  it('冻结独立 Key 默认，默认目录失效时不切换模型或凭据', async () => {
-    const ctx = await fixture();
-    const credentialId = ctx.settingsStore.update({
-      baseUrl: 'https://other.invalid/v1',
-      apiKey: 'synthetic-independent-key',
-      activate: false,
-    }).createdCredentialId!;
-    ctx.settingsStore.replaceModels(
-      [
-        {
-          id: 'independent-text',
-          name: '独立文字',
-          mediaTypes: ['text'],
-          refreshedAt: new Date().toISOString(),
-        },
-      ],
-      credentialId,
-    );
-    ctx.settingsStore.update({
-      defaultModels: { text: { modelAlias: 'independent-text', credentialId } },
-    });
-    const start = await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload });
-    expect(start.statusCode, start.body).toBe(202);
-    expect(start.json().optimization).toMatchObject({
-      modelAlias: 'independent-text',
-    });
-    expect(start.json().optimization).not.toHaveProperty('credentialId');
-    const runId = start.json().optimization.runId;
-    expect((await ctx.runService.get(runId))?.snapshot.credentialId).toBe(credentialId);
-    await vi.waitFor(async () =>
-      expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
-    );
-    ctx.settingsStore.replaceModels([], credentialId);
-    const failed = await ctx.app.inject({
-      method: 'POST',
-      url: ctx.url,
-      payload: { ...ctx.payload, idempotencyKey: 'new' },
-    });
-    expect(failed.statusCode).toBe(400);
-    expect(failed.json().code).toBe('model_unavailable');
-    expect(
-      (await ctx.app.inject({ method: 'POST', url: ctx.url, payload: ctx.payload })).json()
-        .optimization.runId,
-    ).toBe(runId);
-  });
-
   it('升级结果在 JSON 字符串中途截断时不返回部分指令，同键查询不再次生成', async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({

@@ -1,0 +1,18 @@
+# 仅显式选择外部 PostgreSQL 时叠加；Neon 使用 Direct connection 并保留 sslmode=require。
+# docker compose --env-file .env.compose -f compose.yaml -f compose.neon.yaml up -d
+x-external-database: &external-database
+  environment:
+    DATABASE_URL: ${DATABASE_URL:?外部数据库必须提供 DATABASE_URL，迁移需直连 Neon 地址}
+
+services:
+  postgres:
+    profiles: ['local-database']
+  migrate:
+    <<: *external-database
+    depends_on: !override
+      initialize:
+        condition: service_completed_successfully
+  api:
+    <<: *external-database
+  worker:
+    <<: *external-database

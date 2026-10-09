@@ -152,7 +152,7 @@ async function installFixture(
       request.method() === 'GET' &&
       !['fetch', 'xhr', 'eventsource'].includes(request.resourceType()) &&
       (url.pathname === `/projects/${project.id}` ||
-        /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|demo\/|favicon\.)/.test(
+        /^\/(?:@vite\/|@id\/|@fs\/|@react-refresh$|src\/|node_modules\/|assets\/|demo\/|brand\/|favicon\.)/.test(
           url.pathname,
         ))
     )
@@ -247,6 +247,13 @@ async function installFixture(
     if (path.includes('/request-prompts')) return json(route, { records: [] });
     if (path.endsWith('/access-url'))
       return json(route, { url: path.replace('/access-url', '/content') });
+    if (path.endsWith('/derivatives/thumbnail')) {
+      const asset = assets.find((entry) => path.includes(`/${entry.id}/`));
+      return route.fulfill({
+        contentType: asset?.mimeType ?? 'image/jpeg',
+        body: asset?.mediaType === 'video' ? video : poster,
+      });
+    }
     if (path.endsWith('/content')) {
       const asset = assets.find((entry) => path.includes(`/${entry.id}/`));
       return route.fulfill({
@@ -294,7 +301,9 @@ async function installFixture(
     return route.abort('blockedbyclient');
   });
   await page.goto(`/projects/${project.id}`);
-  await expect(page.locator('.react-flow__node[data-id="generation-root"]')).toBeVisible();
+  await expect(page.locator('.react-flow__node[data-id="generation-root"]')).toBeVisible({
+    timeout: 15_000,
+  });
   return { errors, submissions, runs, canvas: () => canvas };
 }
 
@@ -411,6 +420,7 @@ test('图片新节点只自动引用最新结果，保留文字要求且不丢�
   await editor
     .getByRole('textbox', { name: '提示词', exact: true })
     .fill(`${instruction} @参考图片`);
+  await page.getByRole('tab', { name: '项目资源', exact: true }).click();
   await page.getByRole('option', { name: /参考图片/ }).click();
   await editor.getByRole('button', { name: '生成', exact: true }).click();
   await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
@@ -423,7 +433,10 @@ test('图片新节点只自动引用最新结果，保留文字要求且不丢�
   );
   expect(fixture.canvas().edges).toEqual([]);
   const latestImage = [...fixture.runs.values()][0]!.result!.asset!;
-  await expect(root.locator('img')).toHaveAttribute('src', new RegExp(latestImage.assetId));
+  await expect(root.locator('img')).toHaveAttribute('src', /^blob:/);
+  await expect
+    .poll(() => root.locator('img').evaluate((image) => (image as HTMLImageElement).naturalWidth))
+    .toBeGreaterThan(0);
 
   await editor.getByRole('button', { name: '新节点', exact: true }).click();
   await expect(page.getByText('修改 待生成节点 已完成', { exact: true })).toBeVisible();
@@ -465,6 +478,7 @@ test('图片新节点只自动引用最新结果，保留文字要求且不丢�
   await childEditor
     .getByRole('textbox', { name: '图片修改要求', exact: true })
     .fill('Use the original colors as an additional reference. @参考图片');
+  await page.getByRole('tab', { name: '项目资源', exact: true }).click();
   await page.getByRole('option', { name: /参考图片/ }).click();
   await childEditor.getByRole('button', { name: '生成', exact: true }).click();
   await expect.poll(() => fixture.submissions.length).toBe(3);
@@ -523,6 +537,7 @@ test('图片新节点显式追加资源提及与连线，保存刷新后仍提�
   await parentEditor
     .getByRole('textbox', { name: '提示词', exact: true })
     .fill('Keep the room layout and brighten the scene. @参考图片');
+  await page.getByRole('tab', { name: '项目资源', exact: true }).click();
   await page.getByRole('option', { name: /参考图片/ }).click();
   await parentEditor.getByRole('button', { name: '生成', exact: true }).click();
   await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
@@ -575,6 +590,7 @@ test('图片新节点显式追加资源提及与连线，保存刷新后仍提�
   await childEditor
     .getByRole('textbox', { name: '图片修改要求', exact: true })
     .fill('Combine the original colors with the connected composition. @参考图片');
+  await page.getByRole('tab', { name: '项目资源', exact: true }).click();
   await page.getByRole('option', { name: /参考图片/ }).click();
   await save(page);
   await expect.poll(() => fixture.canvas().edges.length).toBe(2);
@@ -637,22 +653,32 @@ test('图片新节点显式追加资源提及与连线，保存刷新后仍提�
   expect(fixture.errors).toEqual([]);
 });
 
-test('视频滑块的 15 秒和 17 秒只在手动生成时提交，不支持的 30 秒不能生成', async ({
+test('目录能力不限制视频模型和 15、30、17 秒参数，只有明确生成才提交', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
-  const fixture = await installFixture(page, 'video');
-  // 只约束本用例；用目录不支持的整数替代旧数字输入框可填入的 0。
+  const initialCanvas = makeCanvas('video');
+  const preservedParameters = {
+    generate_audio: false,
+    seed: 0,
+    custom_upstream: { flag: false, count: 0, value: 'future-value' },
+    aspectRatio: '1:8.25',
+    resolution: 'future-8k',
+  };
+  initialCanvas.nodes[0].data.parameters = preservedParameters;
+  initialCanvas.nodes[0].data.inferenceStrength = 'future-effort';
+  const fixture = await installFixture(page, 'video', initialCanvas);
+  // 目录媒体分类和时长建议都不能阻止用户的明确选择。
   await page.route('**/v1/models', (route) =>
     json(route, {
       models: [
         {
           id: 'mock-video',
           name: 'Mock video',
-          mediaTypes: ['video'],
+          mediaTypes: ['text'],
           group: 'alpha',
           credentialId: 'batch-credential',
-          available: true,
+          available: false,
           capabilities: { durations: [15, 17] },
         },
       ],
@@ -684,38 +710,60 @@ test('视频滑块的 15 秒和 17 秒只在手动生成时提交，不支持的
   await editor.getByRole('button', { name: '生成', exact: true }).click();
   await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
   expect(fixture.submissions).toHaveLength(1);
-  expect(fixture.submissions[0]!.body.parameters).toMatchObject({ duration: 15 });
+  expect(fixture.submissions[0]!.body.parameters).toMatchObject({
+    ...preservedParameters,
+    duration: 15,
+  });
+  expect(fixture.submissions[0]!.body.parameters).toMatchObject({
+    inferenceStrength: 'future-effort',
+  });
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await duration.click();
   await seconds.press('End');
   await expect(seconds).toHaveValue('30');
-  await expect(seconds).toHaveAttribute('aria-invalid', 'true');
-  await expect(editor.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
-  await page.screenshot({ path: testInfo.outputPath('video-unsupported-seconds.png') });
-  expect(fixture.submissions).toHaveLength(1);
-  await seconds.press('Home');
-  for (let second = 5; second < 17; second++) await seconds.press('ArrowRight');
-  await expect(seconds).toHaveValue('17');
   await expect(seconds).toHaveAttribute('aria-invalid', 'false');
+  await expect(editor.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath('video-open-seconds.png') });
   expect(fixture.submissions).toHaveLength(1);
-  await page.screenshot({ path: testInfo.outputPath('video-slider-seconds.png') });
   await seconds.press('Escape');
   await page.keyboard.press('Escape');
   await editor.getByRole('button', { name: '生成', exact: true }).click();
   await expect.poll(() => fixture.submissions.length).toBe(2);
   await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
-  expect(fixture.submissions[1]!.body.parameters).toMatchObject({ duration: 17 });
+  expect(fixture.submissions[1]!.body.parameters).toMatchObject({ duration: 30 });
+  await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
+  await duration.click();
+  await seconds.press('Home');
+  for (let second = 5; second < 17; second++) await seconds.press('ArrowRight');
+  await expect(seconds).toHaveValue('17');
+  await expect(seconds).toHaveAttribute('aria-invalid', 'false');
+  expect(fixture.submissions).toHaveLength(2);
+  await page.screenshot({ path: testInfo.outputPath('video-slider-seconds.png') });
+  await seconds.press('Escape');
+  await page.keyboard.press('Escape');
+  await editor.getByRole('button', { name: '生成', exact: true }).click();
+  await expect.poll(() => fixture.submissions.length).toBe(3);
+  await expect(page.getByText('待生成节点 已完成', { exact: true })).toBeVisible();
+  expect(fixture.submissions[2]!.body.parameters).toMatchObject({ duration: 17 });
   await expect
     .poll(() => root.locator('video').evaluate((element: HTMLVideoElement) => element.readyState))
     .toBeGreaterThan(0);
   await save(page);
+  expect(fixture.canvas().nodes[0].data.parameters).toEqual({
+    ...preservedParameters,
+    duration: 17,
+  });
   await page.reload();
   await root.click();
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await expect(duration).toHaveAccessibleName('时长（秒）：17 秒');
   await duration.click();
   await expect(seconds).toHaveValue('17');
-  expect(fixture.submissions).toHaveLength(2);
+  expect(fixture.canvas().nodes[0].data.parameters).toEqual({
+    ...preservedParameters,
+    duration: 17,
+  });
+  expect(fixture.submissions).toHaveLength(3);
   expect(fixture.errors).toEqual([]);
 });
 

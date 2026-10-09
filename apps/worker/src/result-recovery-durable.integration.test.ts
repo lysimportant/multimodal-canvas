@@ -219,7 +219,7 @@ describe.skipIf(!databaseUrl || !redisUrl)('真实持久授权的图片归档恢
                 inputCount: 0,
               },
               output: { mediaType: 'image', kind: 'base64', base64: png, mimeType: 'image/png' },
-              usage: { amount: '1.25', currency: 'USD' },
+              usage: { metadata: { amount: '1.25', currency: 'USD' } },
             };
           },
         },
@@ -313,10 +313,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('真实持久授权的图片归档恢
           });
           expect(run.nodeTimings).toMatchObject({ [nodeId]: { outcome: 'succeeded' } });
         }
-        expect(recovered?.data.providerJob?.payload).toMatchObject({
-          usageStatus: 'external',
-          reportedUsage: { runId: executionDatabaseRunId(runId), amount: '1.25' },
-        });
         await expect(
           service.assertRetrySafe({ runId, nodeId, snapshot, userId }),
         ).rejects.toMatchObject({ code: 'send_requires_review' });

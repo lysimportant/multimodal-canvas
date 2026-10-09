@@ -68,7 +68,8 @@ afterEach(async () => {
  * @returns 实例、两个不同所有者的资产、合成用户认证头及原生签名替身。
  */
 async function createFixture(mode?: S3DownloadMode, logger: BuildAppOptions['logger'] = false) {
-  const nativeUrl = 'https://minio:9000/private-bucket/object?X-Amz-Signature=test';
+  const nativeUrl =
+    'https://account.r2.cloudflarestorage.com/private-bucket/object?X-Amz-Signature=test';
   const presign = vi
     .fn<NonNullable<AssetStore['createPresignedGetUrl']>>()
     .mockResolvedValue(nativeUrl);
@@ -273,7 +274,7 @@ describe('proxy asset access URLs', () => {
       expect(issued.statusCode).toBe(200);
       const access = issued.json<{ url: string; expiresAt: string }>();
       expect(access.url).toMatch(/^\/v1\/assets\//);
-      expect(access.url).not.toContain('minio');
+      expect(access.url).not.toContain('r2.cloudflarestorage.com');
       const parsed = new URL(access.url, 'http://localhost:8080');
       expect(parsed.pathname).toBe(unsignedPath);
       expect([...parsed.searchParams.keys()]).toEqual(['access_token']);

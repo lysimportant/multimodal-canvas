@@ -122,7 +122,6 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
   queueState.jobs.set(runId, job);
 
   const persisted = new Map<string, ProviderJob>();
-  const recordUsage = vi.fn(async () => undefined);
   const persistence: RunPersistence = {
     async getProviderCredentials() {
       return { baseUrl: 'https://provider.example/v1', apiKey: 'synthetic-test-key' };
@@ -131,7 +130,6 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
       persisted.set(current.id, structuredClone(current));
     },
     async upsertRequestPromptRecord() {},
-    recordUsage,
   };
   let creationCalls = 0;
   let resumeCalls = 0;
@@ -172,7 +170,7 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
         progress: 100,
         payload: request.providerJob?.payload,
       },
-      usage: { amount: '0.01', currency: 'USD' },
+      usage: { metadata: { amount: '0.01', currency: 'USD' } },
     };
   });
   const options: Parameters<typeof createRunWorker>[0] = {
@@ -193,7 +191,6 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
     execute,
     options,
     persisted,
-    recordUsage,
     creationCalls: () => creationCalls,
     resumeCalls: () => resumeCalls,
   };
@@ -441,8 +438,6 @@ describe('Worker 中性执行授权', () => {
       }),
     );
     expect(f.creationCalls()).toBe(1);
-    expect(f.recordUsage).not.toHaveBeenCalled();
-    expect(f.job.data.providerJob?.payload).toMatchObject({ usageStatus: 'external' });
   });
 
   it('无执行授权的历史未发送节点零创建调用', async () => {

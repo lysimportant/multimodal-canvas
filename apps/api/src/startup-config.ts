@@ -355,7 +355,7 @@ function validateS3CredentialPair(
   const secretKey = Boolean(environment.S3_SECRET_KEY?.trim());
   const customEndpoint = Boolean(environment.S3_ENDPOINT?.trim());
   // AWS deployments may use the SDK's default IAM role chain when no custom
-  // endpoint is configured. MinIO and other custom endpoints do not provide
+  // endpoint is configured. R2 and other custom endpoints do not provide
   // that role chain, so production requires an explicit credentials pair.
   if (accessKey && secretKey) return;
   if (!customEndpoint && !accessKey && !secretKey) return;

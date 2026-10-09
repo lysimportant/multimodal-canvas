@@ -310,7 +310,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     '/v1/admin/runs': {
       get: {
         ...operation(
-          '管理员查看跨用户运行任务，不自动重试收费请求',
+          '管理员查看跨用户运行任务，不自动重试已发送请求',
           page('runs', { type: 'object' }),
         ),
         parameters: [

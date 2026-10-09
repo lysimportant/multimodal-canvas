@@ -151,7 +151,6 @@ describe('worker provider job boundary', () => {
             }),
             getProviderTimeoutMs,
             async upsertProviderJob() {},
-            async recordUsage() {},
             async upsertRequestPromptRecord({ record }) {
               requestPrompts.push(record);
             },
@@ -311,7 +310,6 @@ describe('worker provider job boundary', () => {
           if (logCheckOutcomeCalls++ === 0) throw new Error('prompt outcome store unavailable');
         },
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
       },
     });
@@ -480,7 +478,7 @@ describe('worker provider job boundary', () => {
           format: 'txt',
         },
         providerJob: { provider: 'newapi', platformJobId: 'platform-1' },
-        usage: { amount: '1.25', currency: 'usd', metadata: { requestId: 'req-1' } },
+        usage: { metadata: { requestId: 'req-1' } },
       }),
     ).toMatchObject({
       result,
@@ -492,11 +490,11 @@ describe('worker provider job boundary', () => {
         format: 'txt',
       },
       providerJob: { platformJobId: 'platform-1' },
-      usage: { amount: '1.25', metadata: { requestId: 'req-1' } },
+      usage: { metadata: { requestId: 'req-1' } },
     });
   });
 
-  it('accepts provider usage without a reported price', () => {
+  it('accepts provider usage as metadata without parsing a price', () => {
     expect(
       normalizeProviderExecution({
         result,
@@ -587,7 +585,6 @@ describe('worker provider job boundary', () => {
       stepDelayMs: 0,
       persistence: {
         async upsertProviderJob() {},
-        async recordUsage() {},
       },
       resultArchiver: async () => ({
         assetId: 'asset_mock_empty_credentials',
@@ -647,7 +644,7 @@ describe('worker provider job boundary', () => {
             providerStatus: 'done',
           },
         },
-        usage: { amount: '2.5', currency: 'USD' },
+        usage: { metadata: { amount: '2.5', currency: 'USD' } },
       };
     });
     const videoSnapshot = withTestExecutionBindings({
@@ -710,9 +707,6 @@ describe('worker provider job boundary', () => {
         async upsertProviderJob(input) {
           providerJobs.push(input.providerJob);
         },
-        async recordUsage(input) {
-          usage.push(input);
-        },
       },
       resultArchiver: async (input) => {
         archiveCalls.push(input as unknown as Record<string, unknown>);
@@ -751,9 +745,6 @@ describe('worker provider job boundary', () => {
       payload: { contract: 'newapi-video-v1', phase: 'completed' },
     });
     expect(usage).toEqual([]);
-    expect(job.data.providerJob).toMatchObject({
-      payload: { usageStatus: 'external' },
-    });
     expect(processed).toMatchObject({
       status: 'succeeded',
       providerJob: { platformJobId: 'platform-video-1' },
@@ -846,7 +837,6 @@ describe('worker provider job boundary', () => {
             return { baseUrl: 'https://newapi.example/v1', apiKey: 'test-key' };
           },
           async upsertProviderJob() {},
-          async recordUsage() {},
           async upsertRequestPromptRecord() {},
           async recordRequestPromptOutcome() {},
         },
@@ -957,7 +947,6 @@ describe('worker provider job boundary', () => {
           return { baseUrl: 'https://newapi.example/v1', apiKey: 'synthetic-test-key' };
         },
         async upsertProviderJob() {},
-        async recordUsage() {},
       },
       resultArchiver: async () => ({
         assetId: 'asset-video-retry',
@@ -1148,7 +1137,6 @@ describe('worker provider job boundary', () => {
       persistence: {
         getProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         updateRun,
       },
     });
@@ -1227,7 +1215,6 @@ describe('worker provider job boundary', () => {
         persistence: {
           ...(expectedError.includes('resolver') ? {} : { getProviderCredentials }),
           async upsertProviderJob() {},
-          async recordUsage() {},
         },
       });
 
@@ -1293,7 +1280,6 @@ describe('worker provider job boundary', () => {
       persistence: {
         ensureRun,
         async upsertProviderJob() {},
-        async recordUsage() {},
       },
     });
 
@@ -1358,7 +1344,6 @@ describe('worker provider job boundary', () => {
       persistence: {
         ensureRun,
         async upsertProviderJob() {},
-        async recordUsage() {},
       },
     });
 

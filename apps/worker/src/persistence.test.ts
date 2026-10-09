@@ -137,9 +137,6 @@ describe('worker run persistence boundary', () => {
         async upsertProviderJob(input) {
           providerJobs.push(input as { runId: string; providerJob: Record<string, unknown> });
         },
-        async recordUsage(input) {
-          usageEntries.push(input);
-        },
       },
       provider: {
         async execute() {
@@ -158,7 +155,9 @@ describe('worker run persistence boundary', () => {
               mimeType: 'text/plain',
               format: 'txt',
             },
-            usage: { amount: '1.250000', currency: 'USD', metadata: { requestId: 'req_1' } },
+            usage: {
+              metadata: { amount: '1.250000', currency: 'USD', requestId: 'req_1' },
+            },
           };
         },
       },
@@ -178,14 +177,6 @@ describe('worker run persistence boundary', () => {
     expect(providerJobs.at(-1)?.providerJob).toMatchObject({ status: 'succeeded', progress: 100 });
     expect(runLifecycle[0]).toEqual({ runId: databaseRunId, status: 'queued' });
     expect(runLifecycle.at(-1)).toEqual({ runId: databaseRunId, status: 'succeeded' });
-    expect(usageEntries).toEqual([
-      {
-        runId: databaseRunId,
-        amount: '1.250000',
-        currency: 'USD',
-        metadata: { requestId: 'req_1' },
-      },
-    ]);
     expect(archiveCalls).toHaveLength(1);
     expect(archiveCalls[0]).toMatchObject({
       output: {

@@ -172,7 +172,7 @@ describe('project model defaults endpoints', () => {
     }
   });
 
-  it('validates credential bindings and catalog capabilities before writing any field', async () => {
+  it('accepts model aliases without local capability checks while validating explicit credentials', async () => {
     const projectStore = new MemoryProjectStore();
     const settingsStore = new MemoryAiSettingsStore('project-default-validation');
     const firstSettings = settingsStore.update({
@@ -234,8 +234,7 @@ describe('project model defaults endpoints', () => {
         url: `/v1/projects/${projectId}/models/defaults`,
         payload: { image: 'shared-image' },
       });
-      expect(ambiguous.statusCode).toBe(400);
-      expect(ambiguous.json().code).toBe('model_unavailable');
+      expect(ambiguous.statusCode).toBe(200);
       expect(
         (
           await app.inject({
@@ -243,7 +242,7 @@ describe('project model defaults endpoints', () => {
             url: `/v1/projects/${projectId}/models/defaults`,
           })
         ).json(),
-      ).toEqual({ defaults: {} });
+      ).toEqual({ defaults: { image: 'shared-image' } });
 
       const bound = await app.inject({
         method: 'PATCH',
@@ -264,14 +263,20 @@ describe('project model defaults endpoints', () => {
           video: { modelAlias: 'shared-image', credentialId: firstCredential.id },
         },
       });
-      expect(wrongMediaType.statusCode).toBe(400);
+      expect(wrongMediaType.statusCode).toBe(200);
+      expect(wrongMediaType.json()).toEqual({
+        defaults: {
+          image: { modelAlias: 'shared-image', credentialId: firstCredential.id },
+          video: { modelAlias: 'shared-image', credentialId: firstCredential.id },
+        },
+      });
 
       const invalidBatch = await app.inject({
         method: 'PATCH',
         url: `/v1/projects/${projectId}/models/defaults`,
         payload: { image: null, text: 'missing-default-model' },
       });
-      expect(invalidBatch.statusCode).toBe(400);
+      expect(invalidBatch.statusCode).toBe(200);
       expect(
         (
           await app.inject({
@@ -280,7 +285,10 @@ describe('project model defaults endpoints', () => {
           })
         ).json(),
       ).toEqual({
-        defaults: { image: { modelAlias: 'shared-image', credentialId: firstCredential.id } },
+        defaults: {
+          text: 'missing-default-model',
+          video: { modelAlias: 'shared-image', credentialId: firstCredential.id },
+        },
       });
 
       const unknownCredential = await app.inject({
@@ -302,7 +310,7 @@ describe('project model defaults endpoints', () => {
       const removed = await app.inject({
         method: 'PATCH',
         url: `/v1/projects/${projectId}/models/defaults`,
-        payload: { image: null },
+        payload: { text: null, video: null },
       });
       expect(removed.statusCode).toBe(200);
       expect(removed.json()).toEqual({ defaults: {} });

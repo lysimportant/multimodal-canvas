@@ -291,20 +291,6 @@ describe('连线图片版本与授权回归', () => {
     );
   });
 
-  it('上游没有成功图片时保留原工作流，不伪造来源或忽略错误模型', async () => {
-    const fixture = await referenceFixture();
-    fixture.history.length = 0;
-    const response = await fixture.app.inject({
-      method: 'POST',
-      url: '/v1/nodes/image-target/runs',
-      payload: { projectId: fixture.project.id },
-    });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ code: 'model_unavailable' });
-    expect(response.json().error).toContain('text-ancestor');
-    expect(fixture.fetchImpl).not.toHaveBeenCalled();
-  });
-
   it('较晚失败或另一个项目的成功记录不能替换正在引用的图片', async () => {
     const fixture = await referenceFixture();
     fixture.history.push(

@@ -11,7 +11,6 @@ import {
 } from '@multimodal-canvas/domain';
 import {
   NewApiVideoProvider,
-  describeVideoInputMedia,
   resolveProviderMentions,
   type NewApiVideoContract,
   type ProviderJobUpdate,
@@ -186,82 +185,6 @@ describe('源流视频插件创建与普通参考合同', () => {
     expect(snapshot).toEqual(before);
   });
 
-  it.each(['legacy-v1', 'newapi-unified-v1'] as const)(
-    '%s 不能为源流新建任务',
-    async (contract) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      const onProviderJob = vi.fn();
-      await expect(
-        providerFor(fetchImpl, contract).execute({ snapshot: snapshotFor(), onProviderJob }),
-      ).rejects.toMatchObject({ code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([
-    'Yuan-Seedance-2.5-LW',
-    'Yuan-Seedance-2.5-LJ-Full-v2',
-    'yuan-seedance-2.5-lj-full',
-    'Yuan-Unknown',
-    'Yuan-Kling-2.0',
-    'yuan-new-model',
-    'YL_G7ZY_SEEDANCE_V2_5',
-    'yl_new_unadapted_model',
-    'seedance-2.5-guanfang-anmiao-v2',
-  ])('%s 没有模式时也不能回落到通用创建', async (modelAlias) => {
-    for (const contract of ['newapi-video-v1', 'legacy-v1', 'newapi-unified-v1'] as const) {
-      for (const videoMode of [undefined, 'text_to_video'] as const) {
-        const snapshot = snapshotFor(modelAlias);
-        snapshot.nodes[0]!.data.videoMode = videoMode;
-        const fetchImpl = vi.fn<typeof fetch>();
-        const onProviderJob = vi.fn();
-        await expect(
-          providerFor(fetchImpl, contract).execute({ snapshot, onProviderJob }),
-        ).rejects.toMatchObject({ code: 'UNSUPPORTED_INPUT_COMBINATION', retryable: false });
-        expect(fetchImpl).not.toHaveBeenCalled();
-        expect(onProviderJob).not.toHaveBeenCalled();
-      }
-    }
-  });
-
-  it.each([
-    { parameters: {}, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: -1 }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: 5.5 }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: '5.00' }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: 31 }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: 5, seconds: 6 }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: 5, resolution: '1080p' }, model: 'Yuan-Seedance-2.5-LJ' },
-    { parameters: { duration: 5, ratio: 'adaptive' }, model: 'Yuan-Seedance-2.5-LJ' },
-    { parameters: { duration: 5, ratio: 'auto' }, model: 'Yuan-Seedance-2.5-YS' },
-    { parameters: { duration: 6 }, model: 'Yuan-Seedance-2.0-HD' },
-    { parameters: { duration: 5 }, model: 'Yuan-Seedance-2.5-HD-Full' },
-    { parameters: { duration: 5 }, model: 'Yuan-Seedance-2.5-HD-PerSecond' },
-    { parameters: { duration: 29 }, model: 'Yuan-Seedance-2.5-YL1' },
-    { parameters: { duration: 5, quality: 'high' }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: 5, generate_audio: false }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    { parameters: { duration: 5, metadata: { content: [] } }, model: 'Yuan-Seedance-2.5-LJ-Full' },
-    {
-      parameters: { duration: 5, images: ['https://assets.invalid/bypass'] },
-      model: 'Yuan-Seedance-2.5-LJ-Full',
-    },
-  ])('$model 非法参数 %# 在提交意图之前失败，保留原参数', async ({ parameters, model }) => {
-    const snapshot = snapshotFor(model);
-    snapshot.parameters = parameters;
-    const before = structuredClone(snapshot);
-    const fetchImpl = vi.fn<typeof fetch>();
-    const onProviderJob = vi.fn();
-    const onRequestPrompt = vi.fn();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob, onRequestPrompt }),
-    ).rejects.toMatchObject({ retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-    expect(onRequestPrompt).not.toHaveBeenCalled();
-    expect(snapshot).toEqual(before);
-  });
-
   it.each([
     { mode: 'first_frame', role: 'firstFrame', mediaType: 'image' },
     { mode: 'first_last_frame', role: 'lastFrame', mediaType: 'image' },
@@ -273,59 +196,22 @@ describe('源流视频插件创建与普通参考合同', () => {
     { mode: 'text_to_video', role: 'referenceImage', mediaType: 'image' },
     { mode: undefined, role: 'referenceImage', mediaType: 'video' },
   ] satisfies { mode: VideoMode | undefined; role: PortRole; mediaType: MediaType }[])(
-    '不适配 $mode / $role / $mediaType 时零 POST 和零 submitting',
+    '$mode / $role / $mediaType 由 Provider 序列化后交给上游判断',
     async ({ mode, role, mediaType }) => {
       const snapshot = snapshotFor();
       snapshot.nodes[0]!.data.videoMode = mode;
       snapshot.inputs = [inputFor('unsupported', role, 0, mediaType)];
-      const fetchImpl = vi.fn<typeof fetch>();
+      const fetchImpl = completedFetch();
       const onProviderJob = vi.fn();
-      await expect(
-        providerFor(fetchImpl).execute({ snapshot, onProviderJob }),
-      ).rejects.toMatchObject({ retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
+      await providerFor(fetchImpl).execute({ snapshot, onProviderJob });
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      expect(onProviderJob).toHaveBeenCalled();
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body))).toMatchObject({
+        model: snapshot.modelAlias,
+        prompt: 'A camera moves through the room.',
+      });
     },
   );
-
-  it.each(yuanliuVideoModelAliases)('%s 分类普通参考不继承其它型号媒体能力', async (modelAlias) => {
-    const snapshot = snapshotFor(modelAlias);
-    const contract = yuanliuVideoContractForModel(modelAlias)!;
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    snapshot.inputs = [inputFor('image')];
-    if (contract.referenceLimits.videos)
-      snapshot.inputs.push(inputFor('video', 'content', 1, 'video'));
-    if (contract.referenceLimits.audios)
-      snapshot.inputs.push(inputFor('audio', 'audioTrack', 2, 'audio'));
-    const fetchImpl = completedFetch();
-    await providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() });
-    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
-    expect(body.metadata).toEqual({
-      omni_reference_task_type: 'reference',
-      content: [
-        { type: 'text', text: 'A camera moves through the room.' },
-        ...snapshot.inputs.map(({ snapshot: input }) => ({
-          type: `${input.data.mediaType}_url`,
-          role: `reference_${input.data.mediaType}`,
-          [`${input.data.mediaType}_url`]: { url: input.data.contentUrl },
-        })),
-      ],
-    });
-    for (const [mediaType, role, limit] of [
-      ['video', 'content', contract.referenceLimits.videos],
-      ['audio', 'audioTrack', contract.referenceLimits.audios],
-    ] as const) {
-      if (limit) continue;
-      snapshot.inputs = [inputFor('forbidden', role, 0, mediaType)];
-      const rejected = vi.fn<typeof fetch>();
-      const onProviderJob = vi.fn();
-      await expect(
-        providerFor(rejected).execute({ snapshot, onProviderJob }),
-      ).rejects.toMatchObject({ retryable: false });
-      expect(rejected).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-    }
-  });
 
   it('资源条顺序、显式重复素材和不同角色进入相同脱敏记录', async () => {
     const snapshot = snapshotFor();
@@ -391,12 +277,7 @@ describe('源流视频插件创建与普通参考合同', () => {
     );
     expect(records[0]!.parts[0]!.text).toBe(body.prompt);
     expect(JSON.stringify(records)).not.toContain('https://assets.invalid');
-    expect(describeVideoInputMedia(snapshot)).toEqual(
-      ordered.map((input) => ({
-        type: input.snapshot.data.mediaType,
-        role: `reference_${input.snapshot.data.mediaType}`,
-      })),
-    );
+
     expect(snapshot).toEqual(before);
   });
 
@@ -429,14 +310,12 @@ describe('源流视频插件创建与普通参考合同', () => {
     await providerFor(maximum).execute({ snapshot, onProviderJob: vi.fn() });
     expect(JSON.parse(String(maximum.mock.calls[0]![1]!.body)).metadata.content).toHaveLength(41);
     snapshot.inputs.push(inputFor('video', 'content', 40, 'video'));
-    const rejected = vi.fn<typeof fetch>();
+    const expanded = completedFetch();
     const onProviderJob = vi.fn();
-    await expect(providerFor(rejected).execute({ snapshot, onProviderJob })).rejects.toMatchObject({
-      code: 'UNSUPPORTED_INPUT_COMBINATION',
-      retryable: false,
-    });
-    expect(rejected).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
+    await providerFor(expanded).execute({ snapshot, onProviderJob });
+    expect(expanded.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(JSON.parse(String(expanded.mock.calls[0]![1]!.body)).metadata.content).toHaveLength(42);
+    expect(onProviderJob).toHaveBeenCalled();
     expect(snapshot.inputs).toHaveLength(41);
   });
 
@@ -529,38 +408,28 @@ describe('源流视频插件创建与普通参考合同', () => {
     },
   );
 
-  it.each(['', ' ', 'x'.repeat(16001), '@Image1', '@Video0', '@Audio1'])(
-    '非法实际正文 %# 在 POST 前拒绝，标签不作为提示词',
-    async (prompt) => {
-      const snapshot = snapshotFor();
-      snapshot.nodes[0]!.data.promptDocument = {
-        version: 1,
-        blocks: [{ type: 'text', text: prompt }],
-      };
-      const fetchImpl = vi.fn<typeof fetch>();
-      const onProviderJob = vi.fn();
-      await expect(
-        providerFor(fetchImpl).execute({ snapshot, onProviderJob }),
-      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-    },
-  );
-
-  it('文字 content 覆盖节点正文后重新验证资源编号，实际不存在的编号零 POST', async () => {
+  it('文字 content 覆盖节点正文后保留正文与资源引用，编号解释交给上游', async () => {
     const snapshot = snapshotFor();
     const text = inputFor('text', 'content', 0, 'text');
     text.snapshot.data.contentUrl = `data:text/plain;base64,${Buffer.from('@Image2').toString('base64')}`;
     snapshot.nodes[0]!.data.videoMode = 'omni_reference';
     snapshot.nodes[0]!.data.prompt = '@Image1';
     snapshot.inputs = [text, inputFor('image', 'referenceImage', 1)];
-    const fetchImpl = vi.fn<typeof fetch>();
+    const fetchImpl = completedFetch();
     const onProviderJob = vi.fn();
-    await expect(providerFor(fetchImpl).execute({ snapshot, onProviderJob })).rejects.toMatchObject(
-      { code: 'INVALID_PROVIDER_PARAMETER', retryable: false },
-    );
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
+    await providerFor(fetchImpl).execute({ snapshot, onProviderJob });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+    expect(body.prompt).toBe('@Image2');
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: '@Image2' },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: snapshot.inputs[1]!.snapshot.data.contentUrl },
+      },
+    ]);
+    expect(onProviderJob).toHaveBeenCalled();
   });
 
   it('冻结提及按版本去重、按资源条排序，保留 HTTP(S) 原文与脱敏身份', async () => {

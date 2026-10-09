@@ -16,7 +16,6 @@ import type {
 } from '@multimodal-canvas/domain';
 import {
   ImageOutputParameterError,
-  Image2proVideoParameterError,
   imageEditSourceSchema,
   normalizeImageOutputParameters,
   precheckVideoGenerationInputs,
@@ -27,13 +26,9 @@ import {
   videoFamilyForModel,
   videoModeForPromptMentions,
   image2proVideoContractForModel,
-  isRetiredImage2proVideoModel,
-  retiredImage2proVideoModelReason,
-  resolveImage2proVideoParameters,
   yuanliuVideoContractForModel,
   resolveYuanliuVideoParameters,
-  isUnadaptedYuanliuVideoModel,
-  unadaptedYuanliuVideoModelReason,
+  resolveImage2proVideoParameters,
   moonVideoContractForModel,
   type Image2proVideoModelContract,
   type MoonVideoModelContract,
@@ -186,7 +181,7 @@ export type NewApiProviderRequest = MockProviderRequest & {
    * 保留平台任务 ID 供后续恢复或人工核对。
    */
   signal?: AbortSignal;
-  /** 已冻结合同及异步平台身份，用于恢复查询，避免再次发送收费 POST。 */
+  /** 已冻结合同及异步平台身份，用于恢复查询，避免重复发送创建请求。 */
   providerJob?: ProviderJobUpdate;
   /** 视频只读恢复：仅按已存在且冻结合同明确的 platformJobId 查询/取内容，绝不创建 POST。 */
   resumeOnly?: boolean;
@@ -340,17 +335,8 @@ type AudioProviderOutput = Extract<ProviderOutput, { kind: 'url' | 'base64' }> &
   mediaType: 'audio';
 };
 
-/**
- * Usage reported by a provider after a successful request.
- *
- * Providers do not always report a price (for example, OpenAI-compatible
- * text responses commonly only contain token counts). `amount` is therefore
- * optional: callers must treat metadata-only usage as unpriced and must never
- * derive a cost from token or media counters.
- */
+/** 供应商返回的调用元数据；费用和账单由 New API 管理，Canvas 不解析金额。 */
 export type ProviderUsage = {
-  amount?: number | string;
-  currency?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -366,11 +352,11 @@ export type ProviderExecution<Output extends ProviderOutput = ProviderOutput> = 
   usage?: ProviderUsage;
 };
 
-/** 创建调用的关联身份与最近一次轮询身份分别保存，不能用 GET 身份替换计费请求。 */
+/** 创建调用的关联身份与最近一次轮询身份分别保存，不能用 GET 身份替换创建请求。 */
 type NewApiRequestIds = {
   /** 普通响应头或响应正文提供的关联 ID，不证明来自 New API 网关。 */
   requestId?: string;
-  /** 仅来自创建响应 X-Oneapi-Request-Id 的网关 ID，按原文保存用于查账。 */
+  /** 仅来自创建响应 X-Oneapi-Request-Id 的网关 ID，按原文保存用于关联记录。 */
   newApiRequestId?: string;
   /** 最近一次查询的普通关联 ID，仅用于诊断。 */
   pollRequestId?: string;
@@ -383,7 +369,7 @@ export type NewApiProviderErrorDetails = NewApiRequestIds & {
   status?: number;
   /** Provider error code or type, if one was supplied. */
   code?: string;
-  /** 仅表示错误可能是临时的；重试前必须确认供应商幂等，不能据此认定不会重复收费。 */
+  /** 仅表示错误可能是临时的；重试前必须确认供应商幂等，不能据此认定请求未被接受。 */
   retryable?: boolean;
   /** Asynchronous platform job identity, when task creation already succeeded. */
   platformJobId?: string;
@@ -498,7 +484,6 @@ export class NewApiProvider {
     if (target.data.mediaType === 'video') {
       throw new NewApiProviderError('video generation requires NewApiVideoProvider');
     }
-    validateProviderRoleParameters(snapshot.parameters, target.data.mediaType);
     if (providerJob && providerJob.provider !== 'newapi') {
       throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
         code: 'PROVIDER_MISMATCH',
@@ -507,7 +492,7 @@ export class NewApiProvider {
     }
 
     // Worker 在请求前持久化本地任务身份，重放时仅保证发送相同的幂等键。
-    // 供应商是否识别该键、如何去重及计费尚需契约确认，不能据此自动重试。
+    // 供应商是否识别该键、如何去重尚需契约确认，不能据此自动重试。
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
     const imageRequest =
@@ -646,8 +631,8 @@ export class NewApiProvider {
       }
     }
     const inputMessages = orderedRunInputs(snapshot).map((input) => {
-      const name = chatInputName(input.role);
-      if (!name) throw unsupportedInputRoleError('text', input.role);
+      const name = chatInputName(input.role) ?? input.role;
+
       return {
         role: 'user' as const,
         name,
@@ -708,6 +693,14 @@ export class NewApiProvider {
       resolvedMentions,
     );
     const parameters = providerParameters(snapshot.parameters, 'image', snapshot.modelAlias);
+    const content = endpointReferenceContent(snapshot, resolvedMentions).filter(
+      (item) => item.type !== 'image_url',
+    );
+    if (content.length)
+      parameters.metadata = {
+        ...(isRecord(parameters.metadata) ? parameters.metadata : {}),
+        content,
+      };
     if (mapping.images.length === 0) {
       // 声明了图片编辑语义却没有可用原图时，绝不静默退回文生图。
       assertImageEditSourceInput(snapshot, mapping);
@@ -717,49 +710,23 @@ export class NewApiProvider {
           ...parameters,
           model: snapshot.modelAlias,
           prompt: mapping.prompt,
-          n: 1,
+          ...(parameters.n === undefined ? { n: 1 } : {}),
         },
         sourceImages: mapping.images,
       };
     }
-    const maxImages = resolveImageEditMaxImages(snapshot.modelAlias, snapshot.imageEditCapability);
-    if (mapping.images.length > maxImages) {
-      throw new NewApiProviderError(
-        `当前模型图片编辑一次最多支持 ${maxImages} 张不同图片或版本，当前为 ${mapping.images.length} 张`,
-        { code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED', retryable: false },
-      );
-    }
-    const capability = snapshot.imageEditCapability;
-    if (
-      capability?.sizes &&
-      parameters.size &&
-      !capability.sizes.some((size) => size.trim().toLowerCase() === parameters.size)
-    ) {
-      throw new NewApiProviderError('当前模型未声明支持请求的图片编辑尺寸', {
-        code: 'IMAGE_EDIT_SIZE_UNSUPPORTED',
-        retryable: false,
-      });
-    }
     const form = new FormData();
     form.append('model', snapshot.modelAlias);
     form.append('prompt', mapping.prompt);
-    form.append('n', '1');
+    if (parameters.n === undefined) form.append('n', '1');
     for (const [parameter, value] of Object.entries(parameters)) {
-      if (parameter === 'n' || parameter === 'stream') continue;
-      if (capability?.parameters && !capability.parameters.includes(parameter)) {
-        throw new NewApiProviderError(`New API 图片编辑未声明支持参数：${parameter}`, {
-          code: 'IMAGE_EDIT_PARAMETER_UNSUPPORTED',
-          retryable: false,
-        });
-      }
       const serialized = imageEditFormValue(value);
       if (serialized !== undefined) form.append(parameter, serialized);
     }
     // 单图保留既有字段；多图按官方 edits 合同重复提交 image[]，不改变输出数量 n。
     const field = mapping.images.length === 1 ? 'image' : 'image[]';
     for (const input of mapping.images) {
-      assertImageEditSupported(snapshot, input);
-      const image = imageFormFile(input, capability?.mimeTypes);
+      const image = imageFormFile(input);
       form.append(field, image.file, image.filename);
     }
     return { path: '/images/edits', body: form, sourceImages: mapping.images };
@@ -772,7 +739,6 @@ export class NewApiProvider {
     nodePromptDocument?: PromptDocument,
     resolvedMentions?: readonly ResolvedMention[],
   ) {
-    assertPromptMentionsUnsupported('audio', snapshot, nodePromptDocument, resolvedMentions);
     const input = resolveSinglePromptInput(
       snapshot,
       label,
@@ -780,13 +746,12 @@ export class NewApiProvider {
       'audio',
       nodePromptDocument,
     );
-    if (!input.trim() || [...input].length > 4096) {
-      throw invalidProviderParameter('audio', 'input', '必须为 1 到 4096 个字符');
-    }
+    const content = endpointReferenceContent(snapshot, resolvedMentions);
     return {
       ...providerParameters(snapshot.parameters, 'audio'),
       model: snapshot.modelAlias,
       input,
+      ...(content.length ? { metadata: { content } } : {}),
     };
   }
 
@@ -1017,9 +982,7 @@ export class NewApiVideoProvider {
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
     const unified = contract === 'newapi-unified-v1';
     const openaiVideo = contract === 'newapi-video-v1';
-    const image2pro =
-      Boolean(image2proVideoContractForModel(snapshot.modelAlias)) ||
-      isRetiredImage2proVideoModel(snapshot.modelAlias);
+    const image2pro = Boolean(image2proVideoContractForModel(snapshot.modelAlias));
     const yuanliu = Boolean(yuanliuVideoContractForModel(snapshot.modelAlias));
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
@@ -1057,20 +1020,6 @@ export class NewApiVideoProvider {
           retryable: false,
         });
       }
-      if (
-        isRetiredImage2proVideoModel(snapshot.modelAlias) ||
-        isUnadaptedYuanliuVideoModel(snapshot.modelAlias)
-      ) {
-        throw new NewApiProviderError(
-          isUnadaptedYuanliuVideoModel(snapshot.modelAlias)
-            ? unadaptedYuanliuVideoModelReason
-            : retiredImage2proVideoModelReason,
-          {
-            code: 'UNSUPPORTED_INPUT_COMBINATION',
-            retryable: false,
-          },
-        );
-      }
       // 已受理任务只按冻结合同查询；原素材失效或新增参数校验不得阻断取回结果。
       const { inputs: absorbedMentionInputs, absorbedMentionIds } =
         collectAbsorbedVideoMentionInputs(snapshot, resolvedMentions);
@@ -1081,33 +1030,9 @@ export class NewApiVideoProvider {
         resolvedMentions,
         absorbedMentionIds,
       );
-      validateProviderRoleParameters(snapshot.parameters, 'video');
-      const family = videoFamilyForModel(snapshot.modelAlias);
-      const official = [
-        'moon-minimax-h3',
-        'minimax-h3',
-        'wan3',
-        'seedance-2',
-        'seedance-2.5',
-      ].includes(family);
-      const moonContract = moonVideoContractForModel(snapshot.modelAlias);
-      if ((official || moonContract || image2pro || yuanliu) && !openaiVideo) {
-        throw new NewApiProviderError(
-          '该视频模型使用 New API /v1/videos 插件协议，请选择 OpenAI 视频合同',
-          { code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false },
-        );
-      }
-      if (unified) validateUnifiedVideoParameters(snapshot.parameters);
-      else if (!image2pro && !yuanliu)
-        validateMediaParameters(
-          snapshot.parameters,
-          'video',
-          (official && family !== 'minimax-h3' && family !== 'moon-minimax-h3') ||
-            Boolean(moonContract?.supportsAutomaticDuration),
-        );
       const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
       const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
-      const body = unified
+      const mappedBody = unified
         ? unifiedVideoPayload(
             snapshot,
             target.data.label,
@@ -1130,6 +1055,7 @@ export class NewApiVideoProvider {
               inputs,
               target.data.promptDocument,
             );
+      const body = openVideoRequestBody(snapshot, mappedBody, inputs);
       const pendingPayload = videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias);
       // 记录必须先于合同落盘：记录失败时不写 submitting 标记，避免留下
       // 与供应商无法核对的任务状态。两者都在创建 POST 之前完成。
@@ -1178,7 +1104,7 @@ export class NewApiVideoProvider {
         });
       }
       throwIfProviderSignalAborted(signal);
-      // 创建可能立即收费，响应丢失时不重发；稳定 key 不证明供应商支持去重。
+      // 创建可能已经被接受，响应丢失时不重发；稳定 key 不证明供应商支持去重。
       let submission: { payload: Record<string, unknown> } & NewApiRequestIds;
       try {
         submission = await this.requestJson(
@@ -1757,7 +1683,7 @@ function positiveInteger(value: number | undefined, fallback: number, name: stri
 
 /**
  * 优先使用 Worker 已持久化的节点任务身份，回退键不包含提示词、凭据或媒体。
- * 这里只保证同一输入得到稳定请求键，不能证明供应商支持幂等或不会重复收费。
+ * 这里只保证同一输入得到稳定请求键，不能证明供应商支持幂等或不会重复接受请求。
  */
 function standardRequestIdempotencyKey(
   snapshot: RunSnapshot,
@@ -1951,9 +1877,7 @@ function videoPlatformId(
 ): string | undefined {
   if (contract === 'newapi-unified-v1') return normalizeErrorField(payload.task_id);
   if (contract === 'newapi-video-v1') {
-    return image2proVideoContractForModel(modelAlias) ||
-      isRetiredImage2proVideoModel(modelAlias) ||
-      yuanliuVideoContractForModel(modelAlias)
+    return image2proVideoContractForModel(modelAlias) || yuanliuVideoContractForModel(modelAlias)
       ? normalizeErrorField(payload.id)
       : extractOpenAiVideoId(payload);
   }
@@ -1976,43 +1900,6 @@ function resolveVideoContract(
   return normalizeErrorField(job?.platformJobId) ? 'legacy-v1' : selected;
 }
 
-/** 官方通用视频 JSON 参数白名单；不把 legacy/Sora 或不明确的 metadata 映射进来。 */
-function validateUnifiedVideoParameters(parameters: Record<string, unknown>): void {
-  for (const [parameter, value] of Object.entries(parameters)) {
-    if (value === undefined || parameter === 'inferenceStrength') continue;
-    if (
-      ![
-        'prompt',
-        'duration',
-        'width',
-        'height',
-        'fps',
-        'seed',
-        'n',
-        'response_format',
-        'user',
-      ].includes(parameter)
-    ) {
-      throw unsupportedProviderParameter('video', parameter);
-    }
-    if (parameter === 'n' || parameter === 'response_format') {
-      if (value !== (parameter === 'n' ? 1 : 'url'))
-        throw unsupportedProviderParameter('video', parameter);
-    } else if (parameter === 'duration') {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
-        throw invalidProviderParameter('video', parameter, '必须为正有限秒数');
-    } else if (['width', 'height', 'fps', 'seed'].includes(parameter)) {
-      if (
-        typeof value !== 'number' ||
-        !Number.isSafeInteger(value) ||
-        (parameter !== 'seed' && value <= 0)
-      )
-        throw invalidProviderParameter('video', parameter, '必须为合法整数');
-    } else if (!nonEmptyString(value))
-      throw invalidProviderParameter('video', parameter, '必须为非空字符串');
-  }
-}
-
 /** 根据公开通用视频合同创建请求，首帧 image 是字符串，不能使用 Sora 的文件字段。 */
 function unifiedVideoPayload(
   snapshot: RunSnapshot,
@@ -2028,7 +1915,6 @@ function unifiedVideoPayload(
     inputs.prompt,
     document,
   );
-  if (!resolvedPrompt.trim()) throw invalidProviderParameter('video', 'prompt', '必须为非空字符串');
   const payload: Record<string, unknown> = { model: snapshot.modelAlias, prompt: resolvedPrompt };
   for (const parameter of [
     'duration',
@@ -2120,26 +2006,19 @@ function videoPayload(
   };
   const firstFrameUrl = inputs.firstFrame ? inputImageUrl(inputs.firstFrame, 'video') : undefined;
   const parameters = snapshot.parameters;
-  const duration = positiveIntegerParameter(
+  const duration = videoParameterValue(
     parameters.duration ?? parameters.seconds ?? parameters.durationSeconds,
   );
-  if (duration !== undefined) {
-    payload.duration = duration;
-  }
-  const resolution = normalizeErrorField(
-    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
-  );
-  if (resolution) payload.resolution = resolution;
-  const size = normalizeErrorField(
-    parameters.size ?? parameters.video_size ?? parameters.videoSize,
-  );
-  if (size) payload.size = size;
-  const quality = normalizeErrorField(
-    parameters.quality ?? parameters.video_quality ?? parameters.videoQuality,
-  );
-  if (quality) payload.quality = quality;
-  const aspectRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
-  if (aspectRatio) payload.aspect_ratio = aspectRatio;
+  if (duration !== undefined) payload.duration = duration;
+  const resolution =
+    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution;
+  if (resolution !== undefined) payload.resolution = resolution;
+  const size = parameters.size ?? parameters.video_size ?? parameters.videoSize;
+  if (size !== undefined) payload.size = size;
+  const quality = parameters.quality ?? parameters.video_quality ?? parameters.videoQuality;
+  if (quality !== undefined) payload.quality = quality;
+  const aspectRatio = parameters.aspect_ratio ?? parameters.aspectRatio;
+  if (aspectRatio !== undefined) payload.aspect_ratio = aspectRatio;
   if (firstFrameUrl) payload.image = { url: firstFrameUrl };
   applyGrokImagineVideo15References(payload, inputs, 'object');
   return payload;
@@ -2233,9 +2112,9 @@ function yuanliuVideoPayload(
   return {
     model: snapshot.modelAlias,
     prompt,
-    duration: parameters.seconds,
-    resolution: parameters.resolution,
-    aspect_ratio: parameters.aspectRatio,
+    ...(parameters.seconds !== undefined ? { duration: parameters.seconds } : {}),
+    resolution: parameters.resolution ?? '720p',
+    aspect_ratio: parameters.aspectRatio ?? '16:9',
     metadata: {
       content: [{ type: 'text', text: prompt }, ...media],
       ...(media.length ? { omni_reference_task_type: 'reference' } : {}),
@@ -2262,42 +2141,16 @@ function image2proVideoPayload(
   nodePromptDocument: PromptDocument | undefined,
   contract: Image2proVideoModelContract,
 ): Record<string, unknown> {
-  if (!contract.requiresPrompt) {
-    resolveImage2proVideoParameters(snapshot.parameters, snapshot.modelAlias);
-  }
   let source = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
   if (contract.requiresPrompt && !source.value.trim()) source = { value: '', explicit: false };
   const prompt =
     source.explicit || inputs.prompt
       ? resolveMappedPromptInput(source, inputs.prompt, 'video')
       : '';
-  let parameters: ReturnType<typeof resolveImage2proVideoParameters>;
-  try {
-    parameters = resolveImage2proVideoParameters(
-      { ...snapshot.parameters, prompt },
-      snapshot.modelAlias,
-    );
-  } catch (error) {
-    if (!(error instanceof Image2proVideoParameterError)) throw error;
-    throw invalidProviderParameter('video', error.parameter, error.message);
-  }
-  const { seconds, aspectRatio, resolution, ...flags } = parameters;
-  const visual = Boolean(
-    inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length,
+  const { seconds, resolution, aspectRatio, ...flags } = resolveImage2proVideoParameters(
+    snapshot.parameters,
+    snapshot.modelAlias,
   );
-  if (!prompt.trim() && (contract.requiresPrompt || !visual)) {
-    throw new NewApiProviderError('Image2Pro 视频需要提示词或支持的视觉参考素材', {
-      code: 'VIDEO_PROMPT_REQUIRED',
-      retryable: false,
-    });
-  }
-  if (prompt.length > contract.maxPromptLength) {
-    throw invalidProviderParameter(
-      'video',
-      'prompt',
-      `长度不能超过 ${contract.maxPromptLength} 个字符`,
-    );
-  }
   const media = orderedVideoMedia(snapshot, inputs).map((input) => {
     const mediaType = input.snapshot.data.mediaType;
     const url = officialVideoReferenceUrl(
@@ -2305,41 +2158,6 @@ function image2proVideoPayload(
       contract.supportsVideoDataUrl ? 'image2pro' : 'seedance-2',
       snapshot.modelAlias,
     );
-    const parsed = parseDataUrl(url);
-    const maxBytes = mediaType !== 'text' ? contract.mediaMaxBytes?.[mediaType] : undefined;
-    if (parsed && maxBytes !== undefined && Buffer.byteLength(parsed.base64, 'base64') > maxBytes) {
-      throw invalidProviderParameter('video', 'content', '参考素材超过模型的单文件大小上限');
-    }
-    const mimeTypes = [normalizedMimeType(input.snapshot.data.mimeType), parsed?.mimeType].filter(
-      (mimeType): mimeType is string => Boolean(mimeType),
-    );
-    if (
-      mediaType === 'image' &&
-      mimeTypes.some((mimeType) => !contract.mediaMimeTypes.image.includes(mimeType))
-    ) {
-      throw invalidProviderParameter(
-        'video',
-        'content',
-        `参考图仅支持 ${contract.mediaMimeTypes.image.join('、')}`,
-      );
-    }
-    if (
-      mediaType === 'audio' &&
-      mimeTypes.some((mimeType) => !contract.mediaMimeTypes.audio.includes(mimeType))
-    ) {
-      throw invalidProviderParameter('video', 'content', '参考音频仅支持 MP3 或 WAV');
-    }
-    if (
-      mediaType === 'video' &&
-      (mimeTypes.some((mimeType) => !contract.mediaMimeTypes.video.includes(mimeType)) ||
-        (parsed && parsed.mimeType !== 'video/mp4'))
-    ) {
-      throw invalidProviderParameter(
-        'video',
-        'content',
-        '参考视频仅支持 MP4 或 QuickTime，内联视频仅支持 MP4',
-      );
-    }
     return {
       type: `${mediaType}_url`,
       [`${mediaType}_url`]: { url },
@@ -2354,13 +2172,9 @@ function image2proVideoPayload(
   return {
     model: snapshot.modelAlias,
     content: [...(prompt.trim() ? [{ type: 'text', text: prompt }] : []), ...media],
-    duration: seconds,
-    resolution,
-    ratio:
-      aspectRatio ??
-      (visual || (contract.allowsAudioOnlyReference && inputs.referenceAudios.length)
-        ? 'adaptive'
-        : '16:9'),
+    ...(seconds !== undefined ? { duration: seconds } : {}),
+    resolution: resolution ?? contract.defaultResolution,
+    ratio: aspectRatio ?? 'adaptive',
     ...flags,
   };
 }
@@ -2374,16 +2188,6 @@ function moonVideoPayload(
   nodePromptDocument: PromptDocument | undefined,
   contract: MoonVideoModelContract,
 ): Record<string, unknown> {
-  for (const key of [
-    'size',
-    'video_size',
-    'videoSize',
-    'quality',
-    'video_quality',
-    'videoQuality',
-  ]) {
-    if (snapshot.parameters[key] !== undefined) throw unsupportedProviderParameter('video', key);
-  }
   const resolvedPrompt = resolveRequiredVideoPrompt(
     snapshot,
     label,
@@ -2391,98 +2195,24 @@ function moonVideoPayload(
     inputs.prompt,
     nodePromptDocument,
   );
-  if (contract.family === 'moon-budget' && /@image\d+/i.test(resolvedPrompt)) {
-    throw invalidProviderParameter('video', 'prompt', '图片引用请使用 @图片N');
-  }
-  if (resolvedPrompt.length > contract.maxPromptLength) {
-    throw invalidProviderParameter(
-      'video',
-      'prompt',
-      `长度不能超过 ${contract.maxPromptLength} 个字符`,
-    );
-  }
-
   const parameters = snapshot.parameters;
   const rawDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
-  const duration = rawDuration === undefined ? contract.duration.default : Number(rawDuration);
-  if (
-    !Number.isSafeInteger(duration) ||
-    (duration !== -1 && (duration < contract.duration.min || duration > contract.duration.max)) ||
-    (duration === -1 && !contract.supportsAutomaticDuration)
-  ) {
-    const automatic = contract.supportsAutomaticDuration ? '，或 -1（自动）' : '';
-    throw invalidProviderParameter(
-      'video',
-      'duration',
-      `必须为 ${contract.duration.min} 到 ${contract.duration.max} 的整数秒数${automatic}`,
-    );
-  }
-
-  const rawResolution = normalizeErrorField(
-    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+  const duration =
+    rawDuration === undefined
+      ? undefined
+      : Number.isFinite(Number(rawDuration))
+        ? Number(rawDuration)
+        : rawDuration;
+  const resolution = String(
+    parameters.resolution ??
+      parameters.video_resolution ??
+      parameters.videoResolution ??
+      contract.defaultResolution,
   );
-  const resolution = (rawResolution ?? contract.defaultResolution).toLowerCase();
-  const hasResolution = Object.prototype.hasOwnProperty.call(contract.resolutions, resolution);
-  const resolutionRange = hasResolution ? contract.resolutions[resolution] : undefined;
-  if (!resolutionRange) {
-    throw invalidProviderParameter(
-      'video',
-      'resolution',
-      `必须为 ${Object.keys(contract.resolutions).join('、')}`,
-    );
-  }
-  if (duration !== -1 && (duration < resolutionRange.min || duration > resolutionRange.max)) {
-    throw invalidProviderParameter(
-      'video',
-      'duration',
-      `在 ${resolution} 下必须为 ${resolutionRange.min} 到 ${resolutionRange.max} 的整数秒数`,
-    );
-  }
-
-  const rawRatio = normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio);
-  const ratio = rawRatio ?? '16:9';
-  if (!contract.aspectRatios.includes(ratio)) {
-    throw invalidProviderParameter(
-      'video',
-      'aspectRatio',
-      `必须为 ${contract.aspectRatios.join('、')}`,
-    );
-  }
-
+  const ratio = String(
+    parameters.aspect_ratio ?? parameters.aspectRatio ?? parameters.ratio ?? '16:9',
+  );
   const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
-  if (mode === 'video_edit' && !contract.supportsVideoEdit) {
-    throw invalidProviderParameter('video', 'mode', '该模型不支持视频编辑');
-  }
-  if (mode === 'video_extend' && !contract.supportsVideoExtend) {
-    throw invalidProviderParameter('video', 'mode', '该模型不支持视频延长');
-  }
-  if (mode === 'video_edit' || mode === 'video_extend') {
-    if (inputs.referenceVideos.length === 0) {
-      throw invalidProviderParameter('video', 'mode', '该模式需要参考视频');
-    }
-    if (ratio !== 'adaptive') {
-      throw invalidProviderParameter('video', 'aspectRatio', '该模式必须使用 adaptive');
-    }
-    if (mode === 'video_edit' && duration !== -1) {
-      throw invalidProviderParameter('video', 'duration', '视频编辑必须使用 -1（自动时长）');
-    }
-  }
-  if (
-    contract.family === 'moon-seedance-2.5-official' &&
-    (inputs.firstFrame || inputs.lastFrame) &&
-    ratio !== 'adaptive'
-  ) {
-    throw invalidProviderParameter('video', 'aspectRatio', '首尾帧模式必须使用 adaptive');
-  }
-  if (
-    contract.frameReferencesExclusive &&
-    (inputs.firstFrame || inputs.lastFrame) &&
-    (inputs.referenceImages.length > 0 ||
-      inputs.referenceVideos.length > 0 ||
-      inputs.referenceAudios.length > 0)
-  ) {
-    throw invalidProviderParameter('video', 'references', '首尾帧不能与其它参考素材混用');
-  }
   const orderedMedia = orderedVideoMedia(snapshot, inputs);
   const media = orderedMedia.map((input) => {
     const mediaType = input.snapshot.data.mediaType;
@@ -2543,21 +2273,8 @@ function officialVideoPayload(
   document?: PromptDocument,
 ): Record<string, unknown> {
   const family = videoFamilyForModel(snapshot.modelAlias);
-  const moonSeedance =
-    snapshot.modelAlias === 'seedance-2-0-official' ||
-    snapshot.modelAlias === 'seedance-2-0-fast-official' ||
-    snapshot.modelAlias === 'seedance-2-0-mini-official';
+  const moonSeedance = snapshot.modelAlias.startsWith('seedance-2-0-');
   const parameters = snapshot.parameters;
-  for (const key of [
-    'size',
-    'video_size',
-    'videoSize',
-    'quality',
-    'video_quality',
-    'videoQuality',
-  ]) {
-    if (parameters[key] !== undefined) throw unsupportedProviderParameter('video', key);
-  }
   const resolvedPrompt = resolveRequiredVideoPrompt(
     snapshot,
     label,
@@ -2566,99 +2283,29 @@ function officialVideoPayload(
     document,
   );
   const rawDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
-  if (family === 'moon-minimax-h3' && rawDuration === undefined) {
-    throw invalidProviderParameter('video', 'duration', '必须显式提供，不能省略');
-  }
-  const duration = rawDuration === undefined ? undefined : Number(rawDuration);
+  const duration =
+    rawDuration === undefined
+      ? undefined
+      : Number.isFinite(Number(rawDuration))
+        ? Number(rawDuration)
+        : rawDuration;
   const h3Family = family === 'moon-minimax-h3' || family === 'minimax-h3';
-  const automaticDuration =
-    family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5';
-  const minimum = family === 'wan3' ? 2 : 4;
-  const maximum = family === 'wan3' || family === 'seedance-2.5' ? 30 : 15;
-  if (
-    duration !== undefined &&
-    !(duration === -1 && automaticDuration) &&
-    (!Number.isSafeInteger(duration) || duration < minimum || duration > maximum)
-  ) {
-    throw invalidProviderParameter(
-      'video',
-      'duration',
-      `必须为 ${minimum} 到 ${maximum} 的整数秒数${automaticDuration ? '，或 -1（自动）' : ''}`,
-    );
-  }
-  const rawResolution = normalizeErrorField(
-    parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+  const resolution = String(
+    parameters.resolution ??
+      parameters.video_resolution ??
+      parameters.videoResolution ??
+      (h3Family ? '768P' : '720P'),
+  ).toUpperCase();
+  const ratio = String(
+    parameters.aspect_ratio ??
+      parameters.aspectRatio ??
+      parameters.ratio ??
+      ((inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length) &&
+      family !== 'moon-minimax-h3'
+        ? 'adaptive'
+        : '16:9'),
   );
-  const resolution = (rawResolution ?? (h3Family ? '768P' : '720P')).toUpperCase();
-  const resolutions =
-    family === 'moon-minimax-h3'
-      ? ['480P', '768P', '1080P', '2K', '4K']
-      : family === 'minimax-h3'
-        ? ['768P', '2K']
-        : family === 'seedance-2' && !/-(?:fast|mini)-/.test(snapshot.modelAlias ?? '')
-          ? ['480P', '720P', '1080P', '4K']
-          : family === 'seedance-2'
-            ? ['480P', '720P']
-            : ['480P', '720P', '1080P'];
-  if (!resolutions.includes(resolution)) {
-    throw invalidProviderParameter('video', 'resolution', `必须为 ${resolutions.join('、')}`);
-  }
   const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
-  const hasReference = Boolean(
-    inputs.firstFrame ||
-    inputs.lastFrame ||
-    inputs.referenceImages.length ||
-    inputs.referenceVideos.length ||
-    inputs.referenceAudios.length,
-  );
-  if (
-    family === 'moon-minimax-h3' &&
-    (resolution === '2K' || resolution === '4K') &&
-    !hasReference
-  ) {
-    throw invalidProviderParameter('video', 'resolution', '2K 或 4K 需要首尾帧或参考素材');
-  }
-  const visual = Boolean(
-    inputs.firstFrame || inputs.referenceImages.length || inputs.referenceVideos.length,
-  );
-  const ratio =
-    normalizeErrorField(parameters.aspect_ratio ?? parameters.aspectRatio) ??
-    (family === 'moon-minimax-h3' ? '16:9' : visual ? 'adaptive' : '16:9');
-  const ratios =
-    family === 'moon-minimax-h3'
-      ? ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', '2:3', '3:2']
-      : ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'];
-  if (family !== 'wan3' && family !== 'moon-minimax-h3') ratios.push('21:9');
-  if (!ratios.includes(ratio) || (family === 'minimax-h3' && ratio === 'adaptive' && !visual)) {
-    throw invalidProviderParameter(
-      'video',
-      'aspectRatio',
-      `必须为 ${ratios.join('、')}${family === 'minimax-h3' ? '；adaptive 需要图片或视频参考' : ''}`,
-    );
-  }
-  const requiresAdaptiveRatio =
-    (family === 'wan3' && mode === 'video_extend') ||
-    (moonSeedance && (mode === 'video_edit' || mode === 'video_extend')) ||
-    (family === 'seedance-2.5' &&
-      (inputs.firstFrame || inputs.lastFrame || mode === 'video_edit' || mode === 'video_extend'));
-  if (requiresAdaptiveRatio && ratio !== 'adaptive') {
-    throw invalidProviderParameter(
-      'video',
-      'aspectRatio',
-      '该模型的当前模式必须选择 adaptive（跟随原素材比例）',
-    );
-  }
-  if (
-    (family === 'seedance-2.5' || moonSeedance) &&
-    mode === 'video_edit' &&
-    (duration !== -1 || ratio !== 'adaptive')
-  ) {
-    throw invalidProviderParameter(
-      'video',
-      'duration/aspectRatio',
-      'Seedance 视频编辑需要 -1（自动时长）和 adaptive（跟随原视频）',
-    );
-  }
   const orderedMedia = orderedVideoMedia(snapshot, inputs);
   const media = orderedMedia.map((input) => {
     const mediaType = input.snapshot.data.mediaType;
@@ -2717,7 +2364,7 @@ function officialVideoPayload(
 }
 
 /**
- * 按最终请求顺序收集媒体，供请求、报价与脱敏记录共用。
+ * 按最终请求顺序收集媒体，供请求与脱敏记录共用。
  * @param snapshot 目标节点的冻结快照，仅读取 resourceRefs 显式顺序。
  * @param inputs 已通过模式/角色预检的输入；首尾帧保持原槽位和身份。
  * @returns 参考媒体按资源条排序、未列项沿旧顺序追加的新数组，不改写输入或角色。
@@ -2781,29 +2428,6 @@ function officialVideoReferenceUrl(
     ) {
       throw inputRoleValueError('video', input.role, '与媒体类型匹配的有效内容');
     }
-    const moonUrlOnly =
-      family === 'moon-minimax-h3' ||
-      modelAlias === 'seedance-2-0-official' ||
-      modelAlias === 'seedance-2-0-fast-official' ||
-      modelAlias === 'seedance-2-0-mini-official' ||
-      family === 'moon-budget' ||
-      family === 'moon-pt' ||
-      family === 'moon-seedance-2.5-official' ||
-      family === 'moon-grok-v1.5-video' ||
-      (family === 'moon-seedance-2' && modelAlias === 'artsdance-2-0-pro-260801');
-    if (
-      moonUrlOnly ||
-      (family === 'wan3' && data.mediaType !== 'image') ||
-      (family.startsWith('seedance-') && data.mediaType === 'video')
-    ) {
-      throw new NewApiProviderError(
-        '该视频模型的参考素材需要外部可访问的素材地址，请配置 S3_PROVIDER_ENDPOINT',
-        {
-          code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
-          retryable: false,
-        },
-      );
-    }
     return value!;
   }
   const remote = value ? providerRemoteUrl(value) : undefined;
@@ -2813,22 +2437,19 @@ function officialVideoReferenceUrl(
   return remote;
 }
 
-/** 将画布中的时长参数规范化为视频接口接受的正整数秒数。 */
-function positiveIntegerParameter(value: unknown): number | undefined {
-  if (typeof value === 'number') {
-    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-  }
-  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return undefined;
-  const parsed = Number(value.trim());
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 function providerVideoReferenceUrl(value: unknown): string | undefined {
   if (!nonEmptyString(value)) return undefined;
   const candidate = value.trim();
   const dataUrl = parseDataUrl(candidate);
   if (dataUrl?.mimeType.startsWith('image/') && isValidBase64(dataUrl.base64)) return candidate;
   return providerRemoteUrl(candidate);
+}
+
+/** 保留未知参数，同时把传统数字字符串规范成供应商常用的数字类型。 */
+function videoParameterValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return /^[-+]?\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : value;
 }
 
 /** OpenAI /v1/videos 创建与查询以顶层 id 为任务身份，其次才兼容 task_id / request_id。 */
@@ -3361,7 +2982,7 @@ function responseRequestId(
   return undefined;
 }
 
-/** 网关查账 ID 必须完整可用；拒绝敏感、超长或需改写的值，不截断后冒充原身份。 */
+/** 网关关联 ID 必须完整可用；拒绝敏感、超长或需改写的值，不截断后冒充原身份。 */
 function verifiedNewApiRequestId(
   value: unknown,
   sensitiveValues: readonly string[] = [],
@@ -3622,106 +3243,10 @@ function mimeTypeFromUrl(url: string, mediaType: 'image' | 'audio'): string | un
   }
 }
 
-const usageAmountKeys = [
-  'amount',
-  'cost',
-  'total_cost',
-  'totalCost',
-  'cost_amount',
-  'costAmount',
-] as const;
-
-const usageCurrencyKeys = [
-  'currency',
-  'cost_currency',
-  'costCurrency',
-  'currency_code',
-  'currencyCode',
-] as const;
-
-type UsageAmountCandidate = {
-  value: unknown;
-  currency?: unknown;
-};
-
-/**
- * Extracts provider-reported usage without estimating a price locally.
- *
- * The raw usage object is copied into metadata so token/media counters remain
- * available for reconciliation. A billable amount is emitted only when both
- * an explicitly named monetary field and a valid three-letter currency are
- * present in the same response.
- */
+/** 将供应商 usage 原样放入元数据，不在 Canvas 内推算或持久化费用。 */
 function parseProviderUsage(payload: unknown): ProviderUsage | undefined {
-  if (!isRecord(payload) || !Object.prototype.hasOwnProperty.call(payload, 'usage')) {
-    return undefined;
-  }
-
-  const rawUsage = payload.usage;
-  const usageRecord = isRecord(rawUsage) ? rawUsage : undefined;
-  const metadata = usageRecord ? { ...usageRecord } : { raw: rawUsage };
-  const candidate = usageRecord ? findUsageAmount(usageRecord) : undefined;
-  const amount = normalizeUsageAmount(candidate?.value);
-  const currency = normalizeUsageCurrency(
-    candidate?.currency ??
-      (usageRecord ? firstDefined(usageCurrencyKeys.map((key) => usageRecord[key])) : undefined) ??
-      firstDefined(usageCurrencyKeys.map((key) => payload[key])),
-  );
-
-  // Do not persist an amount without an explicit, verifiable currency. In
-  // particular, token counts and image dimensions are never treated as cost.
-  if (amount === undefined || currency === undefined) {
-    return { metadata };
-  }
-  return { amount, currency, metadata };
-}
-
-function findUsageAmount(record: Record<string, unknown>): UsageAmountCandidate | undefined {
-  for (const key of usageAmountKeys) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
-    const value = record[key];
-    if (isRecord(value)) {
-      const nestedValue = firstDefined([
-        value.amount,
-        value.value,
-        value.cost,
-        value.total_cost,
-        value.totalCost,
-      ]);
-      if (nestedValue !== undefined) {
-        return {
-          value: nestedValue,
-          currency: firstDefined(usageCurrencyKeys.map((currencyKey) => value[currencyKey])),
-        };
-      }
-    }
-    return { value };
-  }
-  return undefined;
-}
-
-function firstDefined(values: unknown[]): unknown {
-  return values.find((value) => value !== undefined && value !== null);
-}
-
-function normalizeUsageAmount(value: unknown): number | string | undefined {
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || value < 0) return undefined;
-    const serialized = String(value);
-    return /^(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$/.test(serialized) ? value : undefined;
-  }
-  if (typeof value !== 'string') return undefined;
-  const amount = value.trim();
-  // Keep the provider's decimal representation intact for precise ledger
-  // persistence; reject exponent notation and negative/empty values.
-  if (!/^(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$/.test(amount)) return undefined;
-  return amount;
-}
-
-function normalizeUsageCurrency(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const currency = value.trim().toUpperCase();
-  return /^[A-Z]{3}$/.test(currency) ? currency : undefined;
+  if (!isRecord(payload) || !Object.hasOwn(payload, 'usage')) return undefined;
+  return { metadata: isRecord(payload.usage) ? { ...payload.usage } : { raw: payload.usage } };
 }
 
 /**
@@ -4319,19 +3844,6 @@ function providerParameters(
   mediaType: 'text' | 'image' | 'audio',
   modelAlias?: string,
 ): Record<string, unknown> {
-  if (mediaType === 'text') {
-    if (
-      parameters.inferenceStrength !== undefined &&
-      typeof parameters.inferenceStrength !== 'string'
-    )
-      throw invalidProviderParameter(mediaType, 'inferenceStrength', '必须为字符串');
-    if (parameters.n !== undefined && parameters.n !== 1)
-      throw unsupportedProviderParameter(mediaType, 'n');
-    if (parameters.stream !== undefined && parameters.stream !== false)
-      throw unsupportedProviderParameter(mediaType, 'stream');
-  } else {
-    validateMediaParameters(parameters, mediaType);
-  }
   const {
     inferenceStrength,
     prompt: _prompt,
@@ -4375,108 +3887,6 @@ function providerParameters(
   return providerParameters;
 }
 
-/**
- * Input roles belong to the canvas graph, not to the untyped provider
- * parameter bag. A role-shaped parameter would otherwise be serialized as an
- * undocumented top-level field (or silently disappear during JSON encoding),
- * which makes the role impossible to diagnose and can produce different
- * behavior across gateways. Prompt is intentionally excluded because it is
- * mapped to the endpoint's primary prompt/input field above.
- */
-function validateProviderRoleParameters(
-  parameters: Record<string, unknown>,
-  mediaType: MediaType,
-): void {
-  for (const role of providerRoleParameterKeys) {
-    if (!Object.prototype.hasOwnProperty.call(parameters, role)) continue;
-    const value = parameters[role];
-    if (mediaType === 'image' && role === 'style' && (value === 'vivid' || value === 'natural'))
-      continue;
-    if (value === undefined || value === null) continue;
-    if (typeof value === 'string' && value.trim().length === 0) continue;
-    throw unsupportedInputRoleError(mediaType, role);
-  }
-  for (const parameter of undocumentedReferenceParameters) {
-    if (parameters[parameter] !== undefined && parameters[parameter] !== null) {
-      throw unsupportedProviderParameter(mediaType, parameter);
-    }
-  }
-}
-
-/** 未确认的参考参数别名不能绕过图端口校验或静默降级。 */
-const undocumentedReferenceParameters = [
-  'reference_images',
-  'referenceImages',
-  'reference_image',
-  'referenceImage',
-  'negative_prompt',
-  'first_frame',
-  'last_frame',
-  'audio_track',
-  'input_reference',
-  'image',
-  'images',
-  'image_url',
-  'image_urls',
-  'audio',
-  'video',
-] as const;
-
-/** 已有映射及公开图像/TTS 契约的参数边界；不意味着所有模型支持全部选项。 */
-const supportedMediaParameters: Record<'image' | 'audio' | 'video', readonly string[]> = {
-  image: [
-    'prompt',
-    'inferenceStrength',
-    'size',
-    'image_size',
-    'imageSize',
-    'resolution',
-    'quality',
-    'image_quality',
-    'imageQuality',
-    'aspect_ratio',
-    'aspectRatio',
-    'n',
-    'style',
-    'response_format',
-    'output_format',
-    'background',
-    'moderation',
-    'user',
-    'stream',
-  ],
-  audio: ['prompt', 'input', 'inferenceStrength', 'voice', 'response_format', 'speed'],
-  video: [
-    'prompt',
-    'inferenceStrength',
-    'duration',
-    'seconds',
-    'durationSeconds',
-    'resolution',
-    'video_resolution',
-    'videoResolution',
-    'size',
-    'video_size',
-    'videoSize',
-    'quality',
-    'video_quality',
-    'videoQuality',
-    'aspect_ratio',
-    'aspectRatio',
-  ],
-};
-
-/** 返回非重试的未知契约诊断，只包含字段名，不包含输入值或媒体内容。 */
-function unsupportedProviderParameter(
-  mediaType: MediaType,
-  parameter: string,
-): NewApiProviderError {
-  return new NewApiProviderError(`New API ${mediaType} 尚不支持参数：${parameter}`, {
-    code: 'UNSUPPORTED_PROVIDER_PARAMETER',
-    retryable: false,
-  });
-}
-
 /** 返回字段范围或类型错误；约束描述由本地代码提供，不拼接不可信输入值。 */
 function invalidProviderParameter(
   mediaType: MediaType,
@@ -4488,104 +3898,6 @@ function invalidProviderParameter(
     retryable: false,
   });
 }
-
-/**
- * 在生成或恢复前拒绝未知参数、类型错误及无法归档的多输出/流式模式。
- * 图像结果当前仅承载一项；TTS voice 必须显式配置，不猜测默认音色。
- */
-function validateMediaParameters(
-  parameters: Record<string, unknown>,
-  mediaType: 'image' | 'audio' | 'video',
-  automaticVideoDuration = false,
-): void {
-  for (const [parameter, value] of Object.entries(parameters)) {
-    if (value === undefined) continue;
-    if (!supportedMediaParameters[mediaType].includes(parameter))
-      throw unsupportedProviderParameter(mediaType, parameter);
-    if (parameter === 'inferenceStrength') continue;
-    if (parameter === 'n') {
-      if (value !== 1) throw unsupportedProviderParameter(mediaType, parameter);
-    } else if (parameter === 'stream') {
-      if (value !== false) throw unsupportedProviderParameter(mediaType, parameter);
-    } else if (parameter === 'speed') {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.25 || value > 4) {
-        throw invalidProviderParameter(mediaType, parameter, '必须为 0.25 到 4 的有限数值');
-      }
-    } else if (['duration', 'seconds', 'durationSeconds'].includes(parameter)) {
-      if (
-        !(automaticVideoDuration && (value === -1 || value === '-1')) &&
-        positiveIntegerParameter(value) === undefined
-      )
-        throw invalidProviderParameter(mediaType, parameter, '必须为正整数秒数');
-    } else if (!nonEmptyString(value)) {
-      throw invalidProviderParameter(mediaType, parameter, '必须为非空字符串');
-    }
-  }
-  const formats =
-    mediaType === 'audio' ? ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] : ['url', 'b64_json'];
-  if (
-    parameters.response_format !== undefined &&
-    !formats.includes(String(parameters.response_format))
-  ) {
-    throw invalidProviderParameter(mediaType, 'response_format', '不在已支持格式范围内');
-  }
-  if (
-    mediaType === 'audio' &&
-    !['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].includes(String(parameters.voice))
-  ) {
-    throw invalidProviderParameter(mediaType, 'voice', '必须显式选择已确认的音色');
-  }
-  if (
-    mediaType === 'image' &&
-    parameters.output_format !== undefined &&
-    !['png', 'jpeg', 'webp'].includes(String(parameters.output_format))
-  ) {
-    throw invalidProviderParameter(mediaType, 'output_format', '不在已支持格式范围内');
-  }
-  if (
-    mediaType === 'image' &&
-    parameters.background === 'transparent' &&
-    parameters.output_format === 'jpeg'
-  ) {
-    throw invalidProviderParameter(mediaType, 'background', '透明背景不能使用 jpeg 输出');
-  }
-  const aliasGroups =
-    mediaType === 'image'
-      ? [] // 图片别名按解析后的尺寸比较，允许 resolution=4k 与等价的显式 size 共存。
-      : mediaType === 'video'
-        ? [
-            ['duration', 'seconds', 'durationSeconds'],
-            ['resolution', 'video_resolution', 'videoResolution'],
-            ['size', 'video_size', 'videoSize'],
-            ['quality', 'video_quality', 'videoQuality'],
-            ['aspect_ratio', 'aspectRatio'],
-          ]
-        : [['prompt', 'input']];
-  for (const aliases of aliasGroups) {
-    const values = aliases
-      .filter((alias) => parameters[alias] !== undefined)
-      .map((alias) =>
-        alias === 'duration' || alias === 'seconds' || alias === 'durationSeconds'
-          ? Number(parameters[alias])
-          : String(parameters[alias]).trim(),
-      );
-    if (new Set(values).size > 1)
-      throw invalidProviderParameter(mediaType, aliases.join('/'), '别名值冲突');
-  }
-}
-
-const providerRoleParameterKeys = [
-  'negativePrompt',
-  'content',
-  'style',
-  'character',
-  'referenceImage',
-  'firstFrame',
-  'lastFrame',
-  'audioTrack',
-  'transcript',
-  'mask',
-] as const satisfies readonly PortRole[];
 
 type PromptSource = {
   value: string;
@@ -4606,6 +3918,7 @@ type ParsedProviderDataUrl = {
 };
 
 type VideoInputMapping = {
+  allInputs?: RunInputSnapshot[];
   prompt?: RunInputSnapshot;
   negativePrompt?: RunInputSnapshot;
   firstFrame?: RunInputSnapshot;
@@ -4755,68 +4068,14 @@ export function resolveProviderMentions(snapshot: RunSnapshot): ResolvedMention[
   });
 }
 
-/** 不含资产地址或身份的输入描述，供视频报价复用实际请求的角色映射。 */
-export type VideoEstimateMedia =
-  | { type: 'image'; role: 'first_frame' | 'last_frame' | 'reference_image' }
-  | { type: 'video'; role: 'reference_video' }
-  | { type: 'audio'; role: 'reference_audio' };
+/** 不含资产地址或身份的输入描述，供视频请求记录复用实际角色映射。 */
 
 /**
  * 根据单节点快照计算实际发送的媒体描述，沿用 Provider 的版本去重及模式预检。
  * @param snapshot 含直接连线和冻结提及的节点快照；无需水合资产内容。
  * @returns 按请求顺序排列的类型/角色，不包含 URL、资产 ID 或二进制内容。
- * @throws 提及身份缺失、模式不支持或输入组合不合法时拒绝报价；不读取资产或发送请求。
+ * @throws 提及身份缺失、模式不支持或输入组合不合法时拒绝生成请求；不读取资产或发送请求。
  */
-export function describeVideoInputMedia(snapshot: RunSnapshot): VideoEstimateMedia[] {
-  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-  const resolved = (snapshot.promptMentions ?? []).map((mention): ResolvedMention => ({
-    ...mention,
-    nodeId: mention.nodeId ?? snapshot.targetNodeId,
-    source: {
-      kind: 'remote-url',
-      mimeType: `${mention.mediaType}/placeholder`,
-      url: 'https://canvas-estimate.invalid/media',
-    },
-  }));
-  const estimateSnapshot = {
-    ...snapshot,
-    inputs: snapshot.inputs.map((input) => ({
-      ...input,
-      snapshot: {
-        ...input.snapshot,
-        data: {
-          ...input.snapshot.data,
-          contentUrl: 'https://canvas-estimate.invalid/media',
-        },
-      },
-    })),
-  };
-  const absorbed = collectAbsorbedVideoMentionInputs(estimateSnapshot, resolved);
-  assertPromptMentionsUnsupported(
-    'video',
-    estimateSnapshot,
-    target?.data.promptDocument,
-    resolved,
-    absorbed.absorbedMentionIds,
-  );
-  const inputs = mapVideoInputs(estimateSnapshot, absorbed.inputs);
-  return orderedVideoMedia(estimateSnapshot, inputs).map((input) => {
-    const type = input.snapshot.data.mediaType;
-    if (type === 'image')
-      return {
-        type,
-        role:
-          input.role === 'firstFrame'
-            ? 'first_frame'
-            : input.role === 'lastFrame'
-              ? 'last_frame'
-              : 'reference_image',
-      };
-    if (type === 'video') return { type, role: 'reference_video' };
-    if (type === 'audio') return { type, role: 'reference_audio' };
-    throw unsupportedInputRoleError('video', input.role, '媒体预估不能包含文字输入');
-  });
-}
 
 /**
  * 将目标节点的结构化提示词转换为 New API Chat Completions 内容块。
@@ -4989,44 +4248,22 @@ function assertPromptMentionsUnsupported(
   resolvedMentions: readonly ResolvedMention[] | undefined,
   absorbedMentionIds: ReadonlySet<string> = new Set(),
 ): void {
-  const targetNodeId = snapshot.targetNodeId;
-  const documentMentions =
-    document?.blocks.flatMap((block) =>
-      block.type === 'mention' && !absorbedMentionIds.has(block.mentionId) ? [block] : [],
-    ) ?? [];
-  const frozenMentions = (snapshot.promptMentions ?? []).filter(
-    (mention) =>
-      (mention.nodeId ?? targetNodeId) === targetNodeId &&
-      !absorbedMentionIds.has(mention.mentionId),
-  );
-  const targetResolved = (resolvedMentions ?? []).filter(
-    (mention) => mention.nodeId === targetNodeId && !absorbedMentionIds.has(mention.mentionId),
-  );
-
-  if (documentMentions.length === 0 && frozenMentions.length === 0 && targetResolved.length === 0) {
-    return;
+  const nodeId = snapshot.targetNodeId;
+  for (const mention of (snapshot.promptMentions ?? []).filter(
+    (mention) => (mention.nodeId ?? nodeId) === nodeId,
+  )) {
+    if (
+      !(resolvedMentions ?? []).some(
+        (resolved) => resolved.nodeId === nodeId && resolved.mentionId === mention.mentionId,
+      )
+    )
+      throw promptMentionMappingError(
+        snapshot,
+        mention,
+        'RESOURCE_MENTION_RESOLUTION_MISSING',
+        'Worker 未提供冻结版本内容',
+      );
   }
-
-  const firstDocumentMention = documentMentions[0];
-  const firstIdentity = firstDocumentMention ?? frozenMentions[0] ?? targetResolved[0];
-  if (
-    firstDocumentMention &&
-    !targetResolved.some((mention) => mention.mentionId === firstDocumentMention.mentionId)
-  ) {
-    throw promptMentionMappingError(
-      snapshot,
-      firstDocumentMention,
-      'RESOURCE_MENTION_RESOLUTION_MISSING',
-      'Worker 未提供冻结版本内容',
-    );
-  }
-  if (!firstIdentity) return;
-  throw promptMentionMappingError(
-    snapshot,
-    firstIdentity,
-    'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
-    `当前项目尚未接通 New API ${mediaType} 的这种资源提及输入映射`,
-  );
 }
 
 function mentionContentPart(snapshot: RunSnapshot, mention: ResolvedMention): ChatContentPart {
@@ -5104,15 +4341,10 @@ function mentionContentPart(snapshot: RunSnapshot, mention: ResolvedMention): Ch
         );
       }
       const format = formatFromMimeType(mimeType);
-      if (format !== 'wav' && format !== 'mp3') {
-        throw promptMentionMappingError(
-          snapshot,
-          mention,
-          'RESOURCE_MENTION_PROVIDER_MAPPING_UNSUPPORTED',
-          `无法从 MIME 类型 ${mimeType} 确定 input_audio 格式`,
-        );
-      }
-      return { type: 'input_audio', input_audio: { data: dataUrl.payload, format } };
+      return {
+        type: 'input_audio',
+        input_audio: { data: dataUrl.payload, format: format ?? mimeType.split('/')[1]! },
+      };
     }
     case 'video':
       return { type: 'video_url', video_url: mention.source.dataUrl.trim() };
@@ -5196,22 +4428,11 @@ function resolveSinglePromptInput(
   mediaType: 'image' | 'audio',
   nodePromptDocument?: PromptDocument,
 ): string {
-  let promptInput: RunInputSnapshot | undefined;
-  for (const input of orderedRunInputs(snapshot)) {
-    // 文本节点常会连接到目标的内容端口；图片和 TTS 接口都将它视为主提示词，
-    // 但二进制或参考媒体仍在这里拒绝，避免误发到文字字段。
-    if (input.role !== 'prompt' && input.role !== 'content') {
-      throw unsupportedInputRoleError(mediaType, input.role);
-    }
-    if (promptInput) throw inputRoleCardinalityError(mediaType, 'prompt');
-    promptInput = input;
-  }
-
-  return resolveMappedPromptInput(
-    resolvePromptSource(snapshot, label, nodePrompt, mediaType, nodePromptDocument),
-    promptInput,
-    mediaType,
-  );
+  const texts = orderedRunInputs(snapshot)
+    .filter((input) => input.snapshot.data.mediaType === 'text')
+    .map((input) => inputTextValue(input, mediaType));
+  const source = resolvePromptSource(snapshot, label, nodePrompt, mediaType, nodePromptDocument);
+  return [...(source.explicit || texts.length === 0 ? [source.value] : []), ...texts].join('\n');
 }
 
 const imageEditSourceRoles = new Set<PortRole>(['imageEdit', 'content', 'referenceImage']);
@@ -5223,14 +4444,12 @@ const imageEditSourceRoles = new Set<PortRole>(['imageEdit', 'content', 'referen
  * @returns 可直接写入 FormData 的字符串；显式空值返回 undefined。
  */
 function imageEditFormValue(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === 'string') return value.trim() ? value : undefined;
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  throw new NewApiProviderError('New API 图片编辑参数必须为标量', {
-    code: 'IMAGE_EDIT_PARAMETER_UNSUPPORTED',
-    retryable: false,
-  });
+  if (value === undefined) return undefined;
+  return typeof value === 'string'
+    ? value
+    : typeof value === 'object'
+      ? JSON.stringify(value)
+      : String(value);
 }
 
 /**
@@ -5242,27 +4461,6 @@ function imageEditFormValue(value: unknown): string | undefined {
  * @param input 作为原图的输入。
  * @returns 已冻结能力，未声明时返回 undefined；格式不符合声明时抛错。
  */
-function assertImageEditSupported(
-  snapshot: RunSnapshot,
-  input: RunInputSnapshot,
-): ImageEditCapability | undefined {
-  const capability = snapshot.imageEditCapability;
-  if (!capability) return undefined;
-  const mediaType = input.snapshot.data.mimeType ?? '';
-  if (
-    capability.mimeTypes &&
-    capability.mimeTypes.length > 0 &&
-    mediaType &&
-    !capability.mimeTypes.some((allowed) => allowed.toLowerCase() === mediaType.toLowerCase())
-  ) {
-    throw inputRoleValueError(
-      'image',
-      input.role,
-      `模型仅声明支持 ${capability.mimeTypes.join('、')} 格式的原图`,
-    );
-  }
-  return capability;
-}
 
 /**
  * 节点声明了图片编辑来源却没有可用的原图输入时拒绝请求。
@@ -5316,7 +4514,7 @@ function mapImageGenerationInputs(
   nodePromptDocument?: PromptDocument,
   resolvedMentions?: readonly ResolvedMention[],
 ): ImageGenerationMapping {
-  let promptInput: RunInputSnapshot | undefined;
+  const promptInputs: RunInputSnapshot[] = [];
   const images: ImageSourceInput[] = [];
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   const editSource = imageEditSourceSchema.safeParse(target?.data.imageEditSource);
@@ -5324,11 +4522,10 @@ function mapImageGenerationInputs(
   for (const input of orderedRunInputs(snapshot)) {
     const sourceType = input.snapshot.data.mediaType;
     if (input.role === 'prompt' || (input.role === 'content' && sourceType === 'text')) {
-      if (promptInput) throw inputRoleCardinalityError('image', 'prompt');
-      promptInput = input;
+      promptInputs.push(input);
       continue;
     }
-    if (imageEditSourceRoles.has(input.role) && sourceType === 'image') {
+    if (sourceType === 'image') {
       const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
       const editVersion =
         assetId &&
@@ -5351,14 +4548,6 @@ function mapImageGenerationInputs(
       images.push({ ...input, assetVersion: input.sourceAssetVersion ?? editVersion });
       continue;
     }
-    if (input.role === 'content') {
-      throw unsupportedInputRoleError(
-        'image',
-        'content',
-        `上游媒体类型 ${sourceType} 无法映射为文字或图片`,
-      );
-    }
-    throw unsupportedInputRoleError('image', input.role);
   }
 
   images.push(...imageMentionInputs(snapshot, nodePromptDocument, resolvedMentions));
@@ -5384,12 +4573,19 @@ function mapImageGenerationInputs(
     uniqueImages.push(input);
   }
 
+  const promptSource = resolvePromptSource(
+    snapshot,
+    label,
+    nodePrompt,
+    'image',
+    nodePromptDocument,
+  );
+  const connectedPrompt = promptInputs.map((input) => inputTextValue(input, 'image')).join('\n');
   return {
-    prompt: resolveMappedPromptInput(
-      resolvePromptSource(snapshot, label, nodePrompt, 'image', nodePromptDocument),
-      promptInput,
-      'image',
-    ),
+    prompt:
+      promptSource.explicit && connectedPrompt
+        ? `${promptSource.value}\n${connectedPrompt}`
+        : connectedPrompt || promptSource.value,
     images: orderResourceReferenceInputs(snapshot, uniqueImages, (input) => input.assetVersion),
   };
 }
@@ -5567,9 +4763,9 @@ function resolveMappedPromptInput(
   if (!input) return prompt.value;
   // 文本节点接入默认 content 端口时，连接内容就是用户明确选择的提示词；
   // 它应覆盖目标节点上遗留的提示词，避免再次触发角色冲突。
-  if (input.role === 'content') return inputTextValue(input, mediaType);
-  if (prompt.explicit) throw inputRoleConflictError(mediaType, 'prompt');
-  return inputTextValue(input, mediaType);
+  const connected = inputTextValue(input, mediaType);
+  if (input.role === 'content') return connected;
+  return prompt.explicit ? `${prompt.value}\n${connected}` : connected;
 }
 
 function resolveRequiredVideoPrompt(
@@ -5580,12 +4776,7 @@ function resolveRequiredVideoPrompt(
   nodePromptDocument?: PromptDocument,
 ): string {
   const prompt = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
-  if (!prompt.explicit && !input) {
-    throw new NewApiProviderError('New API video 需要 prompt', {
-      code: 'VIDEO_PROMPT_REQUIRED',
-      retryable: false,
-    });
-  }
+  if (!prompt.explicit && !input) return prompt.value;
   return resolveMappedPromptInput(prompt, input, 'video');
 }
 
@@ -5653,6 +4844,7 @@ function mapVideoInputs(
     inputImageUrl(input, 'video');
   }
   return {
+    allInputs: [...snapshot.inputs, ...extraInputs],
     prompt: precheck.inputSet.prompt,
     negativePrompt: precheck.inputSet.negativePrompt,
     firstFrame: precheck.inputSet.firstFrame,
@@ -5712,38 +4904,34 @@ function inputTextValue(
 function chatInputContent(input: RunInputSnapshot): string | ChatContentPart[] {
   const data = input.snapshot.data;
   if (data.mediaType === 'text') return inputTextValue(input, 'text');
-  if (data.mediaType !== 'image' || input.role !== 'content') {
-    throw new NewApiProviderError(
-      `当前项目 New API 文字适配器尚未接通 ${data.mediaType} 到 ${input.role} 的连线输入映射`,
-      { code: 'UNSUPPORTED_INPUT_ROLE', retryable: false },
-    );
-  }
-  const dataUrl = nonEmptyString(data.contentUrl) ? data.contentUrl.trim() : undefined;
-  const parsed = dataUrl ? parseDataUrl(dataUrl) : undefined;
+  const url = data.contentUrl;
+  const parsed = typeof url === 'string' ? parseDataUrl(url) : undefined;
   const mimeType = normalizedMimeType(data.mimeType);
   if (
-    !dataUrl ||
+    !url ||
     !parsed ||
-    !mimeType?.startsWith('image/') ||
+    !mimeType?.startsWith(data.mediaType + '/') ||
     parsed.mimeType !== mimeType ||
     !isValidBase64(parsed.base64)
-  ) {
-    throw new NewApiProviderError(
-      '文字节点的图片连线缺少有效的已水合图片数据，或数据 URL 与资源 MIME 类型不一致',
-      { code: 'INPUT_MEDIA_INVALID', retryable: false },
-    );
-  }
-  return [{ type: 'image_url', image_url: { url: dataUrl } }];
+  )
+    throw new NewApiProviderError('连线媒体缺少有效的已水合内容或 MIME 类型不匹配', {
+      code: 'INPUT_MEDIA_INVALID',
+      retryable: false,
+    });
+  if (data.mediaType === 'image') return [{ type: 'image_url', image_url: { url } }];
+  if (data.mediaType === 'video') return [{ type: 'video_url', video_url: url }];
+  return [
+    {
+      type: 'input_audio',
+      input_audio: {
+        data: parsed.base64,
+        format: formatFromMimeType(mimeType) ?? mimeType.split('/')[1]!,
+      },
+    },
+  ];
 }
 
 function inputImageUrl(input: RunInputSnapshot, targetMediaType: 'video'): string {
-  if (input.snapshot.data.mediaType !== 'image') {
-    throw unsupportedInputRoleError(
-      targetMediaType,
-      input.role,
-      `上游媒体类型 ${input.snapshot.data.mediaType} 无法映射为图片`,
-    );
-  }
   const url = providerVideoReferenceUrl(input.snapshot.data.contentUrl);
   if (!url) throw inputRoleValueError(targetMediaType, input.role, '可发送的图片 URL');
   return url;
@@ -5809,3 +4997,128 @@ function inputRoleValueError(
   });
 }
 
+/** 将已冻结连线和提及保序映射到开放媒体内容，缺失内容仍明确失败。 */
+function endpointReferenceContent(
+  snapshot: RunSnapshot,
+  mentions?: readonly ResolvedMention[],
+): Record<string, unknown>[] {
+  const entries: Array<{ mediaType: MediaType; role: string; url: string | undefined }> =
+    orderedRunInputs(snapshot)
+      .filter((input) => input.snapshot.data.mediaType !== 'text')
+      .map((input) => ({
+        mediaType: input.snapshot.data.mediaType,
+        role: input.role,
+        url: input.snapshot.data.contentUrl,
+      }));
+  for (const mention of mentions ?? []) {
+    if (mention.nodeId !== snapshot.targetNodeId) continue;
+    const url = mention.source.kind === 'data-url' ? mention.source.dataUrl : mention.source.url;
+    if (mention.mediaType === 'text')
+      entries.push({
+        mediaType: 'text',
+        role: mention.semanticRole ?? 'content',
+        url: JSON.stringify(mentionContentPart(snapshot, mention)),
+      });
+    else
+      entries.push({ mediaType: mention.mediaType, role: mention.semanticRole ?? 'content', url });
+  }
+  return entries.map(({ mediaType, role, url }) => {
+    if (typeof url !== 'string' || !url)
+      throw new NewApiProviderError('引用缺少已冻结素材内容', {
+        code: 'INPUT_MEDIA_INVALID',
+        retryable: false,
+      });
+    if (mediaType === 'text') return { ...JSON.parse(url), role };
+    return { type: mediaType + '_url', role, [mediaType + '_url']: { url } };
+  });
+}
+
+/** 合并开放参数与既有视频协议映射，用户扩展字段、假值及额外媒体不被丢弃。 */
+function openVideoRequestBody(
+  snapshot: RunSnapshot,
+  mapped: Record<string, unknown>,
+  inputs: VideoInputMapping,
+): Record<string, unknown> {
+  const parameters = { ...snapshot.parameters };
+  delete parameters.inferenceStrength;
+  delete parameters.prompt;
+  for (const [alias, key] of [
+    ['durationSeconds', 'duration'],
+    ['video_resolution', 'resolution'],
+    ['videoResolution', 'resolution'],
+    ['video_size', 'size'],
+    ['videoSize', 'size'],
+    ['video_quality', 'quality'],
+    ['videoQuality', 'quality'],
+    ['aspectRatio', 'aspect_ratio'],
+  ] as const) {
+    if (parameters[alias] !== undefined) parameters[key] = videoParameterValue(parameters[alias]);
+    delete parameters[alias];
+  }
+  const body: Record<string, unknown> = { ...mapped, model: snapshot.modelAlias };
+  for (const [key, value] of Object.entries(parameters)) {
+    if (key === 'metadata') continue;
+    const mappedMetadata = isRecord(mapped.metadata) ? mapped.metadata : {};
+    if (
+      key === 'resolution' &&
+      (mapped.resolution !== undefined || mappedMetadata.resolution !== undefined)
+    )
+      continue;
+    if (
+      (key === 'aspect_ratio' || key === 'ratio') &&
+      (mapped.ratio !== undefined ||
+        mapped.aspect_ratio !== undefined ||
+        mappedMetadata.ratio !== undefined)
+    )
+      continue;
+    if ((key === 'duration' || key === 'seconds') && mapped.duration !== undefined) continue;
+    if (Array.isArray(value) && Array.isArray(mapped[key]))
+      body[key] = [...(mapped[key] as unknown[]), ...value];
+    else body[key] = value;
+  }
+  const metadata = {
+    ...(isRecord(mapped.metadata) ? mapped.metadata : {}),
+    ...(isRecord(parameters.metadata) ? parameters.metadata : {}),
+  };
+  const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
+  if (
+    !isRecord(mapped.metadata) &&
+    !Array.isArray(mapped.content) &&
+    (mode === 'video_edit' || mode === 'video_extend')
+  )
+    metadata.omni_reference_task_type = mode === 'video_edit' ? 'edit' : 'extend';
+  const mappedInputs = new Set([
+    inputs.prompt,
+    inputs.negativePrompt,
+    ...orderedVideoMedia(snapshot, inputs),
+  ]);
+  const additional = (inputs.allInputs ?? []).filter((input) => !mappedInputs.has(input));
+  const extra = additional.map((input) =>
+    input.snapshot.data.mediaType === 'text'
+      ? { type: 'text', role: input.role, text: inputTextValue(input, 'video') }
+      : {
+          type: input.snapshot.data.mediaType + '_url',
+          role: input.role,
+          [input.snapshot.data.mediaType + '_url']: {
+            url: officialVideoReferenceUrl(input, 'open', snapshot.modelAlias),
+          },
+        },
+  );
+  const generic = !isRecord(mapped.metadata) && !Array.isArray(mapped.content);
+  if (generic) {
+    for (const input of [...inputs.referenceVideos, ...inputs.referenceAudios])
+      extra.push({
+        type: input.snapshot.data.mediaType + '_url',
+        role: input.role,
+        [input.snapshot.data.mediaType + '_url']: {
+          url: officialVideoReferenceUrl(input, 'open', snapshot.modelAlias),
+        },
+      });
+    if (inputs.negativePrompt)
+      body.negative_prompt = inputTextValue(inputs.negativePrompt, 'video');
+  }
+  if (extra.length)
+    metadata.content = [...(Array.isArray(metadata.content) ? metadata.content : []), ...extra];
+  if (Object.keys(metadata).length) body.metadata = metadata;
+  return body;
+}

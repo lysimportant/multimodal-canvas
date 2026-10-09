@@ -4,16 +4,103 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      r2_integration:
+        description: 使用专用测试 R2 bucket 执行真实存储集成（会写入并清理测试对象）
+        type: boolean
+        default: false
 
 jobs:
   validate:
-    name: 代码质量检查
+    name: 代码与部署配置
     runs-on: ubuntu-latest
     env:
       WORKER_PROVIDER: mock
       RUN_SERVICE: memory
-      NEW_API_BASE_URL: ''
-      NEW_API_API_KEY: ''
+      VITE_API_BASE_URL: http://localhost:3000
+      WEB_PORT: '5173'
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.12.0
+          cache: pnpm
+      - name: 安装锁定依赖并生成 Prisma Client
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm db:generate
+      - name: 安装媒体工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ffmpeg openssl
+      - name: 格式与 lint
+        run: |
+          pnpm format:check
+          pnpm lint
+      - name: 构建与类型检查
+        run: |
+          pnpm build
+          pnpm typecheck
+      - name: 单元与运行产物测试
+        run: |
+          pnpm test:runtime
+          pnpm exec turbo run test --force --concurrency=1 --continue=dependencies-successful -- --maxWorkers=1 --minWorkers=1
+      - name: R2 必选、Neon 可选、密钥持久化和代理日志回归
+        run: node --test scripts/docker/*.test.mjs
+      - name: 开发设施配置检查（仅使用合成密码）
+        env:
+          COMPOSE_DISABLE_ENV_FILE: '1'
+          POSTGRES_PASSWORD: synthetic-ci-postgres
+          REDIS_PASSWORD: synthetic-ci-redis
+        run: docker compose -f docker-compose.dev.yml config --quiet
+      - name: Redis 跨进程限流
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:6379
+          TEST_REDIS_NAMESPACE: ci-rate-limit-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          pnpm --filter @multimodal-canvas/api exec vitest run
+          --config vitest.rate-limit-integration.config.ts --maxWorkers=1 --minWorkers=1
+      - name: 未执行的外部验收说明
+        if: ${{ always() }}
+        run: |
+          echo '常规 CI 不使用真实 R2 或 New API；不能视为登录、供应商生成或生产验收。' >> "$GITHUB_STEP_SUMMARY"
+
+  r2_integration:
+    name: 显式 R2 集成验收
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.r2_integration }}
+    runs-on: ubuntu-latest
+    env:
+      WORKER_PROVIDER: mock
+      RUN_SERVICE: memory
+      VITE_API_BASE_URL: http://localhost:3000
+      WEB_PORT: '5173'
+      TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      TEST_REDIS_NAMESPACE: canvas-r2-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      TEST_S3_ENDPOINT: ${{ secrets.TEST_R2_ENDPOINT }}
+      TEST_S3_BUCKET: ${{ secrets.TEST_R2_BUCKET }}
+      TEST_S3_ACCESS_KEY: ${{ secrets.TEST_R2_ACCESS_KEY }}
+      TEST_S3_SECRET_KEY: ${{ secrets.TEST_R2_SECRET_KEY }}
+      TEST_S3_REGION: auto
+      TEST_S3_PREFIX: integration/ci/${{ github.run_id }}/${{ github.run_attempt }}
+      TEST_S3_CONFIRMED_ISOLATED: 'true'
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+      REQUIRE_INTEGRATION_SERVICES: 'true'
+      REQUIRE_PRODUCTION_ENTRY: 'true'
+      MEDIA_REAL_TESTS: 'true'
+      MEDIA_OPS_INTEGRATION: 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -21,275 +108,78 @@ jobs:
           POSTGRES_DB: multimodal_canvas_ci
           POSTGRES_USER: ci_user
           POSTGRES_PASSWORD: ci_password
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U ci_user -d multimodal_canvas_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
+          --health-interval 5s --health-timeout 3s --health-retries 20
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
+          --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - name: 检出代码
-        id: checkout
-        uses: actions/checkout@v4
-
-      - name: 配置 pnpm
-        id: pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 11.19.0
-
-      - name: 配置 Node.js
-        id: node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24.12.0
           cache: pnpm
-
-      - name: 安装依赖
-        id: install
-        run: pnpm install --frozen-lockfile
-
-      - name: 配置隔离媒体验收工具
-        id: media_tools
+      - name: 确认专用 R2 测试配置
         run: |
+          node --input-type=module <<'NODE'
+          for (const name of ['TEST_S3_ENDPOINT', 'TEST_S3_BUCKET', 'TEST_S3_ACCESS_KEY', 'TEST_S3_SECRET_KEY']) {
+            if (!process.env[name]?.trim()) throw new Error(`缺少 ${name}，未运行外部验收。`);
+          }
+          const endpoint = new URL(process.env.TEST_S3_ENDPOINT);
+          if (endpoint.protocol !== 'https:' || !endpoint.hostname.endsWith('.r2.cloudflarestorage.com')) {
+            throw new Error('测试对象存储必须为 Cloudflare R2。');
+          }
+          NODE
+      - name: 安装、生成与构建
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm db:generate
+          pnpm build
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes ffmpeg openssl
-          ffmpeg -version
-          ffprobe -version
-          openssl version
-
-      - name: 检查代码格式
-        id: format
-        run: pnpm format:check
-
-      - name: 运行各包 lint
-        id: lint
-        run: pnpm lint
-
-      - name: 构建项目及集成测试依赖
-        id: build
-        run: pnpm build
-
-      - name: 检查 TypeScript 类型
-        id: typecheck
-        run: pnpm typecheck
-
-      - name: 运行测试
-        id: test
-        run: pnpm exec turbo run test --force --concurrency=1 --continue=dependencies-successful -- --maxWorkers=1 --minWorkers=1
-
-      - name: 验证隔离数据库迁移
-        id: integration_migrate
-        env:
-          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
+      - name: 验证 Prisma 并确认历史迁移已应用
         run: |
+          DATABASE_URL="$TEST_DATABASE_URL" pnpm db:validate
           DATABASE_URL="$TEST_DATABASE_URL" pnpm exec prisma migrate deploy
-          pnpm exec prisma migrate diff \
-            --from-url "$TEST_DATABASE_URL" \
-            --to-schema-datamodel prisma/schema.prisma \
-            --exit-code
-
-      - name: 验证 Redis 跨进程全局限流
-        id: rate_limit_integration
-        env:
-          TEST_REDIS_URL: redis://127.0.0.1:6379
-          TEST_REDIS_NAMESPACE: ci-rate-limit-${{ github.run_id }}-${{ github.run_attempt }}
+          DATABASE_URL="$TEST_DATABASE_URL" pnpm exec prisma migrate status
+      - name: 数据、队列与真实 R2 集成
         run: >-
-          pnpm --filter @multimodal-canvas/api exec vitest run
-          --config vitest.rate-limit-integration.config.ts
-          --reporter=default --reporter=json --outputFile=../../test-results/ci/rate-limit.json
-
-      - name: 验证开发 Compose 配置
-        id: compose_config
-        env:
-          COMPOSE_PROJECT_NAME: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          MINIO_ROOT_USER: ci-minio-user
-          MINIO_ROOT_PASSWORD: ci-minio-password
-          S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          docker compose -f docker-compose.dev.yml config --quiet
-          compose_images="$(docker compose -f docker-compose.dev.yml config --images)"
-          printf '%s\n' "$compose_images" | grep -Fx \
-            'quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
-          printf '%s\n' "$compose_images" | grep -Fx \
-            'quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
-
-      - name: 验证并初始化隔离 MinIO bucket
-        id: minio_setup
-        env:
-          COMPOSE_PROJECT_NAME: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          MINIO_ROOT_USER: ci-minio-user
-          MINIO_ROOT_PASSWORD: ci-minio-password
-          S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          docker compose -f docker-compose.dev.yml up --detach minio
-          docker compose -f docker-compose.dev.yml run --rm --no-deps minio-init
-
-          docker compose -f docker-compose.dev.yml stop minio
-          if docker compose -f docker-compose.dev.yml run --rm --no-deps \
-            -e MINIO_INIT_MAX_ATTEMPTS=2 minio-init; then
-            echo "MinIO initializer unexpectedly succeeded while MinIO was stopped" >&2
-            exit 1
-          fi
-
-          docker compose -f docker-compose.dev.yml up --detach minio
-          docker compose -f docker-compose.dev.yml run --rm --no-deps minio-init
-
-      - name: 运行隔离 Prisma、Redis 与 MinIO 集成测试
-        id: integration_test
-        env:
-          REQUIRE_INTEGRATION_SERVICES: 'true'
-          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
-          TEST_REDIS_URL: redis://127.0.0.1:6379/15
-          TEST_REDIS_NAMESPACE: multimodal-canvas:ci:${{ github.run_id }}:${{ github.run_attempt }}
-          TEST_S3_ENDPOINT: http://127.0.0.1:9000
-          TEST_S3_REGION: us-east-1
-          TEST_S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_S3_ACCESS_KEY: ci-minio-user
-          TEST_S3_SECRET_KEY: ci-minio-password
-          TEST_S3_PREFIX: integration/${{ github.run_id }}/${{ github.run_attempt }}
-        run: >-
-          pnpm --filter @multimodal-canvas/api test:integration
-          --maxWorkers=1 --minWorkers=1
+          pnpm --filter @multimodal-canvas/api test:integration --maxWorkers=1 --minWorkers=1
           --reporter=default --reporter=json --outputFile=../../test-results/ci/integration.json
-
-      - name: 验证本地 TLS 代理到生产模式 API 入口
-        id: production_entry
-        env:
-          REQUIRE_PRODUCTION_ENTRY: 'true'
-          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
-          TEST_REDIS_URL: redis://127.0.0.1:6379/15
-          TEST_S3_ENDPOINT: http://127.0.0.1:9000
-          TEST_S3_REGION: us-east-1
-          TEST_S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_S3_ACCESS_KEY: ci-minio-user
-          TEST_S3_SECRET_KEY: ci-minio-password
-        run: >-
-          pnpm --filter @multimodal-canvas/api exec vitest run src/production-proxy.test.ts
-          --maxWorkers=1 --minWorkers=1
-          --reporter=default --reporter=json --outputFile=../../test-results/ci/production-entry.json
-
-      - name: 验证真实媒体处理与隔离 S3 归档
-        id: media_acceptance
-        env:
-          MEDIA_REAL_TESTS: 'true'
-          MEDIA_OPS_INTEGRATION: 'true'
-          TEST_DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/multimodal_canvas_ci?schema=public
-          TEST_S3_ENDPOINT: http://127.0.0.1:9000
-          TEST_S3_REGION: us-east-1
-          TEST_S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_S3_ACCESS_KEY: ci-minio-user
-          TEST_S3_SECRET_KEY: ci-minio-password
+      - name: 生产模式 TLS 代理与真实媒体归档
         run: >-
           pnpm --filter @multimodal-canvas/api exec vitest run
-          src/media.real.test.ts src/media-ops.integration.test.ts
-          --maxWorkers=1 --minWorkers=1
-          --reporter=default --reporter=json --outputFile=../../test-results/ci/media.json
-
-      - name: 确认独立验收套件没有跳过或遗漏
-        id: integration_coverage
+          src/production-proxy.test.ts src/media.real.test.ts src/media-ops.integration.test.ts
+          --maxWorkers=1 --minWorkers=1 --reporter=default --reporter=json
+          --outputFile=../../test-results/ci/media-entry.json
+      - name: 确认无跳过并保存验收范围
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
-          for (const name of ['rate-limit', 'integration', 'production-entry', 'media']) {
+          for (const name of ['integration', 'media-entry']) {
             const report = JSON.parse(readFileSync(`test-results/ci/${name}.json`, 'utf8'));
-            assert.equal(report.success, true, `${name}: 测试失败`);
-            assert.ok(report.numTotalTests > 0, `${name}: 没有执行测试`);
-            assert.equal(report.numPendingTests, 0, `${name}: 存在跳过的测试`);
-            assert.equal(report.numTodoTests ?? 0, 0, `${name}: 存在待办测试`);
-            assert.equal(report.numPassedTests, report.numTotalTests, `${name}: 验收未全部通过`);
-            console.log(`${name}: ${report.numPassedTests} 项通过，无跳过`);
+            assert.equal(report.success, true);
+            assert.ok(report.numTotalTests > 0);
+            assert.equal(report.numPendingTests, 0);
+            assert.equal(report.numTodoTests ?? 0, 0);
+            assert.equal(report.numPassedTests, report.numTotalTests);
           }
           NODE
-
-      - name: 保存隔离验收报告
-        if: ${{ always() && steps.checkout.outcome == 'success' }}
+          echo '本轮执行专用 R2 集成；未执行真实 New API 登录、模型生成或生产部署。' >> "$GITHUB_STEP_SUMMARY"
+      - name: 保存 R2 验收报告
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: isolated-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r2-integration-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/ci/*.json
           if-no-files-found: warn
           retention-days: 7
-
-      - name: 清理隔离 MinIO
-        id: minio_cleanup
-        if: ${{ always() && steps.checkout.outcome == 'success' }}
-        env:
-          COMPOSE_PROJECT_NAME: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          MINIO_ROOT_USER: ci-minio-user
-          MINIO_ROOT_PASSWORD: ci-minio-password
-          S3_BUCKET: multimodal-canvas-ci-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker compose -f docker-compose.dev.yml down --volumes --remove-orphans
-
-      - name: 生成中文检查摘要
-        if: ${{ always() }}
-        env:
-          CHECKOUT_STATUS: ${{ steps.checkout.outcome }}
-          PNPM_STATUS: ${{ steps.pnpm.outcome }}
-          NODE_STATUS: ${{ steps.node.outcome }}
-          INSTALL_STATUS: ${{ steps.install.outcome }}
-          MEDIA_TOOLS_STATUS: ${{ steps.media_tools.outcome }}
-          FORMAT_STATUS: ${{ steps.format.outcome }}
-          LINT_STATUS: ${{ steps.lint.outcome }}
-          TYPECHECK_STATUS: ${{ steps.typecheck.outcome }}
-          TEST_STATUS: ${{ steps.test.outcome }}
-          INTEGRATION_MIGRATE_STATUS: ${{ steps.integration_migrate.outcome }}
-          RATE_LIMIT_INTEGRATION_STATUS: ${{ steps.rate_limit_integration.outcome }}
-          COMPOSE_CONFIG_STATUS: ${{ steps.compose_config.outcome }}
-          MINIO_SETUP_STATUS: ${{ steps.minio_setup.outcome }}
-          INTEGRATION_TEST_STATUS: ${{ steps.integration_test.outcome }}
-          BUILD_STATUS: ${{ steps.build.outcome }}
-          PRODUCTION_ENTRY_STATUS: ${{ steps.production_entry.outcome }}
-          MEDIA_ACCEPTANCE_STATUS: ${{ steps.media_acceptance.outcome }}
-          INTEGRATION_COVERAGE_STATUS: ${{ steps.integration_coverage.outcome }}
-          MINIO_CLEANUP_STATUS: ${{ steps.minio_cleanup.outcome }}
-        run: |
-          status_text() {
-            case "$1" in
-              success) echo "通过" ;;
-              failure) echo "失败" ;;
-              skipped) echo "跳过" ;;
-              cancelled) echo "已取消" ;;
-              *) echo "未执行" ;;
-            esac
-          }
-
-          {
-            echo "## 持续集成检查摘要"
-            echo ""
-            echo "- 提交：\`$GITHUB_SHA\`"
-            echo "- 分支：\`$GITHUB_REF_NAME\`"
-            echo ""
-            echo "| 检查项 | 状态 |"
-            echo "| --- | --- |"
-            echo "| 检出代码 | $(status_text "$CHECKOUT_STATUS") |"
-            echo "| 配置 pnpm | $(status_text "$PNPM_STATUS") |"
-            echo "| 配置 Node.js | $(status_text "$NODE_STATUS") |"
-            echo "| 安装依赖 | $(status_text "$INSTALL_STATUS") |"
-            echo "| 媒体验收工具 | $(status_text "$MEDIA_TOOLS_STATUS") |"
-            echo "| 代码格式 | $(status_text "$FORMAT_STATUS") |"
-            echo "| 各包 lint | $(status_text "$LINT_STATUS") |"
-            echo "| TypeScript 类型 | $(status_text "$TYPECHECK_STATUS") |"
-            echo "| 测试 | $(status_text "$TEST_STATUS") |"
-            echo "| 隔离数据库迁移 | $(status_text "$INTEGRATION_MIGRATE_STATUS") |"
-            echo "| Redis 跨进程全局限流 | $(status_text "$RATE_LIMIT_INTEGRATION_STATUS") |"
-            echo "| 开发 Compose 配置 | $(status_text "$COMPOSE_CONFIG_STATUS") |"
-            echo "| MinIO 初始化与失败场景 | $(status_text "$MINIO_SETUP_STATUS") |"
-            echo "| Prisma/Redis/MinIO 集成测试 | $(status_text "$INTEGRATION_TEST_STATUS") |"
-            echo "| 构建 | $(status_text "$BUILD_STATUS") |"
-            echo "| 本地 TLS 生产模式入口 | $(status_text "$PRODUCTION_ENTRY_STATUS") |"
-            echo "| 真实媒体与隔离 S3 归档 | $(status_text "$MEDIA_ACCEPTANCE_STATUS") |"
-            echo "| 独立验收无跳过检查 | $(status_text "$INTEGRATION_COVERAGE_STATUS") |"
-            echo "| 隔离 MinIO 清理 | $(status_text "$MINIO_CLEANUP_STATUS") |"
-          } >> "$GITHUB_STEP_SUMMARY"

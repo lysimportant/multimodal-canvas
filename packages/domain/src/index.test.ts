@@ -1370,27 +1370,6 @@ describe('video input set', () => {
     expect(inferVideoOperation(inputSet)).toBe('omni_reference');
   });
 
-  it('rejects unconfirmed live roles before a provider request would be created', () => {
-    const precheck = precheckVideoGenerationInputs([
-      videoInput('prompt', 'prompt', 0, 'text'),
-      videoInput('first', 'firstFrame', 1),
-      videoInput('last', 'lastFrame', 2),
-      videoInput('hero', 'character', 3),
-      videoInput('look', 'style', 4),
-      videoInput('prop', 'referenceImage', 5),
-    ]);
-
-    expect(precheck.operation).toBe('omni_reference');
-    expect(precheck.inputSet.referenceImage).toHaveLength(1);
-    expect(precheck.issues.map((issue) => issue.role)).toEqual([
-      'lastFrame',
-      'character',
-      'style',
-      'referenceImage',
-    ]);
-    expect(precheck.issues.every((issue) => issue.code === 'UNSUPPORTED_INPUT_ROLE')).toBe(true);
-  });
-
   it('keeps legacy Grok frame and reference requests compatible without an explicit mode', () => {
     const precheck = precheckVideoGenerationInputs(
       [
@@ -1406,19 +1385,6 @@ describe('video input set', () => {
     expect(precheck.operation).toBe('omni_reference');
     expect(precheck.issues).toEqual([]);
     expect(precheck.inputSet.referenceImage).toHaveLength(1);
-  });
-
-  it('rejects grok-imagine-video-1.5 reference or last-frame requests above 720p', () => {
-    const precheck = precheckVideoGenerationInputs(
-      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('prop', 'referenceImage', 1)],
-      { modelAlias: 'grok-imagine-video-1.5.1', parameters: { resolution: '1080p' } },
-    );
-    expect(precheck.issues).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        message: 'grok-imagine-video-1.5 的参考图或尾帧合同最高 720p',
-      },
-    ]);
   });
 
   it('reports duplicate first frames instead of keeping only the first image', () => {
@@ -1459,38 +1425,6 @@ describe('video input set', () => {
     expect(inputSet.content.map((input) => input.nodeId)).toEqual(['clip']);
   });
 
-  it('requires first and last frames in first_last_frame mode', () => {
-    const precheck = precheckVideoGenerationInputs(
-      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('first', 'firstFrame', 1)],
-      { modelAlias: 'grok-imagine-video-1.5.1', videoMode: 'first_last_frame' },
-    );
-    expect(precheck.operation).toBe('first_last_frame');
-    expect(precheck.issues).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        role: 'lastFrame',
-        message: '首尾帧模式需要同时连接首帧和尾帧',
-      },
-    ]);
-  });
-
-  it('rejects first frame in omni mode even on grok-imagine-video-1.5', () => {
-    const precheck = precheckVideoGenerationInputs(
-      [
-        videoInput('prompt', 'prompt', 0, 'text'),
-        videoInput('first', 'firstFrame', 1),
-        videoInput('prop', 'referenceImage', 2),
-      ],
-      {
-        modelAlias: 'grok-imagine-video-1.5.1',
-        videoMode: 'omni_reference',
-        parameters: { resolution: '720p' },
-      },
-    );
-    expect(precheck.operation).toBe('omni_reference');
-    expect(precheck.issues.map((issue) => issue.role)).toEqual(['firstFrame']);
-  });
-
   it('allows grok-imagine-video-1.5 omni reference images without pinning a first frame', () => {
     const precheck = precheckVideoGenerationInputs(
       [videoInput('prompt', 'prompt', 0, 'text'), videoInput('prop', 'referenceImage', 1)],
@@ -1502,39 +1436,6 @@ describe('video input set', () => {
     );
     expect(precheck.issues).toEqual([]);
     expect(precheck.operation).toBe('omni_reference');
-  });
-
-  it('fail-closes unmapped omni reference on unknown models before a POST', () => {
-    const precheck = precheckVideoGenerationInputs(
-      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('prop', 'referenceImage', 1)],
-      { modelAlias: 'sora-2', videoMode: 'omni_reference' },
-    );
-    expect(precheck.issues).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        message: '该模型的全能参考尚未接通 New API 字段映射，不能发起真实请求',
-      },
-    ]);
-  });
-
-  it('rejects text_to_video media inputs and keeps first_frame required', () => {
-    const textOnly = precheckVideoGenerationInputs(
-      [videoInput('prompt', 'prompt', 0, 'text'), videoInput('first', 'firstFrame', 1)],
-      { videoMode: 'text_to_video' },
-    );
-    expect(textOnly.issues.some((issue) => issue.role === 'firstFrame')).toBe(true);
-
-    const missingFirst = precheckVideoGenerationInputs(
-      [videoInput('prompt', 'prompt', 0, 'text')],
-      { videoMode: 'first_frame' },
-    );
-    expect(missingFirst.issues).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        role: 'firstFrame',
-        message: '首帧模式需要连接一张首帧图',
-      },
-    ]);
   });
 
   it.each([
@@ -1600,168 +1501,6 @@ describe('video input set', () => {
       }
     },
   );
-
-  it('requires a source video for edit and extend and keeps H3 unavailable', () => {
-    for (const videoMode of ['video_edit', 'video_extend'] as const) {
-      const missingVideo = precheckVideoGenerationInputs(
-        [videoInput('prompt', 'prompt', 0, 'text'), videoInput('still', 'referenceImage', 1)],
-        { modelAlias: 'wan3.0-video', videoMode },
-      );
-      expect(missingVideo.issues).toEqual([
-        {
-          code: 'UNSUPPORTED_INPUT_COMBINATION',
-          role: 'content',
-          message:
-            videoMode === 'video_edit'
-              ? '视频编辑模式需要连接一段待编辑视频'
-              : '视频延长模式需要连接一段待延长视频',
-        },
-      ]);
-
-      const h3 = precheckVideoGenerationInputs(
-        [videoInput('prompt', 'prompt', 0, 'text'), videoInput('clip', 'content', 1, 'video')],
-        { modelAlias: 'minimax-h3', videoMode },
-      );
-      expect(h3.issues).toEqual([
-        {
-          code: 'UNSUPPORTED_INPUT_COMBINATION',
-          message: `该模型尚无「${videoMode === 'video_edit' ? '视频编辑' : '视频延长'}」的正式字段映射，不能发起真实请求`,
-        },
-      ]);
-    }
-  });
-
-  it('only allows Wan3 negative prompts among the newly mapped official families', () => {
-    const inputs = [
-      videoInput('prompt', 'prompt', 0, 'text'),
-      videoInput('negative', 'negativePrompt', 1, 'text'),
-    ];
-    expect(
-      precheckVideoGenerationInputs(inputs, {
-        modelAlias: 'wan3.0-video-prime',
-        videoMode: 'text_to_video',
-      }).issues,
-    ).toEqual([]);
-    for (const modelAlias of [
-      'minimax-h3',
-      'doubao-seedance-2-0-mini-260615',
-      'doubao-seedance-2-5-260628',
-    ]) {
-      expect(
-        precheckVideoGenerationInputs(inputs, { modelAlias, videoMode: 'text_to_video' }).issues,
-      ).toEqual([
-        {
-          code: 'UNSUPPORTED_INPUT_ROLE',
-          role: 'negativePrompt',
-          message: 'New API video 不支持该输入角色：negativePrompt',
-        },
-      ]);
-    }
-  });
-
-  it.each([
-    ['minimax-h3', 9, 3, 3],
-    ['wan3.0-video', 10, 5, 5],
-    ['doubao-seedance-2-0-fast-260128', 9, 3, 3],
-    ['doubao-seedance-2-5-260628', 30, 10, 10],
-  ] as const)(
-    'enforces reference count limits for %s',
-    (modelAlias, imageLimit, videoLimit, audioLimit) => {
-      const inputs = [
-        videoInput('prompt', 'prompt', 0, 'text'),
-        ...Array.from({ length: imageLimit + 1 }, (_, index) =>
-          videoInput(`image-${index}`, 'referenceImage', index + 1),
-        ),
-        ...Array.from({ length: videoLimit + 1 }, (_, index) =>
-          videoInput(`video-${index}`, 'content', imageLimit + index + 2, 'video'),
-        ),
-        ...Array.from({ length: audioLimit + 1 }, (_, index) =>
-          videoInput(`audio-${index}`, 'audioTrack', imageLimit + videoLimit + index + 3, 'audio'),
-        ),
-      ];
-      const { issues } = precheckVideoGenerationInputs(inputs, {
-        modelAlias,
-        videoMode: 'omni_reference',
-      });
-      expect(issues.map((issue) => issue.role)).toEqual([
-        'referenceImage',
-        'content',
-        'audioTrack',
-      ]);
-      expect(issues.every((issue) => issue.code === 'INPUT_ROLE_CARDINALITY_UNSUPPORTED')).toBe(
-        true,
-      );
-    },
-  );
-
-  it('rejects Seedance 2.0 audio-only reference and allows it on Seedance 2.5', () => {
-    const inputs = [
-      videoInput('prompt', 'prompt', 0, 'text'),
-      videoInput('sound', 'audioTrack', 1, 'audio'),
-    ];
-    expect(
-      precheckVideoGenerationInputs(inputs, {
-        modelAlias: 'doubao-seedance-2-0-260128',
-        videoMode: 'omni_reference',
-      }).issues,
-    ).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        message: 'Seedance 2.0 不支持只用参考音频生成视频',
-      },
-    ]);
-    expect(
-      precheckVideoGenerationInputs(inputs, {
-        modelAlias: 'doubao-seedance-2-5-260628',
-        videoMode: 'omni_reference',
-      }).issues,
-    ).toEqual([]);
-  });
-
-  it('rejects role media mismatches before provider serialization', () => {
-    const { issues } = precheckVideoGenerationInputs(
-      [
-        videoInput('prompt', 'prompt', 0, 'text'),
-        videoInput('bad-image', 'referenceImage', 1, 'video'),
-        videoInput('bad-audio', 'audioTrack', 2, 'video'),
-      ],
-      { modelAlias: 'minimax-h3', videoMode: 'omni_reference' },
-    );
-    expect(issues).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        role: 'referenceImage',
-        message: '视频输入角色 referenceImage 不接受 video 媒体',
-      },
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        role: 'audioTrack',
-        message: '视频输入角色 audioTrack 不接受 video 媒体',
-      },
-    ]);
-  });
-
-  it('keeps mapped legacy nodes working but rejects legacy frame/reference mixing', () => {
-    const references = [
-      videoInput('prompt', 'prompt', 0, 'text'),
-      videoInput('prop', 'referenceImage', 1),
-      videoInput('clip', 'content', 2, 'video'),
-      videoInput('sound', 'audioTrack', 3, 'audio'),
-    ];
-    expect(precheckVideoGenerationInputs(references, { modelAlias: 'minimax-h3' }).issues).toEqual(
-      [],
-    );
-    expect(
-      precheckVideoGenerationInputs([...references, videoInput('first', 'firstFrame', 4)], {
-        modelAlias: 'minimax-h3',
-      }).issues,
-    ).toEqual([
-      {
-        code: 'UNSUPPORTED_INPUT_COMBINATION',
-        message: '首帧或尾帧不能与参考图、参考视频或参考音频混用',
-      },
-    ]);
-  });
 });
 
 describe('video mode ports', () => {
@@ -1801,7 +1540,7 @@ describe('video mode ports', () => {
     expect(inferVideoModeFromRoles(['referenceImage'])).toBe('omni_reference');
     expect(displayVideoMode({ videoMode: 'first_frame' }, ['referenceImage'])).toBe('first_frame');
     expect(implementedVideoModes).toEqual(videoModes);
-    expect(videoModeCapability('video_edit').selectable).toBe(false);
+    expect(videoModeCapability('video_edit').selectable).toBe(true);
     expect(videoModeCapability('video_edit', 'wan3.0-video').selectable).toBe(true);
     expect(videoModeCapability('omni_reference', 'grok-imagine-video-1.5').livePost).toBe(true);
     expect(videoModeCapability('omni_reference', 'minimax-h3').livePost).toBe(true);
@@ -1816,7 +1555,7 @@ describe('video mode ports', () => {
     }
   });
 
-  it('narrows video ports once an explicit mode is saved', () => {
+  it('keeps video ports open after an explicit mode is saved', () => {
     const legacy = canvasNodeSchema.parse({
       id: 'node_video',
       type: 'video',
@@ -1843,7 +1582,7 @@ describe('video mode ports', () => {
     expect(targetPortRolesForNode(omni)).toEqual(
       expect.arrayContaining(['prompt', 'referenceImage', 'character', 'style']),
     );
-    expect(targetPortRolesForNode(omni)).not.toContain('firstFrame');
+    expect(targetPortRolesForNode(omni)).toContain('firstFrame');
 
     const image = canvasNodeSchema.parse({
       id: 'node_image',
@@ -1852,7 +1591,7 @@ describe('video mode ports', () => {
       data: { label: '图', mediaType: 'image', mode: 'source' },
     });
     expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:referenceImage')).toBe(true);
-    expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:firstFrame')).toBe(false);
+    expect(isPortConnectionAllowed(image, 'output:image', omni, 'input:firstFrame')).toBe(true);
   });
 
   it('absorbs omni prompt image mentions as reference images on grok-imagine-video-1.5', () => {
@@ -1861,16 +1600,16 @@ describe('video mode ports', () => {
     ).toBe('referenceImage');
     expect(
       videoInputRoleForPromptMention('video', 'omni_reference', 'grok-imagine-video-1.5.1'),
-    ).toBeUndefined();
-    expect(videoModeForPromptMentions('text_to_video', true)).toBe('omni_reference');
-    expect(videoModeForPromptMentions(undefined, true)).toBe('omni_reference');
+    ).toBe('content');
+    expect(videoModeForPromptMentions('text_to_video', true)).toBe('text_to_video');
+    expect(videoModeForPromptMentions(undefined, true)).toBeUndefined();
     expect(videoModeForPromptMentions('first_frame', true)).toBe('first_frame');
     expect(
       videoInputRoleForPromptMention('image', 'text_to_video', 'grok-imagine-video-1.5.1'),
     ).toBe('referenceImage');
-    expect(
-      videoInputRoleForPromptMention('image', 'first_frame', 'grok-imagine-video-1.5.1'),
-    ).toBeUndefined();
+    expect(videoInputRoleForPromptMention('image', 'first_frame', 'grok-imagine-video-1.5.1')).toBe(
+      'referenceImage',
+    );
     const mentions = [
       { mediaType: 'image' as const, mentionId: 'm-image' },
       { mediaType: 'video' as const, mentionId: 'm-video' },
@@ -1885,7 +1624,7 @@ describe('video mode ports', () => {
         },
         mentions,
       ).map((mention) => mention.mentionId),
-    ).toEqual(['m-video']);
+    ).toEqual([]);
     expect(
       unabsorbedVideoPromptMentions(
         {
@@ -1896,7 +1635,7 @@ describe('video mode ports', () => {
         },
         mentions,
       ).map((mention) => mention.mentionId),
-    ).toEqual(['m-video']);
+    ).toEqual([]);
     expect(
       unabsorbedVideoPromptMentions(
         {
@@ -1906,7 +1645,7 @@ describe('video mode ports', () => {
         },
         mentions,
       ).map((mention) => mention.mentionId),
-    ).toEqual(['m-video']);
+    ).toEqual([]);
   });
 
   it('absorbs confirmed reference media mentions for omni, edit, and extend modes', () => {
@@ -1930,7 +1669,7 @@ describe('video mode ports', () => {
         expect(videoInputRoleForPromptMention('audio', videoMode, modelAlias)).toBe('audioTrack');
       }
     }
-    expect(videoInputRoleForPromptMention('video', 'video_edit', 'minimax-h3')).toBeUndefined();
+    expect(videoInputRoleForPromptMention('video', 'video_edit', 'minimax-h3')).toBe('content');
     expect(videoImageRolesForMode('video_edit')).toEqual(['referenceImage']);
     expect(videoImageRolesForMode('video_extend')).toEqual(['referenceImage']);
   });

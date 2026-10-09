@@ -1,5 +1,6 @@
 import { Job, Queue, UnrecoverableError, Worker, type ConnectionOptions } from 'bullmq';
-import { Prisma } from '@prisma/client';
+import { PrismaExecutionService } from '@multimodal-canvas/execution';
+
 import { startWorkerConcurrencySync } from './generation-concurrency';
 import {
   createCredentialEncryptionKeyringFromEnvironment,
@@ -110,10 +111,7 @@ export type ProviderExecution = {
 };
 
 export type ProviderUsage = {
-  /** Monetary amount when the provider reports an explicit priced usage. */
-  amount?: number | string;
-  currency?: string;
-  userId?: string;
+  /** 供应商返回的调用元数据；费用由 New API 管理。 */
   metadata?: Record<string, unknown>;
 };
 
@@ -193,7 +191,7 @@ export type RunPersistence = {
    *
    * 同一键重放不新增行，也不用旧数据覆盖已落库的状态；结果身份只在归档完成后
    * 通过 `recordRequestPromptOutcome` 补写。写入失败必须让调用方放弃本次请求，
-   * 避免出现已计费却无法追溯的结果。
+   * 避免出现已发送却无法追溯的结果。
    */
   upsertRequestPromptRecord?(input: { record: RequestPromptRecord }): Promise<unknown>;
   /**
@@ -212,17 +210,6 @@ export type RunPersistence = {
   findProviderJobByRunId?(runId: string): Promise<ProviderJob | undefined>;
   /** 读取当前运行或恢复来源的持久任务；包含已归档的同步结果，避免恢复时重新生成。 */
   findProviderJobsByRunId?(runId: string): Promise<ProviderJob[]>;
-  recordUsage(input: {
-    runId?: string;
-    userId?: string;
-    providerJobId?: string;
-    eventId?: string;
-    kind?: string;
-    amount: number | string;
-    currency?: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<unknown>;
-  close?(): Promise<void>;
 };
 
 /** 新模式 Worker 的持久授权边界；实现必须从数据库读取，不能信任队列字段。 */
@@ -379,7 +366,7 @@ function usableHttpStatus(value: unknown): number | undefined {
  * `isDefiniteProviderRejection`（providers 包不导出该函数），改动时必须同步。
  * 这里比它更保守一点：不带可用 HTTP 状态码的错误即使携带 `model_not_found`、
  * `invalid_request_error` 之类的代码也不判为失败，因为没有响应证据就无法排除
- * 计费已经发生，而 `unknown` 是唯一不会引发重发的结论。
+ * 请求可能已经被接受，而 `unknown` 是唯一不会引发重发的结论。
  *
  * @param error Provider 调用抛出的错误。
  * @returns `sent`、`failed` 或 `unknown`。
@@ -415,7 +402,7 @@ function snapshotForProvider(snapshot: RunSnapshot, provider: string): RunSnapsh
 }
 
 /**
- * 创建处理独立 Run 的有界并发 Worker；单 Run DAG、发送授权和计费边界保持不变。
+ * 创建处理独立 Run 的有界并发 Worker；单 Run DAG、发送授权和请求边界保持不变。
  * @param options 队列连接与按 Run 隔离的执行、持久化适配器。
  * @returns 同一命名空间的队列与 Worker；调用方负责关闭资源。
  * @throws StartupConfigurationError WORKER_CONCURRENCY 非法时在连接 Redis 前失败。
@@ -735,7 +722,7 @@ export function createRunWorker(options: {
         } catch (error) {
           runLogger.warn(serializeWorkerError(error), 'workflow recovery failed');
           options.onPersistenceError?.(error);
-          // 恢复证据不可读不代表请求未发生，不能继续执行可能再次计费的创建请求。
+          // 恢复证据不可读不代表请求未发生，不能继续执行可能再次发送的创建请求。
           finishRunSpan('error', 'failed');
           throw error;
         }
@@ -818,73 +805,9 @@ export function createRunWorker(options: {
           throw error;
         }
       }
-      const persistUsageStrict = async (
-        usage: ProviderUsage,
-        providerJob: ProviderJob,
-        requestProviderJobId?: string,
-        usageRunId = databaseRunId,
-      ) => {
-        // A provider may report token/media counters without a price. The
-        // usage ledger stores money only, so do not invent a zero/estimated
-        // charge for metadata-only responses.
-        const amount = usage.amount;
-        if (!options.persistence || !databaseRunId || amount === undefined) return;
-        try {
-          await options.persistence.recordUsage({
-            runId: usageRunId,
-            amount,
-            ...(providerJob.provider === 'newapi'
-              ? {
-                  providerJobId:
-                    providerJob.platformJobId ?? requestProviderJobId ?? providerJob.id,
-                  kind: 'generation',
-                }
-              : {}),
-            ...(usage.currency ? { currency: usage.currency } : {}),
-            ...(usage.userId ? { userId: usage.userId } : {}),
-            ...(usage.metadata ? { metadata: usage.metadata } : {}),
-          });
-        } catch (error) {
-          runLogger.error(serializeWorkerError(error), 'usage persistence failed');
-          options.onPersistenceError?.(error);
-          // 已归档结果先于 usage 落库；恢复时只用原请求身份补写记录，绝不重发生成。
-          throw error;
-        }
-      };
-      /** 补写历史请求的明确 usage；失败保留待核实标记，重复写入沿用同一身份。 */
-      const persistReportedUsage = async (providerJob: ProviderJob): Promise<ProviderJob> => {
-        if (providerJob.payload?.usageStatus !== 'pending') return providerJob;
-        if (usesExecutionAuthorization) {
-          return {
-            ...providerJob,
-            payload: {
-              ...providerJob.payload,
-              usageStatus: 'external',
-              usageReason: '费用由 New API 记录；Canvas 只保留原始供应商回执',
-            },
-          };
-        }
-        const usage = sanitizeReportedUsage(providerJob.payload.reportedUsage);
-        if (!usage) {
-          throw new Error('已归档结果的费用证据不完整，等待核实；禁止重新生成');
-        }
-        const amount = new Prisma.Decimal(usage.amount);
-        if (amount.decimalPlaces() > 6 || amount.greaterThanOrEqualTo('1e12')) {
-          throw new Error('历史 usage 记录无法精确保存供应商成本，等待核实；禁止舍入');
-        }
-        await persistUsageStrict(
-          usage,
-          providerJob,
-          workflowRequestProviderJobId(providerJob),
-          usage.runId,
-        );
-        return {
-          ...providerJob,
-          payload: { ...providerJob.payload, usageStatus: 'recorded' },
-        };
-      };
-      /** 取消或归档失败只补记原响应 usage；收到响应不等于已完成归档。 */
-      const persistReceivedUsage = async (nodeId: string, providerJob: ProviderJob) => {
+
+      /** 留存已收到响应的原发送身份；取消或归档失败后也不得重新创建。 */
+      const persistReceivedProviderJob = async (nodeId: string, providerJob: ProviderJob) => {
         const receipt = {
           ...providerJob,
           id: createWorkflowProviderJobRecord(
@@ -895,8 +818,7 @@ export function createRunWorker(options: {
           ).id,
         };
         await persistProviderJobStrict(receipt);
-        const recorded = await persistReportedUsage(receipt);
-        await persistProviderJobStrict(recorded);
+        const recorded = receipt;
         const current = readJobData();
         const currentWorkflow =
           current.workflowState ??
@@ -1016,7 +938,7 @@ export function createRunWorker(options: {
       // 节点进入待执行状态的时刻只在本进程记录，等它真正开始执行时再落库：
       // 从未执行的节点不会留下任何时间条目，界面显示「未记录」。
       const queuedAtByNode = new Map<string, string>();
-      /** 反推请求结果不确定时只允许显式新建，队列重放不能再次收费。 */
+      /** 反推请求结果不确定时只允许显式新建，队列重放不能再次发送。 */
       const uncertainReversePromptNodes = new Set<string>();
       /** 已持久化的 Skill 输出校验错误；重放同一回执不能把它改写成归档故障。 */
       const promptOptimizationOutputErrors = new Map<string, string>();
@@ -1035,8 +957,7 @@ export function createRunWorker(options: {
           const currentState = workflowNodeState(workflowState, node.id);
           if (
             currentState?.status === 'succeeded' &&
-            isCompletedWorkflowResultForNode(currentState.result, node, executionSnapshot) &&
-            currentState.providerJob?.payload?.usageStatus !== 'pending'
+            isCompletedWorkflowResultForNode(currentState.result, node, executionSnapshot)
           ) {
             continue;
           }
@@ -1080,10 +1001,7 @@ export function createRunWorker(options: {
             fallback: localProviderJob,
           });
           if (isCompletedWorkflowResultForNode(cachedResult, node, executionSnapshot)) {
-            const cachedProviderJobBase = cachedCandidate ?? currentState?.providerJob;
-            const cachedProviderJob = cachedProviderJobBase
-              ? await persistReportedUsage(cachedProviderJobBase)
-              : undefined;
+            const cachedProviderJob = cachedCandidate ?? currentState?.providerJob;
             for (const identity of cachedResult.asset?.version
               ? storedRequestPromptIdentities(cachedProviderJob, node.id)
               : []) {
@@ -1181,7 +1099,7 @@ export function createRunWorker(options: {
                 currentState?.providerJob ??
                 recoveredForNode ??
                 localProviderJob;
-              // 首错和费用终态按同一请求的持久证据合并，旧队列回执不能覆盖数据库补写。
+              // 按同一请求的持久证据保留首个归档错误，旧队列回执不能覆盖它。
               const matchingReceipts = [recoveredForNode, ...providerCandidates].filter(
                 (candidate): candidate is ProviderJob =>
                   Boolean(
@@ -1193,9 +1111,7 @@ export function createRunWorker(options: {
               const firstArchiveError = matchingReceipts
                 .map((candidate) => candidate.payload?.firstArchiveError)
                 .find((value): value is string => typeof value === 'string' && value.length > 0);
-              const settledUsage = matchingReceipts.find((candidate) =>
-                ['recorded', 'external'].includes(String(candidate.payload?.usageStatus)),
-              );
+
               const received: ProviderJob = {
                 ...retained,
                 ...(staged.providerJob?.platformJobId
@@ -1211,17 +1127,11 @@ export function createRunWorker(options: {
                     resultStagingRunId: runId,
                     deliveryState: 'received',
                     ...(firstArchiveError ? { firstArchiveError } : {}),
-                    ...(settledUsage
-                      ? {
-                          usageStatus: settledUsage.payload?.usageStatus,
-                          reportedUsage: settledUsage.payload?.reportedUsage,
-                        }
-                      : {}),
                   },
                   snapshotFingerprint,
                 ),
               };
-              const reconciled = await persistReceivedUsage(node.id, received);
+              const reconciled = await persistReceivedProviderJob(node.id, received);
               workflowState = replaceWorkflowNodeState(workflowState, {
                 nodeId: node.id,
                 status: 'pending',
@@ -1236,7 +1146,7 @@ export function createRunWorker(options: {
             (candidate) => candidate.payload?.deliveryState === 'received',
           );
           if (receiptIndex !== -1)
-            providerCandidates[receiptIndex] = await persistReceivedUsage(
+            providerCandidates[receiptIndex] = await persistReceivedProviderJob(
               node.id,
               providerCandidates[receiptIndex]!,
             );
@@ -1788,7 +1698,7 @@ export function createRunWorker(options: {
             activeSendIntent = true;
           };
           // 有持久化边界时，Provider 必须在真正发送前把最终请求文本交给 Worker
-          // 落库；回调抛错会阻止本次请求，避免已计费但无法追溯。没有持久化适配器
+          // 落库；回调抛错会阻止本次请求，避免已发送但无法追溯。没有持久化适配器
           // 的本地运行（未配置 DATABASE_URL，例如 mock 或本地 newapi 调试）不传
           // 该回调，Provider 按其合同跳过记录：这是有意的兼容行为，不是留存失败。
           const captureRequestPrompt =
@@ -2033,7 +1943,7 @@ export function createRunWorker(options: {
             ));
           const execution = 'result' in returned ? returned : { result: returned };
 
-          // 先留存脱敏响应回执和明确成本，取消、校验或归档失败均可按原身份补账。
+          // 先留存脱敏响应回执和供应商 usage 元数据，取消、校验或归档失败均可按原身份恢复。
           const rawProviderMetadata: Partial<ProviderJob> = execution.providerJob ?? {};
           const { payload: rawProviderMetadataPayload, ...providerMetadata } = rawProviderMetadata;
           const safeProviderMetadataPayload = rawProviderMetadataPayload
@@ -2068,16 +1978,6 @@ export function createRunWorker(options: {
                         currentData.attempt,
                     }
                   : {}),
-                reportedUsage: stagedResult
-                  ? existingNodeProviderJob?.payload?.reportedUsage
-                  : execution.usage?.amount !== undefined
-                    ? { ...execution.usage, runId: databaseRunId }
-                    : undefined,
-                usageStatus: stagedResult
-                  ? existingNodeProviderJob?.payload?.usageStatus
-                  : execution.usage?.amount !== undefined
-                    ? 'pending'
-                    : undefined,
                 requestPromptRecords: activeRequestPrompts,
                 ...(requestProviderJobId ? { requestProviderJobId } : {}),
               },
@@ -2201,7 +2101,7 @@ export function createRunWorker(options: {
             throw new Error(`result archiver is required for workflow node ${node.id}`);
           }
           await persistRun('processing', executionProviderJob);
-          /** 只重试原输出归档；恢复 URL 不改变资产键、费用和请求提示词身份。 */
+          /** 只重试原输出归档；恢复 URL 不改变资产键、供应商回执和请求提示词身份。 */
           const archiveCurrentOutput = () =>
             executeWithCancellation(
               () =>
@@ -2306,7 +2206,7 @@ export function createRunWorker(options: {
             ...(finalFrame ? { finalFrame } : {}),
           } satisfies RunResult;
           const safeArchivedResult = sanitizeProviderJobPayload({ result: archivedResult })?.result;
-          // 先保留已归档结果、原请求身份和明确 usage；后续补写失败只恢复原结果。
+          // 先保留已归档结果、原请求身份和供应商元数据；后续补写失败只恢复原结果。
           let archivedProviderJob: ProviderJob = {
             ...executionProviderJob,
             payload: workflowProviderPayload(
@@ -2339,7 +2239,6 @@ export function createRunWorker(options: {
               : {}),
           });
           await persistProviderJobStrict(archivedProviderJob);
-          archivedProviderJob = await persistReportedUsage(archivedProviderJob);
           activeProviderJob = archivedProviderJob;
           for (const prompt of asset?.version ? activeRequestPrompts : []) {
             await bindRequestPromptResultStrict(prompt, {
@@ -2527,8 +2426,8 @@ export function createRunWorker(options: {
           activeNodeId &&
           activeProviderJob?.payload?.deliveryState === 'received'
         ) {
-          // usage 写入失败保持原回执并抛给队列；并发取消不能吞掉这次补写失败。
-          activeProviderJob = await persistReceivedUsage(activeNodeId, activeProviderJob);
+          // 回执写入失败保持原响应并抛给队列；并发取消不能吞掉这次补写失败。
+          activeProviderJob = await persistReceivedProviderJob(activeNodeId, activeProviderJob);
         }
         // 已归档后的本地补写失败仍需重试；并发取消不能吞掉原 Run 的恢复。
         if (
@@ -2667,7 +2566,7 @@ export function createRunWorker(options: {
   return { queue, worker };
 }
 
-/** 错误持久化保留原调用身份；网关 ID 只认 Provider 校验过的属性，正文不能提升为查账身份。 */
+/** 错误持久化保留原调用身份；网关 ID 只认 Provider 校验过的属性，正文不能提升为关联身份。 */
 export function attachProviderErrorMetadata(providerJob: ProviderJob, error: unknown): ProviderJob {
   if (!error || typeof error !== 'object') return providerJob;
   const candidate = error as { platformJobId?: unknown; providerPayload?: unknown };
@@ -2744,9 +2643,6 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'error',
     'statusResponse',
     'usage',
-    'reportedUsage',
-    'usageStatus',
-    'usageReason',
     'deliveryState',
     'resultStagingRunId',
     'resultStagingAttempt',
@@ -2775,11 +2671,7 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
       if (usage) output.usage = usage;
       continue;
     }
-    if (key === 'reportedUsage') {
-      const usage = sanitizeReportedUsage(raw);
-      if (usage) output.reportedUsage = usage;
-      continue;
-    }
+
     const scalar = sanitizeProviderScalar(key, raw);
     if (scalar !== undefined) output[key] = scalar;
   }
@@ -3108,44 +3000,6 @@ function sanitizeProviderUsage(value: unknown): Record<string, unknown> | undefi
   return Object.keys(output).length > 0 ? output : undefined;
 }
 
-/**
- * 保留供应商明确报告的金额、原币种及原 Run 身份，供取消、归档失败后的幂等补账使用。
- * 金额按 Decimal(38,12) 精度规范化，接受指数文本但不允许精度舍入；不推断费用。
- * 非法或缺少币种时返回 undefined，调用方保留待核实状态；敏感元数据不会落库。
- */
-function sanitizeReportedUsage(
-  value: unknown,
-): (ProviderUsage & { amount: string | number; currency: string; runId?: string }) | undefined {
-  if (!isRecord(value)) return undefined;
-  const rawAmount = value.amount;
-  const amountText = String(rawAmount);
-  if (
-    (typeof rawAmount !== 'number' && typeof rawAmount !== 'string') ||
-    amountText.length > 100 ||
-    !/^(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(amountText)
-  ) {
-    return undefined;
-  }
-  const decimal = new Prisma.Decimal(amountText);
-  if (!decimal.isFinite() || decimal.decimalPlaces() > 12 || decimal.greaterThanOrEqualTo('1e26'))
-    return undefined;
-  const amount = /[eE]/.test(amountText) ? decimal.toFixed() : rawAmount;
-  const currency = typeof value.currency === 'string' ? value.currency.trim().toUpperCase() : '';
-  if (!/^[A-Z]{3}$/.test(currency)) return undefined;
-  const metadata = sanitizeProviderUsage(value.metadata);
-  return {
-    amount,
-    currency,
-    ...(typeof value.runId === 'string' && DATABASE_UUID_PATTERN.test(value.runId)
-      ? { runId: value.runId }
-      : {}),
-    ...(typeof value.userId === 'string' && DATABASE_UUID_PATTERN.test(value.userId)
-      ? { userId: value.userId }
-      : {}),
-    ...(metadata ? { metadata } : {}),
-  };
-}
-
 function sanitizeProviderResult(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const output: Record<string, unknown> = {};
@@ -3170,10 +3024,10 @@ function sanitizeProviderResult(value: unknown): Record<string, unknown> | undef
       .filter((mention): mention is NonNullable<typeof mention> => mention !== undefined);
     if (mentions.length > 0) output.promptMentions = mentions;
   }
-  // 反推文字本身是持久结果，保留完整字段以便恢复时跳过已收费的分析请求。
+  // 反推文字本身是持久结果，保留完整字段以便恢复时跳过已发送的分析请求。
   const reversePrompt = reversePromptResultSchema.safeParse(value.reversePrompt);
   if (reversePrompt.success) output.reversePrompt = reversePrompt.data;
-  // 保留完整优化文档，队列恢复时复用已付费结果，不重发模型请求。
+  // 保留完整优化文档，队列恢复时复用已持久化结果，不重发模型请求。
   if (isRecord(value.promptOptimization)) {
     const prompt = promptDocumentSchema.safeParse(value.promptOptimization.promptDocument);
     if (prompt.success) output.promptOptimization = { promptDocument: prompt.data };
@@ -3326,11 +3180,12 @@ function createProcessPersistence(): {
   return {
     persistence,
     execution: new PrismaWorkerExecutionAuthorization(
+      new PrismaExecutionService(persistence.prisma),
       persistence.prisma,
     ),
     resolveDatabaseRunId: (runId) => databaseRunId(runId),
     // A production run must not be reported as successful when its durable
-    // lifecycle or usage record could not be written.
+    // lifecycle record could not be written.
     onPersistenceError: (error) => {
       throw error;
     },

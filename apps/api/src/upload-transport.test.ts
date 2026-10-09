@@ -68,7 +68,7 @@ const productionEnvironment = {
   REDIS_URL: 'rediss://redis.example:6379',
   S3_BUCKET: 'upload-transport-test',
   S3_REGION: 'us-east-1',
-  S3_ENDPOINT: 'https://minio.example:9000',
+  S3_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
   S3_ACCESS_KEY: 'test-access-key',
   S3_SECRET_KEY: 'test-secret-key',
   AI_CREDENTIAL_ENCRYPTION_KEY: 'test-encryption-secret',
@@ -208,13 +208,13 @@ describe('API entrypoint upload transport', () => {
     const { S3BlobStore } = await import('./assets');
     const presign = vi
       .spyOn(S3BlobStore.prototype, 'createPresignedPutUrl')
-      .mockResolvedValue('https://minio.example:9000/signed-upload');
+      .mockResolvedValue('https://account.r2.cloudflarestorage.com/signed-upload');
     await import('./index');
 
     const store = entryMocks.buildApp.mock.calls[0]?.[0].uploadSessionStore;
     expect(store).toBeDefined();
     expect(await store!.getUploadUrl('upload-test', { ownerId: 'owner-test' })).toBe(
-      'https://minio.example:9000/signed-upload',
+      'https://account.r2.cloudflarestorage.com/signed-upload',
     );
     expect(presign).toHaveBeenCalledExactlyOnceWith('uploads/upload-test', { expiresIn: 900 });
     expect(entryMocks.listen).toHaveBeenCalledExactlyOnceWith({ host: '0.0.0.0', port: 3000 });

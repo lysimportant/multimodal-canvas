@@ -97,7 +97,7 @@ export type NodeHandleLayout = {
 export type NodeHandleLayoutOptions = {
   /** 视频生成节点的显式模式；缺省保持旧画布全量端口。 */
   videoMode?: VideoMode;
-  /** 用于按模型收窄全能参考允许的媒体。 */
+  /** 保留模型身份兼容调用；不收窄输入角色。 */
   modelAlias?: string;
 };
 
@@ -130,7 +130,7 @@ function preferredRolesForVideoMode(
 }
 
 /**
- * 四侧位置保持稳定，输入职责按媒体、视频模式和模型能力分配。
+ * 四侧位置保持稳定，输入职责按媒体与视频模式展示，不校验模型能力。
  * 额外角色通过重叠语义输入层保留，已有连线身份不随可见位置变化。
  * @param mediaType 节点媒体类型。
  * @param mode 节点 source/generate。

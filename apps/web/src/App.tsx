@@ -230,7 +230,10 @@ import {
 import { AppQueryProvider } from './query/client';
 import { SessionLoading } from './startup/SessionLoading';
 import { usePlatformModelCatalogQuery, useCustomGroupsModelQuery } from './query/models';
-import { useCustomApiGroupsStore, getCustomApiVisibleForUsers } from './state/workspace-preferences';
+import {
+  useCustomApiGroupsStore,
+  getCustomApiVisibleForUsers,
+} from './state/workspace-preferences';
 import {
   mergeRunUpdate,
   shouldApplyRunUpdate,
@@ -247,6 +250,7 @@ import {
   mediaLabels,
   modeLabels,
   type AssetFilter,
+  type ModelEntry,
   type ModelSelection,
   type AiSettings,
   type ModelDefaults,
@@ -709,10 +713,19 @@ function WorkspaceApp({
   const platformModelsQuery = usePlatformModelCatalogQuery(authUser?.id);
   const customApiConfig = useCustomApiGroupsStore((s) => s.config);
   const customGroupsQueries = useCustomGroupsModelQuery(customApiConfig);
-  const customGroupModels = customGroupsQueries
-    .filter((q) => q.isSuccess && q.data)
-    .flatMap((q) => q.data ?? []);
-  const modelCatalog = [...(platformModelsQuery.data ?? []), ...customGroupModels];
+  const modelCatalogRef = useRef<ModelEntry[]>([]);
+  const nextModelCatalog = [
+    ...(platformModelsQuery.data ?? []),
+    ...customGroupsQueries
+      .filter((query) => query.isSuccess && query.data)
+      .flatMap((query) => query.data ?? []),
+  ];
+  const previousModelCatalog = modelCatalogRef.current;
+  const modelCatalog =
+    previousModelCatalog.length === nextModelCatalog.length &&
+    previousModelCatalog.every((model, index) => model === nextModelCatalog[index])
+      ? previousModelCatalog
+      : (modelCatalogRef.current = nextModelCatalog);
   const [runRecords, setRunRecords] = useState<Record<string, RunRecord>>({});
   const [saveState, setSaveState] = useState('准备就绪');
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -2070,8 +2083,7 @@ function WorkspaceApp({
         !modelCatalog.some(
           (candidate) =>
             candidate.id === selection?.modelAlias &&
-            candidate.credentialId === selection?.credentialId &&
-            candidate.availability !== 'unavailable',
+            candidate.credentialId === selection?.credentialId,
         )
       )
         nodePreferenceNoticeRef.current = '原分组模型已失效，请重新选择；系统不会自动改用其他分组';
@@ -2083,11 +2095,7 @@ function WorkspaceApp({
             error instanceof Error ? error.message : '无法读取本机模型偏好';
         }
       }
-      const catalogModel = modelCatalog.find(
-        (candidate) =>
-          candidate.mediaTypes.includes(mediaType) &&
-          (!candidate.availability || candidate.availability === 'available'),
-      );
+      const catalogModel = modelCatalog[0];
       if (!selection && catalogModel && mayUsePreference && !inheritedSelection) {
         selection = {
           modelAlias: catalogModel.id,
@@ -2098,8 +2106,7 @@ function WorkspaceApp({
         ? modelCatalog.find(
             (candidate) =>
               candidate.id === selection.modelAlias &&
-              candidate.credentialId === selection.credentialId &&
-              candidate.mediaTypes.includes(mediaType),
+              candidate.credentialId === selection.credentialId,
           )
         : undefined;
       return withNodeAutoGrowthLimit({
@@ -2759,8 +2766,7 @@ function WorkspaceApp({
       const model = modelCatalog.find(
         (candidate) =>
           candidate.id === selection.modelAlias &&
-          candidate.credentialId === selection.credentialId &&
-          candidate.mediaTypes.includes(targetNode.data.mediaType),
+          candidate.credentialId === selection.credentialId,
       );
       rememberHistory();
       canvasDirtyRef.current = true;
@@ -3883,12 +3889,7 @@ function WorkspaceApp({
             currentNode.data.modelAlias,
           );
         } else if (currentNode.data.mediaType === 'audio') {
-          const model = modelCatalog.find(
-            (entry) =>
-              entry.id === currentNode.data.modelAlias &&
-              entry.credentialId === currentNode.data.credentialId,
-          );
-          const issue = getAudioParameterIssue(currentNode.data.parameters ?? {}, model);
+          const issue = getAudioParameterIssue(currentNode.data.parameters ?? {});
           if (issue) throw new Error(issue);
         }
       } catch (error) {
@@ -4374,7 +4375,6 @@ function WorkspaceApp({
       createGenerateNode,
       isOperationCurrent,
       isNodeBusy,
-      modelCatalog,
       nodeRunControlStore,
       pollRun,
       promoteSourceNodeToGenerate,

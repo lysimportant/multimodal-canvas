@@ -1,7 +1,6 @@
 /** 为当前节点添加、移除画布资源及保存引用顺序；纯计算，不触发上传或生成。 */
 import {
   getEffectivePromptDocument,
-  isPortConnectionAllowed,
   mentionDisplayName,
   nodeDataSchema,
   renderPromptDocument,
@@ -164,7 +163,7 @@ function referencePool(
  * @param assets 当前项目目录，只用于恢复已有引用的展示元数据。
  * @param asset 上传接口返回的资源，必须携带正整数版本。
  * @returns 待原子保存的数据及变更标志；重复身份沿用原别名、顺序和模式。
- * @throws 版本未知、资源归档、资料超限或视频模式与现有连线不兼容时整次拒绝。
+ * @throws 版本未知、资源归档或资料结构无效时整次拒绝。
  */
 export function attachUploadedNodeResource(
   target: AssetFlowNode,
@@ -184,7 +183,6 @@ export function attachUploadedNodeResource(
     )
   )
     return { data: target.data, changed: false };
-  if (references.length >= 40) throw new Error('节点引用资源不能超过 40 个');
   const resourceRefs = [
     ...references,
     {
@@ -199,34 +197,12 @@ export function attachUploadedNodeResource(
       attached: true,
     },
   ];
-  const promoteOmni =
-    target.data.mediaType === 'video' &&
-    target.data.mode !== 'source' &&
-    !target.data.imageEditSource &&
-    !['omni_reference', 'video_edit', 'video_extend'].includes(target.data.videoMode ?? '');
   const data: AssetFlowNode['data'] = {
     ...target.data,
     resourceRefs,
     stale: true,
-    ...(promoteOmni ? { videoMode: 'omni_reference' as const } : {}),
   };
   nodeDataSchema.parse(data);
-  if (promoteOmni) {
-    const nextTarget = { ...target, data };
-    for (const edge of edges.filter((item) => item.target === target.id)) {
-      const source = nodes.find((node) => node.id === edge.source);
-      if (
-        !source ||
-        !isPortConnectionAllowed(
-          source,
-          edge.sourceHandle ?? '',
-          nextTarget,
-          edge.targetHandle ?? '',
-        )
-      )
-        throw new Error('当前首尾帧连线与全能参考不兼容，请先确认生成模式；原连线未改变');
-    }
-  }
   return { data, changed: true };
 }
 
@@ -236,8 +212,8 @@ export function attachUploadedNodeResource(
  * @param sourceId 被点击的画布节点；引用其当前已确定版本，不生成新资源。
  * @returns 新图及 changed 标志；原数组和节点不变，成功变更可作为一个撤销步骤保存。
  * 素材/图片修改节点只保存独立资料，不添加输入边；其他节点原子添加连线。
- * 视频生成节点的文字资料尚无 mention 映射，需使用提示词连线；已有帧连线不得转成参考 mention。
- * @throws 资源缺失、版本未知、循环、输入类型不兼容、文档或引用数量超限时整次拒绝。
+ * 视频新资料按媒体保存参考角色；已有首尾帧继续使用原角色，不改用户选择的模式。
+ * @throws 资源缺失、版本未知、循环、来源绑定歧义或数据结构无效时整次拒绝。
  */
 export function addNodeResourceReference(
   nodes: readonly AssetFlowNode[],
@@ -259,26 +235,18 @@ export function addNodeResourceReference(
     (block): block is PromptMention => block.type === 'mention',
   );
   if (!picked) throw new Error('来源节点没有可引用的资源');
-  if (!referenceOnly && target.data.mediaType === 'video' && picked.mediaType === 'text') {
-    throw new Error('视频节点尚不支持文字资源提及，请使用提示词连线；原连线和生成模式未改变');
-  }
-  if (
-    !referenceOnly &&
-    target.data.mediaType === 'video' &&
-    edges.some(
-      (edge) =>
-        edge.target === targetId &&
-        (edge.targetHandle === 'input:firstFrame' || edge.targetHandle === 'input:lastFrame'),
-    )
-  ) {
-    throw new Error('首尾帧输入不能通过添加参考资源转成正文提及；原帧连线和生成模式未改变');
-  }
   const { references: pool, document, projected } = referencePool(target, nodes, edges, assets);
   const existing = pool.find((item) => identity(item) === identity(picked));
   const name =
     existing?.name ??
     uniqueResourceDisplayName(picked.label, new Set(pool.map((item) => item.name)));
   const hasEdge = edges.some((edge) => edge.source === sourceId && edge.target === targetId);
+  const hasFrameEdge = edges.some(
+    (edge) =>
+      edge.source === sourceId &&
+      edge.target === targetId &&
+      (edge.targetHandle === 'input:firstFrame' || edge.targetHandle === 'input:lastFrame'),
+  );
   const reference = existing ?? {
     id: `reference:${picked.mentionId}`,
     assetId: picked.assetId,
@@ -301,7 +269,11 @@ export function addNodeResourceReference(
     throw new Error('该来源已绑定其他冻结版本，请先确认原引用；正文和连线未改变');
   }
   const resourceRefs = existing
-    ? pool.map((item) => (item === existing ? { ...boundReference, attached: true } : item))
+    ? pool.map((item) =>
+        item === existing
+          ? { ...boundReference, ...(!hasFrameEdge ? { attached: true } : {}) }
+          : item,
+      )
     : [...pool, { ...boundReference, attached: true }];
   const unchangedReferences =
     resourceRefs.length === target.data.resourceRefs?.length &&
@@ -317,7 +289,7 @@ export function addNodeResourceReference(
     });
   if ((hasEdge || referenceOnly) && !projected && unchangedReferences)
     return { nodes: [...nodes], edges: [...edges], changed: false };
-  // 添加参考资料不删除原有首尾帧连接；兼容性必须在写入图之前整体检查。
+  // 资料引用保留用户模式与既有帧语义；模型是否支持由上游判断。
   const nextTarget: AssetFlowNode = {
     ...target,
     data: {
@@ -327,36 +299,27 @@ export function addNodeResourceReference(
         ...(projected ? { promptDocument: document } : {}),
         resourceRefs,
         stale: true,
-        ...(!referenceOnly &&
-        !hasEdge &&
-        target.data.mediaType === 'video' &&
-        !['omni_reference', 'video_edit', 'video_extend'].includes(target.data.videoMode ?? '')
-          ? { videoMode: 'omni_reference' as const }
-          : {}),
       }),
     },
   };
   const nextNodes = nodes.map((node) => (node.id === targetId ? nextTarget : node));
   const nextEdges = [...edges];
-  if (nextTarget.data.videoMode !== target.data.videoMode) {
-    for (const edge of edges.filter((item) => item.target === targetId)) {
-      const existingSource = nodes.find((node) => node.id === edge.source);
-      if (
-        !existingSource ||
-        !isPortConnectionAllowed(
-          existingSource,
-          edge.sourceHandle ?? '',
-          nextTarget,
-          edge.targetHandle ?? '',
-        )
-      ) {
-        throw new Error('当前首尾帧连线与全能参考不兼容，请先确认生成模式；原连线未改变');
-      }
-    }
-  }
   if (!hasEdge && !referenceOnly) {
+    const videoReferenceRole =
+      picked.mediaType === 'image'
+        ? 'referenceImage'
+        : picked.mediaType === 'audio'
+          ? 'audioTrack'
+          : picked.mediaType === 'video'
+            ? 'content'
+            : 'prompt';
     const validation = validateResolvedCanvasConnection(
-      { source: sourceId, target: targetId, sourceHandle: null, targetHandle: null },
+      {
+        source: sourceId,
+        target: targetId,
+        sourceHandle: null,
+        targetHandle: target.data.mediaType === 'video' ? `input:${videoReferenceRole}` : null,
+      },
       nextNodes,
       nextEdges,
     );

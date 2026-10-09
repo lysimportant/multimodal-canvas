@@ -132,25 +132,6 @@ function completedFetch() {
 }
 
 describe('Image2Pro 视频插件合同', () => {
-  it.each(['无限制-Flash-中配-Video'])(
-    '%s 不因合同或缺少模式回落到通用创建路径',
-    async (modelAlias) => {
-      for (const contract of ['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const) {
-        for (const videoMode of [undefined, 'text_to_video'] as const) {
-          const snapshot = snapshotFor(modelAlias);
-          snapshot.nodes[0]!.data.videoMode = videoMode;
-          const fetchImpl = vi.fn<typeof fetch>();
-          const onProviderJob = vi.fn();
-          await expect(
-            providerFor(fetchImpl, contract).execute({ snapshot, onProviderJob }),
-          ).rejects.toMatchObject({ code: 'UNSUPPORTED_INPUT_COMBINATION', retryable: false });
-          expect(fetchImpl).not.toHaveBeenCalled();
-          expect(onProviderJob).not.toHaveBeenCalled();
-        }
-      }
-    },
-  );
-
   it.each(models)('%s 使用规范字段创建，按公共 ID 查询并返回成片 URL', async (model) => {
     const snapshot = snapshotFor(model);
     const before = structuredClone(snapshot);
@@ -186,19 +167,6 @@ describe('Image2Pro 视频插件合同', () => {
     });
     expect(snapshot).toEqual(before);
   });
-
-  it.each(['legacy-v1', 'newapi-unified-v1'] as const)(
-    '%s 不得为 Image2Pro 创建任务',
-    async (contract) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      const onProviderJob = vi.fn();
-      await expect(
-        providerFor(fetchImpl, contract).execute({ snapshot: snapshotFor(), onProviderJob }),
-      ).rejects.toMatchObject({ code: 'VIDEO_CONTRACT_UNSUPPORTED', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-    },
-  );
 
   it.each(models)('%s 冻结提及与请求记录保持同一资源顺序和版本', async (modelAlias) => {
     const snapshot = snapshotFor(modelAlias);
@@ -316,80 +284,8 @@ describe('Image2Pro 视频插件合同', () => {
     });
   });
 
-  it.each([
-    { label: '视频编辑', mode: 'video_edit', role: 'content', mediaType: 'video' },
-    { label: '视频延长', mode: 'video_extend', role: 'content', mediaType: 'video' },
-    { label: '纯音频参考', mode: 'omni_reference', role: 'audioTrack', mediaType: 'audio' },
-  ] satisfies { label: string; mode: VideoMode; role: PortRole; mediaType: MediaType }[])(
-    '不发送未确认的 $label 输入',
-    async ({ mode, role, mediaType }) => {
-      const snapshot = snapshotFor();
-      snapshot.nodes[0]!.data.videoMode = mode;
-      snapshot.inputs = [inputFor('unsupported', role, 0, mediaType)];
-      const fetchImpl = vi.fn<typeof fetch>();
-      const onProviderJob = vi.fn();
-      await expect(
-        providerFor(fetchImpl).execute({ snapshot, onProviderJob }),
-      ).rejects.toMatchObject({ retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([
-    {
-      label: '质量',
-      parameters: { duration: 5, quality: 'high' },
-      code: 'UNSUPPORTED_PROVIDER_PARAMETER',
-    },
-    {
-      label: '参数冲突',
-      parameters: { duration: 5, seconds: 6 },
-      code: 'INVALID_PROVIDER_PARAMETER',
-    },
-    { label: '缺少时长', parameters: {}, code: 'INVALID_PROVIDER_PARAMETER' },
-    { label: '小数时长', parameters: { duration: 5.5 }, code: 'INVALID_PROVIDER_PARAMETER' },
-    { label: '自动时长', parameters: { duration: -1 }, code: 'INVALID_PROVIDER_PARAMETER' },
-    {
-      label: '非法分辨率',
-      parameters: { duration: 5, resolution: '2k' },
-      code: 'INVALID_PROVIDER_PARAMETER',
-    },
-  ])('$label 在持久化提交前拒绝，原参数保持可恢复', async ({ parameters, code }) => {
-    const snapshot = snapshotFor();
-    snapshot.parameters = parameters;
-    const before = structuredClone(snapshot);
-    const fetchImpl = vi.fn<typeof fetch>();
-    const onProviderJob = vi.fn();
-    const onRequestPrompt = vi.fn();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob, onRequestPrompt }),
-    ).rejects.toMatchObject({ code, retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-    expect(onRequestPrompt).not.toHaveBeenCalled();
-    expect(snapshot).toEqual(before);
-  });
-
-  it('第十张图在 POST 前失败，不静默截断参考素材', async () => {
-    const snapshot = snapshotFor();
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    snapshot.inputs = Array.from({ length: 10 }, (_, index) =>
-      inputFor(`image-${index}`, 'referenceImage', index),
-    );
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({
-      code: 'INPUT_ROLE_CARDINALITY_UNSUPPORTED',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(snapshot.inputs).toHaveLength(10);
-  });
-
   it.each(['video', 'audio'] as const)(
-    '冻结 %s 单段或累计时长非法时，零 POST 且不进入 submitting',
+    '冻结 %s 单段或累计时长交给上游判断，不在本地阻断',
     async (mediaType) => {
       for (const durations of [[1.99], [15.01], [8, 8]]) {
         const snapshot = snapshotFor();
@@ -407,15 +303,23 @@ describe('Image2Pro 视频插件合同', () => {
           })),
         ];
         const before = structuredClone(snapshot);
-        const fetchImpl = vi.fn<typeof fetch>();
+        const fetchImpl = completedFetch();
         const onProviderJob = vi.fn();
         const onRequestPrompt = vi.fn();
-        await expect(
-          providerFor(fetchImpl).execute({ snapshot, onProviderJob, onRequestPrompt }),
-        ).rejects.toMatchObject({ code: 'UNSUPPORTED_INPUT_COMBINATION', retryable: false });
-        expect(fetchImpl).not.toHaveBeenCalled();
-        expect(onProviderJob).not.toHaveBeenCalled();
-        expect(onRequestPrompt).not.toHaveBeenCalled();
+        await providerFor(fetchImpl).execute({
+          snapshot,
+          onProviderJob,
+          onRequestPrompt,
+          runId: `run-invalid-${mediaType}`,
+        });
+        expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+        expect(onProviderJob).toHaveBeenCalled();
+        expect(onRequestPrompt).toHaveBeenCalledOnce();
+        const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+        expect(body.content.slice(1).map((part: { role: string }) => part.role)).toEqual([
+          'reference_image',
+          ...durations.map(() => `reference_${mediaType}`),
+        ]);
         expect(snapshot).toEqual(before);
       }
     },
@@ -515,27 +419,6 @@ describe('Image2Pro 视频插件合同', () => {
     },
   );
 
-  it('图音频 Data URL 保留可用，视频 Data URL 在 POST 前明确拒绝', async () => {
-    const snapshot = snapshotFor();
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    snapshot.inputs = [inputFor('image'), inputFor('audio', 'audioTrack', 1, 'audio')];
-    for (const input of snapshot.inputs)
-      input.snapshot.data.contentUrl = `data:${input.snapshot.data.mimeType};base64,${Buffer.from(input.nodeId).toString('base64')}`;
-    const fetchImpl = completedFetch();
-    await providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() });
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).content[2].audio_url.url).toBe(
-      snapshot.inputs[1]!.snapshot.data.contentUrl,
-    );
-    const video = inputFor('video', 'content', 2, 'video');
-    video.snapshot.data.contentUrl = 'data:video/mp4;base64,AQID';
-    snapshot.inputs.push(video);
-    const rejectedFetch = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(rejectedFetch).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED' });
-    expect(rejectedFetch).not.toHaveBeenCalled();
-  });
-
   it('视觉参考允许空提示词，记录实际空文本而不把节点标签发给上游', async () => {
     const snapshot = snapshotFor();
     snapshot.nodes[0]!.data.prompt = '';
@@ -558,7 +441,7 @@ describe('Image2Pro 视频插件合同', () => {
   });
 
   it.each(['node', 'parameter', 'connected'] as const)(
-    '%s 提示词不能以尾随标记覆盖显式参数',
+    '%s 提示词正文保留尾随标记并交给上游解释',
     async (source) => {
       const snapshot = snapshotFor();
       const prompt = 'A scene --duration 15';
@@ -571,57 +454,14 @@ describe('Image2Pro 视频插件合同', () => {
         input.snapshot.data.contentUrl = `data:text/plain;base64,${Buffer.from(prompt).toString('base64')}`;
         snapshot.inputs = [input];
       }
-      const fetchImpl = vi.fn<typeof fetch>();
+      const fetchImpl = completedFetch();
       const onProviderJob = vi.fn();
-      await expect(
-        providerFor(fetchImpl).execute({ snapshot, onProviderJob }),
-      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(['audio/ogg', 'audio/aac'])('拒绝官方未支持的音频 Data URL：%s', async (mimeType) => {
-    const snapshot = snapshotFor();
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    const audio = inputFor('audio', 'audioTrack', 1, 'audio');
-    audio.snapshot.data.mimeType = mimeType;
-    audio.snapshot.data.contentUrl = `data:${mimeType};base64,AQID`;
-    snapshot.inputs = [inputFor('image'), audio];
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { mediaType: 'audio', mimeType: 'audio/aac' },
-    { mediaType: 'video', mimeType: 'video/webm' },
-  ] as const)(
-    '公网引用也拒绝官方未支持的 $mimeType，零 POST 且不进入 submitting',
-    async ({ mediaType, mimeType }) => {
-      const snapshot = snapshotFor();
-      snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-      const media = inputFor(
-        'unsupported-format',
-        mediaType === 'audio' ? 'audioTrack' : 'content',
-        1,
-        mediaType,
-      );
-      media.snapshot.data.mimeType = mimeType;
-      snapshot.inputs = [inputFor('image'), media];
-      const before = structuredClone(snapshot);
-      const fetchImpl = vi.fn<typeof fetch>();
-      const onProviderJob = vi.fn();
-      const onRequestPrompt = vi.fn();
-      await expect(
-        providerFor(fetchImpl).execute({ snapshot, onProviderJob, onRequestPrompt }),
-      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(onProviderJob).not.toHaveBeenCalled();
-      expect(onRequestPrompt).not.toHaveBeenCalled();
-      expect(snapshot).toEqual(before);
+      await providerFor(fetchImpl).execute({ snapshot, onProviderJob });
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)).content[0]).toEqual({
+        type: 'text',
+        text: prompt,
+      });
     },
   );
 
@@ -647,23 +487,6 @@ describe('Image2Pro 视频插件合同', () => {
       [`${mediaType}_url`]: { url: media.snapshot.data.contentUrl },
       role: `reference_${mediaType}`,
     });
-  });
-
-  it('拒绝插件未接受的 SVG 数据 URL', async () => {
-    const snapshot = snapshotFor();
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    const image = inputFor('svg');
-    image.snapshot.data.mimeType = 'image/svg+xml';
-    image.snapshot.data.contentUrl = `data:image/svg+xml;base64,${Buffer.from('<svg />').toString('base64')}`;
-    snapshot.inputs = [image];
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({
-      code: 'INVALID_PROVIDER_PARAMETER',
-      retryable: false,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it.each(['Seedance2.0 0.9r', '无限制-Flash-中配-Video', '无限制-Flash-MAX-Video'])(
@@ -739,16 +562,24 @@ describe('Image2Pro 视频插件合同', () => {
         url: 'https://media.invalid/wrong.mp4',
       }),
     );
-    await expect(
-      providerFor(fetchImpl).execute({
-        snapshot: snapshotFor(modelAlias),
-        providerJob: {
-          provider: 'newapi',
-          platformJobId: 'task-frozen-image2pro',
-          payload: { contract: 'newapi-video-v1' },
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'VIDEO_TASK_ID_MISMATCH', retryable: false });
+    const execution = providerFor(fetchImpl).execute({
+      snapshot: snapshotFor(modelAlias),
+      providerJob: {
+        provider: 'newapi',
+        platformJobId: 'task-frozen-image2pro',
+        payload: { contract: 'newapi-video-v1' },
+      },
+    });
+    if (modelAlias === '无限制-Flash-中配-Video' && id === undefined) {
+      await expect(execution).resolves.toMatchObject({
+        output: { kind: 'url', url: 'https://media.invalid/wrong.mp4' },
+      });
+    } else {
+      await expect(execution).rejects.toMatchObject({
+        code: 'VIDEO_TASK_ID_MISMATCH',
+        retryable: false,
+      });
+    }
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0]![1]!.method).toBe('GET');
   });
@@ -837,23 +668,6 @@ describe('Image2Pro Flash-MAX H3 序列化', () => {
       ]);
     },
   );
-
-  it.each([' ', 'x'.repeat(7001)])('H3 水合后的非法文字正文在 POST 前拒绝 %#', async (prompt) => {
-    const snapshot = snapshotFor(modelAlias);
-    snapshot.nodes[0]!.data.prompt = '';
-    snapshot.nodes[0]!.data.promptDocument = { version: 1, blocks: [{ type: 'text', text: '' }] };
-    const input = inputFor('text', 'prompt', 0, 'text', 1);
-    input.snapshot.data.mimeType = 'text/plain';
-    input.snapshot.data.contentUrl = `data:text/plain;base64,${Buffer.from(prompt).toString('base64')}`;
-    snapshot.inputs = [input];
-    const fetchImpl = vi.fn<typeof fetch>();
-    const onProviderJob = vi.fn();
-    await expect(providerFor(fetchImpl).execute({ snapshot, onProviderJob })).rejects.toMatchObject(
-      { retryable: false },
-    );
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-  });
 
   it.each(['document', 'connected'] as const)(
     'H3 %s 实际文字覆盖旧参数后发送原文，不误用节点标签或 Seedance 命令语法',
@@ -971,96 +785,4 @@ describe('Image2Pro Flash-MAX H3 序列化', () => {
       });
     },
   );
-
-  it.each([
-    { duration: 13 },
-    { duration: 5.5 },
-    { duration: 5, resolution: '768p' },
-    { duration: 5, resolution: '1080p' },
-    { duration: 5, generate_audio: false },
-    { duration: 5, watermark: false },
-    { duration: 5, return_last_frame: false },
-    { duration: 5, unknown: false },
-    { duration: 5, prompt: 'x'.repeat(7001) },
-    { duration: 5, ratio: 'adaptive' },
-  ])('不支持参数 %# 在请求记录与 POST 之前拒绝', async (parameters) => {
-    const snapshot = snapshotFor(modelAlias);
-    snapshot.parameters = parameters;
-    const fetchImpl = vi.fn<typeof fetch>();
-    const onProviderJob = vi.fn();
-    await expect(providerFor(fetchImpl).execute({ snapshot, onProviderJob })).rejects.toMatchObject(
-      { retryable: false },
-    );
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-  });
-
-  it('帧模式固定比例与缺少提示词明确失败，不静默改写', async () => {
-    for (const parameters of [
-      { duration: 5, ratio: '16:9' },
-      { duration: 5, ratio: 'adaptive', prompt: '' },
-    ]) {
-      const snapshot = snapshotFor(modelAlias);
-      snapshot.parameters = parameters;
-      snapshot.nodes[0]!.data.videoMode = 'first_frame';
-      if (parameters.prompt === '') snapshot.nodes[0]!.data.prompt = '';
-      snapshot.inputs = [inputFor('first', 'firstFrame')];
-      const before = structuredClone(snapshot);
-      const fetchImpl = vi.fn<typeof fetch>();
-      await expect(
-        providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
-      ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(snapshot).toEqual(before);
-    }
-  });
-
-  it.each([
-    'image/gif',
-    'image/bmp',
-    'image/tiff',
-    'image/svg+xml',
-    'audio/ogg',
-    'video/webm',
-    'video/quicktime',
-  ])('H3 内联引用拒绝 %s，公网 MOV 单独允许', async (mimeType) => {
-    const snapshot = snapshotFor(modelAlias);
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    const mediaType = mimeType.split('/')[0] as 'image' | 'audio' | 'video';
-    const media = inputFor(
-      'unsupported',
-      mediaType === 'audio' ? 'audioTrack' : mediaType === 'video' ? 'content' : 'referenceImage',
-      0,
-      mediaType,
-    );
-    media.snapshot.data.mimeType = mimeType;
-    media.snapshot.data.contentUrl = `data:${mimeType};base64,AQID`;
-    snapshot.inputs = [media];
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    if (mimeType === 'video/quicktime') {
-      media.snapshot.data.contentUrl = 'https://assets.invalid/frozen-v2.mov';
-      const accepted = completedFetch();
-      await providerFor(accepted).execute({ snapshot, onProviderJob: vi.fn() });
-      expect(JSON.parse(String(accepted.mock.calls[0]![1]!.body)).content[1].video_url.url).toBe(
-        media.snapshot.data.contentUrl,
-      );
-    }
-  });
-
-  it('直接调用 Provider 也拒绝超过 15 MiB 的内联音频', async () => {
-    const snapshot = snapshotFor(modelAlias);
-    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
-    const audio = inputFor('large', 'audioTrack', 0, 'audio');
-    audio.snapshot.data.contentUrl = `data:audio/mpeg;base64,${Buffer.alloc(15 * 1024 * 1024 + 1).toString('base64')}`;
-    snapshot.inputs = [audio];
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      providerFor(fetchImpl).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({ code: 'INVALID_PROVIDER_PARAMETER', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
 });

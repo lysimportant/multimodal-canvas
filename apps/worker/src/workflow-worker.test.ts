@@ -377,7 +377,6 @@ describe('worker workflow DAG execution', () => {
               persistence: {
                 getProviderCredentials: getTestProviderCredentials,
                 async upsertRequestPromptRecord() {},
-                async recordUsage() {},
                 async upsertProviderJob(input) {
                   savedJobs.push(structuredClone(input.providerJob));
                 },
@@ -648,7 +647,7 @@ describe('worker workflow DAG execution', () => {
       const staging = createStagingFixture();
       const execute = vi.fn(async (request: WorkerProviderRequest) => ({
         ...createExecution(request.snapshot),
-        usage: { amount: '1.25', currency: 'USD' },
+        usage: { metadata: { amount: '1.25', currency: 'USD' } },
       }));
       const finishSend = vi.fn(async () => {
         throw new Error('send record unavailable');
@@ -713,22 +712,17 @@ describe('worker workflow DAG execution', () => {
       expect(finishSend).toHaveBeenCalledTimes(2);
       expect(execute).toHaveBeenCalledOnce();
       expect(resultArchiver).toHaveBeenCalledTimes(mode === 'cancelled' ? 0 : 1);
-      expect((retry.data.providerJob as ProviderJob).payload?.usageStatus).toBe('external');
-      expect((retry.data.providerJob as ProviderJob).payload?.reportedUsage).toMatchObject({
-        runId,
-        amount: '1.25',
-      });
     },
   );
 
-  it('过时队列不能覆盖数据库已保存的首个归档错误与费用终态', async () => {
+  it('过时队列不能覆盖数据库已保存的首个归档错误终态', async () => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174203';
     const staging = createStagingFixture();
     const saved: ProviderJob[] = [];
     const execute = vi.fn(async (request: WorkerProviderRequest) => ({
       ...createExecution(request.snapshot),
-      usage: { amount: '1.25', currency: 'USD' },
+      usage: { metadata: { amount: '1.25', currency: 'USD' } },
     }));
     const archiver = vi
       .fn()
@@ -743,7 +737,6 @@ describe('worker workflow DAG execution', () => {
       resultStagingStore: staging.createStore(),
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
-        async recordUsage() {},
         async upsertProviderJob({ providerJob }) {
           saved.push(structuredClone(providerJob));
         },
@@ -769,13 +762,11 @@ describe('worker workflow DAG execution', () => {
     ]) {
       if (providerJob?.payload) {
         delete providerJob.payload.firstArchiveError;
-        providerJob.payload.usageStatus = 'pending';
       }
     }
     createRunWorker(options);
     await expect(bullmqState.processor?.(original)).rejects.toThrow('first archive failure');
     expect(saved.at(-1)?.payload?.firstArchiveError).toBe('first archive failure');
-    expect(saved.at(-1)?.payload?.usageStatus).toBe('external');
     expect(execute).toHaveBeenCalledOnce();
   });
 
@@ -846,7 +837,6 @@ describe('worker workflow DAG execution', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(update) {
           updates.push(update);
         },
@@ -1060,9 +1050,12 @@ describe('worker workflow DAG execution', () => {
       execute: vi.fn(async ({ snapshot }: WorkerProviderRequest) => ({
         ...createExecution(snapshot),
         usage: {
-          amount: '0.01',
-          currency: 'USD',
-          metadata: { promptTokens: 128, completionTokens: 512 },
+          metadata: {
+            amount: '0.01',
+            currency: 'USD',
+            promptTokens: 128,
+            completionTokens: 512,
+          },
         },
         output: {
           kind: 'text' as const,
@@ -1091,7 +1084,6 @@ describe('worker workflow DAG execution', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(update) {
           updates.push(update);
         },
@@ -1104,14 +1096,6 @@ describe('worker workflow DAG execution', () => {
     await expect(firstAttempt).rejects.not.toThrow('仅重试归档');
 
     const receipt = job.data.providerJob as ProviderJob;
-    expect(receipt.payload).toMatchObject({
-      code: 'PROMPT_OPTIMIZATION_OUTPUT_INVALID',
-      deliveryState: 'received',
-      usageStatus: 'external',
-      reportedUsage: { amount: '0.01', currency: 'USD', runId },
-      usage: { promptTokens: 128, completionTokens: 512 },
-      error: expect.stringContaining(expectedError),
-    });
     expect(receipt.payload).not.toHaveProperty('firstArchiveError');
     expect(staging.values.size).toBe(1);
     expect(updates).toContainEqual(
@@ -1221,7 +1205,9 @@ describe('worker workflow DAG execution', () => {
             platformJobId,
             payload: { contract: 'newapi-video-v1' },
           },
-          usage: { amount: request.resumeOnly ? '999' : '1.25', currency: 'USD' },
+          usage: {
+            metadata: { amount: request.resumeOnly ? '999' : '1.25', currency: 'USD' },
+          },
         };
       });
       const archiveKeys: Array<string | undefined> = [];
@@ -1278,10 +1264,6 @@ describe('worker workflow DAG execution', () => {
       expect(execute).toHaveBeenCalledTimes(2);
       expect(beginSend).toHaveBeenCalledOnce();
       expect(new Set(archiveKeys).size).toBe(1);
-      expect((job.data.providerJob as ProviderJob).payload?.reportedUsage).toMatchObject({
-        amount: '1.25',
-        runId,
-      });
       expect(JSON.stringify(job.data)).not.toContain('secret=');
       expect(staging.values.size).toBe(0);
     },
@@ -2273,7 +2255,6 @@ describe('worker workflow DAG execution', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(input) {
           runStatuses.push(input.status);
         },
@@ -2574,17 +2555,13 @@ describe('worker workflow DAG execution', () => {
     },
   );
 
-  it('retains upstream work and reported cost without replaying an intermediate cancelled response', async () => {
+  it('retains upstream work and provider metadata without replaying an intermediate cancelled response', async () => {
     bullmqState.jobs.clear();
     const predecessorRunId = '123e4567-e89b-42d3-a456-426614174111';
     const runId = '123e4567-e89b-42d3-a456-426614174112';
-    const usageRecords: Array<{ providerJobId?: string }> = [];
     const persistence = {
       getProviderCredentials: getTestProviderCredentials,
       async upsertProviderJob() {},
-      async recordUsage(input: { providerJobId?: string }) {
-        usageRecords.push(input);
-      },
     };
     const predecessor = createJob({
       runId: predecessorRunId,
@@ -2610,7 +2587,7 @@ describe('worker workflow DAG execution', () => {
             predecessor.data.cancelRequested = true;
             return {
               ...createExecution(request.snapshot),
-              usage: { amount: '2.50', currency: 'USD' },
+              usage: { metadata: { amount: '2.50', currency: 'USD' } },
             };
           }
           return createExecution(request.snapshot);
@@ -2634,15 +2611,9 @@ describe('worker workflow DAG execution', () => {
       'node_image',
     ]);
     expect(firstVideoProvider.execute).not.toHaveBeenCalled();
-    expect(usageRecords).toEqual([]);
     const predecessorState = predecessor.data.workflowState as WorkflowState;
     expect(workflowNodeState(predecessorState, 'node_draft')?.status).toBe('succeeded');
     expect(workflowNodeState(predecessorState, 'node_image')?.status).toBe('cancelled');
-    expect(workflowNodeState(predecessorState, 'node_image')?.providerJob?.payload).toMatchObject({
-      deliveryState: 'received',
-      reportedUsage: { amount: '2.50', currency: 'USD', runId: predecessorRunId },
-      usageStatus: 'external',
-    });
 
     const retry = createJob({
       runId,
@@ -2669,7 +2640,7 @@ describe('worker workflow DAG execution', () => {
           });
           return {
             ...createExecution(request.snapshot),
-            usage: { amount: '2.50', currency: 'USD' },
+            usage: { metadata: { amount: '2.50', currency: 'USD' } },
           };
         },
       },
@@ -2687,7 +2658,6 @@ describe('worker workflow DAG execution', () => {
 
     expect(retryRequests).toEqual([]);
     expect(videoProvider.execute).not.toHaveBeenCalled();
-    expect(usageRecords).toEqual([]);
     expect(workflowNodeState(retry.data.workflowState as WorkflowState, 'node_draft')?.status).toBe(
       'succeeded',
     );
@@ -2716,7 +2686,6 @@ describe('worker workflow DAG execution', () => {
         async upsertProviderJob() {
           throw new Error('provider job database unavailable');
         },
-        async recordUsage() {},
       },
     });
 
@@ -2748,7 +2717,6 @@ describe('worker workflow DAG execution', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(input) {
           runStatuses.push(input.status);
           if (input.status === 'succeeded' && rejectSucceededWrite) {
@@ -2800,9 +2768,9 @@ describe('worker workflow DAG execution', () => {
       const execute = vi.fn(async (request: WorkerProviderRequest) => ({
         ...createExecution(request.snapshot),
         usage: {
-          amount: '1.000001',
-          currency: 'USD',
           metadata: {
+            amount: '1.000001',
+            currency: 'USD',
             requestId: 'request_usage_recovery',
             total_tokens: 30,
             signed_url: 'https://provider.example/result?secret=synthetic',
@@ -2810,7 +2778,6 @@ describe('worker workflow DAG execution', () => {
           },
         },
       }));
-      const recordUsage = vi.fn<RunPersistence['recordUsage']>();
       const persistence: RunPersistence = {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob({ runId: persistedRunId, providerJob }) {
@@ -2824,7 +2791,6 @@ describe('worker workflow DAG execution', () => {
                 return persistedJob ? [structuredClone(persistedJob)] : [];
               },
             }),
-        recordUsage,
       };
       const resultArchiver = vi.fn(async () => ({
         assetId: 'asset_usage_replay',
@@ -2844,10 +2810,6 @@ describe('worker workflow DAG execution', () => {
       await expect(bullmqState.processor?.(job)).resolves.toMatchObject({
         status: 'succeeded',
         result: { asset: { assetId: 'asset_usage_replay', version: 1 } },
-      });
-      expect(persistedJobs.get(runId)?.payload).toMatchObject({
-        reportedUsage: { amount: '1.000001', currency: 'USD', runId },
-        usageStatus: 'external',
       });
       expect(JSON.stringify(persistedJobs.get(runId)?.payload)).not.toContain('synthetic');
       const retainedData = structuredClone(job.data) as unknown as RunJobData;
@@ -2873,12 +2835,10 @@ describe('worker workflow DAG execution', () => {
 
       expect(execute).toHaveBeenCalledOnce();
       expect(resultArchiver).toHaveBeenCalledOnce();
-      expect(recordUsage).not.toHaveBeenCalled();
       await expect(bullmqState.processor?.(recovered)).resolves.toMatchObject({
         status: 'succeeded',
       });
       expect(execute).toHaveBeenCalledOnce();
-      expect(recordUsage).not.toHaveBeenCalled();
     },
   );
 
@@ -2887,11 +2847,10 @@ describe('worker workflow DAG execution', () => {
     const runId = '123e4567-e89b-42d3-a456-426614174171';
     const persistedJobs = new Map<string, ProviderJob>();
     let rejectArchivedPersistence = true;
-    const recordUsage = vi.fn<RunPersistence['recordUsage']>();
     const execute = vi.fn(async (request: WorkerProviderRequest) => ({
       ...createExecution(request.snapshot),
       ...(request.snapshot.targetNodeId === 'node_image'
-        ? { usage: { amount: '0.250000', currency: 'USD' } }
+        ? { usage: { metadata: { amount: '0.250000', currency: 'USD' } } }
         : {}),
     }));
     const submission: RunJobData = {
@@ -2924,7 +2883,6 @@ describe('worker workflow DAG execution', () => {
         async findProviderJobsByRunId() {
           return structuredClone([...persistedJobs.values()]);
         },
-        recordUsage,
       },
       resultArchiver: async ({ snapshot: nodeSnapshot }) => ({
         assetId: `asset_${nodeSnapshot.targetNodeId}_recovered`,
@@ -2957,7 +2915,6 @@ describe('worker workflow DAG execution', () => {
       'node_image',
       'node_video',
     ]);
-    expect(recordUsage).not.toHaveBeenCalled();
     expect(execute.mock.calls.at(-1)?.[0].snapshot.inputs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ sourceAssetId: 'asset_node_image_recovered' }),
@@ -3004,7 +2961,6 @@ describe('worker workflow DAG execution', () => {
       const runId = '123e4567-e89b-42d3-a456-426614174173';
       const textSnapshot = createTextSnapshot();
       const execute = vi.fn();
-      const recordUsage = vi.fn();
       const providerJob: ProviderJob = {
         ...createProviderJobRecord(runId, 'newapi', 'failed', 95),
         payload: {
@@ -3012,7 +2968,6 @@ describe('worker workflow DAG execution', () => {
           snapshotFingerprint: workflowSnapshotFingerprint(textSnapshot),
           requestProviderJobId: `provider_job_${runId}`,
           deliveryState: 'archived',
-          usageStatus: 'pending',
           ...(missingEvidence === 'usage'
             ? {
                 result: {
@@ -3020,7 +2975,7 @@ describe('worker workflow DAG execution', () => {
                   asset: { assetId: 'asset_retained', version: 1, mimeType: 'text/plain' },
                 },
               }
-            : { reportedUsage: { amount: '1.00', currency: 'USD', runId } }),
+            : { usage: { metadata: { amount: '1.00', currency: 'USD' } } }),
         },
       };
       createRunWorker({
@@ -3034,7 +2989,6 @@ describe('worker workflow DAG execution', () => {
           async findProviderJobsByRunId() {
             return [providerJob];
           },
-          recordUsage,
         },
       });
       const job = createJob({
@@ -3052,15 +3006,8 @@ describe('worker workflow DAG execution', () => {
           status: 'succeeded',
           result: { asset: { assetId: 'asset_retained', version: 1 } },
         });
-        expect(job.data.providerJob).toMatchObject({
-          payload: {
-            usageStatus: 'external',
-            usageReason: '费用由 New API 记录；Canvas 只保留原始供应商回执',
-          },
-        });
       }
       expect(execute).not.toHaveBeenCalled();
-      expect(recordUsage).not.toHaveBeenCalled();
     },
   );
 
@@ -3076,7 +3023,6 @@ describe('worker workflow DAG execution', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async findProviderJobsByRunId() {
           throw new Error('recovery database unavailable');
         },
@@ -3128,7 +3074,6 @@ describe('worker workflow DAG execution', () => {
       cancelRequested: false,
     });
     const requestProviderJobIds: Array<string | undefined> = [];
-    const usageRecords: Array<{ providerJobId?: string }> = [];
 
     createRunWorker({
       connection: { host: '127.0.0.1', port: 6379 },
@@ -3138,7 +3083,7 @@ describe('worker workflow DAG execution', () => {
           requestProviderJobIds.push(request.providerJob?.id);
           return {
             ...createExecution(request.snapshot),
-            usage: { amount: '1.25', currency: 'USD' },
+            usage: { metadata: { amount: '1.25', currency: 'USD' } },
           };
         },
       },
@@ -3146,9 +3091,6 @@ describe('worker workflow DAG execution', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage(input) {
-          usageRecords.push(input);
-        },
       },
       resultArchiver: async () => ({
         assetId: 'asset_draft_retry',
@@ -3160,16 +3102,6 @@ describe('worker workflow DAG execution', () => {
     await bullmqState.processor?.(job);
 
     expect(requestProviderJobIds).toEqual([`provider_job_${predecessorRunId}`]);
-    expect(usageRecords).toEqual([]);
-    expect(job.data.providerJob).toMatchObject({
-      id: `provider_job_${runId}`,
-      status: 'succeeded',
-      payload: {
-        requestProviderJobId: `provider_job_${predecessorRunId}`,
-        reportedUsage: { amount: '1.25', currency: 'USD', runId },
-        usageStatus: 'external',
-      },
-    });
   });
 
   it('recovers completed upstream results and a live target task from persistence only', async () => {
@@ -3259,7 +3191,6 @@ describe('worker workflow DAG execution', () => {
         getProviderCredentials: getTestProviderCredentials,
         findProviderJobsByRunId,
         async upsertProviderJob() {},
-        async recordUsage() {},
       },
       resultArchiver: async () => ({
         assetId: 'asset_video_database',
@@ -3406,7 +3337,6 @@ describe('worker workflow DAG execution', () => {
         getProviderCredentials: getTestProviderCredentials,
         findProviderJobsByRunId,
         async upsertProviderJob() {},
-        async recordUsage() {},
       },
       resultArchiver: async () => ({
         assetId: 'asset_v1_recovered',
@@ -3514,7 +3444,6 @@ describe('worker workflow DAG execution', () => {
       resolveDatabaseRunId: () => runId,
       persistence: {
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(input) {
           runUpdates.push({ status: input.status, ...(input.error ? { error: input.error } : {}) });
         },
@@ -3781,7 +3710,6 @@ describe('worker request prompt retention', () => {
           async findProviderJobsByRunId() {
             return [...saved.values()];
           },
-          async recordUsage() {},
           upsertRequestPromptRecord: retainPrompt,
           updateRun,
         },
@@ -3881,7 +3809,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome(input) {
@@ -3967,7 +3894,6 @@ describe('worker request prompt retention', () => {
             const providerJob = persistedJobs.get(runId);
             return providerJob ? [providerJob] : [];
           },
-          async recordUsage() {},
           async updateRun() {},
           async upsertRequestPromptRecord() {},
           async recordRequestPromptOutcome(input) {
@@ -4070,7 +3996,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord({ record }) {
           expect(record.sendStatus).toBe('pending');
@@ -4127,7 +4052,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(input) {
           statuses.push(input.status);
         },
@@ -4178,7 +4102,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord({ record }) {
           events.push(`retain:${record.nodeId}`);
@@ -4238,7 +4161,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome({ identity, assetId, assetVersion }) {
@@ -4297,7 +4219,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome(input) {
@@ -4351,7 +4272,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord({ record }) {
           retained.push(record.nodeId);
@@ -4456,7 +4376,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome({ sendStatus, assetId }) {
@@ -4501,7 +4420,6 @@ describe('worker request prompt retention', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome({ sendStatus }) {
@@ -4684,7 +4602,6 @@ describe('worker node timings', () => {
               ? [structuredClone(persistedProviderJob)]
               : [];
           },
-          async recordUsage() {},
           updateRun,
         },
       };
@@ -4795,7 +4712,6 @@ describe('worker node timings', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome() {},
         async updateRun(input) {
@@ -4881,7 +4797,6 @@ describe('worker node timings', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async upsertRequestPromptRecord() {},
         async recordRequestPromptOutcome({ sendStatus }) {
           outcomes.push(sendStatus);
@@ -4930,7 +4845,6 @@ describe('worker node timings', () => {
       persistence: {
         getProviderCredentials: getTestProviderCredentials,
         async upsertProviderJob() {},
-        async recordUsage() {},
         async updateRun(input) {
           if (input.nodeTimings) timingWrites.push(structuredClone(input.nodeTimings));
         },

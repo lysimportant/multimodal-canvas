@@ -46,12 +46,10 @@ export type ModelEntry = {
   credentialLabel?: string;
   /** 平台商品公开的脱敏连接身份与标签，仅用于选模展示。 */
   connection?: { id: string; label: string };
-  /** 模型目录返回的能力描述，前端按媒体类型解析可用参数。 */
+  /** 模型目录的参数建议，仅用于快捷选项，不限制用户输入。 */
   capabilities?: Record<string, unknown>;
-  /** 模型目录返回的限制描述，作为能力字段缺失时的兼容来源。 */
+  /** 旧目录的参数建议，作为能力字段缺失时的兼容来源。 */
   limitations?: Record<string, unknown>;
-  /** 模型价格信息，仅随目录透传，不参与节点参数选择。 */
-  price?: Record<string, unknown>;
   availability?: 'available' | 'unavailable' | 'needs_review';
   /** 账号目录给出的调用资格，由查询边界转换为界面状态。 */
   available?: boolean;

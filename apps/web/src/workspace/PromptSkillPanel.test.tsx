@@ -897,7 +897,7 @@ describe('PromptSkillPanel', () => {
     expect(inputs.onApply).not.toHaveBeenCalled();
   });
 
-  it('只展示文字模型，同名模型以连接区分', async () => {
+  it('展示完整模型目录，并以连接区分同名模型', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result({ credentialId: 'key-b' }));
     vi.stubGlobal('fetch', fetcher);
@@ -926,7 +926,7 @@ describe('PromptSkillPanel', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Skill 配置' }));
     await user.click(screen.getByRole('combobox', { name: '优化模型' }));
-    expect(screen.queryByRole('option', { name: '图片专用' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '图片专用' })).toBeInTheDocument();
     await user.click(screen.getByRole('option', { name: /文字 B.*分组乙/ }));
     await user.click(screen.getByRole('button', { name: '优化提示词' }));
     await screen.findByRole('button', { name: '应用' });

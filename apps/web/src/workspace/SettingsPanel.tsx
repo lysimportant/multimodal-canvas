@@ -1,5 +1,14 @@
 import { Select, Tabs } from 'antd';
-import { AudioLines, ExternalLink, FileText, ImageIcon, LoaderCircle, RefreshCw, Video, X } from 'lucide-react';
+import {
+  AudioLines,
+  ExternalLink,
+  FileText,
+  ImageIcon,
+  LoaderCircle,
+  RefreshCw,
+  Video,
+  X,
+} from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '@multimodal-canvas/ui';
@@ -8,7 +17,13 @@ import { GENERATION_COUNT_MAX, isValidGenerationCount } from '@multimodal-canvas
 
 import { apiFetch, getAuthSessionGeneration, startNewApiLogin } from '../auth-client';
 import { useModelCatalogQuery, fetchCustomGroupModels } from '../query/models';
-import { useWorkspacePreferences, useCustomApiGroupsStore, getCustomApiVisibleForUsers, setCustomApiVisibleForUsers, type CanvasTheme } from '../state/workspace-preferences';
+import {
+  useWorkspacePreferences,
+  useCustomApiGroupsStore,
+  getCustomApiVisibleForUsers,
+  setCustomApiVisibleForUsers,
+  type CanvasTheme,
+} from '../state/workspace-preferences';
 import { isImeKeyboardEvent } from '../ime';
 import { GenerationConcurrencySettings } from './GenerationConcurrencySettings';
 import { appearanceEdgeEffectOptions, appearanceEdgePathOptions } from './AppearancePicker';
@@ -108,7 +123,11 @@ function CustomApiSection() {
   const updateGroup = useCustomApiGroupsStore((s) => s.updateGroup);
 
   type MediaType = 'text' | 'image' | 'audio' | 'video';
-  const rows: { mediaType: MediaType; label: string; icon: typeof import('lucide-react').FileText }[] = [
+  const rows: {
+    mediaType: MediaType;
+    label: string;
+    icon: typeof import('lucide-react').FileText;
+  }[] = [
     { mediaType: 'text', label: '文字节点', icon: FileText },
     { mediaType: 'image', label: '图片节点', icon: ImageIcon },
     { mediaType: 'audio', label: '音频节点', icon: AudioLines },
@@ -191,77 +210,79 @@ function CustomApiSection() {
         </p>
       </div>
       <div className="settings-custom-api-grid">
-      {rows.map(({ mediaType, label, icon: Icon }) => {
-        const entry = config[mediaType];
-        const isTesting = testingKeys.has(mediaType);
-        const canTest = entry.baseUrl.trim() !== '' && entry.apiKey.trim() !== '';
-        const result = testResults[mediaType];
-        return (
-          <div key={mediaType} className="settings-custom-api-group">
-            <div className="settings-custom-api-group-header">
-              <span className="settings-custom-api-media-label">
-                <Icon size={15} aria-hidden="true" />
-                {label}
-              </span>
-              <label className="settings-field settings-custom-api-toggle-field">
-                <span>启用</span>
-                <Select
-                  aria-label={`启用 ${label} 自定义 API`}
-                  value={entry.enabled ? 'on' : 'off'}
-                  onChange={(value) => updateGroup(mediaType, { enabled: value === 'on' })}
-                  options={[
-                    { value: 'on', label: '启用' },
-                    { value: 'off', label: '停用' },
-                  ]}
-                  virtual={false}
-                  styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+        {rows.map(({ mediaType, label, icon: Icon }) => {
+          const entry = config[mediaType];
+          const isTesting = testingKeys.has(mediaType);
+          const canTest = entry.baseUrl.trim() !== '' && entry.apiKey.trim() !== '';
+          const result = testResults[mediaType];
+          return (
+            <div key={mediaType} className="settings-custom-api-group">
+              <div className="settings-custom-api-group-header">
+                <span className="settings-custom-api-media-label">
+                  <Icon size={15} aria-hidden="true" />
+                  {label}
+                </span>
+                <label className="settings-field settings-custom-api-toggle-field">
+                  <span>启用</span>
+                  <Select
+                    aria-label={`启用 ${label} 自定义 API`}
+                    value={entry.enabled ? 'on' : 'off'}
+                    onChange={(value) => updateGroup(mediaType, { enabled: value === 'on' })}
+                    options={[
+                      { value: 'on', label: '启用' },
+                      { value: 'off', label: '停用' },
+                    ]}
+                    virtual={false}
+                    styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                  />
+                </label>
+              </div>
+              <label className="settings-field">
+                <span>API Base URL</span>
+                <Input
+                  aria-label={`${label} API Base URL`}
+                  value={entry.baseUrl}
+                  onChange={(e) => updateGroup(mediaType, { baseUrl: e.target.value })}
+                  placeholder="https://api.example.com"
                 />
               </label>
-            </div>
-            <label className="settings-field">
-              <span>API Base URL</span>
-              <Input
-                aria-label={`${label} API Base URL`}
-                value={entry.baseUrl}
-                onChange={(e) => updateGroup(mediaType, { baseUrl: e.target.value })}
-                placeholder="https://api.example.com"
-              />
-            </label>
-            <label className="settings-field">
-              <span>API Key</span>
-              <Input
-                aria-label={`${label} API Key`}
-                type="password"
-                value={entry.apiKey}
-                onChange={(e) => updateGroup(mediaType, { apiKey: e.target.value })}
-                placeholder="sk-..."
-              />
-            </label>
-            <div className="settings-custom-api-group-footer">
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={isTesting || !canTest}
-                onClick={() => void testEntry(mediaType)}
-              >
-                {isTesting ? (
-                  <>
-                    <LoaderCircle className="spin" size={15} />
-                    正在测试连通性
-                  </>
-                ) : (
-                  '测试连通性'
+              <label className="settings-field">
+                <span>API Key</span>
+                <Input
+                  aria-label={`${label} API Key`}
+                  type="password"
+                  value={entry.apiKey}
+                  onChange={(e) => updateGroup(mediaType, { apiKey: e.target.value })}
+                  placeholder="sk-..."
+                />
+              </label>
+              <div className="settings-custom-api-group-footer">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={isTesting || !canTest}
+                  onClick={() => void testEntry(mediaType)}
+                >
+                  {isTesting ? (
+                    <>
+                      <LoaderCircle className="spin" size={15} />
+                      正在测试连通性
+                    </>
+                  ) : (
+                    '测试连通性'
+                  )}
+                </Button>
+                {result && (
+                  <span
+                    className={result.status === 'ok' ? 'settings-status' : 'settings-field-error'}
+                  >
+                    {result.message}
+                  </span>
                 )}
-              </Button>
-              {result && (
-                <span className={result.status === 'ok' ? 'settings-status' : 'settings-field-error'}>
-                  {result.message}
-                </span>
-              )}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
       </div>
     </section>
   );
@@ -397,14 +418,10 @@ export function SettingsPanel({
   const models = modelsQuery.data ?? [];
   const modelsByMedia = useMemo(
     () =>
-      Object.fromEntries(
-        mediaOrder.map((mediaType) => [
-          mediaType,
-          models.filter(
-            (model) => model.mediaTypes.includes(mediaType) && model.availability !== 'unavailable',
-          ),
-        ]),
-      ) as Record<MediaType, ModelEntry[]>,
+      Object.fromEntries(mediaOrder.map((mediaType) => [mediaType, models])) as Record<
+        MediaType,
+        ModelEntry[]
+      >,
     [models],
   );
   const editedDefaults = scope === 'project' ? projectDefaults : globalDefaults;
@@ -726,9 +743,7 @@ export function SettingsPanel({
         </section>
       )}
       {category === 'generation' && <GenerationConcurrencySettings onNotice={onNotice} />}
-      {category === 'custom-api' && (
-        <CustomApiSection />
-      )}
+      {category === 'custom-api' && <CustomApiSection />}
       {!loading && category === 'appearance' && (
         <section className="settings-section" aria-labelledby="appearance-title">
           <div className="settings-section-heading">
@@ -843,10 +858,10 @@ export function SettingsPanel({
         items={settingsCategories
           .filter((entry) => entry.id !== 'custom-api' || isAdmin)
           .map((entry) => ({
-          key: entry.id,
-          label: entry.label,
-          children: settingsContent,
-        }))}
+            key: entry.id,
+            label: entry.label,
+            children: settingsContent,
+          }))}
       />
       <footer className="settings-footer">
         <span className="settings-footer-spacer" />

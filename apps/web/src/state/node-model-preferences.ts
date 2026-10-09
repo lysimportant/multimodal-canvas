@@ -11,7 +11,7 @@ function preferenceKey(ownerId: string, mediaType: MediaType, mode: OperationNod
 }
 
 /**
- * 读取最近模型，只返回当前目录仍支持该媒体类型的精确模型与来源组合。
+ * 读取最近模型，只按当前目录匹配精确模型与来源组合，不检查媒体能力。
  * @returns 未保存、数据格式失效或目录已移除时返回 undefined。
  * @throws 本机存储不可访问时抛出原始异常，由界面提示持久化故障。
  */
@@ -40,10 +40,7 @@ export function readNodeModelPreference(
     return undefined;
   if (!credentialId) return undefined;
   const current = models.find(
-    (model) =>
-      model.id === modelAlias &&
-      model.credentialId === credentialId &&
-      model.mediaTypes.includes(mediaType),
+    (model) => model.id === modelAlias && model.credentialId === credentialId,
   );
   return current
     ? {

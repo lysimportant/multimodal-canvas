@@ -79,197 +79,21 @@ export function checkResourceMentionCapabilities(input: {
   requestId: string;
   allowMockPreview: boolean;
 }): ResourceMentionCapabilityCheck {
-  if (input.mentions.length === 0) return { issues: [], simulated: false };
-
-  const modelCapabilities = mergeCapabilityRecords(
-    input.model?.capabilities,
-    input.model?.limitations,
-  );
-  const imageGeneration =
-    input.node.data.mediaType === 'image' && input.node.data.mode === 'generate';
-  const parsed = parseCapabilities(modelCapabilities);
-  const simulated = input.allowMockPreview;
-  const issues: ResourceMentionCapabilityDiagnostic[] = [];
-  if (imageGeneration && !simulated) {
-    for (const mention of input.mentions) {
-      if (mention.mediaType === 'image') continue;
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_MEDIA_UNSUPPORTED',
-          reason: 'media_unsupported',
-          message: `当前项目的图片生成适配器尚未接通 ${mention.mediaType} 类型资源提及`,
-        }),
-      );
-    }
-  }
-
-  const nodeMode = parsed.modes;
-  if (nodeMode && !nodeMode.includes(input.node.data.mode)) {
-    for (const mention of input.mentions) {
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_MODE_UNSUPPORTED',
-          reason: 'mode_unsupported',
-          message: `模型 ${input.modelAlias} 不支持 ${input.node.data.mode} 模式下的资源提及`,
-        }),
-      );
-    }
-  }
-
-  if (parsed.semanticRoles) {
-    for (const mention of input.mentions) {
-      if (!mention.semanticRole || parsed.semanticRoles.includes(mention.semanticRole)) continue;
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_ROLE_UNSUPPORTED',
-          reason: 'role_unsupported',
-          message: `模型 ${input.modelAlias} 不支持语义角色 ${mention.semanticRole}`,
-        }),
-      );
-    }
-  }
-
-  if (parsed.maxMentions !== undefined && input.mentions.length > parsed.maxMentions) {
-    for (const mention of input.mentions.slice(parsed.maxMentions)) {
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_COUNT_EXCEEDED',
-          reason: 'count_exceeded',
-          message: `模型 ${input.modelAlias} 最多支持 ${parsed.maxMentions} 个资源提及`,
-        }),
-      );
-    }
-  }
-
-  const distinctMediaTypes = new Set(input.mentions.map((mention) => mention.mediaType));
-  if (distinctMediaTypes.size > 1 && parsed.supportsMixedMentions === false) {
-    for (const mention of input.mentions) {
-      issues.push(
-        diagnostic(input, mention, {
-          code: 'RESOURCE_MENTION_MIXED_UNSUPPORTED',
-          reason: 'mixed_unsupported',
-          message: `模型 ${input.modelAlias} 不支持混合媒体资源提及`,
-        }),
-      );
-    }
-  }
-
-  return { issues: deduplicateDiagnostics(issues), simulated };
+  return { issues: [], simulated: input.allowMockPreview && input.mentions.length > 0 };
 }
 
 /** 为单个资源生成不含内容或 URL 的稳定诊断。 */
-function diagnostic(
-  input: Parameters<typeof checkResourceMentionCapabilities>[0],
-  mention: FrozenPromptMention,
-  details: Pick<ResourceMentionCapabilityDiagnostic, 'code' | 'reason' | 'message'>,
-): ResourceMentionCapabilityDiagnostic {
-  return {
-    ...details,
-    requestId: input.requestId,
-    nodeId: input.node.id,
-    mentionId: mention.mentionId,
-    assetId: mention.assetId,
-    mediaType: mention.mediaType,
-    ...(mention.semanticRole ? { semanticRole: mention.semanticRole } : {}),
-    modelAlias: input.modelAlias,
-  };
-}
 
 /** 合并预检限制，capabilities 中的显式值覆盖 limitations。 */
-function mergeCapabilityRecords(
-  capabilities: Record<string, unknown> | undefined,
-  limitations: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!capabilities && !limitations) return undefined;
-  return { ...(limitations ?? {}), ...(capabilities ?? {}) };
-}
 
 /** 仅解析模式、角色与组合限制；对应空列表与零上限仍表示禁用。 */
-function parseCapabilities(
-  value: Record<string, unknown> | undefined,
-): ResourceMentionCapabilities {
-  if (!value) return {};
-  return {
-    semanticRoles: readStrings(value, [
-      'semanticRoles',
-      'semantic_roles',
-      'mentionSemanticRoles',
-      'mention_semantic_roles',
-    ]),
-    maxMentions: readMentionLimit(value, ['maxMentions', 'max_mentions', 'maxReferences']),
-    supportsMixedMentions: readBoolean(value, [
-      'supportsMixedMentions',
-      'supports_mixed_mentions',
-      'mixedMentions',
-      'mixed_mentions',
-    ]),
-    modes: readModes(value, ['modes', 'supportedModes', 'supported_modes']),
-  };
-}
 
 /** 读取字符串声明，保留显式空数组的禁用语义。 */
-function readStrings(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): string[] | undefined {
-  for (const key of keys) {
-    const raw = record[key];
-    if (!Array.isArray(raw)) continue;
-    const values = raw.filter(
-      (item): item is string => typeof item === 'string' && item.trim().length > 0,
-    );
-    return values.length > 0 || raw.length === 0
-      ? [...new Set(values.map((item) => item.trim()))]
-      : undefined;
-  }
-  return undefined;
-}
 
 /** 过滤已识别的节点模式，保留显式空模式列表。 */
-function readModes(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): NodeMode[] | undefined {
-  const values = readStrings(record, keys);
-  if (!values) return undefined;
-  const modes = values.filter((value): value is NodeMode =>
-    (nodeModes as readonly string[]).includes(value),
-  );
-  return modes.length > 0 || values.length === 0 ? [...new Set(modes)] : undefined;
-}
 
 /** 读取资源数量上限；零表示明确禁用资源输入。 */
-function readMentionLimit(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): number | undefined {
-  for (const key of keys) {
-    const raw = record[key];
-    if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) return raw;
-  }
-  return undefined;
-}
 
 /** 读取布尔声明，不把缺省值推断成支持或禁用。 */
-function readBoolean(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): boolean | undefined {
-  for (const key of keys) {
-    if (typeof record[key] === 'boolean') return record[key] as boolean;
-  }
-  return undefined;
-}
 
 /** 按错误、节点、提及和消息去重，保留首个诊断顺序。 */
-function deduplicateDiagnostics(
-  issues: readonly ResourceMentionCapabilityDiagnostic[],
-): ResourceMentionCapabilityDiagnostic[] {
-  const seen = new Set<string>();
-  return issues.filter((issue) => {
-    const key = `${issue.code}\0${issue.nodeId}\0${issue.mentionId}\0${issue.message}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}

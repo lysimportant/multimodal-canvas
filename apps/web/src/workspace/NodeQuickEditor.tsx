@@ -21,7 +21,6 @@ import type {
   PromptDocument,
   PromptSkill,
   VideoCompletionAction,
-  VideoModelFamily,
   VideoMode,
   VideoRecreationConfig,
 } from '@multimodal-canvas/domain';
@@ -32,20 +31,11 @@ import {
   ImageOutputParameterError,
   normalizeImageOutputParameters,
   resolveImageOutputParameters,
-  image2proVideoContractForModel,
-  isRetiredImage2proVideoModel,
-  Image2proVideoParameterError,
   isValidGenerationCount,
-  moonVideoContractForModel,
-  resolveImage2proVideoParameters,
-  resolveYuanliuVideoParameters,
   resolveVideoCompletionAction,
-  videoFamilyForModel,
   videoModeDescriptions,
   videoModeLabels,
   videoModes,
-  yuanliuVideoContractForModel,
-  YuanliuVideoParameterError,
 } from '@multimodal-canvas/domain';
 import { renderPromptDocument } from '@multimodal-canvas/domain';
 import {
@@ -100,11 +90,11 @@ export type NodeMediaParameters = Record<string, unknown> & {
   width?: number;
   /** 保留历史视频高度，单位像素；界面不再编辑，新建不初始化。 */
   height?: number;
-  /** TTS 音色必须由用户显式填写；未受当前接口支持的历史值保留显示但禁止提交。 */
+  /** 上游音色 ID，空值时省略，不由 Canvas 收窄音色集合。 */
   voice?: string;
   /** TTS 输出格式；新建或切换模型时可初始化为支持列表中的第一项，清空后省略。 */
   response_format?: string;
-  /** TTS 语速倍率，有限数值且范围为 0.25 至 4；未设置时省略。 */
+  /** TTS 语速倍率，有限数值；未设置时省略，上游判断适用范围。 */
   speed?: number;
 };
 
@@ -221,15 +211,6 @@ const legacyImageResolutionTiers: MediaOption[] = [
   { value: '4k', label: '4k', description: '极致' },
 ];
 
-/** 目录缺失时仅为精确固定尺寸模型补官方像素，不向相似名称或未知别名扩展。 */
-const fixedImageSizeFallbacks: Readonly<Record<string, readonly string[]>> = {
-  'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
-  'gpt-image-1-mini': ['1024x1024', '1536x1024', '1024x1536'],
-  'gpt-image-1.5': ['1024x1024', '1536x1024', '1024x1536'],
-  'dall-e-2': ['256x256', '512x512', '1024x1024'],
-  'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
-};
-
 /** 图片尺寸兼容字段；显式编辑后只保留官方 size。 */
 const imageSizeParameterAliases = ['size', 'image_size', 'imageSize', 'resolution'] as const;
 
@@ -277,179 +258,6 @@ const adaptiveVideoAspectRatioOption: MediaOption = {
   description: '由模型根据提示词和素材决定',
 };
 
-/** 判断模型家族是否接受 -1 自动时长。 */
-function supportsAutomaticVideoDuration(family: VideoModelFamily, modelAlias?: string): boolean {
-  if (yuanliuVideoContractForModel(modelAlias)) return false;
-  const moonContract = moonVideoContractForModel(modelAlias);
-  return (
-    moonContract?.supportsAutomaticDuration ??
-    (family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5')
-  );
-}
-
-/** Wan3 与 Seedance 2.x 可显式选择 adaptive 比例。 */
-function supportsAdaptiveVideoAspectRatio(family: VideoModelFamily, modelAlias?: string): boolean {
-  if (yuanliuVideoContractForModel(modelAlias)) return false;
-  if (image2proVideoContractForModel(modelAlias)) return true;
-  const moonContract = moonVideoContractForModel(modelAlias);
-  return (
-    moonContract?.aspectRatios.includes('adaptive') ??
-    (family === 'wan3' || family === 'seedance-2' || family === 'seedance-2.5')
-  );
-}
-
-/** 只有这些不与 Doubao 共用的精确 ID 使用 Moon Seedance 编辑合同。 */
-const moonSeedanceModelIds = new Set([
-  'seedance-2-0-mini-official',
-  'seedance-2-0-fast-official',
-  'seedance-2-0-official',
-]);
-
-/** 判断模型是否使用 Moon Seedance 的编辑与延长合同。 */
-function isMoonSeedanceModel(modelAlias?: string): boolean {
-  return moonSeedanceModelIds.has(modelAlias?.trim() ?? '');
-}
-
-/** 官方合同要求沿用原素材比例的模式。 */
-function requiresAdaptiveVideoAspectRatio(
-  family: VideoModelFamily,
-  mode?: VideoMode,
-  modelAlias?: string,
-): boolean {
-  const image2proContract = image2proVideoContractForModel(modelAlias);
-  if (image2proContract?.requiresAdaptiveFrameRatio) {
-    return mode === 'first_frame' || mode === 'first_last_frame';
-  }
-  const moonContract = moonVideoContractForModel(modelAlias);
-  if (moonContract?.family === 'moon-seedance-2.5-official') {
-    return ['first_frame', 'first_last_frame', 'video_edit', 'video_extend'].includes(mode ?? '');
-  }
-  if (moonContract?.family === 'moon-seedance-2') {
-    return mode === 'video_edit' || mode === 'video_extend';
-  }
-  return (
-    (family === 'wan3' && mode === 'video_extend') ||
-    (isMoonSeedanceModel(modelAlias) && (mode === 'video_edit' || mode === 'video_extend')) ||
-    (family === 'seedance-2.5' &&
-      ['first_frame', 'first_last_frame', 'video_edit', 'video_extend'].includes(mode ?? ''))
-  );
-}
-
-/** 已确认的视频时长边界；控制提交校验，不能由滑块范围或默认值扩大。 */
-const videoDurationContracts: Partial<
-  Record<
-    VideoModelFamily,
-    { min: number; max: number; presets: readonly number[]; default?: number }
-  >
-> = {
-  'moon-minimax-h3': { min: 4, max: 15, presets: [4, 8, 12, 15] },
-  'minimax-h3': { min: 4, max: 15, presets: [4, 8, 12, 15] },
-  wan3: { min: 2, max: 30, presets: [2, 4, 8, 12, 15, 20, 30] },
-  'seedance-2': { min: 4, max: 15, presets: [4, 8, 12, 15] },
-  'seedance-2.5': { min: 4, max: 30, presets: [4, 8, 12, 15, 20, 30] },
-  image2pro: { min: 4, max: 15, presets: [4, 8, 12, 15], default: 5 },
-};
-
-/** 精确型号合同优先；Moon 按输出分辨率收窄时长，其它模型沿用家族合同。 */
-function videoDurationContractForModel(
-  modelAlias: string | undefined,
-  family: VideoModelFamily,
-  resolution?: unknown,
-) {
-  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
-  if (yuanliuContract) {
-    const { min, max, default: defaultDuration, values } = yuanliuContract.duration;
-    return {
-      min,
-      max,
-      default: defaultDuration,
-      presets: values ?? Array.from({ length: max - min + 1 }, (_, index) => min + index),
-    };
-  }
-  const image2proContract = image2proVideoContractForModel(modelAlias);
-  if (image2proContract) {
-    const { min, max, default: defaultDuration } = image2proContract.duration;
-    return {
-      min,
-      max,
-      default: defaultDuration,
-      presets: Array.from({ length: max - min + 1 }, (_, index) => min + index),
-    };
-  }
-  const moonContract = moonVideoContractForModel(modelAlias);
-  if (moonContract) {
-    const resolutionKey = normalizeCurrentOptionValue(resolution).toLowerCase();
-    const resolutionRange =
-      moonContract.resolutions[resolutionKey] ??
-      moonContract.resolutions[moonContract.defaultResolution];
-    if (!resolutionRange) return undefined;
-    const min = Math.max(moonContract.duration.min, resolutionRange.min);
-    const max = Math.min(moonContract.duration.max, resolutionRange.max);
-    return {
-      min,
-      max,
-      default: moonContract.duration.default,
-      presets: Array.from({ length: Math.max(0, max - min + 1) }, (_, index) => min + index),
-    };
-  }
-  return videoDurationContracts[family];
-}
-
-/** 已确认的官方分辨率白名单；目录缺失或含旧值时仍以 Provider 合同为准。 */
-const videoResolutionContracts: Partial<Record<VideoModelFamily, readonly string[]>> = {
-  'minimax-h3': ['768p', '2k'],
-  wan3: ['480p', '720p', '1080p'],
-  'seedance-2': ['480p', '720p', '1080p', '4k'],
-  'seedance-2.5': ['480p', '720p', '1080p'],
-};
-
-/** Moon H3 普通工作流可映射为精确像素尺寸的清晰度。 */
-const moonH3StandardResolutions = ['480p', '768p', '1080p'] as const;
-/** Moon H3 参考工作流在普通档位之外支持的超分档位。 */
-const moonH3SuperResolutions = [...moonH3StandardResolutions, '2k', '4k'] as const;
-/** Moon H3 尺寸目录明确支持的固定比例，不能使用 adaptive。 */
-const moonH3FixedAspectRatios = [
-  '16:9',
-  '9:16',
-  '1:1',
-  '2:3',
-  '3:2',
-  '3:4',
-  '4:3',
-  '21:9',
-] as const;
-
-/** 返回模型和模式的分辨率范围；未知模型交由目录决定。 */
-function videoResolutionContractForModel(
-  modelAlias?: string,
-  allowMoonH3SuperResolution = false,
-): readonly string[] | undefined {
-  const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
-  if (yuanliuContract) return yuanliuContract.resolutions;
-  const image2proContract = image2proVideoContractForModel(modelAlias);
-  if (image2proContract) return image2proContract.resolutions;
-  const moonContract = moonVideoContractForModel(modelAlias);
-  if (moonContract) return Object.keys(moonContract.resolutions);
-  const family = videoFamilyForModel(modelAlias);
-  if (family === 'moon-minimax-h3') {
-    return allowMoonH3SuperResolution ? moonH3SuperResolutions : moonH3StandardResolutions;
-  }
-  if (family === 'seedance-2' && /-(?:fast|mini)-/.test(modelAlias?.toLowerCase() ?? '')) {
-    return ['480p', '720p'];
-  }
-  return videoResolutionContracts[family];
-}
-
-/** 当前 Provider 已确认的音色；提示和预检共用此列表，目录额外声明不扩大接口能力。 */
-const SUPPORTED_AUDIO_VOICES: readonly string[] = [
-  'alloy',
-  'echo',
-  'fable',
-  'onyx',
-  'nova',
-  'shimmer',
-];
-
 /** Provider 已支持的 TTS 格式，空选项仅用于移除显式配置。 */
 const AUDIO_FORMAT_OPTIONS: MediaOption[] = [
   { value: '', label: '未设置' },
@@ -460,7 +268,6 @@ const AUDIO_FORMAT_OPTIONS: MediaOption[] = [
 ];
 
 /** 与 Provider 契约一致的连续语速范围，不将用户值静默截断或量化。 */
-const AUDIO_SPEED_RANGE = { min: 0.25, max: 4 } as const;
 
 /** GPT-5.6 文本模型支持的推理强度，目录缺失时作为兼容回退。 */
 const GPT_56_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
@@ -543,15 +350,9 @@ export function NodeQuickEditor({
   const closeMediaSettings = () => setMediaSettingsOpen(false);
   const storedModelAlias = node.data.modelAlias ?? '';
   const currentCredentialId = node.data.credentialId;
-  const availableModels = models.filter((model) => model.mediaTypes.includes(node.data.mediaType));
+  const availableModels = models;
   const selectedModel = findSelectedModel(availableModels, storedModelAlias, currentCredentialId);
   const currentModel = storedModelAlias;
-  const modelIssue =
-    currentModel && !selectedModel
-      ? '当前分组模型已失效，请重新选择；不会自动切换其他分组'
-      : selectedModel?.availability && selectedModel.availability !== 'available'
-        ? selectedModel.unavailableReason || '当前分组模型暂不可用，请重新选择'
-        : undefined;
   const currentModelIsMissing =
     Boolean(currentModel) &&
     !availableModels.some(
@@ -583,37 +384,8 @@ export function NodeQuickEditor({
       imageOutputParameterIssue = error.message;
     }
   }
-  const videoFamily = videoFamilyForModel(currentModel);
-  const moonVideoContract = moonVideoContractForModel(currentModel);
-  const image2proVideoContract =
-    node.data.mediaType === 'video' ? image2proVideoContractForModel(currentModel) : undefined;
-  const yuanliuVideoContract =
-    node.data.mediaType === 'video' ? yuanliuVideoContractForModel(currentModel) : undefined;
-  const strictVideoContract = image2proVideoContract ?? yuanliuVideoContract;
-  const unsupportedVideoParameters = strictVideoContract
-    ? Object.entries({
-        ...parameters,
-        ...(node.data.inferenceStrength ? { inferenceStrength: node.data.inferenceStrength } : {}),
-      }).filter(
-        ([key, value]) => value !== undefined && !strictVideoContract.parameterKeys.includes(key),
-      )
-    : [];
-  const storedDuration = strictVideoContract
-    ? (parameters.duration ?? parameters.seconds ?? parameters.durationSeconds)
-    : parameters.duration;
-  const storedAspectRatio = strictVideoContract
-    ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
-    : parameters.aspectRatio;
-  const currentVideoMode =
-    node.data.mediaType === 'video' ? displayVideoMode(node.data, connectedInputRoles) : undefined;
-  const allowMoonH3SuperResolution = Boolean(
-    currentVideoMode &&
-    ['first_frame', 'first_last_frame', 'omni_reference'].includes(currentVideoMode),
-  );
-  const supportsAutomaticDuration = supportsAutomaticVideoDuration(videoFamily, currentModel);
-  const supportsAdaptiveAspectRatio =
-    supportsAdaptiveVideoAspectRatio(videoFamily, currentModel) &&
-    !(image2proVideoContract?.requiresPrompt && currentVideoMode === 'text_to_video');
+  const storedDuration = parameters.duration ?? parameters.seconds ?? parameters.durationSeconds;
+  const storedAspectRatio = parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio;
   /** 数量选择即时显示；切换节点同步已存值，非法历史值仍阻止运行。 */
   const [generationCountDraft, setGenerationCountDraft] = useState(
     String(node.data.generationCount ?? DEFAULT_GENERATION_COUNT),
@@ -631,131 +403,20 @@ export function NodeQuickEditor({
   const generationCountIssue = isValidGenerationCount(Number(generationCountDraft))
     ? undefined
     : `生成数量必须为 1 至 ${GENERATION_COUNT_MAX} 的整数`;
-  const durationContract = videoDurationContractForModel(
-    currentModel,
-    videoFamily,
-    parameters.resolution,
-  );
-  /** 已确认的范围合同优先；其它模型的目录枚举不能被快捷值或自定义输入扩大。 */
-  const declaredDurations = durationContract
-    ? undefined
-    : readCapabilityOptions(
-        getCapabilityRoots(selectedModel, 'video'),
-        ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
-        'duration',
-      )?.filter((option) => !option.disabled);
   const durationValue = Number(durationDraft);
-  const automaticDuration = supportsAutomaticDuration && durationValue === -1;
   const durationIssue =
-    node.data.mediaType === 'video' && videoFamily === 'moon-minimax-h3' && durationDraft === ''
-      ? 'Moon MiniMax H3 必须选择 4 至 15 秒的视频时长'
-      : node.data.mediaType === 'video' &&
-          durationDraft !== '' &&
-          (!Number.isSafeInteger(durationValue) ||
-            (!automaticDuration &&
-              (durationValue <= 0 ||
-                Boolean(
-                  durationContract &&
-                  (durationValue < durationContract.min || durationValue > durationContract.max),
-                ))))
-        ? durationContract
-          ? `视频时长必须为 ${durationContract.min} 至 ${durationContract.max} 秒${supportsAutomaticDuration ? '，或使用 -1 自动时长' : ''}`
-          : supportsAutomaticDuration
-            ? '视频时长必须为正整数秒，或使用 -1 自动时长'
-            : '视频时长必须为正整数秒，且不能超过安全整数范围'
-        : node.data.mediaType === 'video' &&
-            durationDraft !== '' &&
-            declaredDurations &&
-            !declaredDurations.some((option) => option.value === String(durationValue))
-          ? declaredDurations.length
-            ? `当前模型仅支持 ${declaredDurations.map((option) => option.value).join('、')} 秒`
-            : '当前模型未声明可用的视频时长'
-          : undefined;
-  const resolutionContract = videoResolutionContractForModel(
-    currentModel,
-    allowMoonH3SuperResolution,
-  );
-  const resolution = normalizeCurrentOptionValue(parameters.resolution).toLowerCase();
-  const resolutionIssue =
     node.data.mediaType === 'video' &&
-    resolution &&
-    resolutionContract &&
-    !resolutionContract.includes(resolution)
-      ? videoFamily === 'moon-minimax-h3'
-        ? currentVideoMode === 'text_to_video'
-          ? 'Moon MiniMax H3 文生视频清晰度仅支持 480P、768P 或 1080P'
-          : `Moon MiniMax H3 当前模式清晰度仅支持 ${resolutionContract.map((value) => value.toUpperCase()).join('、')}`
-        : videoFamily === 'minimax-h3'
-          ? 'MiniMax H3 视频清晰度仅支持 768P 或 2K'
-          : videoFamily === 'wan3'
-            ? 'Wan3 视频清晰度仅支持 480P、720P 或 1080P'
-            : `Seedance 视频清晰度仅支持 ${resolutionContract.map((value) => value.toUpperCase()).join('、')}`
+    durationDraft !== '' &&
+    (!Number.isFinite(durationValue) || (durationValue <= 0 && durationValue !== -1))
+      ? '视频时长必须为正数秒，或使用 -1 自动时长'
       : undefined;
-  const catalogMediaOptions = getMediaOptions(
+  const mediaOptions = getMediaOptions(
     selectedModel,
     node.data.mediaType,
     parameters,
     true,
     currentModel,
-    allowMoonH3SuperResolution,
-    currentVideoMode,
   );
-  const requiresAdaptiveAspectRatio = requiresAdaptiveVideoAspectRatio(
-    videoFamily,
-    currentVideoMode,
-    currentModel,
-  );
-  const aspectRatioIssue =
-    node.data.mediaType === 'video' && videoFamily === 'moon-minimax-h3' && !parameters.aspectRatio
-      ? 'Moon MiniMax H3 必须选择固定视频比例'
-      : node.data.mediaType === 'video' &&
-          catalogMediaOptions.aspectRatio.some(
-            (option) => option.value === storedAspectRatio && option.disabled,
-          )
-        ? `当前模型不支持视频比例 ${storedAspectRatio}`
-        : undefined;
-  const videoModeIssue: string | undefined = undefined;
-  const mediaOptions = {
-    ...catalogMediaOptions,
-    duration: supportsAutomaticDuration
-      ? [
-          ...catalogMediaOptions.duration.filter((option) => option.value !== '-1'),
-          automaticVideoDurationOption,
-        ]
-      : catalogMediaOptions.duration,
-    aspectRatio: supportsAdaptiveAspectRatio
-      ? [
-          {
-            ...adaptiveVideoAspectRatioOption,
-            ...(node.data.videoMode === 'first_frame' || node.data.videoMode === 'first_last_frame'
-              ? { label: '原图比例', description: '沿用输入图片' }
-              : node.data.videoMode === 'video_edit' || node.data.videoMode === 'video_extend'
-                ? { label: '原视频比例', description: '沿用输入视频' }
-                : {}),
-          },
-          ...catalogMediaOptions.aspectRatio.filter((option) => option.value !== 'adaptive'),
-        ]
-      : catalogMediaOptions.aspectRatio,
-  };
-  const videoContractParameterIssue =
-    node.data.mediaType === 'video' &&
-    ((currentVideoMode === 'video_edit' &&
-      (videoFamily === 'seedance-2.5' || isMoonSeedanceModel(currentModel))) ||
-      (moonVideoContract &&
-        currentVideoMode === 'video_edit' &&
-        moonVideoContract.supportsVideoEdit &&
-        moonVideoContract.supportsAutomaticDuration)) &&
-    (parameters.duration !== -1 || parameters.aspectRatio !== 'adaptive')
-      ? 'Seedance 视频编辑需要自动时长和原视频比例'
-      : node.data.mediaType === 'video' &&
-          requiresAdaptiveAspectRatio &&
-          storedAspectRatio !== 'adaptive'
-        ? node.data.videoMode === 'first_frame' || node.data.videoMode === 'first_last_frame'
-          ? image2proVideoContract?.requiresAdaptiveFrameRatio
-            ? 'Flash-MAX 首帧和首尾帧需要沿用原图比例'
-            : 'Seedance 2.5 首帧和首尾帧需要沿用原图比例'
-          : '视频编辑或延长需要沿用原视频比例'
-        : undefined;
   const inferenceOptions = getInferenceStrengthOptions(
     selectedModel,
     node.data.mediaType,
@@ -766,40 +427,12 @@ export function NodeQuickEditor({
   const effectivePrompt = node.data.promptDocument
     ? renderPromptDocument(node.data.promptDocument)
     : (node.data.prompt ?? '');
-  const hasConnectedPrompt =
-    hasConnectedTextPromptInput || (hasConnectedInput && connectedInputRoles.includes('prompt'));
-  let strictVideoParameterIssue: string | undefined;
-  if (strictVideoContract) {
-    if (unsupportedVideoParameters.length) {
-      strictVideoParameterIssue = `${yuanliuVideoContract ? '源流' : 'Image2Pro'} 不支持已保存参数 ${unsupportedVideoParameters.map(([key]) => key).join('、')}，请明确移除后生成`;
-    } else {
-      try {
-        if (yuanliuVideoContract) {
-          resolveYuanliuVideoParameters({ ...parameters, prompt: effectivePrompt }, currentModel);
-        } else {
-          resolveImage2proVideoParameters({ ...parameters, prompt: effectivePrompt }, currentModel);
-        }
-        if (strictVideoContract.requiresPrompt && !effectivePrompt.trim() && !hasConnectedPrompt) {
-          strictVideoParameterIssue = `${yuanliuVideoContract ? '源流视频' : 'Flash-MAX'} 必须填写提示词或连接文字输入`;
-        }
-      } catch (error) {
-        if (
-          !(error instanceof Image2proVideoParameterError) &&
-          !(error instanceof YuanliuVideoParameterError)
-        )
-          throw error;
-        strictVideoParameterIssue = error.message;
-      }
-    }
-  }
   const hasPrompt = Boolean(effectivePrompt.trim());
   /** 图片编辑必须由用户写明修改意图，不能靠连线输入代替提示词。 */
   const imageEditPromptRequired = Boolean(imageEditSource);
   const hasRunnableParameters = imageEditPromptRequired
     ? hasPrompt
-    : strictVideoContract?.requiresPrompt
-      ? hasPrompt || hasConnectedPrompt
-      : hasPrompt || hasConnectedInput;
+    : hasPrompt || hasConnectedInput;
   const invalidVideoDimensions = (['width', 'height'] as const).filter((field) => {
     const value = parameters[field];
     return (
@@ -807,15 +440,6 @@ export function NodeQuickEditor({
       (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
     );
   });
-  /** 资源提及和原图连线都需要编辑接口；缺少目录声明不阻止提交。 */
-  const hasImageEditInput =
-    node.data.mediaType === 'image' &&
-    (Boolean(imageEditSource) ||
-      Boolean(
-        node.data.promptDocument?.blocks.some(
-          (block) => block.type === 'mention' && block.mediaType === 'image',
-        ),
-      ));
   const imageEditSourceIssue = imageEditSource?.versionUnavailable
     ? '来源图已不可读取或版本已变更，请重新从图片节点创建修改节点'
     : undefined;
@@ -823,14 +447,9 @@ export function NodeQuickEditor({
   const mediaParameterIssue =
     recreationIssue ??
     imageOutputParameterIssue ??
-    strictVideoParameterIssue ??
     durationIssue ??
-    resolutionIssue ??
-    aspectRatioIssue ??
-    videoModeIssue ??
-    videoContractParameterIssue ??
     (node.data.mediaType === 'audio'
-      ? getAudioParameterIssue(parameters, selectedModel)
+      ? getAudioParameterIssue(parameters)
       : node.data.mediaType === 'video' && invalidVideoDimensions.length > 0
         ? '视频宽高必须为正整数像素，且不能超过安全整数范围'
         : imageEditSourceIssue);
@@ -846,23 +465,15 @@ export function NodeQuickEditor({
     onParametersChange(next);
   };
 
-  /** 精确视频合同在显式编辑时收敛同义字段，保留其它参数供用户单独处理。 */
-  const updateStrictVideoParameter = (
-    key: 'duration' | 'aspectRatio' | 'resolution',
-    value: unknown,
-  ) => {
+  /** 显式编辑时收敛该控件的同义字段，其它参数原样保留。 */
+  const updateVideoParameter = (key: 'duration' | 'aspectRatio' | 'resolution', value: unknown) => {
     if (!onParametersChange) return;
     const next: Record<string, unknown> = { ...parameters };
     const aliases =
       key === 'duration'
         ? ['duration', 'seconds', 'durationSeconds']
         : key === 'resolution'
-          ? [
-              'resolution',
-              'video_resolution',
-              'videoResolution',
-              ...(yuanliuVideoContract ? ['size'] : []),
-            ]
+          ? ['resolution', 'video_resolution', 'videoResolution']
           : ['aspectRatio', 'aspect_ratio', 'ratio'];
     for (const alias of aliases) delete next[alias];
     if (value !== undefined && value !== '') next[key] = value;
@@ -888,23 +499,30 @@ export function NodeQuickEditor({
           ) || 1024
         : 1024;
       nextSize = imageSizeForRatio(longEdge, value, currentModel)?.size;
-      if (!nextSize) return;
+      if (!nextSize) {
+        const next = canonicalImageParameters(parameters, currentSize, nativeQuality);
+        delete next.aspect_ratio;
+        delete next.ratio;
+        next.aspectRatio = value;
+        onParametersChange(next);
+        return;
+      }
     }
     if (key === 'quality') nextQuality = value || undefined;
     onParametersChange(canonicalImageParameters(parameters, nextSize, nextQuality));
   };
 
   /** 推理强度对文字节点直接显示，对媒体节点收进参数页。 */
-  const inferenceEditor =
-    inferenceOptions.length > 0 && !strictVideoContract ? (
-      <NodeParameterSelect
-        label="推理强度"
-        value={node.data.inferenceStrength}
-        options={inferenceOptions}
-        onChange={onInferenceStrengthChange}
-        className="node-quick-editor-select-group"
-      />
-    ) : null;
+  const inferenceEditor = (
+    <NodeParameterSelect
+      label="推理强度"
+      value={node.data.inferenceStrength}
+      options={inferenceOptions}
+      onChange={onInferenceStrengthChange}
+      className="node-quick-editor-select-group"
+      allowCustomValue
+    />
+  );
 
   const promptEditor = (
     <div className="node-quick-editor-field node-quick-editor-prompt">
@@ -1019,78 +637,8 @@ export function NodeQuickEditor({
       </div>
     ) : null;
 
-  /** 模式切换与其强制参数属于同一用户动作，避免 Provider 端静默改写。 */
-  const changeVideoMode = (nextMode: VideoMode) => {
-    const nextParameters = { ...parameters };
-    let parametersChanged = false;
-    const moonAutomaticDurationMode =
-      moonVideoContract?.supportsAutomaticDuration &&
-      nextMode === 'video_edit' &&
-      moonVideoContract.supportsVideoEdit;
-    if (image2proVideoContract?.requiresAdaptiveFrameRatio) {
-      const currentRatio =
-        nextParameters.aspectRatio ?? nextParameters.aspect_ratio ?? nextParameters.ratio;
-      const nextRatio =
-        nextMode === 'text_to_video'
-          ? typeof currentRatio === 'string' && currentRatio && currentRatio !== 'adaptive'
-            ? currentRatio
-            : '16:9'
-          : 'adaptive';
-      if (
-        nextParameters.aspectRatio !== nextRatio ||
-        nextParameters.aspect_ratio !== undefined ||
-        nextParameters.ratio !== undefined
-      ) {
-        delete nextParameters.aspect_ratio;
-        delete nextParameters.ratio;
-        nextParameters.aspectRatio = nextRatio;
-        parametersChanged = true;
-      }
-    } else if (
-      moonAutomaticDurationMode ||
-      (!moonVideoContract &&
-        nextMode === 'video_edit' &&
-        (videoFamily === 'seedance-2.5' || isMoonSeedanceModel(currentModel)))
-    ) {
-      if (nextParameters.duration !== -1) {
-        nextParameters.duration = -1;
-        parametersChanged = true;
-      }
-      if (nextParameters.aspectRatio !== 'adaptive') {
-        nextParameters.aspectRatio = 'adaptive';
-        parametersChanged = true;
-      }
-    } else if (!yuanliuVideoContract) {
-      if (
-        (currentVideoMode === 'video_edit' ||
-          (moonVideoContract && currentVideoMode === 'video_extend')) &&
-        nextParameters.duration === -1
-      ) {
-        nextParameters.duration = durationContract?.default ?? VIDEO_DURATION_RANGE.default;
-        parametersChanged = true;
-      }
-      if (requiresAdaptiveVideoAspectRatio(videoFamily, nextMode, currentModel)) {
-        if (nextParameters.aspectRatio !== 'adaptive') {
-          nextParameters.aspectRatio = 'adaptive';
-          parametersChanged = true;
-        }
-      } else if (nextParameters.aspectRatio === 'adaptive') {
-        const fallback = catalogMediaOptions.aspectRatio.find(
-          (option) => !option.disabled && option.value !== 'adaptive',
-        );
-        if (fallback) nextParameters.aspectRatio = fallback.value;
-        else delete nextParameters.aspectRatio;
-        parametersChanged = true;
-      }
-    }
-    if (parametersChanged) {
-      setDurationDraft(
-        nextParameters.duration === undefined ? '' : String(nextParameters.duration),
-      );
-      onParametersChange?.(nextParameters);
-    }
-    onVideoModeChange?.(nextMode);
-  };
+  /** 切换模式只保存用户选择，不改写已保存的媒体参数。 */
+  const changeVideoMode = (nextMode: VideoMode) => onVideoModeChange?.(nextMode);
 
   /** 视频模式在快速编辑器控制栏常驻，避免用户为切换模式打开参数页。 */
   const videoModeEditor =
@@ -1129,6 +677,7 @@ export function NodeQuickEditor({
         >
           <NodeParameterSelect
             label="图片分辨率"
+            allowCustomValue
             value={mediaOptions.imageResolutionValue}
             options={mediaOptions.resolution}
             onChange={(value) => updateImageParameter('size', value)}
@@ -1145,6 +694,7 @@ export function NodeQuickEditor({
           {mediaOptions.hasNativeImageQuality && (
             <NodeParameterSelect
               label="生成质量"
+              allowCustomValue
               value={imageOutputParameters?.quality ?? readNativeImageQuality(parameters) ?? ''}
               options={mediaOptions.quality}
               onChange={(value) => updateImageParameter('quality', value)}
@@ -1179,76 +729,36 @@ export function NodeQuickEditor({
           >
             <NodeParameterSelect
               label="视频清晰度"
+              allowCustomValue
               value={normalizeCurrentOptionValue(
-                strictVideoContract
-                  ? (parameters.resolution ??
-                      parameters.video_resolution ??
-                      parameters.videoResolution ??
-                      (yuanliuVideoContract ? parameters.size : undefined))
-                  : parameters.resolution,
+                parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
               )}
               options={mediaOptions.resolution}
-              onChange={(value) =>
-                strictVideoContract
-                  ? updateStrictVideoParameter('resolution', value)
-                  : updateParameter('resolution', value)
-              }
+              onChange={(value) => updateVideoParameter('resolution', value)}
               className="node-quick-editor-select-group"
               optionLayout="grid"
             />
             <QuickOptionMenu
               label="视频比例"
-              value={
-                strictVideoContract
-                  ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
-                  : parameters.aspectRatio
-              }
+              value={storedAspectRatio}
               options={mediaOptions.aspectRatio}
               aspectOptions
-              onChange={(value) =>
-                strictVideoContract
-                  ? updateStrictVideoParameter('aspectRatio', value)
-                  : updateParameter('aspectRatio', value)
-              }
+              onChange={(value) => updateVideoParameter('aspectRatio', value)}
             />
-            {yuanliuVideoContract?.duration.values ? (
-              <NodeParameterSelect
-                label="时长（秒）"
-                value={durationDraft}
-                options={mediaOptions.duration}
-                disabled={!onParametersChange}
-                onChange={(value) => {
-                  setDurationDraft(value);
-                  updateStrictVideoParameter('duration', Number(value));
-                }}
-                className="node-quick-editor-select-group"
-              />
-            ) : (
-              <VideoDurationControl
-                value={durationDraft}
-                issue={durationIssue}
-                contract={durationContract}
-                sliderContract={
-                  moonVideoContract || strictVideoContract ? durationContract : undefined
-                }
-                declaredDurations={declaredDurations}
-                supportsAutomaticDuration={supportsAutomaticDuration}
-                inputDisabled={!onParametersChange}
-                onChange={(value) => {
-                  setDurationDraft(value);
-                  if (value === '') {
-                    if (strictVideoContract) updateStrictVideoParameter('duration', undefined);
-                    else updateParameter('duration', undefined);
-                  } else if (
-                    Number.isSafeInteger(Number(value)) &&
-                    (Number(value) > 0 || (supportsAutomaticDuration && Number(value) === -1))
-                  ) {
-                    if (strictVideoContract) updateStrictVideoParameter('duration', Number(value));
-                    else updateParameter('duration', Number(value));
-                  }
-                }}
-              />
-            )}
+            <VideoDurationControl
+              value={durationDraft}
+              issue={durationIssue}
+              inputDisabled={!onParametersChange}
+              onChange={(value) => {
+                setDurationDraft(value);
+                if (value === '') updateVideoParameter('duration', undefined);
+                else if (
+                  Number.isFinite(Number(value)) &&
+                  (Number(value) > 0 || Number(value) === -1)
+                )
+                  updateVideoParameter('duration', Number(value));
+              }}
+            />
             <NodeParameterSelect
               label="完成后"
               value={resolveVideoCompletionAction(node.data)}
@@ -1295,12 +805,7 @@ export function NodeQuickEditor({
               type="text"
               value={typeof parameters.voice === 'string' ? parameters.voice : ''}
               placeholder="输入音色 ID"
-              required
-              aria-invalid={
-                typeof parameters.voice !== 'string' ||
-                !SUPPORTED_AUDIO_VOICES.includes(parameters.voice)
-              }
-              title={'音色（必填）；当前接口支持 ' + SUPPORTED_AUDIO_VOICES.join('、')}
+              title="填写上游音色 ID；留空时由上游处理"
               disabled={!onParametersChange}
               onChange={(event) =>
                 updateParameter(
@@ -1312,6 +817,7 @@ export function NodeQuickEditor({
           </label>
           <NodeParameterSelect
             label="音频格式"
+            allowCustomValue
             value={normalizeCurrentOptionValue(parameters.response_format)}
             options={getAudioFormatOptions(parameters.response_format, selectedModel)}
             onChange={(value) => updateParameter('response_format', value)}
@@ -1325,8 +831,6 @@ export function NodeQuickEditor({
               style={{ cursor: 'text' }}
               type="number"
               inputMode="decimal"
-              min={AUDIO_SPEED_RANGE.min}
-              max={AUDIO_SPEED_RANGE.max}
               step="any"
               value={
                 typeof parameters.speed === 'number' && Number.isFinite(parameters.speed)
@@ -1335,9 +839,12 @@ export function NodeQuickEditor({
                     ? parameters.speed
                     : ''
               }
-              placeholder="倍率 0.25–4"
-              aria-invalid={parameters.speed !== undefined && !isValidAudioSpeed(parameters.speed)}
-              title="语速范围：0.25 至 4"
+              placeholder="语速倍率"
+              aria-invalid={
+                parameters.speed !== undefined &&
+                (typeof parameters.speed !== 'number' || !Number.isFinite(parameters.speed))
+              }
+              title="发送给上游的语速倍率"
               disabled={!onParametersChange}
               onChange={(event) =>
                 updateParameter(
@@ -1350,32 +857,6 @@ export function NodeQuickEditor({
         </div>
       )}
       {inferenceEditor}
-      {unsupportedVideoParameters.length > 0 && (
-        <div className="node-quick-editor-unsupported-parameters">
-          <p>当前模型不支持以下已保存参数。移除后使用模型自身的输出设置。</p>
-          <dl>
-            {unsupportedVideoParameters.map(([key, value]) => (
-              <div key={key}>
-                <dt>{key}</dt>
-                <dd>{typeof value === 'string' ? value : JSON.stringify(value)}</dd>
-              </div>
-            ))}
-          </dl>
-          <Button
-            type="button"
-            className="button button-secondary"
-            disabled={!onParametersChange}
-            onClick={() => {
-              const next = { ...parameters };
-              for (const [key] of unsupportedVideoParameters) delete next[key];
-              onParametersChange?.(next);
-              if (node.data.inferenceStrength) onInferenceStrengthChange('');
-            }}
-          >
-            移除不支持的参数
-          </Button>
-        </div>
-      )}
       {mediaParameterIssue && (
         <p className="node-quick-editor-parameter-issue" role="status">
           {mediaParameterIssue}
@@ -1532,8 +1013,7 @@ export function NodeQuickEditor({
                     ? '生成中'
                     : !enabled
                       ? '节点已停用'
-                      : (modelIssue ??
-                        generationCountIssue ??
+                      : (generationCountIssue ??
                         mediaParameterIssue ??
                         (!hasRunnableParameters
                           ? imageEditPromptRequired
@@ -1546,7 +1026,7 @@ export function NodeQuickEditor({
                   busy ||
                   !enabled ||
                   !hasRunnableParameters ||
-                  Boolean(modelIssue || generationCountIssue || mediaParameterIssue)
+                  Boolean(generationCountIssue || mediaParameterIssue)
                 }
               >
                 {busy ? (
@@ -1569,23 +1049,13 @@ export function NodeQuickEditor({
                       ? '节点已停用'
                       : !currentModel
                         ? '请先选择本人可用的分组模型'
-                        : modelIssue ||
-                            generationCountIssue ||
-                            durationIssue ||
-                            resolutionIssue ||
-                            aspectRatioIssue ||
-                            videoContractParameterIssue
-                          ? (modelIssue ??
-                            generationCountIssue ??
-                            durationIssue ??
-                            resolutionIssue ??
-                            aspectRatioIssue ??
-                            videoContractParameterIssue)
+                        : generationCountIssue || durationIssue || mediaParameterIssue
+                          ? (generationCountIssue ?? durationIssue ?? mediaParameterIssue)
                           : !nodeHasPrompt(node.data)
                             ? '请先填写提示词'
                             : mediaParameterIssue
-                                ? mediaParameterIssue
-                                : '把修改结果写到新节点'
+                              ? mediaParameterIssue
+                              : '把修改结果写到新节点'
                 }
                 onClick={() => onRunNewNode?.()}
                 disabled={
@@ -1593,14 +1063,7 @@ export function NodeQuickEditor({
                   !enabled ||
                   !onRunNewNode ||
                   !currentModel ||
-                  Boolean(
-                    modelIssue ||
-                    generationCountIssue ||
-                    durationIssue ||
-                    resolutionIssue ||
-                    aspectRatioIssue ||
-                    videoContractParameterIssue,
-                  ) ||
+                  Boolean(generationCountIssue || durationIssue || mediaParameterIssue) ||
                   !nodeHasPrompt(node.data) ||
                   Boolean(mediaParameterIssue)
                 }
@@ -1804,7 +1267,8 @@ function readNodeMediaParameters(data: unknown): NodeMediaParameters {
  * @returns 合法字段的解析值；无效字段留给完整参数校验展示错误，不隐藏原始节点数据。
  */
 function readImageResolutionParameter(value: unknown): ImageOutputParameters | undefined {
-  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^(?:[1-4]k|\d+x\d+|auto)$/i.test(value.trim()))
+    return undefined;
   try {
     return resolveImageOutputParameters({ resolution: value });
   } catch (error) {
@@ -1927,13 +1391,18 @@ function imageSizeForRatio(
  */
 function imageAspectRatioForSize(size: string | undefined): string | undefined {
   if (!size || size === 'auto') return undefined;
+  const match = /^(\d+)x(\d+)$/i.exec(size.trim());
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0)
+    return undefined;
   for (const option of aspectRatioOptions) {
-    try {
-      resolveImageOutputParameters({ size, aspectRatio: option.value });
-      return option.value;
-    } catch (error) {
-      if (!(error instanceof ImageOutputParameterError)) throw error;
-    }
+    const ratio = /^([0-9]+(?:\.[0-9]+)?):([0-9]+(?:\.[0-9]+)?)$/.exec(option.value);
+    if (!ratio) continue;
+    const expected = Number(ratio[1]) / Number(ratio[2]);
+    const actual = width / height;
+    if (Math.abs(actual - expected) <= 8 / Math.max(width, height)) return option.value;
   }
   return undefined;
 }
@@ -1953,6 +1422,13 @@ function imageSizeOption(
   modelAlias?: string,
 ): MediaOption | undefined {
   const compatible = readImageResolutionParameter(option.value);
+  if (normalizeCurrentOptionValue(option.value).toLowerCase() === 'auto') {
+    return {
+      value: 'auto',
+      label: '自动',
+      ...(option.description ? { description: option.description } : {}),
+    };
+  }
   if (!compatible?.size) return undefined;
   let size = compatible.size;
   if (compatible.resolution) {
@@ -1965,13 +1441,6 @@ function imageSizeOption(
       if (!(error instanceof ImageOutputParameterError)) throw error;
       return undefined;
     }
-  }
-  let disabled = Boolean(option.disabled);
-  try {
-    resolveImageOutputParameters({ size }, modelAlias);
-  } catch (error) {
-    if (!(error instanceof ImageOutputParameterError)) throw error;
-    disabled = true;
   }
   const tierDescription = compatible.resolution
     ? legacyImageResolutionTiers.find((candidate) => candidate.value === compatible.resolution)
@@ -1986,7 +1455,6 @@ function imageSizeOption(
     ...(catalogDescription || tierDescription
       ? { description: catalogDescription ?? tierDescription }
       : {}),
-    ...(disabled ? { disabled: true, description: '当前模型不支持此像素尺寸' } : {}),
   };
 }
 
@@ -2005,82 +1473,42 @@ function imageSizeOptions(
   });
 }
 
-/** 检查已保存的语速；字符串、非有限值和越界值不能作为合法倍率提交。 */
-function isValidAudioSpeed(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isFinite(value) &&
-    value >= AUDIO_SPEED_RANGE.min &&
-    value <= AUDIO_SPEED_RANGE.max
-  );
-}
-
-/**
- * 音频生成的前置校验；返回首个需要修正的字段提示，合法时返回 undefined。
- * 只检查契约，不修改节点或猜测默认值；后端仍负责最终校验。
- * @param parameters 当前节点的原始媒体参数，非法历史值不会在此改写。
- * @param model 所选模型目录项，仅用于读取已声明的格式列表。
- * @returns 可展示的中文错误；参数符合已实现接口时返回 undefined。
- */
-export function getAudioParameterIssue(
-  parameters: NodeMediaParameters,
-  model?: ModelEntry,
-): string | undefined {
-  if (typeof parameters.voice !== 'string' || !parameters.voice.trim()) return '请先填写音色';
-  if (!SUPPORTED_AUDIO_VOICES.includes(parameters.voice)) {
-    return '当前接口不支持此音色，请使用 ' + SUPPORTED_AUDIO_VOICES.join('、');
-  }
+/** 验证音频参数的可序列化格式，不依据目录限制音色、格式或倍率。 */
+export function getAudioParameterIssue(parameters: NodeMediaParameters): string | undefined {
+  if (parameters.voice !== undefined && typeof parameters.voice !== 'string')
+    return '音色必须为字符串';
+  if (parameters.response_format !== undefined && typeof parameters.response_format !== 'string')
+    return '音频格式必须为字符串';
   if (
-    parameters.response_format !== undefined &&
-    !getSupportedAudioFormatOptions(model).some(
-      (option) => option.value && option.value === parameters.response_format,
-    )
-  ) {
-    return '请选择支持的音频格式';
-  }
-  if (parameters.speed !== undefined && !isValidAudioSpeed(parameters.speed)) {
-    return '语速必须为 0.25 至 4 的有限数值';
-  }
+    parameters.speed !== undefined &&
+    (typeof parameters.speed !== 'number' || !Number.isFinite(parameters.speed))
+  )
+    return '语速必须为有限数值';
   return undefined;
 }
 
-/** 保留不支持的历史格式供用户发现并修正，不将它替换成菜单首项或静默删除。 */
+/** 常用格式、目录建议和已保存格式都可再次选择。 */
 function getAudioFormatOptions(value: unknown, model?: ModelEntry): MediaOption[] {
-  const current = normalizeCurrentOptionValue(value);
-  const options = getSupportedAudioFormatOptions(model);
-  if (!current || options.some((option) => option.value === current)) {
-    return options;
-  }
-  return [
-    ...options,
-    { value: current, label: current, description: '已保存，当前不支持', disabled: true },
-  ];
+  return ensureCurrentOption(getSupportedAudioFormatOptions(model), value, 'resolution');
 }
 
-/** 优先使用模型声明且 Provider 已支持的音频格式；空枚举表示不支持，不回退。 */
+/** 目录补充音频格式建议，不收窄用户选择。 */
 function getSupportedAudioFormatOptions(model?: ModelEntry): MediaOption[] {
-  const declared = readCapabilityOptions(
-    getCapabilityRoots(model, 'audio'),
-    [
-      'response_format',
-      'response_formats',
-      'responseFormat',
-      'responseFormats',
-      'formats',
-      'audioFormats',
-      'audio_formats',
-    ],
-    'resolution',
-  );
-  if (declared === undefined) return AUDIO_FORMAT_OPTIONS;
-  return [
-    AUDIO_FORMAT_OPTIONS[0],
-    ...declared
-      .filter((option) =>
-        AUDIO_FORMAT_OPTIONS.some((supported) => supported.value === option.value),
-      )
-      .map((option) => ({ ...option, label: option.value.toUpperCase() })),
-  ];
+  const declared =
+    readCapabilityOptions(
+      getCapabilityRoots(model, 'audio'),
+      [
+        'response_format',
+        'response_formats',
+        'responseFormat',
+        'responseFormats',
+        'formats',
+        'audioFormats',
+        'audio_formats',
+      ],
+      'resolution',
+    ) ?? [];
+  return mergeOptions(AUDIO_FORMAT_OPTIONS, declared);
 }
 
 /** 将节点浮层挂到最近的模态窗口，非模态编辑器使用 body，避免画布裁切。 */
@@ -2089,26 +1517,18 @@ function nodePopupContainer(trigger: HTMLElement): HTMLElement {
 }
 
 /**
- * 视频秒数按精确模型滑轨合同拖动，未提供时使用 5–30 秒；父层校验生成边界。
+ * 视频滑块提供 5–30 秒快捷编辑，输入框可保存其它秒数；适用范围交给上游。
  * value 为实际保存值，历史空值、范围外值和自动 -1 不因打开浮卡而改写。
  * hover 不抢焦点；键盘进入后聚焦滑块，Escape 只关闭本层并归还焦点。
  */
 function VideoDurationControl({
   value,
   issue,
-  contract,
-  sliderContract,
-  declaredDurations,
-  supportsAutomaticDuration,
   inputDisabled,
   onChange,
 }: {
   value: string;
   issue?: string;
-  contract?: { min: number; max: number; default?: number };
-  sliderContract?: { min: number; max: number; default?: number };
-  declaredDurations?: readonly MediaOption[];
-  supportsAutomaticDuration: boolean;
   inputDisabled: boolean;
   onChange: (value: string) => void;
 }) {
@@ -2120,10 +1540,10 @@ function VideoDurationControl({
   const inputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const focusOnOpenRef = useRef(false);
-  const automatic = supportsAutomaticDuration && value === '-1';
-  const sliderMin = sliderContract?.min ?? VIDEO_DURATION_RANGE.min;
-  const sliderMax = sliderContract?.max ?? VIDEO_DURATION_RANGE.max;
-  const sliderDefault = sliderContract?.default ?? VIDEO_DURATION_RANGE.default;
+  const automatic = value === '-1';
+  const sliderMin = VIDEO_DURATION_RANGE.min;
+  const sliderMax = VIDEO_DURATION_RANGE.max;
+  const sliderDefault = VIDEO_DURATION_RANGE.default;
   const selectionLabel = value === '' ? '未设置' : automatic ? '自动' : value + ' 秒';
   const seconds = Number(value);
   const fixedDuration = value !== '' && Number.isSafeInteger(seconds) && seconds > 0;
@@ -2139,15 +1559,6 @@ function VideoDurationControl({
         : outsideSlider
           ? '已保存 ' + value + ' 秒，超出滑块范围；保留原值，拖动后才修改。'
           : '拖动或使用方向键调整，每次 1 秒。';
-  const availableDurations = declaredDurations?.filter((option) => !option.disabled);
-  const capabilityHint = contract
-    ? '当前模型支持 ' + contract.min + '–' + contract.max + ' 秒；超出范围无法生成。'
-    : availableDurations
-      ? availableDurations.length
-        ? '当前模型仅支持 ' + availableDurations.map((option) => option.value).join('、') + ' 秒。'
-        : '当前模型未声明可用的视频时长。'
-      : undefined;
-
   /** 首次键盘打开时等 portal 挂载再聚焦滑块；hover 打开不执行此步骤。 */
   const focusSlider = (container: HTMLDivElement | null) => {
     if (!container || !focusOnOpenRef.current) return;
@@ -2224,6 +1635,14 @@ function VideoDurationControl({
                 {selectionLabel}
               </output>
             </div>
+            <Input
+              type="number"
+              step="any"
+              aria-label="自定义时长（秒）"
+              value={value}
+              disabled={inputDisabled}
+              onChange={(event) => onChange(event.currentTarget.value)}
+            />
             <div className="node-quick-editor-duration-range">
               <input
                 ref={inputRef}
@@ -2247,11 +1666,7 @@ function VideoDurationControl({
                     : selectionLabel + '，滑块参考起点 ' + sliderValue + ' 秒'
                 }
                 aria-invalid={Boolean(issue)}
-                aria-describedby={[
-                  inputId + '-hint',
-                  capabilityHint ? inputId + '-capability' : undefined,
-                  issue ? inputId + '-issue' : undefined,
-                ]
+                aria-describedby={[inputId + '-hint', issue ? inputId + '-issue' : undefined]
                   .filter(Boolean)
                   .join(' ')}
                 disabled={inputDisabled}
@@ -2277,7 +1692,7 @@ function VideoDurationControl({
                 }}
               />
               <div className="node-quick-editor-duration-scale" aria-hidden="true">
-                {(sliderContract ? [sliderMin, sliderDefault, sliderMax] : [5, 10, 15, 20, 25, 30])
+                {[5, 10, 15, 20, 25, 30]
                   .filter((seconds, index, values) => values.indexOf(seconds) === index)
                   .map((seconds) => (
                     <span key={seconds}>{seconds}</span>
@@ -2289,7 +1704,6 @@ function VideoDurationControl({
                 {sliderMin}–{sliderMax} 秒 · 新建默认 {sliderDefault} 秒
               </span>
               <small id={inputId + '-hint'}>{hint}</small>
-              {capabilityHint && <small id={inputId + '-capability'}>{capabilityHint}</small>}
               {issue && (
                 <small
                   id={inputId + '-issue'}
@@ -2301,7 +1715,7 @@ function VideoDurationControl({
               )}
             </div>
             <div className="node-quick-editor-duration-actions">
-              {supportsAutomaticDuration && (
+              {
                 <Button
                   type="button"
                   variant="ghost"
@@ -2317,12 +1731,12 @@ function VideoDurationControl({
                 >
                   自动时长
                 </Button>
-              )}
+              }
               <Button
                 type="button"
                 variant="ghost"
                 disabled={inputDisabled || value === ''}
-                title="删除时长参数；要求指定时长的模型会阻止生成"
+                title="删除显式时长参数，由上游处理未设置值"
                 onClick={() => {
                   onChange('');
                   close();
@@ -2413,6 +1827,7 @@ function NodeParameterSelect({
   disabled,
   optionLayout = 'list',
   aspectOptions = false,
+  allowCustomValue = false,
 }: {
   label: string;
   value?: string;
@@ -2422,8 +1837,10 @@ function NodeParameterSelect({
   disabled?: boolean;
   optionLayout?: 'list' | 'grid';
   aspectOptions?: boolean;
+  allowCustomValue?: boolean;
 }) {
   const selectId = useId();
+  const [customValue, setCustomValue] = useState('');
   const selected = options.find((option) => option.value === value);
   const selectionLabel = selected
     ? [selected.label, selected.trailingLabel].filter(Boolean).join(' · ')
@@ -2461,7 +1878,7 @@ function NodeParameterSelect({
         aria-label={label + '：' + selectionLabel}
         value={selected?.value}
         placeholder="未设置"
-        disabled={disabled || !options.some((option) => !option.disabled)}
+        disabled={disabled || (!allowCustomValue && !options.some((option) => !option.disabled))}
         options={grouped}
         onSelect={onChange}
         virtual={false}
@@ -2506,6 +1923,27 @@ function NodeParameterSelect({
             }}
           >
             {menu}
+            {allowCustomValue && (
+              <div className="node-parameter-custom-value">
+                <Input
+                  aria-label={'自定义' + label}
+                  value={customValue}
+                  placeholder="输入上游参数值"
+                  onChange={(event) => setCustomValue(event.currentTarget.value)}
+                  onKeyDown={(event) => event.stopPropagation()}
+                />
+                <Button
+                  type="button"
+                  disabled={!customValue.trim()}
+                  onClick={() => {
+                    onChange(customValue.trim());
+                    setCustomValue('');
+                  }}
+                >
+                  采用参数
+                </Button>
+              </div>
+            )}
           </div>
         )}
         optionRender={(option) => (
@@ -2543,18 +1981,15 @@ function QuickOptionMenu({
       options={options}
       onChange={onChange}
       aspectOptions={aspectOptions}
+      allowCustomValue
       optionLayout="grid"
     />
   );
 }
 
 /**
- * 为新建节点或显式切换模型补齐媒体默认值；优先采用精确模型合同的默认秒数。
- * 返回可直接写入节点的浅拷贝，不修改输入；已有参数和未知字段全部保留。
- * 时长默认值是编辑偏好，不是能力声明；目录不支持 10 秒时由生成预检明确阻止。
- * 图片目录 K 档会与目录首个比例合成为官方 size，原生质量独立保存；已有图片参数不回写。
- * 其它媒体枚举仅使用目录或已确认合同；不支持的 -1/adaptive 在明确切模型时清理。
- * 音色和连续语速由用户填写，像素宽高仅保留旧值。不得在渲染或加载历史节点时自动调用。
+ * 新建节点或显式选择模型时补齐编辑默认值，已有参数及未知字段始终保留。
+ * 目录仅提供默认选项，不依据媒体能力删改用户值；历史节点加载不调用此函数。
  */
 export function applyNodeGenerationDefaults(
   data: AssetFlowNode['data'],
@@ -2562,57 +1997,15 @@ export function applyNodeGenerationDefaults(
 ): AssetFlowNode['data'] {
   const mediaType = data.mediaType;
   const parameters = readNodeMediaParameters(data);
-  if (mediaType === 'video' && isRetiredImage2proVideoModel(model?.id ?? data.modelAlias)) {
-    return { ...data, parameters };
-  }
-  const image2proContract =
-    mediaType === 'video'
-      ? image2proVideoContractForModel(model?.id ?? data.modelAlias)
-      : undefined;
-  const yuanliuContract =
-    mediaType === 'video' ? yuanliuVideoContractForModel(model?.id ?? data.modelAlias) : undefined;
-  const strictVideoContract = image2proContract ?? yuanliuContract;
-  if (mediaType === 'video') {
-    const modelAlias = model?.id ?? data.modelAlias;
-    const family = videoFamilyForModel(modelAlias);
-    const moonContract = moonVideoContractForModel(modelAlias);
-    if (
-      !strictVideoContract &&
-      !supportsAutomaticVideoDuration(family, modelAlias) &&
-      parameters.duration === -1
-    ) {
-      delete parameters.duration;
-    }
-    if (
-      !strictVideoContract &&
-      !supportsAdaptiveVideoAspectRatio(family, modelAlias) &&
-      parameters.aspectRatio === 'adaptive'
-    ) {
-      delete parameters.aspectRatio;
-    }
-    if (
-      parameters.duration === undefined &&
-      (!strictVideoContract ||
-        (parameters.seconds === undefined && parameters.durationSeconds === undefined))
-    ) {
-      const automaticCompletionDuration = moonContract
-        ? data.videoMode === 'video_edit'
-          ? moonContract.supportsVideoEdit && moonContract.supportsAutomaticDuration
-          : data.videoMode === 'video_extend'
-            ? moonContract.supportsVideoExtend && moonContract.supportsAutomaticDuration
-            : false
-        : data.videoMode === 'video_edit' &&
-          supportsAutomaticVideoDuration(family, modelAlias) &&
-          (family === 'seedance-2.5' || isMoonSeedanceModel(modelAlias));
-      parameters.duration = automaticCompletionDuration
-        ? -1
-        : (strictVideoContract?.duration.default ??
-          moonContract?.duration.default ??
-          VIDEO_DURATION_RANGE.default);
-    }
-  }
-  if (!model?.mediaTypes.includes(mediaType)) return { ...data, parameters };
-  const options = getMediaOptions(model, mediaType, {}, false, model.id, false, data.videoMode);
+  if (
+    mediaType === 'video' &&
+    parameters.duration === undefined &&
+    parameters.seconds === undefined &&
+    parameters.durationSeconds === undefined
+  )
+    parameters.duration = VIDEO_DURATION_RANGE.default;
+  if (!model) return { ...data, parameters };
+  const options = getMediaOptions(model, mediaType, {}, false, model.id);
   if (mediaType === 'image') {
     const hasStoredImageOutput =
       imageSizeParameterAliases.some((alias) => parameters[alias] !== undefined) ||
@@ -2620,32 +2013,19 @@ export function applyNodeGenerationDefaults(
       parameters.aspectRatio !== undefined ||
       parameters.aspect_ratio !== undefined;
     if (!hasStoredImageOutput) {
-      const size = firstAvailableOption(options.resolution);
-      const quality = firstAvailableOption(options.quality);
+      const size = firstAvailableOption(options.resolution),
+        quality = firstAvailableOption(options.quality);
       if (size !== undefined) parameters.size = size;
       if (quality !== undefined) parameters.quality = quality;
     }
   } else if (mediaType === 'video') {
     for (const field of ['resolution', 'aspectRatio'] as const) {
-      if (
-        strictVideoContract &&
-        (field === 'resolution'
-          ? parameters.video_resolution !== undefined ||
-            parameters.videoResolution !== undefined ||
-            (yuanliuContract && parameters.size !== undefined)
-          : parameters.aspect_ratio !== undefined || parameters.ratio !== undefined)
-      )
-        continue;
-      if (parameters[field] !== undefined) continue;
-      const value = strictVideoContract
-        ? field === 'resolution'
-          ? strictVideoContract.defaultResolution
-          : image2proContract?.requiresAdaptiveFrameRatio &&
-              data.videoMode &&
-              data.videoMode !== 'text_to_video'
-            ? 'adaptive'
-            : '16:9'
-        : firstAvailableOption(options[field]);
+      const aliases =
+        field === 'resolution'
+          ? ['resolution', 'video_resolution', 'videoResolution', 'size']
+          : ['aspectRatio', 'aspect_ratio', 'ratio'];
+      if (aliases.some((alias) => parameters[alias] !== undefined)) continue;
+      const value = firstAvailableOption(options[field]);
       if (value !== undefined) parameters[field] = value;
     }
   }
@@ -2655,11 +2035,7 @@ export function applyNodeGenerationDefaults(
   }
   const inferenceStrength =
     data.inferenceStrength ??
-    (strictVideoContract
-      ? undefined
-      : preferredInferenceStrength(
-          getInferenceStrengthOptions(model, mediaType, model.id, undefined),
-        ));
+    preferredInferenceStrength(getInferenceStrengthOptions(model, mediaType, model.id, undefined));
   return { ...data, parameters, ...(inferenceStrength === undefined ? {} : { inferenceStrength }) };
 }
 
@@ -2712,52 +2088,49 @@ export function resolvePreviousOperationSeed(
   return undefined;
 }
 
-/** 返回当前模型的媒体能力；官方视频合同可补目录缺项，通用旧回退只供手动选择。 */
+/** 合并建议选项并保持首见顺序；目录禁用标记不构成 Canvas 的能力门禁。 */
+function mergeOptions(...sources: readonly MediaOption[][]): MediaOption[] {
+  const seen = new Set<string>();
+  return sources.flatMap((source) =>
+    source.flatMap(({ disabled: _disabled, ...option }) => {
+      if (seen.has(option.value)) return [];
+      seen.add(option.value);
+      return [option];
+    }),
+  );
+}
+
+/** 目录提供建议，常用选项和已保存参数始终可以发送给上游。 */
 function getMediaOptions(
   model: ModelEntry | undefined,
   mediaType: AssetFlowNode['data']['mediaType'],
   parameters: NodeMediaParameters,
   allowLegacyFallback = true,
   modelAlias?: string,
-  allowMoonH3SuperResolution = false,
-  videoMode?: VideoMode,
 ) {
-  const roots = getCapabilityRoots(model, mediaType);
-  const resolvedModelAlias = modelAlias ?? model?.id;
-  const family = videoFamilyForModel(resolvedModelAlias);
-  const moonContract = moonVideoContractForModel(resolvedModelAlias);
-  const image2proContract = image2proVideoContractForModel(resolvedModelAlias);
-  const yuanliuContract = yuanliuVideoContractForModel(resolvedModelAlias);
-  const strictVideoContract = image2proContract ?? yuanliuContract;
-  const resolutionContract =
-    mediaType === 'video'
-      ? videoResolutionContractForModel(modelAlias ?? model?.id, allowMoonH3SuperResolution)
-      : undefined;
-  const durationContract =
-    mediaType === 'video'
-      ? videoDurationContractForModel(resolvedModelAlias, family, parameters.resolution)
-      : undefined;
-  const declaredQuality = readCapabilityOptions(
-    roots,
-    ['quality', 'qualities', 'imageQuality', 'image_quality'],
-    'quality',
-  );
-  const nativeQuality = declaredQuality?.filter(
+  const roots = getCapabilityRoots(model, mediaType),
+    resolvedModelAlias = modelAlias ?? model?.id;
+  const declaredQuality =
+    readCapabilityOptions(
+      roots,
+      ['quality', 'qualities', 'imageQuality', 'image_quality'],
+      'quality',
+    ) ?? [];
+  const nativeQuality = declaredQuality.filter(
     (option) => !readImageResolutionParameter(option.value)?.resolution,
   );
-  const storedNativeQuality = readNativeImageQuality(parameters);
-  const quality = ensureCurrentOption(nativeQuality ?? [], storedNativeQuality, 'quality');
-  const declaredImageAspectRatios = readCapabilityOptions(
-    roots,
-    ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
-    'aspectRatio',
-  );
+  const declaredRatios =
+    readCapabilityOptions(
+      roots,
+      ['aspectRatio', 'aspectRatios', 'aspect_ratio', 'aspect_ratios', 'ratios'],
+      'aspectRatio',
+    ) ?? [];
   const compatibleImageOutput =
     mediaType === 'image' ? readCompatibleImageOutputParameters(parameters) : undefined;
   const imageAspectRatioValue = imageAspectRatioForSize(compatibleImageOutput?.size);
   const imageTierAspectRatio =
-    imageAspectRatioValue ?? firstAvailableOption(declaredImageAspectRatios ?? []) ?? '1:1';
-  const declaredImageResolution = readCapabilityOptions(
+    imageAspectRatioValue ?? firstAvailableOption(declaredRatios) ?? '1:1';
+  const declaredSizes = readCapabilityOptions(
     roots,
     [
       'size',
@@ -2773,211 +2146,105 @@ function getMediaOptions(
     ],
     'quality',
   );
-  const legacyImageResolutionFromQuality = declaredQuality?.filter(
-    (option) => readImageResolutionParameter(option.value)?.resolution !== undefined,
-  );
-  const declaredImageSizeSource =
-    declaredImageResolution ??
-    (legacyImageResolutionFromQuality?.length ? legacyImageResolutionFromQuality : undefined);
-  const declaredImageSizes = imageSizeOptions(
-    declaredImageSizeSource ?? [],
-    imageTierAspectRatio,
-    resolvedModelAlias,
-  );
-  const declaredImageHasFlexibleTier = declaredImageSizeSource?.some(
-    (option) => readImageResolutionParameter(option.value)?.resolution !== undefined,
-  );
-  const fixedImageSizes = fixedImageSizeFallbacks[resolvedModelAlias ?? ''];
-  const exactImageSizes =
-    declaredImageSizeSource !== undefined && !declaredImageHasFlexibleTier
-      ? new Set(declaredImageSizes.map((option) => option.value))
-      : declaredImageSizeSource === undefined && fixedImageSizes
-        ? new Set(fixedImageSizes)
-        : undefined;
+  const sizeSource =
+    declaredSizes ??
+    declaredQuality.filter((option) => {
+      const resolution = readImageResolutionParameter(option.value)?.resolution;
+      return resolution !== undefined && resolution !== 'auto';
+    });
+  const declaredImageSizes = imageSizeOptions(sizeSource, imageTierAspectRatio, resolvedModelAlias);
   const fallbackImageSizes = imageSizeOptions(
-    fixedImageSizes?.map((value) => ({ value, label: value })) ?? legacyImageResolutionTiers,
+    legacyImageResolutionTiers,
     imageTierAspectRatio,
     resolvedModelAlias,
   );
-  const imageResolutionValue = compatibleImageOutput?.size;
-  const imageResolution = imageSizeOptions(
-    ensureCurrentOption(
-      declaredImageResolution !== undefined || declaredImageSizes.length > 0
-        ? declaredImageSizes
-        : allowLegacyFallback
-          ? fallbackImageSizes
-          : [],
-      imageResolutionValue,
-      'resolution',
-    ),
-    imageTierAspectRatio,
-    resolvedModelAlias,
-  );
-  const declaredResolution = readCapabilityOptions(
-    roots,
-    ['resolution', 'resolutions', 'videoResolution', 'video_resolution', 'quality', 'qualities'],
-    'resolution',
-  );
-  const contractResolutionOptions = resolutionContract?.map((value) => ({
-    ...(declaredResolution?.find((option) => option.value.toLowerCase() === value) ?? {}),
-    value,
-    label:
-      declaredResolution?.find((option) => option.value.toLowerCase() === value)?.label ??
-      value.toUpperCase(),
-  }));
-  const videoResolution = ensureCurrentOption(
-    contractResolutionOptions ??
-      declaredResolution ??
-      (allowLegacyFallback ? videoResolutionOptions : []),
-    strictVideoContract
-      ? (parameters.resolution ??
-          parameters.video_resolution ??
-          parameters.videoResolution ??
-          (yuanliuContract ? parameters.size : undefined))
-      : parameters.resolution,
-    'resolution',
-  ).map((option) =>
-    resolutionContract && !resolutionContract.includes(option.value.toLowerCase())
-      ? { ...option, disabled: true, description: '已保存，当前模型不支持' }
-      : option,
-  );
-  const ratioContract: readonly string[] | undefined =
-    mediaType !== 'video'
-      ? undefined
-      : yuanliuContract
-        ? yuanliuContract.aspectRatios
-        : image2proContract
-          ? image2proContract.requiresAdaptiveFrameRatio &&
-            (videoMode === 'first_frame' || videoMode === 'first_last_frame')
-            ? ['adaptive']
-            : image2proContract.requiresPrompt && videoMode === 'text_to_video'
-              ? image2proContract.aspectRatios.filter((value) => value !== 'adaptive')
-              : image2proContract.aspectRatios
-          : moonContract
-            ? moonContract.aspectRatios
-            : family === 'moon-minimax-h3'
-              ? moonH3FixedAspectRatios
-              : family === 'minimax-h3' ||
-                  supportsAdaptiveVideoAspectRatio(family, resolvedModelAlias)
-                ? [
-                    'adaptive',
-                    '1:1',
-                    '16:9',
-                    '9:16',
-                    '4:3',
-                    '3:4',
-                    ...(family === 'wan3' ? [] : ['21:9']),
-                  ]
-                : undefined;
-  const declaredAspectRatios =
-    declaredImageAspectRatios ?? (allowLegacyFallback ? aspectRatioOptions : []);
-  const supportedAspectRatios =
-    strictVideoContract || moonContract
-      ? (strictVideoContract ? ratioContract! : moonContract!.aspectRatios).map(
-          (value) =>
-            declaredAspectRatios.find((option) => option.value === value) ??
-            aspectRatioOptions.find((option) => option.value === value) ?? { value, label: value },
+  const resolution =
+    mediaType === 'image'
+      ? ensureCurrentOption(
+          mergeOptions(declaredImageSizes, allowLegacyFallback ? fallbackImageSizes : []),
+          compatibleImageOutput?.size,
+          'resolution',
         )
-      : family === 'moon-minimax-h3'
-        ? moonH3FixedAspectRatios.map(
-            (value) =>
-              declaredAspectRatios.find((option) => option.value === value) ??
-              aspectRatioOptions.find((option) => option.value === value) ?? {
-                value,
-                label: value,
-              },
-          )
-        : declaredAspectRatios.filter(
-            (option) => !ratioContract || ratioContract.includes(option.value),
-          );
+      : ensureCurrentOption(
+          mergeOptions(
+            readCapabilityOptions(
+              roots,
+              [
+                'resolution',
+                'resolutions',
+                'videoResolution',
+                'video_resolution',
+                'quality',
+                'qualities',
+              ],
+              'resolution',
+            ) ?? [],
+            allowLegacyFallback ? videoResolutionOptions : [],
+          ),
+          parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+          'resolution',
+        );
+  if (mediaType === 'image') {
+    for (const option of resolution) {
+      const display = formatImageSize(option.value);
+      if (display) option.label = display;
+    }
+  }
   const aspectRatio = ensureCurrentOption(
-    supportedAspectRatios,
+    mergeOptions(
+      declaredRatios,
+      allowLegacyFallback
+        ? [
+            ...(mediaType === 'video' ? [adaptiveVideoAspectRatioOption] : []),
+            ...aspectRatioOptions,
+          ]
+        : [],
+    ),
     mediaType === 'image'
       ? imageAspectRatioValue
-      : strictVideoContract
-        ? (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio)
-        : parameters.aspectRatio,
+      : (parameters.aspectRatio ?? parameters.aspect_ratio ?? parameters.ratio),
     'aspectRatio',
-  ).map((option) => {
-    if (ratioContract && !ratioContract.includes(option.value))
-      return { ...option, disabled: true, description: '已保存，当前模型不支持' };
-    if (mediaType !== 'image') return option;
-    const longEdge = compatibleImageOutput
-      ? Math.max(compatibleImageOutput.width ?? 0, compatibleImageOutput.height ?? 0) || 1024
-      : 1024;
-    const ratioSize = imageSizeForRatio(longEdge, option.value, resolvedModelAlias)?.size;
-    return ratioSize && (!exactImageSizes || exactImageSizes.has(ratioSize))
-      ? option
-      : { ...option, disabled: true, description: '当前模型不支持此比例对应的像素尺寸' };
-  });
-  const declaredDuration = readCapabilityOptions(
-    roots,
-    ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
+  );
+  const duration = ensureCurrentOption(
+    mergeOptions(
+      readCapabilityOptions(
+        roots,
+        ['duration', 'durations', 'seconds', 'durationSeconds', 'duration_seconds'],
+        'duration',
+      ) ?? [],
+      allowLegacyFallback
+        ? [
+            automaticVideoDurationOption,
+            ...[4, 8, 12, 15, 20].map((value) => ({
+              value: String(value),
+              label: String(value),
+              description: '秒',
+            })),
+          ]
+        : [],
+    ),
+    parameters.duration ?? parameters.seconds ?? parameters.durationSeconds,
     'duration',
   );
-  const supportedDeclaredDuration = durationContract
-    ? (declaredDuration ?? []).filter((option) => {
-        const seconds = Number(option.value);
-        return (
-          Number.isSafeInteger(seconds) &&
-          ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
-            (seconds >= durationContract.min &&
-              seconds <= durationContract.max &&
-              (!yuanliuContract?.duration.values ||
-                yuanliuContract.duration.values.includes(seconds))))
-        );
-      })
-    : declaredDuration;
-  const fallbackDurations =
-    durationContract?.presets ?? (allowLegacyFallback ? [4, 8, 12, 15, 20] : []);
-  const durationOptions = durationContract
-    ? [
-        ...(supportedDeclaredDuration ?? []),
-        ...fallbackDurations
-          .filter(
-            (value) => !supportedDeclaredDuration?.some((option) => option.value === String(value)),
-          )
-          .map((value) => ({
-            value: String(value),
-            label: String(value),
-            description: '秒',
-          })),
-      ]
-    : (supportedDeclaredDuration ??
-      fallbackDurations.map((value) => ({
-        value: String(value),
-        label: String(value),
-        description: '秒',
-      })));
-  const duration = ensureCurrentOption(
-    durationOptions,
-    strictVideoContract
-      ? (parameters.duration ?? parameters.seconds ?? parameters.durationSeconds)
-      : parameters.duration,
-    'duration',
-  ).map((option) => {
-    if (!durationContract) return option;
-    const seconds = Number(option.value);
-    const supported =
-      Number.isSafeInteger(seconds) &&
-      ((supportsAutomaticVideoDuration(family, resolvedModelAlias) && seconds === -1) ||
-        (seconds >= durationContract.min &&
-          seconds <= durationContract.max &&
-          (!yuanliuContract?.duration.values ||
-            yuanliuContract.duration.values.includes(seconds))));
-    return supported
-      ? option
-      : { ...option, disabled: true, description: '已保存，当前模型不支持' };
-  });
+  const quality = ensureCurrentOption(
+    mergeOptions(
+      nativeQuality,
+      allowLegacyFallback
+        ? ['auto', 'low', 'medium', 'high'].map((value) => ({ value, label: value }))
+        : [],
+    ),
+    readNativeImageQuality(parameters),
+    'quality',
+  );
   return {
     quality,
     videoResolutionSupported: true,
-    resolution: mediaType === 'image' ? imageResolution : videoResolution,
+    resolution,
     aspectRatio,
     duration,
-    imageResolutionValue,
+    imageResolutionValue: compatibleImageOutput?.size,
     imageAspectRatioValue,
-    hasNativeImageQuality: Boolean(nativeQuality?.length),
+    hasNativeImageQuality: allowLegacyFallback || Boolean(nativeQuality.length),
   };
 }
 
@@ -3190,7 +2457,7 @@ function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
   }));
 }
 
-/** 构造按媒体类型和凭据筛选后的模型选项。 */
+/** 按凭据分组完整模型目录，不依据媒体能力或可用性禁用选项。 */
 function buildModelOptions(
   models: ModelEntry[],
   currentValue: string,
@@ -3203,7 +2470,7 @@ function buildModelOptions(
     options.push({
       value: currentValue,
       label: currentModel,
-      description: currentCredentialId ? '原分组当前不可用' : '旧设置缺少分组身份',
+      description: currentCredentialId ? '已保存的分组身份' : '已保存模型',
     });
   }
   for (const group of groupModelsByCredential(models)) {
@@ -3215,12 +2482,6 @@ function buildModelOptions(
         }),
         label: model.name,
         trailingLabel: model.group ?? model.credentialLabel,
-        ...(model.availability && model.availability !== 'available'
-          ? {
-              disabled: true,
-              description: model.availability === 'needs_review' ? '待管理员确认' : '暂不可用',
-            }
-          : {}),
         groupLabel: group.label,
       });
     }
@@ -3228,7 +2489,7 @@ function buildModelOptions(
   return options.length > 0 ? options : [{ value: '', label: '暂无可用模型', disabled: true }];
 }
 
-/** 找到节点当前绑定的模型；无绑定时使用当前媒体的第一个模型能力。 */
+/** 按精确模型与凭据找到目录建议；目录缺失不限制节点运行。 */
 function findSelectedModel(
   models: ModelEntry[],
   modelAlias: string,

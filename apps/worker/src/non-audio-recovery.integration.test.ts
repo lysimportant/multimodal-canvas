@@ -248,8 +248,7 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
         snapshotFingerprint: executionSnapshotFingerprint(snapshot),
         requestProviderJobId,
       };
-      const usage = { amount: '1.25', currency: 'USD' };
-      const reportedUsage = { ...usage, runId: databaseRunId };
+      const usage = { metadata: { amount: '1.25', currency: 'USD' } };
       const output: ProviderOutput = video
         ? {
             mediaType: 'video' as const,
@@ -301,10 +300,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
       const execute = vi.fn(async (request: WorkerProviderRequest): Promise<ProviderExecution> => {
         if (request.resumeOnly) {
           expect(expired).toBe(true);
-          expect(request.providerJob).toMatchObject({
-            platformJobId,
-            payload: { contract: 'newapi-video-v1', requestProviderJobId, reportedUsage },
-          });
           expect(request.onRequestPrompt).toBeUndefined();
           expect(request.onProviderJob).toBeUndefined();
           expect(generations).toBe(1);
@@ -318,8 +313,8 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
             maxPollAttempts: 1,
             timeoutMs: 1000,
           }).execute(request);
-          // 刷新响应故意携带不同费用，Worker 必须保留原始生成回执而非覆盖计费身份。
-          expect(refreshed.usage?.amount).toBe('999');
+          // 刷新响应故意携带不同 usage 元数据，Worker 应保留供应商原始回执结构。
+          expect(refreshed.usage?.metadata?.amount).toBe('999');
           return refreshed;
         }
         // 真实发送授权由该回调触发；不允许无回调的合成 Provider 绕过 beginSend。
@@ -520,12 +515,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
           where: { runId: databaseRunId },
         });
         expect(originalProviders).toHaveLength(1);
-        expect(originalProviders[0]?.payload).toMatchObject({
-          deliveryState: 'received',
-          requestProviderJobId,
-          reportedUsage,
-          usageStatus: 'external',
-        });
         if (video) {
           expect(snapshot.executionBindings?.[nodeId]?.contract).toBe('newapi-video-v1');
           expect(originalProviders[0]).toMatchObject({
@@ -614,17 +603,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
           where: { runId: databaseRunId },
         });
         expect(providers).toHaveLength(1);
-        expect(providers[0]).toMatchObject({
-          id: originalProviders[0]!.id,
-          status: 'succeeded',
-          payload: {
-            deliveryState: 'archived',
-            requestProviderJobId,
-            requestId: providerRequestId,
-            reportedUsage,
-            usageStatus: 'external',
-          },
-        });
         if (video)
           expect(providers[0]).toMatchObject({
             platformJobId,
@@ -637,11 +615,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
           expect(recovered?.returnvalue.result?.asset).toBeUndefined();
           expect(recoveredRun.result).not.toHaveProperty('asset');
         }
-        expect(recovered?.data.providerJob?.payload).toMatchObject({
-          requestProviderJobId,
-          reportedUsage,
-          usageStatus: 'external',
-        });
         expect(await restartedPrisma.runSendIntent.findMany({ where: { runId } })).toEqual([
           originalSend,
         ]);
@@ -660,9 +633,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
             ? { assetId: asset.assetId, assetVersion: 1 }
             : { assetId: null, assetVersion: null }),
         });
-        expect(await restartedPrisma.usageLedger.count({ where: { runId: databaseRunId } })).toBe(
-          0,
-        );
         expect(await stagingKeys(second, queueName)).toEqual([]);
         await expect(
           new PrismaExecutionService(restartedPrisma).assertRetrySafe({
@@ -686,7 +656,6 @@ describe.skipIf(!databaseUrl || !redisUrl)('非音频结果跨真实 Worker 恢�
         await prisma.runSendIntent.deleteMany({ where: { runId } });
         await prisma.runOutbox.deleteMany({ where: { runId } });
         await prisma.executionAuthorization.deleteMany({ where: { runId } });
-        await prisma.usageLedger.deleteMany({ where: { runId: databaseRunId } });
         await prisma.project.deleteMany({ where: { id: projectId } });
         await prisma.user.deleteMany({ where: { id: userId } });
         await prisma.$disconnect();

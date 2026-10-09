@@ -125,7 +125,7 @@ describe('API production startup configuration', () => {
       S3_DOWNLOAD_MODE: 'proxy',
       S3_BUCKET: '',
       REDIS_URL: 'redis://redis:6379',
-      S3_ENDPOINT: 'http://minio:9000',
+      S3_ENDPOINT: 'http://objects.internal:9000',
     });
     expect(issues.map(({ variable }) => variable)).toEqual([
       'S3_BUCKET',
@@ -251,7 +251,7 @@ describe('API production startup configuration', () => {
   it('requires credentials when a custom S3 endpoint is configured', () => {
     const issues = validateApiStartupConfiguration({
       ...productionEnvironment,
-      S3_ENDPOINT: 'https://minio.example.com',
+      S3_ENDPOINT: 'https://objects.example.com',
       S3_ACCESS_KEY: '',
       S3_SECRET_KEY: '',
     });

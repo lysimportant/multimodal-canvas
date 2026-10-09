@@ -2007,7 +2007,7 @@ export const openApiDocument = {
       post: {
         tags: ['runs'],
         summary: '提交单节点及其工作流执行',
-        description: '使用本人分组模型提交持久任务，受理后由 New API 按实际规则计费。',
+        description: '使用本人分组模型提交持久任务；模型调用和费用由 New API 按其规则处理。',
         parameters: [
           { $ref: '#/components/parameters/NodeId' },
           { $ref: '#/components/parameters/IdempotencyKey' },
@@ -2609,7 +2609,6 @@ export const openApiDocument = {
           unavailableReason: { type: 'string' },
           capabilities: { type: 'object', additionalProperties: true },
           limitations: { type: 'object', additionalProperties: true },
-          price: { type: 'object', additionalProperties: true },
           refreshedAt: { type: 'string', format: 'date-time' },
         },
       },

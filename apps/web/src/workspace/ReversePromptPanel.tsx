@@ -64,7 +64,7 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
   const analysis = analysisQuery.data?.analysis;
   const running = analysis?.status === 'queued' || analysis?.status === 'running';
   const model = submission.current?.model ?? selection ?? analysisQuery.data?.defaultModel;
-  const textModels = models.filter((entry) => entry.mediaTypes.includes('text'));
+  const textModels = models;
   const modelValue = model ? reversePromptModelKey(model) : '';
   const hasSelectedModel = textModels.some(
     (entry) =>
@@ -171,7 +171,6 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
                 label: [entry.name || entry.id, entry.group ?? entry.credentialLabel]
                   .filter(Boolean)
                   .join(' · '),
-                disabled: Boolean(entry.availability && entry.availability !== 'available'),
               })),
             ]}
           />

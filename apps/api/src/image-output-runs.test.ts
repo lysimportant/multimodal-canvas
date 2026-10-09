@@ -148,46 +148,6 @@ async function finished(service: MemoryRunService, id: string): Promise<RunRecor
   throw new Error('Synthetic run did not finish');
 }
 
-describe('image output request preflight', () => {
-  it.each([
-    { quality: '4k', size: '1024x1024', aspectRatio: '9:16' },
-    { resolution: '4k', aspectRatio: '1:1' },
-    { resolution: '1k', aspectRatio: '9:16' },
-    { resolution: '4k', aspectRatio: '0:16' },
-    { quality: '8k' },
-  ])('rejects bad sizes before run creation or provider submission: %j', async (parameters) => {
-    const fixture = await setup(parameters);
-    const response = await fixture.app.inject({
-      method: 'POST',
-      url: '/v1/nodes/image-target/runs',
-      headers: fixture.headers,
-      payload: { projectId: fixture.project.id },
-    });
-    expect(response.statusCode, response.body).toBe(400);
-    expect(response.json()).toMatchObject({
-      code: 'IMAGE_OUTPUT_PARAMETERS_INVALID',
-      nodeId: 'image-target',
-    });
-    expect(fixture.create).not.toHaveBeenCalled();
-    expect(fixture.fetchImpl).not.toHaveBeenCalled();
-    expect(await fixture.runService.listByProject(fixture.project.id)).toEqual([]);
-  });
-
-  it('uses the request-resolved model instead of the node model for dimension limits', async () => {
-    const fixture = await setup({ resolution: '4k', aspectRatio: '9:16' });
-    const response = await fixture.app.inject({
-      method: 'POST',
-      url: '/v1/nodes/image-target/runs',
-      headers: fixture.headers,
-      payload: { projectId: fixture.project.id, modelAlias: 'gpt-image-1' },
-    });
-    expect(response.statusCode, response.body).toBe(400);
-    expect(response.json().code).toBe('IMAGE_OUTPUT_PARAMETERS_INVALID');
-    expect(fixture.create).not.toHaveBeenCalled();
-    expect(fixture.fetchImpl).not.toHaveBeenCalled();
-  });
-});
-
 describe.each([false, true])('image output HTTP to provider (edit=%s)', (edit) => {
   it.each([
     { quality: '4k', aspectRatio: '9:16' },

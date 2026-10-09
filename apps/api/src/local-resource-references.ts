@@ -1,9 +1,4 @@
-import {
-  image2proVideoContractForModel,
-  yuanliuVideoContractForModel,
-  isRetiredImage2proVideoModel,
-  type MediaType,
-} from '@multimodal-canvas/domain';
+import { type MediaType } from '@multimodal-canvas/domain';
 import type { ProviderAssetUrlSigner } from '@multimodal-canvas/credential-crypto';
 import type { ResolvedMention } from '@multimodal-canvas/providers';
 
@@ -36,21 +31,9 @@ export function withLocalResourceReferences(
     if (!target || target.data.mode !== 'generate') {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
-    const image2proContract =
-      target.data.mediaType === 'video'
-        ? image2proVideoContractForModel(request.snapshot.modelAlias)
-        : undefined;
-    const image2proVideo = Boolean(image2proContract);
-    const yuanliuVideo =
-      target.data.mediaType === 'video' &&
-      Boolean(yuanliuVideoContractForModel(request.snapshot.modelAlias));
-    const contractVideo = image2proVideo || yuanliuVideo;
+    const videoTarget = target.data.mediaType === 'video';
     // 已有公共任务只查询结果，不能因原图后来失效阻断恢复。
-    if (
-      target.data.mediaType === 'video' &&
-      (contractVideo || isRetiredImage2proVideoModel(request.snapshot.modelAlias)) &&
-      request.providerJob?.platformJobId
-    ) {
+    if (videoTarget && request.providerJob?.platformJobId) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
     const resourceInputs = request.snapshot.inputs.filter((input) =>
@@ -59,7 +42,7 @@ export function withLocalResourceReferences(
         : (input.snapshot.data.mediaType === 'image' &&
             ((target.data.mediaType === 'text' && input.role === 'content') ||
               (target.data.mediaType === 'image' && imageSourceRoles.has(input.role)))) ||
-          (contractVideo &&
+          (videoTarget &&
             [
               'firstFrame',
               'lastFrame',
@@ -74,14 +57,14 @@ export function withLocalResourceReferences(
       (mention) =>
         (mention.nodeId ?? request.snapshot.targetNodeId) === target.id &&
         (target.data.mediaType === 'text' ||
-          contractVideo ||
+          videoTarget ||
           (target.data.mediaType === 'image' && mention.mediaType === 'image')),
     );
     if (resourceInputs.length === 0 && frozenMentions.length === 0) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
 
-    /** 水合前后与发送前检查取消，避免读取期间取消后仍发送收费请求。 */
+    /** 水合前后与发送前检查取消，避免读取期间取消后仍发送外部请求。 */
     const assertActive = () => {
       if (request.isCancelled?.()) throw new Error('资源运行已取消，未发送 Provider 请求');
     };
@@ -146,9 +129,7 @@ export function withLocalResourceReferences(
         (candidate) => candidate.version === version,
       );
       if (!selected) throw new Error(`资源 ${assetId} 的冻结版本 ${version} 已不可用`);
-      const modelMaxBytes =
-        mediaType !== 'text' ? image2proContract?.mediaMaxBytes?.[mediaType] : undefined;
-      const readLimitBytes = Math.min(maxBytes, modelMaxBytes ?? maxBytes);
+      const readLimitBytes = maxBytes;
       if (selected.sizeBytes <= 0 || selected.sizeBytes > readLimitBytes)
         throw new Error(`资源 ${assetId} 的冻结版本超出大小限制`);
       const content = await assetStore.getVersionContent(assetId, version, scope);
@@ -172,7 +153,7 @@ export function withLocalResourceReferences(
         throw new Error(`资源 ${assetId} 已不可访问或已归档`);
       readAssets.push({ assetId, scope });
       assertActive();
-      if (yuanliuVideo && mediaType !== 'text') {
+      if (videoTarget && mediaType !== 'text') {
         if (!providerAssetUrlSigner) {
           throw new Error(
             '参考素材需要公网 HTTPS 访问：部署后会自动使用网站域名；当前网站地址或签名密钥不可用。本机 localhost 无法被远端模型读取。',

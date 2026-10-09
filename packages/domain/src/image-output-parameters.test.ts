@@ -71,45 +71,6 @@ describe('resolveImageOutputParameters', () => {
     expect(resolveImageOutputParameters(parameters)).toEqual(expected);
     expect(parameters).toEqual(before);
   });
-
-  it.each([
-    { quality: '8k' },
-    { resolution: '720p' },
-    { quality: '4k', resolution: '2k' },
-    { quality: 'high', imageQuality: 'low' },
-    { size: '1024x1024', quality: '4k' },
-    { size: '1024x1536', aspectRatio: '16:9' },
-    { size: '1024x1536', aspectRatio: '9:16' },
-    { size: '1024x1024', imageSize: '1536x1024' },
-    { aspect_ratio: '9:16', aspectRatio: '16:9' },
-    { aspectRatio: '0:1' },
-    { aspectRatio: '1:0' },
-    { aspectRatio: '-1:1' },
-    { aspectRatio: 'landscape' },
-    { aspectRatio: '1:999999999999999999' },
-    { quality: '1k', aspectRatio: '1:100000' },
-    { quality: '4k', aspectRatio: 'auto' },
-    { size: '0x1024' },
-    { size: '1024x-1' },
-    { size: '1024.5x1024' },
-    { size: '999999999999999999x1024' },
-    { quality: 4 },
-    { resolution: '' },
-    { aspectRatio: null },
-  ])('rejects invalid values or conflicts without guessing: %j', (parameters) => {
-    expect(() => resolveImageOutputParameters(parameters)).toThrow(ImageOutputParameterError);
-  });
-
-  it('does not echo untrusted values in parameter errors', () => {
-    const value = 'private-prompt-or-token';
-    try {
-      resolveImageOutputParameters({ size: value });
-      throw new Error('Expected invalid size to fail');
-    } catch (error) {
-      expect(error).toBeInstanceOf(ImageOutputParameterError);
-      expect((error as Error).message).not.toContain(value);
-    }
-  });
 });
 
 describe('known image model size contracts', () => {
@@ -129,33 +90,6 @@ describe('known image model size contracts', () => {
     );
   });
 
-  it.each([
-    { resolution: '4k', aspectRatio: '1:1' },
-    { resolution: '4k', aspectRatio: '4:3' },
-    { resolution: '4k', aspectRatio: '3:2' },
-    { resolution: '3k', aspectRatio: '1:1' },
-    { resolution: '1k', aspectRatio: '9:16' },
-    { resolution: '1k', aspectRatio: '16:9' },
-    { resolution: '1k', aspectRatio: '21:9' },
-    { size: '4096x2160' },
-    { size: '1200x700' },
-    { size: '3840x1024' },
-  ])('rejects unsupported combinations rather than resizing: %j', (parameters) => {
-    expect(() => resolveImageOutputParameters(parameters, 'gpt-image-2.5-sunburst')).toThrow(
-      ImageOutputParameterError,
-    );
-  });
-
-  it.each(['gpt-image-1', 'gpt-image-1-mini', 'gpt-image-1.5', 'dall-e-2', 'dall-e-3'])(
-    'preserves native sizes and rejects 4K for %s',
-    (model) => {
-      expect(resolveImageOutputParameters({ size: '1024x1024' }, model).size).toBe('1024x1024');
-      expect(() =>
-        resolveImageOutputParameters({ resolution: '4k', aspectRatio: '9:16' }, model),
-      ).toThrow(ImageOutputParameterError);
-    },
-  );
-
   it('does not infer a custom alias capability from its name', () => {
     expect(
       resolveImageOutputParameters(
@@ -167,15 +101,6 @@ describe('known image model size contracts', () => {
 });
 
 describe('automatic size model compatibility', () => {
-  it.each(['dall-e-2', 'dall-e-3'])('rejects auto for fixed-size-only %s', (model) => {
-    expect(() => resolveImageOutputParameters({ size: 'auto' }, model)).toThrow(
-      ImageOutputParameterError,
-    );
-    expect(() => resolveImageOutputParameters({ aspectRatio: 'auto' }, model)).toThrow(
-      ImageOutputParameterError,
-    );
-    expect(resolveImageOutputParameters({}, model)).toEqual({});
-  });
   it.each(['gpt-image-2.5-sunburst', 'gpt-image-1', 'custom-image-alias'])(
     'preserves auto for %s',
     (model) => {
@@ -214,20 +139,5 @@ describe('normalizeImageOutputParameters', () => {
       quality: 'high',
     });
     expect(parameters).toEqual(before);
-  });
-
-  it('兼容旧 K 档但不放宽精确模型边界', () => {
-    expect(
-      normalizeImageOutputParameters(
-        { quality: '4k', aspectRatio: '9:16', providerOption: 'preserved' },
-        'gpt-image-2.5-sunburst',
-      ),
-    ).toEqual({ size: '2160x3840', providerOption: 'preserved' });
-    expect(() =>
-      normalizeImageOutputParameters(
-        { size: '3840x3840', quality: 'high' },
-        'gpt-image-2.5-sunburst',
-      ),
-    ).toThrow(ImageOutputParameterError);
   });
 });

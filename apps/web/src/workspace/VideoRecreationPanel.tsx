@@ -314,7 +314,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     ? { modelAlias: request.modelAlias, credentialId: request.credentialId }
     : (selectedModel ?? defaultModel);
   const modelValue = selectedModel ? videoRecreationModelKey(selectedModel) : '';
-  const textModels = models.filter((entry) => entry.mediaTypes.includes('text'));
+  const textModels = models;
   const imageAssets = assets.filter(
     (entry) => entry.mediaType === 'image' && entry.status === 'ready' && !entry.archivedAt,
   );
@@ -326,16 +326,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     (binding) =>
       config.analysis && !config.analysis.template.roles.some((role) => role.id === binding.roleId),
   );
-  const selectedUnavailable =
-    selectedModel &&
-    !textModels.some(
-      (entry) =>
-        videoRecreationModelKey({ modelAlias: entry.id, credentialId: entry.credentialId }) ===
-          modelValue &&
-        entry.available !== false &&
-        (!entry.availability || entry.availability === 'available'),
-    );
-
   /** 重新查询只读记录，始终沿用原 runId，不重放 POST。 */
   function queryAgain(): void {
     setError(undefined);
@@ -384,7 +374,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
       queryAgain();
       return;
     }
-    if (!pending && (sourceError || invalidDuration || selectedUnavailable || !model)) return;
+    if (!pending && (sourceError || invalidDuration || !model)) return;
     posting.current = true;
     setSubmitting(true);
     setError(undefined);
@@ -711,10 +701,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 modelAlias: entry.id,
                 credentialId: entry.credentialId,
               })}
-              disabled={
-                entry.available === false ||
-                Boolean(entry.availability && entry.availability !== 'available')
-              }
             >
               {[entry.name || entry.id, entry.group ?? entry.credentialLabel]
                 .filter(Boolean)
@@ -737,11 +723,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             sourceChanged ||
             (!request &&
               !recovery &&
-              (loading ||
-                Boolean(sourceError) ||
-                invalidDuration ||
-                Boolean(selectedUnavailable) ||
-                !model))
+              (loading || Boolean(sourceError) || invalidDuration || !model))
           }
           onClick={() => void analyze()}
         >

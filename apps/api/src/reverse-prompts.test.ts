@@ -212,54 +212,6 @@ describe('资源反推提示词 API', () => {
     expect(ctx.executor).toHaveBeenCalledTimes(1);
   });
 
-  it('保留默认模型的独立凭据，默认失效时不自动切换模型或 Key', async () => {
-    const ctx = await fixture();
-    const added = ctx.settingsStore.update({
-      baseUrl: 'https://other.invalid/v1',
-      apiKey: 'synthetic-independent-key',
-      activate: false,
-    });
-    const credentialId = added.createdCredentialId!;
-    ctx.settingsStore.replaceModels(
-      [
-        {
-          id: 'independent-text',
-          name: '独立',
-          mediaTypes: ['text'],
-          refreshedAt: new Date().toISOString(),
-        },
-      ],
-      credentialId,
-    );
-    ctx.settingsStore.update({
-      defaultModels: { text: { modelAlias: 'independent-text', credentialId } },
-    });
-    const response = await ctx.app.inject({
-      method: 'POST',
-      url: ctx.url,
-      payload: { projectId: ctx.project.id },
-    });
-    expect(response.statusCode).toBe(202);
-    expect(response.json().analysis).toMatchObject({
-      modelAlias: 'independent-text',
-    });
-    expect(response.json().analysis.credentialId).toBe(credentialId);
-    expect((await ctx.runService.get(response.json().analysis.runId))?.snapshot.credentialId).toBe(
-      credentialId,
-    );
-    await vi.waitFor(async () =>
-      expect((await ctx.runService.get(response.json().analysis.runId))?.status).toBe('succeeded'),
-    );
-    ctx.settingsStore.replaceModels([], credentialId);
-    const failed = await ctx.app.inject({
-      method: 'POST',
-      url: ctx.url,
-      payload: { projectId: ctx.project.id },
-    });
-    expect(failed.statusCode).toBe(400);
-    expect(failed.json().code).toBe('model_unavailable');
-  });
-
   it('手动请求按幂等键持久去重，失败也不自动重发', async () => {
     const ctx = await fixture('not JSON');
     const first = await ctx.app.inject({
@@ -298,7 +250,7 @@ describe('资源反推提示词 API', () => {
     expect(ctx.archiver).not.toHaveBeenCalled();
   });
 
-  it('旧自动反推请求在执行前拒绝且不产生运行', async () => {
+  it('自动反推请求按资源版本幂等去重并交给上游执行', async () => {
     const ctx = await fixture();
     const responses = await Promise.all(
       Array.from({ length: 6 }, () =>
@@ -309,9 +261,15 @@ describe('资源反推提示词 API', () => {
         }),
       ),
     );
-    expect(responses.every((response) => response.statusCode === 400)).toBe(true);
-    expect(await ctx.runService.listByProject(ctx.project.id)).toHaveLength(0);
-    expect(ctx.executor).not.toHaveBeenCalled();
+    expect(responses.every((response) => response.statusCode === 202)).toBe(true);
+    const runIds = responses.map((response) => response.json().analysis.runId);
+    const runId = runIds[0]!;
+    expect(new Set(runIds).size).toBe(1);
+    await vi.waitFor(async () =>
+      expect((await ctx.runService.get(runId))?.status).toBe('succeeded'),
+    );
+    expect(await ctx.runService.listByProject(ctx.project.id)).toHaveLength(1);
+    expect(ctx.executor).toHaveBeenCalledTimes(1);
   });
 
   it('拒绝其他项目资源、缺失版本和归档资源，在调用供应商前完成校验', async () => {
@@ -366,39 +324,6 @@ describe('资源反推提示词 API', () => {
     expect(ctx.executor.mock.calls[0]![0].resolvedMentions?.[0]?.source).toMatchObject({
       dataUrl: `data:image/png;base64,${Buffer.from('version-one').toString('base64')}`,
     });
-  });
-
-  it('复用资源大小与显式引用数量限制', async () => {
-    const ctx = await fixture();
-    vi.stubEnv('RESOURCE_MENTION_MAX_BYTES', '3');
-    const oversized = await ctx.app.inject({
-      method: 'POST',
-      url: ctx.url,
-      payload: { projectId: ctx.project.id },
-    });
-    expect(oversized.statusCode).toBe(400);
-    expect(oversized.json().code).toBe('RESOURCE_MENTION_FREEZE_FAILED');
-    vi.stubEnv('RESOURCE_MENTION_MAX_BYTES', '1048576');
-    ctx.settingsStore.replaceModels(
-      [
-        {
-          id: 'alpha-text',
-          name: '文字',
-          mediaTypes: ['text'],
-          capabilities: { maxMentions: 0 },
-          refreshedAt: new Date().toISOString(),
-        },
-      ],
-      ctx.settingsStore.getCredentialReference().credentialId,
-    );
-    const unsupported = await ctx.app.inject({
-      method: 'POST',
-      url: ctx.url,
-      payload: { projectId: ctx.project.id },
-    });
-    expect(unsupported.statusCode).toBe(400);
-    expect(unsupported.json().code).toBe('RESOURCE_MENTION_CAPABILITY_UNSUPPORTED');
-    expect(ctx.executor).not.toHaveBeenCalled();
   });
 
   it('轮询精确运行身份，不能用其它资源的 runId 读取结果', async () => {
