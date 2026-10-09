@@ -2,7 +2,7 @@
 
 ## 运行范围
 
-项目的运行核心是同一份跨平台 `compose.yaml`，支持 Windows Docker Desktop 和 Linux 服务器。本文的 CMD/PowerShell 只是可选的 Windows 便捷包装，不是部署前提。Linux 服务器上的域名、HTTPS 与启动步骤见 [Linux 服务器部署](docker-server.md)。
+项目的运行核心是同一份跨平台 `compose.yaml`，支持 Windows Docker Desktop 和 Linux 服务器。本文的 PowerShell 脚本只是可选的 Windows 便捷入口，不是部署前提。Linux 服务器上的域名、HTTPS 与启动步骤见 [Linux 服务器部署](docker-server.md)。
 
 此入口使用根目录 `compose.yaml`，项目名固定为 `multimodal-canvas-app`。运行正式构建的 Web、API 和 Worker，以及 PostgreSQL、Redis、MinIO；不是 `pnpm dev`，不使用 Vite 开发服务器或内存任务模式。`initialize`、`migrate`、`storage-init` 是一次性初始化服务，成功执行后退出，不应作为常驻服务手动重启。
 
@@ -86,7 +86,7 @@ Start 的核心操作是以下命令；脚本还显式传入经过检查的本�
 docker compose -f compose.yaml -p multimodal-canvas-app up -d --wait --wait-timeout 180
 ```
 
-Build 在相同操作上增加 `--build`；Https 增加 `--profile local-https`；Stop/Status 均增加 `--profile server --profile local-https`，分别执行 `compose stop` 与 `compose ps --all`。普通 Start 仍使用 HTTP，不会主动启用或停止已有的 HTTPS 网关。Windows 包装脚本只由 Action 选择 profile，执行 Compose 时临时忽略继承的 `COMPOSE_PROFILES`，退出时恢复，不修改用户环境。脚本不会执行 `down -v`、删除卷、清理镜像或停止占用端口的其他程序。不要在排障时自行执行删除卷命令或 Docker Desktop 的清空/恢复出厂设置。
+Build 在相同操作上增加 `--build`；Https 增加 `--profile local-https`；Stop/Status 均增加 `--profile server --profile local-https`，分别执行 `compose stop` 与 `compose ps --all`。普通 Start 仍使用 HTTP，不会主动启用或停止已有的 HTTPS 网关。Windows PowerShell 脚本只由 Action 选择 profile，执行 Compose 时临时忽略继承的 `COMPOSE_PROFILES`，退出时恢复，不修改用户环境。脚本不会执行 `down -v`、删除卷、清理镜像或停止占用端口的其他程序。不要在排障时自行执行删除卷命令或 Docker Desktop 的清空/恢复出厂设置。
 
 ### 本地 HTTPS 与证书信任
 
@@ -160,7 +160,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 首次建立该 Compose 项目时使用独立数据环境，不会自动导入旧 `.data`、开发数据库、测试卷或根目录 `.env`。同名项目之后再次启动会复用原有 named volumes；`--build` 只更新镜像，不会清空数据库或将旧卷变成新库。需要旧数据时应先制定并验证迁移与备份方案，不要把“已重新构建镜像”当作“已经完成数据迁移”。
 
-完成 New API 登录后，在画布选择所属分组和已确认支持的模型。不向源码、Compose、CMD、文档或日志粘贴真实密钥。启动脚本不会调用付费 API；首次启动与登录不代表真实供应商生成已验收。点击真实生成可能产生费用，结果不明时应先查询已有任务，不重复创建。
+完成 New API 登录后，在画布选择所属分组和已确认支持的模型。不向源码、Compose、文档或日志粘贴真实密钥。启动脚本不会调用付费 API；首次启动与登录不代表真实供应商生成已验收。点击真实生成可能产生费用，结果不明时应先查询已有任务，不重复创建。
 
 本机回环地址不能被外部供应商直接访问。真实供应商回调、模型权限、账户余额、外网连通性及供应商端取消/签名/幂等契约，不由本地启动成功保障；未确认项仍以 [TODO-SERVER.md](../TODO-SERVER.md) 和相关供应商验收文档为准。
 
