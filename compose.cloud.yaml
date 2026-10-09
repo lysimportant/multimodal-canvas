@@ -1,7 +1,8 @@
-# 外部 PostgreSQL（如 Neon）与 S3 兼容存储（如 Cloudflare R2）叠加配置。
+# S3 兼容外部对象存储（如 Cloudflare R2）叠加配置；数据库与 Redis 仍使用本栈容器。
 # 用法：docker compose --env-file .env.compose -f compose.yaml -f compose.cloud.yaml up -d --build
 # 私有连接信息写入 .env.cloud（参考 .env.cloud.example，已被 .gitignore 排除）。
-# 本栈 postgres、minio、storage-init 移入 bundled-storage profile，默认不启动；Redis 仍在本栈。
+# 本栈 minio、storage-init 移入 bundled-storage profile，默认不启动。
+# 如需外部 PostgreSQL，在 .env.cloud 填写 CLOUD_DATABASE_URL 并使用 compose.cloud-db.yaml。
 
 x-cloud-runtime: &cloud-runtime
   env_file:
@@ -14,8 +15,6 @@ x-cloud-runtime: &cloud-runtime
     AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
 
 services:
-  postgres:
-    profiles: ['bundled-storage']
   minio:
     profiles: ['bundled-storage']
   storage-init:
@@ -23,9 +22,6 @@ services:
 
   migrate:
     <<: *cloud-runtime
-    depends_on: !override
-      initialize:
-        condition: service_completed_successfully
 
   api:
     <<: *cloud-runtime

@@ -8,17 +8,18 @@ import { setTimeout as delay } from 'node:timers/promises';
 export const secretDirectory = '/run/multimodal/secrets';
 
 /**
- * 外部数据库与对象存储模式（compose.cloud.yaml 设置 MC_EXTERNAL_SERVICES=1）。
- * 启用后 DATABASE_URL 与 S3_* 取自私有 env_file，不再指向本栈 postgres/minio。
+ * 外部对象存储模式（compose.cloud.yaml 设置 MC_EXTERNAL_SERVICES=1）：S3_* 取自私有
+ * env_file，不再指向本栈 minio。外部数据库需另行叠加 compose.cloud-db.yaml
+ * （设置 MC_EXTERNAL_DATABASE=1 并读取 CLOUD_DATABASE_URL），否则仍使用本栈 postgres。
  */
 export const externalServices = process.env.MC_EXTERNAL_SERVICES === '1';
+export const externalDatabase = process.env.MC_EXTERNAL_DATABASE === '1';
 
 /**
- * 外部模式必需的变量：私有 env_file 使用 CLOUD_ 前缀，避免与 compose.yaml 固定的
+ * 外部存储必需的变量：私有 env_file 使用 CLOUD_ 前缀，避免与 compose.yaml 固定的
  * S3_ENDPOINT 等 environment 项冲突（environment 优先于 env_file）。
  */
-const EXTERNAL_VARIABLES = [
-  'DATABASE_URL',
+const EXTERNAL_STORAGE_VARIABLES = [
   'S3_ENDPOINT',
   'S3_BUCKET',
   'S3_REGION',
@@ -26,24 +27,33 @@ const EXTERNAL_VARIABLES = [
   'S3_SECRET_KEY',
 ];
 
-/** 返回本栈或外部模式下的数据库与对象存储配置；外部模式缺项时只报告变量名。 */
+/** 返回对象存储配置；外部模式缺项时只报告变量名，不输出取值。 */
 function storageEnvironment(secret) {
-  if (!externalServices) {
-    return {
-      DATABASE_URL: `postgresql://canvas:${secret.postgres}@postgres:5432/canvas?schema=public`,
-      S3_ACCESS_KEY: 'canvas-app',
-      S3_SECRET_KEY: secret.s3,
-    };
-  }
-  const missing = EXTERNAL_VARIABLES.filter((name) => !process.env[`CLOUD_${name}`]?.trim());
+  if (!externalServices) return { S3_ACCESS_KEY: 'canvas-app', S3_SECRET_KEY: secret.s3 };
+  const missing = EXTERNAL_STORAGE_VARIABLES.filter(
+    (name) => !process.env[`CLOUD_${name}`]?.trim(),
+  );
   if (missing.length) {
     const error = new Error(`Missing CLOUD_${missing.join(', CLOUD_')}`);
     error.code = `MISSING_CLOUD_${missing[0]}`;
     throw error;
   }
   return Object.fromEntries(
-    EXTERNAL_VARIABLES.map((name) => [name, process.env[`CLOUD_${name}`].trim()]),
+    EXTERNAL_STORAGE_VARIABLES.map((name) => [name, process.env[`CLOUD_${name}`].trim()]),
   );
+}
+
+/** 返回本栈或外部数据库连接串；外部模式缺少连接串时拒绝启动。 */
+function databaseUrl(secret) {
+  if (!externalDatabase)
+    return `postgresql://canvas:${secret.postgres}@postgres:5432/canvas?schema=public`;
+  const url = process.env.CLOUD_DATABASE_URL?.trim();
+  if (!url) {
+    const error = new Error('Missing CLOUD_DATABASE_URL');
+    error.code = 'MISSING_CLOUD_DATABASE_URL';
+    throw error;
+  }
+  return url;
 }
 
 /** 返回经过校验的生产环境变量；密钥缺失或格式错误时直接拒绝启动。 */
@@ -56,6 +66,7 @@ export async function runtimeEnvironment() {
   return {
     ...process.env,
     NODE_ENV: 'production',
+    DATABASE_URL: databaseUrl(secret),
     REDIS_URL: `rediss://:${secret.redis}@redis:6379/0`,
     ...storageEnvironment(secret),
     API_JWT_SECRET: secret.jwt,
@@ -92,7 +103,7 @@ export async function waitForDependencies(service) {
   const deadline = Date.now() + 180_000;
   while (true) {
     try {
-      if (externalServices) {
+      if (externalDatabase) {
         // 外部数据库只确认 TCP 可达；对象存储由 API 启动后的实际请求校验。
         const database = new URL(process.env.CLOUD_DATABASE_URL);
         await probe(database.hostname, Number(database.port || 5432));

@@ -1,0 +1,23 @@
+# 可选：在 compose.cloud.yaml 之后叠加，改用 .env.cloud 中 CLOUD_DATABASE_URL 指向的外部
+# PostgreSQL（如 Neon，需直连地址），本栈 postgres 不再启动。
+# 用法：docker compose --env-file .env.compose -f compose.yaml -f compose.cloud.yaml -f compose.cloud-db.yaml up -d
+
+x-external-database: &external-database
+  environment:
+    MC_EXTERNAL_DATABASE: '1'
+
+services:
+  postgres:
+    profiles: ['bundled-storage']
+
+  migrate:
+    <<: *external-database
+    depends_on: !override
+      initialize:
+        condition: service_completed_successfully
+
+  api:
+    <<: *external-database
+
+  worker:
+    <<: *external-database
