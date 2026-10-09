@@ -10,9 +10,9 @@
 
 ### 当前电脑的 New API 本地验收环境
 
-当前电脑使用单独的 `canvas-newapi-local` 项目，包含已配套的本地 New API 和免费 Mock。**双击根目录的 `Docker-Local.cmd` 启动这套环境**：显式选择本地配置，使用已有镜像，不构建、不拉取镜像，也不清空数据。配置或镜像缺失时明确失败。
+当前电脑使用单独的 `canvas-newapi-local` 项目，包含已配套的本地 New API 和免费 Mock。**在根目录运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start -LocalNewApi` 启动这套环境**：显式选择本地配置，使用已有镜像，不构建、不拉取镜像，也不清空数据。配置或镜像缺失时明确失败。
 
-根目录直接运行通用 Compose 命令，或使用 `Docker-Start.cmd`，操作的是 `multimodal-canvas-app`，不会自动选中这套本地环境；通用入口必须先按下文提供真实 `MC_NEW_API_*` 配置。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
+根目录直接运行通用 Compose 命令，或使用 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start`，操作的是 `multimodal-canvas-app`，不会自动选中这套本地环境；通用入口必须先按下文提供真实 `MC_NEW_API_*` 配置。两个项目各自保存数据库卷，但 Web 默认都使用 8080，同一时间只能有一个占用该入口。
 
 在已保留配置和镜像的当前电脑，从仓库根目录启动、查看状态或停止：
 
@@ -44,10 +44,10 @@ docker compose --project-name canvas-newapi-local `
 
 1. 安装并打开 Windows Docker Desktop，完成其首次安装引导、许可确认及 WSL 2/虚拟化配置，使用 **Linux containers**。脚本不会替你修改系统功能、全局 Docker context 或容器模式。
 2. 保持 Docker Hub、Quay.io、Debian HTTPS 仓库和 npm 可访问。第一次需要下载基础镜像、安装镜像内依赖并构建应用；MinIO Server 与 `mc` 从 `quay.io/minio` 获取，并保留仓库固定的 SHA-256 digest。耗时取决于网络和机器性能；主机不需要另外安装 Node.js 或 pnpm。
-3. 当前电脑已有配套 New API 环境时，在项目根目录双击 `Docker-Local.cmd`。需要启动通用 `multimodal-canvas-app` 时，先按下节配置真实 New API 站点，再运行标准 Compose 命令或 `Docker-Start.cmd`。
+3. 当前电脑已有配套 New API 环境时，在项目根目录运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start -LocalNewApi`。需要启动通用 `multimodal-canvas-app` 时，先按下节配置真实 New API 站点，再运行标准 Compose 命令或 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start`。
 4. 等待 Compose 健康检查完成，脚本会打开默认浏览器。若初始化、构建或健康检查失败，窗口保留错误，不会宣称启动成功或自动重复变更操作。
 
-脚本兼容 Windows PowerShell 5.1 和 PowerShell 7。双击入口使用系统自带的 Windows PowerShell 5.1，`ExecutionPolicy Bypass` 仅作用于该进程，不修改机器或用户策略。组织策略禁止脚本时，请联系管理员处理，不要自行关闭安全机制。
+脚本兼容 Windows PowerShell 5.1 和 PowerShell 7。从 Windows PowerShell 5.1 运行时使用系统自带的 PowerShell，`ExecutionPolicy Bypass` 仅作用于该进程，不修改机器或用户策略。组织策略禁止脚本时，请联系管理员处理，不要自行关闭安全机制。
 
 Docker CLI 不在 `PATH` 时，脚本会检查 Docker Desktop 的标准全机和当前用户安装目录。引擎未就绪时，Start/Build/Https 可以隐藏启动已安装的 Docker Desktop，并最多等待约 180 秒；仍未就绪则显式失败。引擎就绪后，Compose 服务健康等待上限是 180 秒，首次镜像下载和构建耗时另计。尚未完成 Desktop 首次引导的机器，可能需要先手动打开 Desktop 处理提示。
 
@@ -55,7 +55,7 @@ Docker CLI 不在 `PATH` 时，脚本会检查 Docker Desktop 的标准全机和
 
 通用 `multimodal-canvas-app` 启动前，按 [.env.compose.example](../.env.compose.example) 创建被 Git 忽略的 `.env.compose`，将 `MC_NEW_API_ISSUER`、`MC_NEW_API_CLIENT_ID`、`MC_NEW_API_INSTANCE_ID` 和回调地址替换为真实站点配置。`MC_NEW_API_ISSUER` 是 Compose 输入，传入 API/Worker 容器后名称为 `NEW_API_ISSUER`；issuer 必须从浏览器和容器实际可达，非回环地址使用 HTTPS。New API 端必须登记相同客户端、实例与精确回调地址，回调路径为当前浏览器入口的 `/v1/auth/newapi/callback`。仅配旧网关地址或保留示例域名无法完成登录。
 
-`.env.compose` 不会被 Compose 或 `Docker-Start.cmd` 自动选中。使用该文件时，从仓库根目录为同一项目的启动、状态和停止命令都显式保留 `--env-file`、`-f` 和项目名：
+`.env.compose` 不会被 Compose 或 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start` 自动选中。使用该文件时，从仓库根目录为同一项目的启动、状态和停止命令都显式保留 `--env-file`、`-f` 和项目名：
 
 ```powershell
 docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app up -d --build --wait --wait-timeout 180
@@ -63,7 +63,7 @@ docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app 
 docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app stop
 ```
 
-`Docker-Start.cmd` 使用临时空环境文件，不读取 `.env.compose` 或开发 `.env`；只有从同一终端启动时，当前进程中已设置的 `MC_NEW_API_*` 才会传给 Compose。本机既有 `canvas-newapi-local` 不需要这组通用站点配置，继续使用 `Docker-Local.cmd` 和它自己的配套文件。
+上述 `-Action Start` 使用临时空环境文件，不读取 `.env.compose` 或开发 `.env`；只有从同一终端启动时，当前进程中已设置的 `MC_NEW_API_*` 才会传给 Compose。本机既有 `canvas-newapi-local` 不需要这组通用站点配置，继续使用 `-Action Start -LocalNewApi` 和它自己的配套文件。
 
 用户点击“使用 New API 登录”，授权后自动建立内部资源身份，并同步本人全部开放分组的 Key；原始分组精确等于“神秘分组”时排除，开放的 auto 同样接入。画布只显示分组模型，Key 加密保存在服务端。账号密码、注册和账单由 New API 管理。
 
@@ -73,9 +73,9 @@ docker compose --env-file .env.compose -f compose.yaml -p multimodal-canvas-app 
 
 ## 日常使用
 
-- **启动通用栈**：完成上面的真实 New API 配置后运行 `Docker-Start.cmd`；双击不会加载 `.env.compose`。已有镜像时直接使用，只有缺少应用镜像时才按需构建。本机配套环境使用 `Docker-Local.cmd`。
-- **本地 HTTPS**：双击 `Docker-HTTPS.cmd`，或运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Https`，启用可选 `local-https` profile 的 `gateway-local`。默认打开 HTTPS 8443，HTTP 8080 仍保留，初次访问需要信任内部 CA。
-- **停止**：双击 `Docker-Stop.cmd`。包含 `server` 和 `local-https` profile，只停止本项目已经创建的服务和网关，保留数据库、对象存储、队列、密钥及证书卷；不创建未启用的网关，不影响其他 Compose 项目。
+- **启动通用栈**：完成上面的真实 New API 配置后运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start`；该命令不会加载 `.env.compose`。已有镜像时直接使用，只有缺少应用镜像时才按需构建。本机配套环境使用 `-Action Start -LocalNewApi`。
+- **本地 HTTPS**：运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Https`，启用可选 `local-https` profile 的 `gateway-local`。默认打开 HTTPS 8443，HTTP 8080 仍保留，初次访问需要信任内部 CA。
+- **停止**：运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Stop`。包含 `server` 和 `local-https` profile，只停止本项目已经创建的服务和网关，保留数据库、对象存储、队列、密钥及证书卷；不创建未启用的网关，不影响其他 Compose 项目。
 - **查看状态**：在项目根目录运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Status`。包含两个网关 profile 的只读查询，不会启动 Docker Desktop 或应用。
 - **代码更新后重新构建**：运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Build`。这是 `up --build`，成功后启动新镜像并打开浏览器；不是仅构建。
 - **不自动打开浏览器**：在 Start/Build/Https 命令后添加 `-NoBrowser`。
@@ -108,7 +108,7 @@ HTTP 与 HTTPS 使用同一套账户和业务数据，但属于不同的浏览�
 
 首次成功启动后，常驻服务采用 `restart: unless-stopped`：之前仍处于运行状态的容器，在 Docker 引擎重新启动后会自动恢复，例如退出并重新打开 Docker Desktop。一次性初始化服务不适用此策略。
 
-**手动停止过的容器不会自动恢复**，即使重新打开 Docker Desktop 也一样。使用过 `Docker-Stop.cmd`，或在 Desktop 中手动停止本项目后，HTTP 使用再次双击 `Docker-Start.cmd` 恢复；本地 HTTPS 需要双击 `Docker-HTTPS.cmd` 或再次运行 `-Action Https`，单独 Start 不会恢复已停止的 HTTPS 网关。没有启用 Docker Desktop 的系统登录启动选项时，Windows 登录本身也不保证引擎运行；脚本不会修改这个设置。
+**手动停止过的容器不会自动恢复**，即使重新打开 Docker Desktop 也一样。运行过 `-Action Stop`，或在 Desktop 中手动停止本项目后，HTTP 使用 `-Action Start` 恢复；本地 HTTPS 需要再次运行 `-Action Https`，单独 Start 不会恢复已停止的 HTTPS 网关。没有启用 Docker Desktop 的系统登录启动选项时，Windows 登录本身也不保证引擎运行；脚本不会修改这个设置。
 
 自动重启策略不等于按依赖健康顺序重新编排，也不保证供应商或网络一直可用。引擎重启后发现服务异常时，先查看 Status 和 Docker Desktop 的容器状态；不要反复点击 Build 或删除数据。镜像不会因启动 Desktop 自动更新，代码更新后需要显式 Build。
 
@@ -121,7 +121,7 @@ $env:MC_HTTP_PORT = '8088'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start
 ```
 
-此时地址为 <http://localhost:8088/>，仍仅绑定 `127.0.0.1`。允许端口范围为 1 至 65535。该设置只在当前终端及其子进程有效，不会写入用户或系统环境；之后从桌面双击仍使用其继承环境中的端口，未设置则恢复默认 8080。再次运行 Start/Build 时请保持相同 `MC_HTTP_PORT`；脚本不从 `.env` 读取或保存端口。
+此时地址为 <http://localhost:8088/>，仍仅绑定 `127.0.0.1`。允许端口范围为 1 至 65535。该设置只在当前终端及其子进程有效，不会写入用户或系统环境；之后从同一终端运行脚本仍使用其继承环境中的端口，未设置则恢复默认 8080。再次运行 Start/Build 时请保持相同 `MC_HTTP_PORT`；脚本不从 `.env` 读取或保存端口。
 
 本地 HTTPS 可单独选择端口，两个端口不能相同：
 
@@ -150,7 +150,7 @@ $env:MC_VIDEO_CONTRACT = 'legacy-v1'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start
 ```
 
-该变量由 Compose 传入应用，不代表填写了供应商凭据，也不会授权任何收费调用。不要只因某次生成失败就切换协议或重发任务。与端口变量一样，后续 Start/Build 应保持相同设置；双击入口不会保存终端中的变量。启动命令显式使用空环境文件，**不会加载开发 `.env` 中的密钥或配置**。
+该变量由 Compose 传入应用，不代表填写了供应商凭据，也不会授权任何收费调用。不要只因某次生成失败就切换协议或重发任务。与端口变量一样，后续 Start/Build 应保持相同设置；新终端不会自动继承旧终端中的变量。启动命令显式使用空环境文件，**不会加载开发 `.env` 中的密钥或配置**。
 
 ## 数据与供应商配置
 
@@ -170,7 +170,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Ac
 
 `Dockerfile:2`、`failed to fetch anonymous token` 和 `auth.docker.io` 连接超时表示基础镜像构建前的网络请求失败，还没有进入数据库迁移。`--build` 仍可能访问镜像仓库；删除数据卷不能修复这个错误。
 
-当前电脑已有配套镜像时使用 `Docker-Local.cmd`，其启动带 `--no-build --pull never`。需要从源码重建时，仍须验证 Docker 引擎到 Docker Hub 和 Quay.io 的 DNS/代理连通性。
+当前电脑已有配套镜像时使用 `-Action Start -LocalNewApi`，其启动带 `--no-build --pull never`。需要从源码重建时，仍须验证 Docker 引擎到 Docker Hub 和 Quay.io 的 DNS/代理连通性。
 
 ### MinIO 镜像提示 `pull access denied`
 
@@ -182,7 +182,7 @@ Compose 会并行拉取多个服务镜像。一个镜像失败后，PostgreSQL�
 
 若镜像、初始化和迁移已经成功，但 API 日志显示 `StartupConfigurationError` 和 `NEW_API_ISSUER is required`，说明通用项目没有取得 New API 站点配置。宿主侧应设置 `MC_NEW_API_ISSUER`，Compose 将其映射为容器内的 `NEW_API_ISSUER`；不要把示例地址或猜测的站点填进去，也不要通过放宽生产启动校验绕过。
 
-当前电脑要使用已经配套的本地 New API 时，停止占用 8080 的通用项目后使用 `Docker-Local.cmd`，保留其现有数据卷。确需启动通用项目时，补齐真实 `.env.compose` 后使用上文三条带相同参数的命令恢复、查询或停止；不需要删除卷或重新迁移。
+当前电脑要使用已经配套的本地 New API 时，停止占用 8080 的通用项目后使用 `-Action Start -LocalNewApi`，保留其现有数据卷。确需启动通用项目时，补齐真实 `.env.compose` 后使用上文三条带相同参数的命令恢复、查询或停止；不需要删除卷或重新迁移。
 
 ### `migrate` 因旧账号数据停止
 

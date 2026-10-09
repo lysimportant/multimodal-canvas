@@ -14,7 +14,7 @@
 - 现有 `fresh-smoke.mjs` 在真实 Chrome 完成 6 项检查：受信任 HTTPS 登录和自动同步、空项目/素材、旧素材 404、重复同步复用凭据、工作台和退出。15 个分组、75 条模型，页面/控制台错误 0、Provider POST 0；两张截图已复核。此前报告与截图另存为本轮证据目录中的 `before-*`。
 - API 启动配置测试 93/93、Docker 配置测试 14/14 通过；全仓 lint/typecheck/test/build 退出 0，应用任务复用 Turbo 缓存，设施 skip 不作为真实集成证据。两份部署文档及本节新增内容格式检查通过，检查点历史表格的既有排版差异未整理。运行证据在 `.local-tests/local-newapi-recovery-20260921/`；浏览器最新结果仍在 `local-docker/fresh-smoke-results.json`。Windows/Linux 部署文档已明确区分本机配套入口与显式加载 `.env.compose` 的通用入口。
 
-当前使用 <http://localhost:8080/>，New API 为 <https://newapi.localhost:13443>；后续通过 `Docker-Local.cmd` 启动。根目录不带配套文件的 `docker compose up` 仍对应独立通用项目，需要真实 New API 配置。本次没有清库、重置账号、改渠道或执行真实供应商请求。
+当前使用 <http://localhost:8080/>，New API 为 <https://newapi.localhost:13443>；后续通过 `scripts/docker.ps1 -Action Start -LocalNewApi` 启动。根目录不带配套文件的 `docker compose up` 仍对应独立通用项目，需要真实 New API 配置。本次没有清库、重置账号、改渠道或执行真实供应商请求。
 
 ## 全新本地初始化与旧媒体隔离（历史）
 
@@ -26,10 +26,10 @@
 - 媒体隔离：API/Worker 只挂载新密钥卷，数据库/MinIO 使用新实例卷，未挂载宿主 `.data`、旧媒体或备份目录。项目、素材、素材版本、节点、Run、ProviderJob、发送意图均为 0，MinIO `canvas` bucket 中无对象。5 个旧素材下载地址均返回 404。
 - 验收脚本：此前直接导入 `http-library.mjs` 会启动历史媒体验收，读取旧账号后登录失败；这不代表新应用能访问旧媒体。现已增加直接执行入口判断，导入时无请求，也不创建历史报告；旧 `media-account.json` 已删除。
 - PC 烟测：真实 Chrome 未禁用 TLS 校验，完成登录自动同步、空项目/素材接口、旧素材 404、重复同步复用凭据、空工作台与退出会话 6 项检查。页面/控制台错误 0，Provider POST 总数 0。证据为 `local-docker/fresh-smoke-results.json`、`fresh-settings.png`、`fresh-workspace.png`；截图已复核。重新签发的公开 CA 已核对来源并加入当前用户信任存储。
-- 启动入口：新增 `Docker-Local.cmd`，调用 `scripts/docker.ps1 -LocalNewApi`，固定当前电脑的配套项目、环境文件与 Compose overlay。仅支持 Start/Stop/Status；不构建、不拉取镜像，配置缺失不退回默认项目。Windows PowerShell 5.1 的 Status/Start 已实际退出 0，重复初始化和迁移成功；Docker 配置测试 14/14、PowerShell 语法检查通过。
+- 启动入口：运行 `scripts/docker.ps1 -Action Start -LocalNewApi`，固定当前电脑的配套项目、环境文件与 Compose overlay。仅支持 Start/Stop/Status；不构建、不拉取镜像，配置缺失不退回默认项目。Windows PowerShell 5.1 的 Status/Start 已实际退出 0，重复初始化和迁移成功；Docker 配置测试 14/14、PowerShell 语法检查通过。
 - 配置补齐：空库重新写入仅限当前 Mock 主机、单个 IP 和 `8081` 端口的下载白名单，SSRF 校验保持开启；初始化脚本已同步该步骤。再次执行初始化与 Chrome 6 项烟测通过，仍为零生成。交付检查另包括 Markdown 解析、文档格式、diff 和新增内容秘密扫描；本轮仅改启动包装与文档，无业务源码/依赖变更，不重复全仓应用构建。交付 Tag 为 `v2026.09.21-fresh-local-initialized`。
 
-当前入口仍为 <http://localhost:8080/>，本地 New API 为 <https://newapi.localhost:13443>。日常使用 `Docker-Local.cmd`，此入口依赖本机已建立的配置和镜像，不是新电脑的自动安装包。线上 New API、真实调用和业务源码均未修改；此前生成归档只作为历史验收记录，不在当前空实例中。删除操作按用户明确授权未新增备份，Git 回退只能恢复脚本/文档，不能恢复旧数据。原 unknown 仍只能按历史请求 ID 向上游核查，不重发请求。
+当前入口仍为 <http://localhost:8080/>，本地 New API 为 <https://newapi.localhost:13443>。日常运行 `scripts/docker.ps1 -Action Start -LocalNewApi`，此入口依赖本机已建立的配置和镜像，不是新电脑的自动安装包。线上 New API、真实调用和业务源码均未修改；此前生成归档只作为历史验收记录，不在当前空实例中。删除操作按用户明确授权未新增备份，Git 回退只能恢复脚本/文档，不能恢复旧数据。原 unknown 仍只能按历史请求 ID 向上游核查，不重发请求。
 
 ## 旧本地环境归档清空（19:53，历史，归档现已删除）
 

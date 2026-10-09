@@ -127,6 +127,6 @@ docker compose --env-file .env.compose -f compose.yaml --profile local-https log
 
 若拉取阶段提示 `minio/mc@sha256:... pull access denied`，且镜像名不含 `quay.io/`，说明当前使用的仍是旧 Docker Hub 引用。当前 Compose 使用 `quay.io/minio/mc`，MinIO Server 同样使用 `quay.io/minio/minio`，两者保留原固定 digest；取得包含当前 `compose.yaml` 的完整版本后重试，不要移除 digest 或改用 `latest`。并行拉取时其他镜像显示 `Interrupted` 只表示 Compose 在首个失败后中止剩余操作，不能据此判断这些镜像各自拉取失败。
 
-若镜像、初始化和迁移已经成功，但 API 显示 unhealthy，日志包含 `StartupConfigurationError` 和 `NEW_API_ISSUER is required`，说明 Compose 没有取得宿主侧 `MC_NEW_API_ISSUER`。填写真实且可达的 issuer 后，使用相同 `.env.compose` 和 Compose 文件重新执行 `up`；不需要删除卷、重复迁移或放宽生产认证校验。本机已有配套 New API 的电脑应改用 `Docker-Local.cmd` 启动独立的 `canvas-newapi-local`，不要为通用项目编造 issuer。
+若镜像、初始化和迁移已经成功，但 API 显示 unhealthy，日志包含 `StartupConfigurationError` 和 `NEW_API_ISSUER is required`，说明 Compose 没有取得宿主侧 `MC_NEW_API_ISSUER`。填写真实且可达的 issuer 后，使用相同 `.env.compose` 和 Compose 文件重新执行 `up`；不需要删除卷、重复迁移或放宽生产认证校验。本机已有配套 New API 的电脑应运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\docker.ps1 -Action Start -LocalNewApi` 启动独立的 `canvas-newapi-local`，不要为通用项目编造 issuer。
 
 依赖初始化故障时保留卷和日志，修复配置/网络后重新执行相同的 `up`，不要重建加密密钥或重复发起可能计费的模型任务。对外分享日志前先脱敏，不输出 `runtime.json`、口令文件、JWT 或 Provider Key。

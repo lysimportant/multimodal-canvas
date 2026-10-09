@@ -113,7 +113,7 @@ function Find-DockerExecutable {
     $candidate = Join-Path $installation $relativePath
     if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
   }
-  throw '未找到已安装的 Docker Desktop。请先安装并完成首次启动引导，再运行 Docker-Start.cmd。'
+  throw '未找到已安装的 Docker Desktop。请先安装并完成首次启动引导，再运行 .\scripts\docker.ps1 -Action Start。'
 }
 
 <#
@@ -390,9 +390,9 @@ try {
       Invoke-Docker -Arguments ($script:ComposeArguments + @('stop')) | Out-Null
       Invoke-Docker -Arguments ($script:ComposeArguments + @('ps', '--all')) | Out-Null
       if ($LocalNewApi) {
-        Write-Host '本地 New API 与画布已停止，数据卷保留；使用 Docker-Local.cmd 恢复。'
+        Write-Host '本地 New API 与画布已停止，数据卷保留；使用 .\scripts\docker.ps1 -Action Start -LocalNewApi 恢复。'
       } else {
-        Write-Host '应用及已启用的网关已停止，全部数据卷保留。HTTP 使用 Docker-Start.cmd；恢复本地 HTTPS 请运行 -Action Https。'
+        Write-Host '应用及已启用的网关已停止，全部数据卷保留。HTTP 使用 .\scripts\docker.ps1 -Action Start；恢复本地 HTTPS 请运行 .\scripts\docker.ps1 -Action Https。'
       }
     }
     default {
