@@ -136,6 +136,18 @@ const models: NodeQuickEditorProps['models'] = [
   { id: 'multi-model', name: '多模态模型', mediaTypes: ['text', 'image'] },
 ];
 
+const mediaFilterModels: NodeQuickEditorProps['models'] = [
+  { id: 'filter-text-model', name: '筛选文字模型', mediaTypes: ['text'] },
+  { id: 'filter-image-model', name: '筛选图片模型', mediaTypes: ['image'] },
+  { id: 'filter-audio-model', name: '筛选音频模型', mediaTypes: ['audio'] },
+  { id: 'filter-video-model', name: '筛选视频模型', mediaTypes: ['video'] },
+  {
+    id: 'filter-multimodal-model',
+    name: '筛选多媒体模型',
+    mediaTypes: ['text', 'image', 'audio', 'video'],
+  },
+];
+
 function syntheticCredentialPreview(suffix: string): string {
   return [['s', 'k'].join(''), `...${suffix}`].join('-');
 }
@@ -525,7 +537,7 @@ describe('NodeQuickEditor', () => {
         expect(listbox.closest('.ant-select-dropdown')).toBeInTheDocument();
         expect(listbox.closest('[role="dialog"]')).toBe(dialog);
         expect(screen.getAllByRole('listbox', { name: '模型选项' })).toHaveLength(1);
-        expect(within(listbox).getAllByRole('option')).toHaveLength(3);
+        expect(within(listbox).getAllByRole('option')).toHaveLength(2);
         await user.click(
           within(listbox).getByRole('option', { name: /^图片模型/, selected: true }),
         );
@@ -538,6 +550,58 @@ describe('NodeQuickEditor', () => {
       });
     },
   );
+
+  it.each([
+    {
+      mediaType: 'text',
+      modelAlias: 'filter-text-model',
+      visible: ['筛选文字模型', '筛选多媒体模型'],
+      hidden: ['筛选图片模型', '筛选音频模型', '筛选视频模型'],
+    },
+    {
+      mediaType: 'image',
+      modelAlias: 'filter-image-model',
+      visible: ['筛选图片模型', '筛选多媒体模型'],
+      hidden: ['筛选文字模型', '筛选音频模型', '筛选视频模型'],
+    },
+    {
+      mediaType: 'audio',
+      modelAlias: 'filter-audio-model',
+      visible: ['筛选音频模型', '筛选多媒体模型'],
+      hidden: ['筛选文字模型', '筛选图片模型', '筛选视频模型'],
+    },
+    {
+      mediaType: 'video',
+      modelAlias: 'filter-video-model',
+      visible: ['筛选视频模型', '筛选多媒体模型'],
+      hidden: ['筛选文字模型', '筛选图片模型', '筛选音频模型'],
+    },
+  ] as const)('$mediaType 节点的模型列表只显示匹配及多媒体模型', async (testCase) => {
+    const user = userEvent.setup();
+    const node = {
+      ...imageNode,
+      type: testCase.mediaType,
+      data: {
+        ...imageNode.data,
+        mediaType: testCase.mediaType,
+        modelAlias: testCase.modelAlias,
+      },
+    } as AssetFlowNode;
+    const view = renderRaw(<NodeQuickEditor {...makeProps({ node, models: mediaFilterModels })} />);
+
+    await user.click(screen.getByRole('combobox', { name: /^模型：/ }));
+    const listbox = await screen.findByRole('listbox', { name: '模型选项' });
+    for (const modelName of testCase.visible) {
+      expect(
+        within(listbox).getByRole('option', { name: new RegExp(modelName) }),
+      ).toBeInTheDocument();
+    }
+    for (const modelName of testCase.hidden) {
+      expect(within(listbox).queryByRole('option', { name: new RegExp(modelName) })).toBeNull();
+    }
+    expect(within(listbox).getAllByRole('option')).toHaveLength(testCase.visible.length);
+    view.unmount();
+  });
 
   it.each(['快捷', '完整'] as const)(
     '%s编辑器的模型分组只显示在组标题，选项保留唯一的无障碍分组名',
@@ -1834,7 +1898,7 @@ describe('NodeQuickEditor', () => {
     await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
   });
 
-  it('列出全部模型，并保留目录中缺失的当前覆盖值', async () => {
+  it('按节点媒体类型筛选模型，并保留目录中缺失的当前覆盖值', async () => {
     const user = userEvent.setup();
     render(
       <NodeQuickEditor
@@ -1856,7 +1920,7 @@ describe('NodeQuickEditor', () => {
     await user.click(within(modelGroup).getByRole('combobox'));
     expect(selectPopup(modelGroup).getByRole('option', { name: /图片模型/ })).toBeInTheDocument();
     expect(selectPopup(modelGroup).getByRole('option', { name: /多模态模型/ })).toBeInTheDocument();
-    expect(selectPopup(modelGroup).getByRole('option', { name: /^文字模型/ })).toBeInTheDocument();
+    expect(selectPopup(modelGroup).queryByRole('option', { name: /^文字模型/ })).toBeNull();
     expect(
       selectPopup(modelGroup).getByRole('option', {
         name: /removed-image-model.*已保存的分组身份/,

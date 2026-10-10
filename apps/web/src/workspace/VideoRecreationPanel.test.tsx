@@ -250,6 +250,27 @@ describe('短视频复刻面板', () => {
     expect(screen.getByRole('button', { name: '分析整条视频' })).toBeVisible();
   });
 
+  it('分析模型只显示文字模型，不把视频生成模型放入分析列表', async () => {
+    render(
+      <Harness
+        models={[
+          ...models,
+          {
+            id: 'video-generator',
+            name: '视频生成模型',
+            credentialId: 'group-c',
+            mediaTypes: ['video'],
+          },
+        ]}
+      />,
+    );
+    await screen.findByRole('option', { name: '默认模型：vision-a' });
+
+    const select = screen.getByRole('combobox', { name: '分析模型' });
+    expect(within(select).getByRole('option', { name: /视觉分析甲/ })).toBeInTheDocument();
+    expect(within(select).queryByRole('option', { name: /视频生成模型/ })).toBeNull();
+  });
+
   it.each([
     ['未分析', initial],
     ['已有分析', ready],

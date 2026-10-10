@@ -314,7 +314,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     ? { modelAlias: request.modelAlias, credentialId: request.credentialId }
     : (selectedModel ?? defaultModel);
   const modelValue = selectedModel ? videoRecreationModelKey(selectedModel) : '';
-  const textModels = models;
+  const textModels = models.filter((entry) => entry.mediaTypes.includes('text'));
   const imageAssets = assets.filter(
     (entry) => entry.mediaType === 'image' && entry.status === 'ready' && !entry.archivedAt,
   );

@@ -366,6 +366,7 @@ export function NodeQuickEditor({
     : '';
   const modelOptions = buildModelOptions(
     availableModels,
+    node.data.mediaType,
     currentModelValue,
     currentModel,
     currentCredentialId,
@@ -2457,9 +2458,10 @@ function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
   }));
 }
 
-/** 按凭据分组完整模型目录，不依据媒体能力或可用性禁用选项。 */
+/** 只展示声明支持当前节点媒体类型的模型；不改变节点已保存模型或提交校验。 */
 function buildModelOptions(
   models: ModelEntry[],
+  mediaType: AssetFlowNode['data']['mediaType'],
   currentValue: string,
   currentModel: string,
   currentCredentialId: string | undefined,
@@ -2473,7 +2475,8 @@ function buildModelOptions(
       description: currentCredentialId ? '已保存的分组身份' : '已保存模型',
     });
   }
-  for (const group of groupModelsByCredential(models)) {
+  const visibleModels = models.filter((model) => model.mediaTypes.includes(mediaType));
+  for (const group of groupModelsByCredential(visibleModels)) {
     for (const model of group.models) {
       options.push({
         value: modelOptionValue({

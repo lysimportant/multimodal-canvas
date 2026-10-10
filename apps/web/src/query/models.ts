@@ -84,7 +84,7 @@ const customGroupMediaLabels: Record<'text' | 'image' | 'audio' | 'video', strin
 
 /**
  * 按自定义 API 配置拉取模型列表，通过后端代理避免暴露 API Key。
- * 模型保留所配置连接的媒体来源标记；Canvas 选择器不依据该标记限制模型。
+ * 模型保留所配置连接的媒体来源标记；节点模型菜单据此展示对应媒体类型。
  *
  * @param group 媒体类型、连接配置。
  * @param signal 取消信号。
