@@ -6,15 +6,16 @@ const assetNodeCss = readFileSync(resolve(process.cwd(), 'src/workspace/asset-no
 const normalizedCss = assetNodeCss.replace(/\s+/g, ' ');
 
 describe('asset node floating controls CSS contracts', () => {
-  it('未选中节点不占边框，选中及悬停保留 1px 透明边框', () => {
-    for (const selector of [
-      '.react-flow__node .flow-asset-node',
-      '.react-flow__node .flow-asset-node:hover',
-    ]) {
-      expect(normalizedCss.slice(normalizedCss.indexOf(selector + ' {')).split('}')[0]).toContain(
-        'border: 0;',
-      );
-    }
+  it('未选中节点预留透明边框，选中时显示 1px 主题边框且不改变尺寸', () => {
+    const baseRule = normalizedCss
+      .slice(normalizedCss.indexOf('.react-flow__node .flow-asset-node {'))
+      .split('}')[0];
+    expect(baseRule).toContain('border: 1px solid transparent;');
+    expect(baseRule).toContain('box-sizing: border-box;');
+    const hoverRule = normalizedCss
+      .slice(normalizedCss.indexOf('.react-flow__node .flow-asset-node:hover {'))
+      .split('}')[0];
+    expect(hoverRule).toContain('border-color: transparent;');
     const selectedRule = normalizedCss
       .slice(
         normalizedCss.indexOf(
@@ -22,8 +23,7 @@ describe('asset node floating controls CSS contracts', () => {
         ),
       )
       .split('}')[0];
-    expect(selectedRule).toContain('border: 1px solid transparent;');
-    expect(selectedRule).toContain('box-sizing: border-box;');
+    expect(selectedRule).toContain('border-color: var(--mc-accent-strong);');
     expect(normalizedCss).not.toContain('border-width: 3px;');
   });
 

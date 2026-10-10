@@ -251,6 +251,15 @@ export function AssetNode({
   const runControlStore = useContext(NodeRunControlStoreContext);
   const stopNode = useContext(NodeStopContext);
   const runControl = useNodeRunControl(runControlStore, id);
+  /** 创建 Run 返回前展示本地准备态；真实活动状态到达后立即以服务端为准。 */
+  const isLocallySubmitting = runControl.submitting && !isNodeRunning(data.runStatus);
+  const effectiveRunStatus: RunStatus | undefined = isLocallySubmitting
+    ? runControl.stopRequested
+      ? 'cancel_requested'
+      : 'preparing'
+    : data.runStatus;
+  const effectiveRunProgress = isLocallySubmitting ? undefined : data.runProgress;
+  const effectiveRunError = isLocallySubmitting ? undefined : data.runError;
   const batchContext = useContext(GenerationBatchViewContext);
   const batchView = batchContext.views.get(id);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -374,7 +383,7 @@ export function AssetNode({
   ]);
   // 仅可见悬浮卡片或信息面板中的活动计时订阅共享时钟。
   const durationNow = useSharedNodeClock(
-    (infoOpen || controlsVisible) && isNodeRunning(data.runStatus),
+    (infoOpen || controlsVisible) && isNodeRunning(effectiveRunStatus),
   );
   const [draftLabel, setDraftLabel] = useState(data.label);
   const renameTitleId = useId();
@@ -442,7 +451,7 @@ export function AssetNode({
     data.resultAsset &&
     !data.manualOutput &&
     !data.stale &&
-    !isNodeRunning(data.runStatus) &&
+    !isNodeRunning(effectiveRunStatus) &&
     actualImageSize &&
     requestedSize?.width &&
     requestedSize.height &&
@@ -469,8 +478,8 @@ export function AssetNode({
     },
     [previewIdentity],
   );
-  const presentationState = getNodePresentationState(data, previewAsset);
-  const writingDisabled = isNodeRunning(data.runStatus) || uploadProgress !== null;
+  const presentationState = getNodePresentationState(data, previewAsset, effectiveRunStatus);
+  const writingDisabled = isNodeRunning(effectiveRunStatus) || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
   /** 只分享已就绪的明确版本；新任务的排队、运行或失败不沿用旧结果入口。 */
@@ -482,7 +491,7 @@ export function AssetNode({
     previewAsset.contentUrl &&
     resolveAssetShareVersion(previewAsset) !== undefined &&
     uploadProgress === null &&
-    (data.runStatus === undefined || data.runStatus === 'succeeded')
+    (effectiveRunStatus === undefined || effectiveRunStatus === 'succeeded')
       ? previewAsset
       : undefined;
   /** 抵消画布缩放，让悬浮栏保持屏幕像素大小；宽度随图标和文字收缩。 */
@@ -515,7 +524,7 @@ export function AssetNode({
     Boolean(recoverNode) &&
     data.mode !== 'source' &&
     data.mediaType === 'video' &&
-    data.runStatus === 'failed';
+    effectiveRunStatus === 'failed';
   const handlePreviewLoadState = useCallback((state: AssetPreviewLoadState) => {
     setPreviewLoadState(state);
   }, []);
@@ -533,7 +542,7 @@ export function AssetNode({
   useEffect(() => {
     setRetryError(null);
     setRecoverError(null);
-  }, [data.runStatus]);
+  }, [effectiveRunStatus]);
 
   useEffect(() => {
     if (!renameOpen) setDraftLabel(data.label);
@@ -646,25 +655,27 @@ export function AssetNode({
   );
   // 保留旧结果时，预览加载状态不能遮住当前任务的运行或失败状态。
   const statusArtifactState =
-    isNodeRunning(data.runStatus) || data.runStatus === 'failed' || data.runStatus === 'cancelled'
+    isNodeRunning(effectiveRunStatus) ||
+    effectiveRunStatus === 'failed' ||
+    effectiveRunStatus === 'cancelled'
       ? undefined
       : presentationState === 'preview'
         ? effectivePreviewLoadState
         : presentationState === 'missing'
           ? 'missing'
           : undefined;
-  const statusTooltip = nodeStatusTooltip(data.runStatus, statusArtifactState);
+  const statusTooltip = nodeStatusTooltip(effectiveRunStatus, statusArtifactState);
   const nodeStatePresentationState =
     presentationState === 'preview' &&
-    (data.runStatus === 'failed' || data.runStatus === 'cancelled')
-      ? data.runStatus
+    (effectiveRunStatus === 'failed' || effectiveRunStatus === 'cancelled')
+      ? effectiveRunStatus
       : presentationState;
   const nodeStateContent = (
     <NodeStateContent
       state={nodeStatePresentationState}
-      status={data.runStatus}
-      progress={data.runProgress}
-      error={data.runError}
+      status={effectiveRunStatus}
+      progress={effectiveRunProgress}
+      error={effectiveRunError}
       canRetry={
         canRetry &&
         (nodeStatePresentationState === 'failed' ||
@@ -678,8 +689,8 @@ export function AssetNode({
       isRecovering={isRecovering}
       recoverError={recoverError}
       onRecover={() => void handleRecover()}
-      stoppable={Boolean(stopNode) && (runControl.stoppable || isNodeRunning(data.runStatus))}
-      stopRequested={runControl.stopRequested || data.runStatus === 'cancel_requested'}
+      stoppable={Boolean(stopNode) && (runControl.stoppable || isNodeRunning(effectiveRunStatus))}
+      stopRequested={runControl.stopRequested || effectiveRunStatus === 'cancel_requested'}
       onStop={stopNode ? () => stopNode(id) : undefined}
       emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
       emptyHint={isVideoRecreation ? '点击节点，按流程开始复刻' : undefined}
@@ -871,11 +882,11 @@ export function AssetNode({
                     {...(displayedTiming ? { timing: displayedTiming } : {})}
                     label="耗时"
                     now={durationNow}
-                    running={!previewAsset && isNodeRunning(data.runStatus)}
+                    running={!previewAsset && isNodeRunning(effectiveRunStatus)}
                   />
                 </span>
               </NodeFloatingHint>
-              {previewAsset && isNodeRunning(data.runStatus) ? (
+              {previewAsset && isNodeRunning(effectiveRunStatus) ? (
                 <NodeFloatingHint description="当前任务已用时间，不包含旧结果的耗时">
                   <span
                     className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
@@ -917,7 +928,7 @@ export function AssetNode({
                   }`}
                   tabIndex={0}
                 >
-                  <RunStatusIcon status={data.runStatus} artifactState={statusArtifactState} />
+                  <RunStatusIcon status={effectiveRunStatus} artifactState={statusArtifactState} />
                   <NodeFloatingActionLabel>{statusTooltip}</NodeFloatingActionLabel>
                 </span>
               </NodeFloatingHint>
@@ -1072,7 +1083,7 @@ export function AssetNode({
               <span
                 className={`flow-node-status ${effectivePreviewLoadState === 'error' || presentationState === 'missing' ? 'is-error' : ''}`}
               >
-                <RunStatusIcon status={data.runStatus} artifactState={statusArtifactState} />
+                <RunStatusIcon status={effectiveRunStatus} artifactState={statusArtifactState} />
               </span>
             </>
           )}
@@ -1179,7 +1190,7 @@ export function AssetNode({
               </div>
               <div>
                 <dt>运行</dt>
-                <dd>{data.runStatus ? runStatusLabel(data.runStatus) : '未运行'}</dd>
+                <dd>{effectiveRunStatus ? runStatusLabel(effectiveRunStatus) : '未运行'}</dd>
               </div>
               <div>
                 <dt>节点创建时间</dt>
@@ -1238,10 +1249,10 @@ export function AssetNode({
                   </div>
                 </>
               ) : null}
-              {data.runError ? (
+              {effectiveRunError ? (
                 <div>
                   <dt>错误</dt>
-                  <dd role="alert">{data.runError}</dd>
+                  <dd role="alert">{effectiveRunError}</dd>
                 </div>
               ) : null}
               <div>
@@ -1250,11 +1261,11 @@ export function AssetNode({
                   <NodeDurationBadge
                     {...(displayedTiming ? { timing: displayedTiming } : {})}
                     now={durationNow}
-                    running={!previewAsset && isNodeRunning(data.runStatus)}
+                    running={!previewAsset && isNodeRunning(effectiveRunStatus)}
                   />
                 </dd>
               </div>
-              {previewAsset && isNodeRunning(data.runStatus) ? (
+              {previewAsset && isNodeRunning(effectiveRunStatus) ? (
                 <div>
                   <dt>当前执行</dt>
                   <dd>
@@ -1301,7 +1312,7 @@ export function AssetNode({
           <Icon size={28} strokeWidth={1.7} aria-hidden="true" />
           <span className="flow-node-summary-label">{data.label}</span>
           <span className="flow-node-summary-status">
-            {nodeStatusTooltip(data.runStatus, statusArtifactState)}
+            {nodeStatusTooltip(effectiveRunStatus, statusArtifactState)}
           </span>
         </div>
       ) : presentationState === 'preview' && previewAsset ? (
@@ -1321,7 +1332,9 @@ export function AssetNode({
             onLoadStateChange={handlePreviewLoadState}
             onNaturalSize={data.mediaType === 'image' ? handleNaturalImageSize : undefined}
           />
-          {(data.runStatus === 'failed' || data.runStatus === 'cancelled' || isRecovering) &&
+          {(effectiveRunStatus === 'failed' ||
+            effectiveRunStatus === 'cancelled' ||
+            isRecovering) &&
           presentationState === 'preview' &&
           (canRecover || canRetry) ? (
             <div className="flow-node-preview-recovery">{nodeStateContent}</div>
@@ -1558,20 +1571,21 @@ function RunStatusIcon({
 function getNodePresentationState(
   data: AssetFlowNode['data'],
   previewAsset?: Asset,
+  runStatus: RunStatus | undefined = data.runStatus,
 ): NodePresentationState {
   if (previewAsset?.contentUrl && (data.manualOutput || data.resultAsset)) return 'preview';
   if (
-    data.runStatus === 'queued' ||
-    data.runStatus === 'preparing' ||
-    data.runStatus === 'running' ||
-    data.runStatus === 'processing' ||
-    data.runStatus === 'cancel_requested'
+    runStatus === 'queued' ||
+    runStatus === 'preparing' ||
+    runStatus === 'running' ||
+    runStatus === 'processing' ||
+    runStatus === 'cancel_requested'
   ) {
     return 'running';
   }
-  if (data.runStatus === 'failed') return 'failed';
-  if (data.runStatus === 'cancelled') return 'cancelled';
-  if (data.runStatus === 'succeeded' && !previewAsset?.contentUrl) return 'missing';
+  if (runStatus === 'failed') return 'failed';
+  if (runStatus === 'cancelled') return 'cancelled';
+  if (runStatus === 'succeeded' && !previewAsset?.contentUrl) return 'missing';
   if (previewAsset?.contentUrl) return 'preview';
   if (data.mode === 'source') return 'missing';
   return 'empty';

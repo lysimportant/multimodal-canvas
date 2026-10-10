@@ -6,11 +6,19 @@ export type NodeRunControlState = {
   stoppable: boolean;
   /** 用户已请求停止，等待创建返回或服务端确认。 */
   stopRequested: boolean;
+  /** 创建请求尚未返回活动 Run；仅用于即时反馈，不冒充服务端运行状态。 */
+  submitting: boolean;
+};
+
+/** 更新停止状态时可省略提交标记；省略表示保留节点当前值。 */
+type NodeRunControlUpdate = Omit<NodeRunControlState, 'submitting'> & {
+  submitting?: boolean;
 };
 
 const idleNodeRunControlState: NodeRunControlState = Object.freeze({
   stoppable: false,
   stopRequested: false,
+  submitting: false,
 });
 
 const idleNodeRunControlStore: NodeRunControlStore = {
@@ -25,7 +33,7 @@ const idleNodeRunControlStore: NodeRunControlStore = {
 export type NodeRunControlStore = {
   getSnapshot: (nodeId: string | undefined) => NodeRunControlState;
   subscribe: (nodeId: string | undefined, listener: () => void) => () => void;
-  set: (nodeId: string, state: NodeRunControlState) => void;
+  set: (nodeId: string, state: NodeRunControlUpdate) => void;
   clear: (nodeId: string) => void;
   clearAll: () => void;
 };
@@ -64,9 +72,17 @@ export function createNodeRunControlStore(): NodeRunControlStore {
     },
     set: (nodeId, state) => {
       const current = states.get(nodeId) ?? idleNodeRunControlState;
-      if (current.stoppable === state.stoppable && current.stopRequested === state.stopRequested)
+      const next: NodeRunControlState = {
+        ...state,
+        submitting: state.submitting ?? current.submitting,
+      };
+      if (
+        current.stoppable === next.stoppable &&
+        current.stopRequested === next.stopRequested &&
+        current.submitting === next.submitting
+      )
         return;
-      states.set(nodeId, Object.freeze({ ...state }));
+      states.set(nodeId, Object.freeze(next));
       notify(nodeId);
     },
     clear: (nodeId) => {

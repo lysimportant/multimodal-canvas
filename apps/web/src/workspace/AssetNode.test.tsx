@@ -1701,6 +1701,29 @@ describe('AssetNode result presentation', () => {
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
 
+  it('创建请求返回前立即显示准备态，提交清理后恢复原服务端状态', () => {
+    const node = makeNode({ runStatus: 'failed', runError: '上一次运行失败' });
+    const runControlStore = createNodeRunControlStore();
+    runControlStore.set(node.id, {
+      stoppable: true,
+      stopRequested: false,
+      submitting: true,
+    });
+    render(
+      <NodeRunControlStoreContext.Provider value={runControlStore}>
+        <AssetNode
+          {...({ id: node.id, data: node.data, selected: false } as NodeProps<AssetFlowNode>)}
+        />
+      </NodeRunControlStoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('准备中');
+    expect(screen.queryByText('上一次运行失败')).not.toBeInTheDocument();
+
+    act(() => runControlStore.clear(node.id));
+    expect(screen.getByRole('alert')).toHaveTextContent('上一次运行失败');
+  });
+
   it('运行占位的停止按钮只调用当前节点处理器，并在停止意图提交后禁用', async () => {
     const node = makeNode({ runStatus: 'processing', runProgress: 48 });
     const onStop = vi.fn();

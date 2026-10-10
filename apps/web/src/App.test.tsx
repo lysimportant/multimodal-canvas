@@ -747,6 +747,10 @@ describe('App 组件库迁移', () => {
       view.canvas!.onRunNode(a);
       view.canvas!.onRunNode(a, 'newNode');
     });
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot(a.id)).toMatchObject({
+      submitting: true,
+      stoppable: true,
+    });
     await waitFor(() => expect(pending.posts).toEqual(['a']));
     expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
     expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();
@@ -915,6 +919,7 @@ describe('App 组件库迁移', () => {
     expect(posts).toHaveLength(1);
     expect(view.canvas!.nodes).toHaveLength(3);
     expect(view.canvas!.busyNodeIds?.size).toBe(0);
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').submitting).toBe(false);
   });
 
   it('创建响应未返回时立即停止，取得 runId 后只取消一次', async () => {
@@ -1151,12 +1156,16 @@ describe('App 组件库迁移', () => {
     fillNode('a', '第一版');
     act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
     await waitFor(() => expect(saves).toHaveLength(1));
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').submitting).toBe(true);
     fillNode('b', '保存期间的第二版');
     act(() => {
       view.canvas!.onRunNode(view.canvas!.nodes[1]);
       view.canvas!.onRunNode(view.canvas!.nodes[2]);
     });
     expect(pending.posts).toEqual([]);
+    for (const id of ['a', 'b', 'c']) {
+      expect(view.canvas!.nodeRunControlStore?.getSnapshot(id).submitting).toBe(true);
+    }
     await act(async () =>
       saves[0].gate.resolve(json({ canvas: { ...saves[0].document, revision: 2 } })),
     );

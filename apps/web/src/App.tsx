@@ -3503,6 +3503,7 @@ function WorkspaceApp({
         nodeRunControlStore.set(nodeId, {
           stoppable: true,
           stopRequested: currentControl.stopRequested || run.status === 'cancel_requested',
+          submitting: false,
         });
       } else if (!nodeRunOperationByNodeRef.current.has(nodeId)) {
         nodeRunControlStore.clear(nodeId);
@@ -3934,7 +3935,11 @@ function WorkspaceApp({
           projectId,
         };
         nodeRunOperationByNodeRef.current.set(source.id, operation);
-        nodeRunControlStore.set(source.id, { stoppable: true, stopRequested: false });
+        nodeRunControlStore.set(source.id, {
+          stoppable: true,
+          stopRequested: false,
+          submitting: false,
+        });
         nodeRunLocksRef.current.add(source.id);
         syncNodeLocks();
         try {
@@ -4076,7 +4081,11 @@ function WorkspaceApp({
           commitForkGraph(child, extraEdges, source.id);
           operation.nodeIds.add(child.id);
           nodeRunOperationByNodeRef.current.set(child.id, operation);
-          nodeRunControlStore.set(child.id, { stoppable: true, stopRequested: false });
+          nodeRunControlStore.set(child.id, {
+            stoppable: true,
+            stopRequested: false,
+            submitting: false,
+          });
           setNotice(
             preferredModelNotice
               ? { kind: 'error', message: `已创建新节点；${preferredModelNotice}` }
@@ -4147,6 +4156,7 @@ function WorkspaceApp({
       nodeRunControlStore.set(node.id, {
         stoppable: true,
         stopRequested: operation.stopRequested,
+        submitting: true,
       });
       nodeRunLocksRef.current.add(node.id);
       syncNodeLocks();
@@ -4182,6 +4192,7 @@ function WorkspaceApp({
             nodeRunControlStore.set(targetNode.id, {
               stoppable: true,
               stopRequested: operation.stopRequested,
+              submitting: true,
             });
           }
           syncNodeLocks();
@@ -4361,6 +4372,7 @@ function WorkspaceApp({
             nodeRunControlStore.set(operationNodeId, {
               stoppable: true,
               stopRequested: currentRun.status === 'cancel_requested',
+              submitting: false,
             });
           } else {
             nodeRunControlStore.clear(operationNodeId);
@@ -4645,6 +4657,7 @@ function WorkspaceApp({
             nodeRunControlStore.set(nodeId, {
               stoppable: true,
               stopRequested: current.status === 'cancel_requested',
+              submitting: false,
             });
           else nodeRunControlStore.clear(nodeId);
           syncNodeLocks();
