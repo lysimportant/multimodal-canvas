@@ -659,6 +659,9 @@ function WorkspaceApp({
   const [renamingAsset, setRenamingAsset] = useState<Asset | null>(null);
   /** 清理确认异步等待期间只允许一个清理事务，避免重复确认与历史快照。 */
   const clearActionPendingRef = useRef(false);
+  const [stopConfirmationNodeId, setStopConfirmationNodeId] = useState<string | null>(null);
+  /** 同一时刻只确认一个节点，且确认按钮只能消费一次目标节点。 */
+  const stopConfirmationNodeIdRef = useRef<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const previousAuthRoleRef = useRef<AuthUser['role'] | null>(authUser?.role ?? null);
@@ -3704,6 +3707,32 @@ function WorkspaceApp({
     [cancelKnownRun, cancelOperationRuns, isOperationCurrent, nodeRunControlStore],
   );
 
+  /** 打开节点停止确认窗口；在用户确认前不改变本地操作或远端 Run。 */
+  const requestStopNode = useCallback(
+    (nodeId: string) => {
+      const control = nodeRunControlStore.getSnapshot(nodeId);
+      if (!control.stoppable || control.stopRequested || stopConfirmationNodeIdRef.current) return;
+      stopConfirmationNodeIdRef.current = nodeId;
+      setStopConfirmationNodeId(nodeId);
+    },
+    [nodeRunControlStore],
+  );
+
+  /** 放弃本次停止请求，不触发任何取消副作用。 */
+  const closeStopConfirmation = useCallback(() => {
+    stopConfirmationNodeIdRef.current = null;
+    setStopConfirmationNodeId(null);
+  }, []);
+
+  /** 消费当前确认目标并执行一次既有停止流程。 */
+  const confirmStopNode = useCallback(() => {
+    const nodeId = stopConfirmationNodeIdRef.current;
+    if (!nodeId) return;
+    stopConfirmationNodeIdRef.current = null;
+    setStopConfirmationNodeId(null);
+    void handleStopNode(nodeId);
+  }, [handleStopNode]);
+
   useEffect(() => {
     if (!projectId) return;
     const controller = new AbortController();
@@ -4814,7 +4843,7 @@ function WorkspaceApp({
         ),
         disabled:
           stopping || (!stoppable && (selectedNodeBusy || selectedNode.data.enabled === false)),
-        onSelect: () => (stoppable ? void handleStopNode(selectedNode.id) : runNode(selectedNode)),
+        onSelect: () => (stoppable ? requestStopNode(selectedNode.id) : runNode(selectedNode)),
       });
     }
     return commands;
@@ -4831,7 +4860,7 @@ function WorkspaceApp({
     handleToggleResourceCollapsed,
     selectedNodeBusy,
     selectedRunControl,
-    handleStopNode,
+    requestStopNode,
     nodes,
     onNavigate,
     projectId,
@@ -4843,6 +4872,21 @@ function WorkspaceApp({
   return (
     <ReactFlowProvider>
       {modalHolder}
+      <Modal
+        open={Boolean(stopConfirmationNodeId)}
+        title="取消当前生成？"
+        okText="确认取消"
+        cancelText="继续生成"
+        okButtonProps={{ danger: true, autoInsertSpace: false }}
+        cancelButtonProps={{ autoInsertSpace: false }}
+        closable={false}
+        destroyOnHidden
+        mask={{ closable: false }}
+        onCancel={closeStopConfirmation}
+        onOk={confirmStopNode}
+      >
+        <p>将停止本地后续提交，并请求取消已知运行。远端任务不一定会终止，也不保证退款。</p>
+      </Modal>
       <AssetRenameDialog
         asset={renamingAsset}
         onClose={() => setRenamingAsset(null)}
@@ -5135,7 +5179,7 @@ function WorkspaceApp({
                   setShowMobileMenu(false);
                   if (!selectedNode) return;
                   if (selectedNodeBusy && selectedRunControl.stoppable)
-                    void handleStopNode(selectedNode.id);
+                    requestStopNode(selectedNode.id);
                   else void runNode(selectedNode);
                 }}
                 title={
@@ -5363,7 +5407,7 @@ function WorkspaceApp({
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={handleRunNode}
-            onStopNode={handleStopNode}
+            onStopNode={requestStopNode}
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
             onAddGenerateNode={handleAddGenerateNode}

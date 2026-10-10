@@ -1,10 +1,11 @@
 import { Button } from '@multimodal-canvas/ui';
-import { Dropdown, type MenuProps } from 'antd';
+import { Dropdown, Modal, type MenuProps } from 'antd';
 import {
   createContext,
   useContext,
   useEffect,
   useId,
+  useRef,
   useState,
   type MouseEvent,
   type ReactNode,
@@ -56,11 +57,29 @@ export function AccountMenu({
   projectId,
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
+  const [logoutConfirmationOpen, setLogoutConfirmationOpen] = useState(false);
+  const logoutConfirmationOpenRef = useRef(false);
   const menuId = useId();
 
   useEffect(() => {
     setOpen(false);
+    setLogoutConfirmationOpen(false);
+    logoutConfirmationOpenRef.current = false;
   }, [user?.id]);
+
+  /** 关闭确认窗口后才执行一次调用方提供的注销动作。 */
+  const confirmLogout = () => {
+    if (!logoutConfirmationOpenRef.current) return;
+    logoutConfirmationOpenRef.current = false;
+    setLogoutConfirmationOpen(false);
+    onLogout();
+  };
+
+  /** 关闭注销确认窗口且不改变当前会话。 */
+  const closeLogoutConfirmation = () => {
+    logoutConfirmationOpenRef.current = false;
+    setLogoutConfirmationOpen(false);
+  };
 
   if (!user) {
     return (
@@ -85,80 +104,102 @@ export function AccountMenu({
   ];
 
   return (
-    <Dropdown
-      open={open}
-      onOpenChange={setOpen}
-      trigger={['hover', 'click']}
-      mouseLeaveDelay={0.14}
-      placement="bottomRight"
-      autoFocus
-      destroyOnHidden
-      classNames={{ root: 'mc-account-dropdown' }}
-      menu={{
-        id: menuId,
-        'aria-label': '账户操作',
-        items: [
-          {
-            type: 'group',
-            key: 'account',
-            label: (
-              <div className="mc-account-identity">
-                <strong>{user.displayName || '我的账户'}</strong>
-                <span>{user.email}</span>
-                <small>{user.role === 'admin' ? '管理员' : '普通用户'}</small>
-              </div>
-            ),
-            children: [
-              ...links.map(({ href, label, icon: Icon }) => ({
-                key: href,
-                icon: <Icon size={16} aria-hidden="true" />,
-                onClick: ({ domEvent }: Parameters<NonNullable<MenuProps['onClick']>>[0]) => {
-                  // 库菜单聚焦 li；键盘激活仍经由原链接执行保存回调和新标签跳转。
-                  if (domEvent.type === 'keydown') {
-                    domEvent.currentTarget.querySelector<HTMLAnchorElement>('a[href]')?.click();
-                  }
+    <>
+      <Dropdown
+        open={open}
+        onOpenChange={setOpen}
+        trigger={['hover', 'click']}
+        mouseLeaveDelay={0.14}
+        placement="bottomRight"
+        autoFocus
+        destroyOnHidden
+        classNames={{ root: 'mc-account-dropdown' }}
+        menu={{
+          id: menuId,
+          'aria-label': '账户操作',
+          items: [
+            {
+              type: 'group',
+              key: 'account',
+              label: (
+                <div className="mc-account-identity">
+                  <strong>{user.displayName || '我的账户'}</strong>
+                  <span>{user.email}</span>
+                  <small>{user.role === 'admin' ? '管理员' : '普通用户'}</small>
+                </div>
+              ),
+              children: [
+                ...links.map(({ href, label, icon: Icon }) => ({
+                  key: href,
+                  icon: <Icon size={16} aria-hidden="true" />,
+                  onClick: ({ domEvent }: Parameters<NonNullable<MenuProps['onClick']>>[0]) => {
+                    // 库菜单聚焦 li；键盘激活仍经由原链接执行保存回调和新标签跳转。
+                    if (domEvent.type === 'keydown') {
+                      domEvent.currentTarget.querySelector<HTMLAnchorElement>('a[href]')?.click();
+                    }
+                  },
+                  label: (
+                    <AppLink
+                      to={appPaths.withProject(href, projectId)}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => {
+                        const targetHref = appPaths.withProject(href, projectId);
+                        // 普通点击交给画布先保存；修饰键继续采用浏览器的新标签行为。
+                        if (shouldInterceptAppLink(event, targetHref, undefined, undefined)) {
+                          onNavigate?.(targetHref, event);
+                        }
+                      }}
+                    >
+                      {label}
+                    </AppLink>
+                  ),
+                })),
+                { type: 'divider', key: 'logout-divider' },
+                {
+                  key: 'logout',
+                  label: '退出登录',
+                  icon: <LogOut size={16} aria-hidden="true" />,
+                  danger: true,
+                  onClick: () => {
+                    if (logoutConfirmationOpenRef.current) return;
+                    setOpen(false);
+                    logoutConfirmationOpenRef.current = true;
+                    setLogoutConfirmationOpen(true);
+                  },
                 },
-                label: (
-                  <AppLink
-                    to={appPaths.withProject(href, projectId)}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(event) => {
-                      const targetHref = appPaths.withProject(href, projectId);
-                      // 普通点击交给画布先保存；修饰键继续采用浏览器的新标签行为。
-                      if (shouldInterceptAppLink(event, targetHref, undefined, undefined)) {
-                        onNavigate?.(targetHref, event);
-                      }
-                    }}
-                  >
-                    {label}
-                  </AppLink>
-                ),
-              })),
-              { type: 'divider', key: 'logout-divider' },
-              {
-                key: 'logout',
-                label: '退出登录',
-                icon: <LogOut size={16} aria-hidden="true" />,
-                danger: true,
-                onClick: onLogout,
-              },
-            ],
-          },
-        ],
-      }}
-    >
-      <Button
-        type="button"
-        className="mc-navigation-icon-button mc-account-trigger"
-        aria-label="账户菜单"
-        title={`账户：${user.displayName ?? user.email}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
+              ],
+            },
+          ],
+        }}
       >
-        <UserCircle size={17} aria-hidden="true" />
-      </Button>
-    </Dropdown>
+        <Button
+          type="button"
+          className="mc-navigation-icon-button mc-account-trigger"
+          aria-label="账户菜单"
+          title={`账户：${user.displayName ?? user.email}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+        >
+          <UserCircle size={17} aria-hidden="true" />
+        </Button>
+      </Dropdown>
+      <Modal
+        open={logoutConfirmationOpen}
+        title="退出登录？"
+        okText="退出登录"
+        cancelText="继续使用"
+        okButtonProps={{ danger: true, autoInsertSpace: false }}
+        cancelButtonProps={{ autoInsertSpace: false }}
+        closable={false}
+        destroyOnHidden
+        mask={{ closable: false }}
+        onCancel={closeLogoutConfirmation}
+        onOk={confirmLogout}
+      >
+        <p>退出后需要重新登录才能继续使用当前账户。</p>
+      </Modal>
+    </>
   );
 }

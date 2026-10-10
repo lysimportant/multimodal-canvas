@@ -2576,11 +2576,23 @@ test('生成按钮在创建中与运行中都能停止，停止后可重新生�
   await expect.poll(() => created).toBe(1);
   const stop = editor.getByRole('button', { name: '停止生成', exact: true });
   await expect(stop).toBeEnabled();
+  await stop.click();
+  let confirmation = page.getByRole('dialog', { name: '取消当前生成？' });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText('远端任务不一定会终止，也不保证退款');
+  await page.waitForTimeout(350);
   await page.screenshot({
-    path: info.outputPath('node-stop-creating.png'),
+    path: info.outputPath('node-stop-confirmation.png'),
     animations: 'disabled',
   });
+  await confirmation.getByRole('button', { name: '继续生成' }).click();
+  await expect(confirmation).toHaveCount(0);
+  await expect(stop).toBeEnabled();
+  expect(cancellations).toEqual([]);
   await stop.click();
+  confirmation = page.getByRole('dialog', { name: '取消当前生成？' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: '确认取消' }).click();
   await expect(editor.getByRole('button', { name: '停止中', exact: true })).toBeDisabled();
   expect(cancellations).toEqual([]);
   releaseCreate();
@@ -2591,9 +2603,51 @@ test('生成按钮在创建中与运行中都能停止，停止后可重新生�
   await expect.poll(() => created).toBe(2);
   await expect(stop).toBeEnabled();
   await stop.click();
+  confirmation = page.getByRole('dialog', { name: '取消当前生成？' });
+  await confirmation.getByRole('button', { name: '确认取消' }).click();
   await expect.poll(() => cancellations).toEqual(['synthetic-stop-1', 'synthetic-stop-2']);
   await expect(generate).toBeEnabled();
   expect(created).toBe(2);
+  expect(errors).toEqual([]);
+});
+
+test('退出登录在确认前保持当前会话，确认后只提交一次', async ({ page }, info) => {
+  const errors: string[] = [];
+  let logoutRequests = 0;
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/v1/auth/logout') {
+      logoutRequests += 1;
+    }
+  });
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(projectPath);
+  const accountMenu = page.getByRole('button', { name: '账户菜单' });
+  await accountMenu.click();
+  await page.getByRole('menuitem', { name: '退出登录' }).click();
+  let confirmation = page.getByRole('dialog', { name: '退出登录？' });
+  await expect(confirmation).toBeVisible();
+  await page.waitForTimeout(350);
+  await page.screenshot({
+    path: info.outputPath('logout-confirmation.png'),
+    animations: 'disabled',
+  });
+  await confirmation.getByRole('button', { name: '继续使用' }).click();
+  await expect(confirmation).toHaveCount(0);
+  expect(logoutRequests).toBe(0);
+  await expect(page).toHaveURL(projectPath);
+
+  await accountMenu.click();
+  await page.getByRole('menuitem', { name: '退出登录' }).click();
+  confirmation = page.getByRole('dialog', { name: '退出登录？' });
+  await confirmation.getByRole('button', { name: '退出登录' }).click();
+  await expect.poll(() => logoutRequests).toBe(1);
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('button', { name: '登录账户' })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

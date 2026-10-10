@@ -352,6 +352,18 @@ async function renderCanvas(expectedEmptyNodes = 2) {
   return result;
 }
 
+/** 从画布统一停止入口打开确认窗口，不在确认前执行取消副作用。 */
+async function openStopConfirmation(nodeId: string) {
+  act(() => view.canvas!.onStopNode?.(nodeId));
+  return screen.findByRole('dialog', { name: '取消当前生成？' });
+}
+
+/** 确认停止一个节点；异步取消结果仍由具体测试等待和断言。 */
+async function confirmStop(nodeId: string) {
+  const dialog = await openStopConfirmation(nodeId);
+  await userEvent.click(within(dialog).getByRole('button', { name: '确认取消' }));
+}
+
 /** 获取实际的资源 PATCH 调用，取消和空值必须不产生写请求。 */
 function renameRequests() {
   return fetchMock.mock.calls.filter(
@@ -954,7 +966,13 @@ describe('App 组件库迁移', () => {
     await renderCanvas(1);
     act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
     await waitFor(() => expect(createCalls).toBe(1));
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    let dialog = await openStopConfirmation('a');
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
+    expect(cancelCalls).toBe(0);
+    await userEvent.click(within(dialog).getByRole('button', { name: '继续生成' }));
+    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
+    dialog = await openStopConfirmation('a');
+    await userEvent.click(within(dialog).getByRole('button', { name: '确认取消' }));
     expect(view.canvas!.nodeRunControlStore?.getSnapshot('a')).toMatchObject({
       stoppable: true,
       stopRequested: true,
@@ -962,7 +980,8 @@ describe('App 组件库迁移', () => {
 
     await act(async () => create.resolve(json({ run }, 202)));
     await waitFor(() => expect(cancelCalls).toBe(1));
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    act(() => view.canvas!.onStopNode?.('a'));
+    expect(screen.queryByRole('dialog', { name: '取消当前生成？' })).not.toBeInTheDocument();
     expect(cancelCalls).toBe(1);
     expect(createCalls).toBe(1);
 
@@ -1010,7 +1029,7 @@ describe('App 组件库迁移', () => {
     await renderCanvas(1);
     act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
     await waitFor(() => expect(posts).toHaveLength(1));
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    await confirmStop('a');
     createdRun = runRecord({
       id: 'run-batch-stop-retry',
       targetNodeId: posts[0]!,
@@ -1025,7 +1044,7 @@ describe('App 组件库迁移', () => {
     expect(posts).toHaveLength(1);
     expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
 
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    await confirmStop('a');
     await waitFor(() => expect(cancelCalls).toBe(2));
     expect(posts).toHaveLength(1);
     await act(async () =>
@@ -1065,7 +1084,7 @@ describe('App 组件库迁移', () => {
         ),
       ).toHaveLength(1),
     );
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    await confirmStop('a');
     act(() =>
       auth.persistAuthSession({ ...session, user: { ...session.user, id: 'next-account' } }),
     );
@@ -1097,23 +1116,23 @@ describe('App 组件库迁移', () => {
     });
     await renderCanvas(0);
     await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe('running'));
-    let first: void | Promise<void>;
-    let second: void | Promise<void>;
-    act(() => {
-      first = view.canvas!.onStopNode?.('a');
-      second = view.canvas!.onStopNode?.('a');
-    });
+    const dialog = await openStopConfirmation('a');
+    act(() => view.canvas!.onStopNode?.('a'));
+    expect(screen.getAllByRole('dialog', { name: '取消当前生成？' })).toHaveLength(1);
+    await userEvent.click(within(dialog).getByRole('button', { name: '确认取消' }));
     expect(cancelCalls).toBe(1);
     expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(true);
     await act(async () => {
       cancellation.resolve(json({ error: '合成取消失败' }, 503));
-      await Promise.all([first, second]);
     });
-    expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    await waitFor(() =>
+      expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false),
+    );
+    await confirmStop('a');
     expect(cancelCalls).toBe(2);
     expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(true);
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    act(() => view.canvas!.onStopNode?.('a'));
+    expect(screen.queryByRole('dialog', { name: '取消当前生成？' })).not.toBeInTheDocument();
     expect(cancelCalls).toBe(2);
   });
 
@@ -1125,7 +1144,8 @@ describe('App 组件库迁移', () => {
     await renderCanvas(0);
     await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe('cancel_requested'));
 
-    await act(async () => view.canvas!.onStopNode?.('a'));
+    act(() => view.canvas!.onStopNode?.('a'));
+    expect(screen.queryByRole('dialog', { name: '取消当前生成？' })).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) =>

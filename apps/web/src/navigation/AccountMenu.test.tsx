@@ -16,7 +16,7 @@ const user: AuthUser = {
 afterEach(cleanup);
 
 describe('账户菜单', () => {
-  it('头像和关闭只改变菜单状态，只有独立退出命令调用注销', async () => {
+  it('退出登录取消时不注销，确认后只注销一次', async () => {
     const actor = userEvent.setup();
     const logout = vi.fn();
     render(<AccountMenu user={user} onRequestLogin={vi.fn()} onLogout={logout} />);
@@ -33,6 +33,19 @@ describe('账户菜单', () => {
     expect(logout).not.toHaveBeenCalled();
     await actor.click(trigger);
     await actor.click(screen.getByRole('menuitem', { name: '退出登录' }));
+    let dialog = await screen.findByRole('dialog', { name: '退出登录？' });
+    expect(logout).not.toHaveBeenCalled();
+    await actor.click(within(dialog).getByRole('button', { name: '继续使用' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '退出登录？' })).not.toBeInTheDocument(),
+    );
+    expect(logout).not.toHaveBeenCalled();
+    await actor.click(trigger);
+    await actor.click(screen.getByRole('menuitem', { name: '退出登录' }));
+    dialog = await screen.findByRole('dialog', { name: '退出登录？' });
+    const confirm = within(dialog).getByRole('button', { name: '退出登录' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
     expect(logout).toHaveBeenCalledTimes(1);
   });
 
