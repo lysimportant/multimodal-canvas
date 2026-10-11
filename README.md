@@ -126,6 +126,8 @@ Docker 入口与配置另做 Compose 渲染、Node 测试和脚本语法检查�
 - Git 回退只能恢复源码与配置，不能撤销数据库迁移、恢复对象或更换过的密钥。回退应用前先核对数据兼容性，不运行 `down -v` 或 volume prune。
 - 旧部署文档、验收检查点和方案已从工作区移除；历史记录可用 `git show 43d86c2:<path>` 查看，不代表当前部署能力。
 
+旧 MinIO 素材转入 R2 使用 [素材迁移说明](docs/asset-migration.md) 和 `scripts/docker/migrate-assets.mjs`。默认只检查，显式 `--apply` 才复制；保留原对象键，核对 SHA-256，同名内容冲突时不覆盖。不重置数据库，不删除源文件。服务器只需 Docker，也可使用已安装项目依赖的 Node 环境。
+
 ## 素材与提示词来源
 
 应用内提示词 Skill 的当前定义在 `packages/domain/src/prompt-skills.ts`。参考秋月盈、灰灰、洲洲工具包，来源分别为：
