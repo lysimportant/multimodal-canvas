@@ -50,7 +50,7 @@ CMD ["node", "docker/run.mjs", "migrate"]
 FROM base AS api
 ENV NODE_ENV=production
 COPY --from=build --chown=node:node /out/api /app
-COPY --chown=node:node scripts/docker/runtime.mjs scripts/docker/run.mjs scripts/docker/health.mjs scripts/docker/admin.mjs scripts/docker/migrate-assets.mjs /app/docker/
+COPY --chown=node:node scripts/docker/runtime.mjs scripts/docker/run.mjs scripts/docker/health.mjs scripts/docker/admin.mjs /app/docker/
 USER node
 EXPOSE 3000
 CMD ["node", "docker/run.mjs", "api"]
