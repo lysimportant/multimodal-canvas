@@ -160,3 +160,69 @@
 .video-recreation-error {
   color: var(--mc-danger, #b42318);
 }
+
+/* 对象卡与原视频截图保持有界，不能改变画布节点的外框尺寸。 */
+.video-recreation-object {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--mc-border, #d3dce0);
+  border-radius: 6px;
+  background: var(--mc-surface-soft, #f7f8fa);
+}
+
+.video-recreation-preview {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+
+.video-recreation-preview-image {
+  display: block;
+  width: 100%;
+  height: 144px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--mc-surface, #fff);
+}
+
+.video-recreation-preview-status {
+  display: grid;
+  align-content: center;
+  min-height: 72px;
+  padding: 8px;
+  color: var(--mc-text-muted, #687386);
+  border: 1px dashed var(--mc-border, #d3dce0);
+  border-radius: 4px;
+}
+
+.video-recreation-preview-caption,
+.video-recreation-replacement > span {
+  font-size: 11px;
+  color: var(--mc-text-muted, #687386);
+}
+
+.video-recreation-preview-retry {
+  justify-self: start;
+}
+
+.video-recreation-replacement {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.video-recreation-replacement-image {
+  height: 112px;
+  max-height: 112px;
+  overflow: hidden;
+  contain: layout paint;
+}
+
+.video-recreation-replacement-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}

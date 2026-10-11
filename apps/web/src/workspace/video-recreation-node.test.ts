@@ -95,4 +95,70 @@ describe('复刻节点集成数据', () => {
     expect(restored.nodes[0]?.data.videoRecreation).toEqual(config);
     expect(restored.nodes[0]).toMatchObject({ width: 400, height: 266 });
   });
+  it('混合保留和多商品替换往返保存，生成引用只包含所选冻结版本', () => {
+    const objects: VideoRecreationConfig = {
+      ...config,
+      analysis: {
+        ...config.analysis!,
+        modelAlias: 'qwen3.8-omni-flash',
+        credentialId: 'analysis-group',
+        template: {
+          ...config.analysis!.template,
+          roles: [...config.analysis!.template.roles, { id: 'bystander', label: '配角' }],
+          products: [
+            { id: 'bottle', label: '饮料瓶', preview: { timestampSeconds: 2 } },
+            { id: 'box', label: '包装盒' },
+            { id: 'bag', label: '手提袋' },
+          ],
+        },
+      },
+      preservedRoleIds: ['bystander'],
+      productBindings: [
+        {
+          productId: 'bottle',
+          assetId: 'product',
+          assetVersion: 3,
+          name: '新包装',
+          description: '饮料包装',
+        },
+        {
+          productId: 'box',
+          assetId: 'product',
+          assetVersion: 3,
+          name: '新包装',
+          description: '外包装展示',
+        },
+      ],
+    };
+    const next = applyVideoRecreationConfig({ ...data, modelAlias: 'generation-model' }, objects);
+    expect(next.resourceRefs).toEqual([
+      expect.objectContaining({ assetId: 'clip', assetVersion: 4, mediaType: 'video' }),
+      expect.objectContaining({ assetId: 'face', assetVersion: 2, mediaType: 'image' }),
+      expect.objectContaining({ assetId: 'product', assetVersion: 3, mediaType: 'image' }),
+    ]);
+    expect(next.prompt).toContain('Character bystander: Preserve');
+    expect(next.prompt).toContain('Product bag: Preserve');
+    expect(next.prompt).toContain('Use the same product image bound to bottle');
+    expect(next.modelAlias).toBe('generation-model');
+    expect(recreationGenerationIssue(next)).toBeUndefined();
+    const canvas = canvasDocumentSchema.parse({
+      revision: 2,
+      nodes: [
+        {
+          id: 'recreate',
+          type: 'video',
+          position: { x: 4, y: 5 },
+          width: 400,
+          height: 266,
+          data: next,
+        },
+      ],
+      edges: [],
+    });
+    const flow = fromCanvasDocument(canvas);
+    const restored = toCanvasDocument(flow.nodes, flow.edges, 2);
+    expect(restored.nodes[0]?.data.videoRecreation).toEqual(objects);
+    expect(restored.nodes[0]?.data.resourceRefs).toEqual(next.resourceRefs);
+    expect(restored.nodes[0]).toMatchObject({ width: 400, height: 266 });
+  });
 });

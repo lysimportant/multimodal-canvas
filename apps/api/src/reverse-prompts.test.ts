@@ -7,6 +7,7 @@ import {
   type CanvasDocument,
   type MediaType,
   type VideoRecreationConfig,
+  type VideoRecreationTemplate,
 } from '@multimodal-canvas/domain';
 import { publicReversePromptAnalysis, reversePromptIdempotencyKey } from './reverse-prompts';
 import { createHash } from 'node:crypto';
@@ -847,7 +848,10 @@ describe('短视频复刻分析', () => {
 });
 
 /** 创建已完成的专属分析及可生成配置，供直接 HTTP 绕过 UI 的守卫测试使用。 */
-async function readyRecreation(template = recreationTemplate, sourceDurationSeconds?: number) {
+async function readyRecreation(
+  template: VideoRecreationTemplate = recreationTemplate,
+  sourceDurationSeconds?: number,
+) {
   const ctx = await fixture(
     JSON.stringify({ ...recreationResult, prompt: JSON.stringify(template) }),
     undefined,
@@ -927,6 +931,111 @@ async function readyRecreation(template = recreationTemplate, sourceDurationSeco
 }
 
 describe('通用 Run 提交的复刻守卫', () => {
+  it.each(['正常', '删除商品引用', '商品版本换绑', '跨项目商品'] as const)(
+    '对象卡保留与多商品替换：%s 通过真实分析记录和冻结引用校验',
+    async (kind) => {
+      const ctx = await readyRecreation(
+        {
+          ...recreationTemplate,
+          roles: [
+            ...recreationTemplate.roles,
+            {
+              id: 'character_b',
+              label: '配角',
+              description: '灰衣人物',
+              preview: { timestampSeconds: 2 },
+            },
+          ],
+          products: [
+            { id: 'product_a', label: '主商品', preview: { timestampSeconds: 3 } },
+            { id: 'product_b', label: '外包装' },
+            { id: 'product_c', label: '保留商品' },
+          ],
+        },
+        12,
+      );
+      const product = await ctx.assetStore.create({
+        projectId: kind === '跨项目商品' ? 'another-project' : ctx.project.id,
+        name: '替换商品',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        content: Buffer.from('product-v1'),
+      });
+      await ctx.assetStore.createVersion(product.id, { content: Buffer.from('product-v2') });
+      await ctx.assetStore.createVersion(ctx.asset.id, { content: Buffer.from('source-v2') });
+      ctx.config.bindings = ctx.config.bindings.filter((item) => item.roleId === 'character_a');
+      ctx.config.preservedRoleIds = ['character_b'];
+      ctx.config.analysis!.modelAlias = 'alpha-text';
+      ctx.config.analysis!.credentialId = ctx.credentialId;
+      ctx.config.productBindings = ['product_a', 'product_b'].map((productId) => ({
+        productId,
+        assetId: product.id,
+        assetVersion: 1,
+        name: '替换商品',
+        description: '已确认包装展示用途',
+      }));
+      const node = ctx.canvas.nodes[0]!;
+      node.data.promptDocument = buildVideoRecreationPrompt(ctx.config);
+      const mention = node.data.promptDocument.blocks.find(
+        (block) => block.type === 'mention' && block.mentionId === 'recreation_product_a',
+      );
+      if (mention?.type !== 'mention') throw new Error('测试缺少商品引用');
+      if (kind === '删除商品引用')
+        node.data.promptDocument.blocks = node.data.promptDocument.blocks.filter(
+          (block) => block !== mention,
+        );
+      if (kind === '商品版本换绑') mention.assetVersion = 2;
+      await ctx.projectStore.updateCanvas(ctx.project.id, ctx.canvas);
+      const existing = (await ctx.runService.get(ctx.config.analysis!.runId))!;
+      const create = vi.spyOn(ctx.runService, 'create').mockResolvedValue(existing);
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: '/v1/nodes/recreation-node/runs',
+        payload: { projectId: ctx.project.id },
+      });
+      if (kind !== '正常') {
+        expect(response.statusCode, response.body).toBe(400);
+        expect(response.json().code).toBe(
+          kind === '跨项目商品' ? 'RESOURCE_MENTION_FREEZE_FAILED' : 'VIDEO_RECREATION_NOT_READY',
+        );
+        if (kind === '跨项目商品')
+          expect(response.json().issues).toContainEqual(
+            expect.objectContaining({ code: 'RESOURCE_MENTION_FORBIDDEN', assetId: product.id }),
+          );
+        expect(create).not.toHaveBeenCalled();
+      } else {
+        expect(response.statusCode, response.body).toBe(202);
+        expect(create).toHaveBeenCalledOnce();
+        const snapshot = create.mock.calls[0]![0];
+        expect(snapshot.nodes[0]!.data.modelAlias).toBe('mock-video');
+        expect(snapshot.nodes[0]!.data.videoRecreation).toEqual(ctx.config);
+        expect(snapshot.promptMentions).toHaveLength(3);
+        expect(snapshot.promptMentions).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              mentionId: 'recreation_source',
+              assetId: ctx.asset.id,
+              assetVersion: 1,
+              durationSeconds: 12,
+            }),
+            expect.objectContaining({
+              mentionId: 'recreation_character_a',
+              assetVersion: 1,
+              semanticRole: 'character',
+            }),
+            expect.objectContaining({
+              mentionId: 'recreation_product_a',
+              assetId: product.id,
+              assetVersion: 1,
+              semanticRole: 'referenceImage',
+            }),
+          ]),
+        );
+      }
+      expect(ctx.executor).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([
     '未分析',
     '分析待完成',

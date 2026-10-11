@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clapperboard } from 'lucide-react';
 import {
   getVideoRecreationIssue,
@@ -17,6 +17,9 @@ import {
 } from '../video-recreation';
 import { API_BASE_URL, type ModelEntry, type ModelSelection } from './contracts';
 import { VideoRecreationGuide } from './VideoRecreationGuide';
+import { AssetPreview } from './AssetPreview';
+import { resultAssetContentUrl } from './node-echo-text';
+import { useVideoRecreationPreviews, VideoRecreationPreview } from './VideoRecreationPreviews';
 import './VideoRecreationPanel.css';
 
 /** 专属编辑区；父级按项目及来源身份设置 key，负责最终提示词和标准生成入口。 */
@@ -37,6 +40,23 @@ type UnsavedAnalysis = {
   analysis: VideoRecreationAnalysis;
   request?: VideoRecreationConfig['request'];
 };
+
+/** 分别定位人物和商品绑定；缺省只用于兼容旧单商品配置。 */
+type BindingTarget = { kind: 'role' | 'product'; id: string };
+
+/** 上传前后比较同一对象的替换及保留状态，迟到图片不能覆盖新的选择。 */
+function bindingIdentity(config: VideoRecreationConfig, target?: BindingTarget): string {
+  return JSON.stringify(
+    target?.kind === 'role'
+      ? [
+          config.bindings.filter((entry) => entry.roleId === target.id),
+          config.preservedRoleIds?.includes(target.id) ?? false,
+        ]
+      : target
+        ? config.productBindings?.filter((entry) => entry.productId === target.id)
+        : config.product,
+  );
+}
 
 /** 请求身份包含凭据与运行编号，防止迟到响应接管其他请求。 */
 function requestIdentity(request: VideoRecreationConfig['request']): string {
@@ -111,6 +131,23 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
   const requestKey = requestIdentity(request);
   const sourceChanged = initialIdentity.current !== sourceIdentity;
   const target = { projectId, assetId: config.source.assetId, version: config.source.assetVersion };
+  const previewItems = useMemo(
+    () => [
+      ...(config.analysis?.template.roles ?? []).map((item) => ({
+        ...item,
+        id: `role:${item.id}`,
+      })),
+      ...(config.analysis?.template.products ?? []).map((item) => ({
+        ...item,
+        id: `product:${item.id}`,
+      })),
+    ],
+    [config.analysis?.template],
+  );
+  const { previews, retry: retryPreviews } = useVideoRecreationPreviews(
+    config.source,
+    previewItems,
+  );
 
   /** 异步操作不跨挂载、来源或账户；父级换源时仍须 remount。 */
   function isCurrent(): boolean {
@@ -154,10 +191,31 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     if (analysis.status === 'succeeded') {
       const template = parseVideoRecreationTemplate(analysis.prompt ?? '');
       if (!analysis.summary?.trim()) throw new Error('视频分析缺少整体摘要');
+      // 旧未知或重复选择须显式处理；先保存新分析，避免追加默认值超过上限而无法恢复。
+      const preserved = current.preservedRoleIds ?? [];
+      const hasUnresolvedPreserved =
+        new Set(preserved).size !== preserved.length ||
+        preserved.some((id) => !template.roles.some((role) => role.id === id));
       next = {
         ...current,
         request: undefined,
-        analysis: { runId: analysis.runId, summary: analysis.summary, template },
+        analysis: {
+          runId: analysis.runId,
+          modelAlias: analysis.modelAlias,
+          credentialId: analysis.credentialId,
+          summary: analysis.summary,
+          template,
+        },
+        preservedRoleIds: [
+          ...(current.preservedRoleIds ?? []),
+          ...(hasUnresolvedPreserved ? [] : template.roles)
+            .filter(
+              (role) =>
+                !current.bindings.some((binding) => binding.roleId === role.id) &&
+                !current.preservedRoleIds?.includes(role.id),
+            )
+            .map((role) => role.id),
+        ],
       };
     } else if (analysis.status === 'failed' || analysis.status === 'cancelled') {
       next = { ...current, request: undefined };
@@ -181,7 +239,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
       );
       setStatus(
         analysis.status === 'succeeded'
-          ? '整条视频分析完成，请逐一绑定人物'
+          ? '整条视频分析完成，请逐项选择保留或替换'
           : next.request
             ? '正在分析整条视频…'
             : '原任务已结束，可调整模型后重新分析',
@@ -314,17 +372,28 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     ? { modelAlias: request.modelAlias, credentialId: request.credentialId }
     : (selectedModel ?? defaultModel);
   const modelValue = selectedModel ? videoRecreationModelKey(selectedModel) : '';
-  const textModels = models.filter((entry) => entry.mediaTypes.includes('text'));
   const imageAssets = assets.filter(
     (entry) => entry.mediaType === 'image' && entry.status === 'ready' && !entry.archivedAt,
   );
   const issue = getVideoRecreationIssue(config);
-  const bindingIssues = [...config.bindings, ...(config.product ? [config.product] : [])]
+  const bindingIssues = [
+    ...config.bindings,
+    ...(config.productBindings ?? []),
+    ...(config.product ? [config.product] : []),
+  ]
     .map((binding) => resourceIssue(binding, assets, 'image'))
     .filter(Boolean);
   const unknownBindings = config.bindings.filter(
     (binding) =>
       config.analysis && !config.analysis.template.roles.some((role) => role.id === binding.roleId),
+  );
+  const unknownPreserved = (config.preservedRoleIds ?? []).filter(
+    (id) => config.analysis && !config.analysis.template.roles.some((role) => role.id === id),
+  );
+  const unknownProducts = (config.productBindings ?? []).filter(
+    (binding) =>
+      config.analysis &&
+      !config.analysis.template.products?.some((product) => product.id === binding.productId),
   );
   /** 重新查询只读记录，始终沿用原 runId，不重放 POST。 */
   function queryAgain(): void {
@@ -374,7 +443,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
       queryAgain();
       return;
     }
-    if (!pending && (sourceError || invalidDuration || !model)) return;
+    if (!pending && (sourceError || invalidDuration || !model?.modelAlias.trim())) return;
     posting.current = true;
     setSubmitting(true);
     setError(undefined);
@@ -470,7 +539,11 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
   }
 
   /** 只替换用户明确选择的角色；异常重复绑定不静默丢弃，要求显式清除。 */
-  async function bind(asset: Asset | undefined, roleId?: string): Promise<void> {
+  async function bind(
+    asset: Asset | undefined,
+    target?: BindingTarget,
+    preserve = false,
+  ): Promise<void> {
     const current = latest.current.config;
     if (
       asset &&
@@ -482,54 +555,81 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
       setError('图片资源或版本尚未就绪，请刷新资源后重新选择');
       return;
     }
-    if (roleId && current.bindings.filter((entry) => entry.roleId === roleId).length > 1) {
-      setError('该角色存在重复绑定，请先明确清除该角色绑定');
+    const duplicates =
+      target?.kind === 'role'
+        ? current.bindings.filter((entry) => entry.roleId === target.id)
+        : target
+          ? (current.productBindings ?? []).filter((entry) => entry.productId === target.id)
+          : [];
+    if (duplicates.length > 1) {
+      setError('该对象存在重复绑定，请先明确清除该对象绑定');
       return;
     }
     const reference = asset
       ? { assetId: asset.id, assetVersion: asset.latestVersion!, name: asset.name }
       : undefined;
     await saveEdit(
-      roleId
+      target?.kind === 'role'
         ? {
             ...current,
             bindings: [
-              ...current.bindings.filter((entry) => entry.roleId !== roleId),
-              ...(reference ? [{ ...reference, roleId }] : []),
+              ...current.bindings.filter((entry) => entry.roleId !== target.id),
+              ...(reference ? [{ ...reference, roleId: target.id }] : []),
+            ],
+            preservedRoleIds: [
+              ...(current.preservedRoleIds ?? []).filter((id) => id !== target.id),
+              ...(preserve ? [target.id] : []),
             ],
           }
-        : { ...current, product: reference },
+        : target
+          ? {
+              ...current,
+              productBindings: [
+                ...(current.productBindings ?? []).filter((entry) => entry.productId !== target.id),
+                ...(reference
+                  ? [
+                      {
+                        ...reference,
+                        productId: target.id,
+                        description: current.productBindings?.find(
+                          (entry) => entry.productId === target.id,
+                        )?.description,
+                      },
+                    ]
+                  : []),
+              ],
+            }
+          : { ...current, product: reference },
     );
   }
 
   /** 上传迟到时不覆盖已经改变的角色或商品；缺少真实版本时保留原绑定。 */
-  async function upload(file: File | undefined, roleId?: string): Promise<void> {
+  async function upload(file: File | undefined, target?: BindingTarget): Promise<void> {
     if (!file || !onUploadResource || locked || !isCurrent()) return;
     if (!file.type.startsWith('image/')) {
       setError('请选择图片文件');
       return;
     }
-    const before = JSON.stringify(
-      roleId
-        ? latest.current.config.bindings.filter((entry) => entry.roleId === roleId)
-        : latest.current.config.product,
-    );
+    const before = bindingIdentity(latest.current.config, target);
     setUploading(true);
     try {
       const asset = await onUploadResource(file);
       if (!isCurrent()) return;
       const current = latest.current.config;
-      const now = JSON.stringify(
-        roleId ? current.bindings.filter((entry) => entry.roleId === roleId) : current.product,
-      );
+      const now = bindingIdentity(current, target);
       if (
         before !== now ||
-        (roleId && !current.analysis?.template.roles.some((role) => role.id === roleId))
+        (target &&
+          !(
+            target.kind === 'role'
+              ? current.analysis?.template.roles
+              : current.analysis?.template.products
+          )?.some((item) => item.id === target.id))
       ) {
         setError('图片已上传，但绑定已改变；请手动选择新资源');
         return;
       }
-      await bind(asset, roleId);
+      await bind(asset, target);
     } catch (cause) {
       if (isCurrent()) setError(cause instanceof Error ? cause.message : '图片上传失败');
     } finally {
@@ -541,26 +641,43 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
   function imagePicker(
     label: string,
     reference: VideoRecreationConfig['product'],
-    roleId?: string,
+    target?: BindingTarget,
   ) {
     const present = reference && imageAssets.some((asset) => asset.id === reference.assetId);
-    const duplicates = roleId ? config.bindings.filter((entry) => entry.roleId === roleId) : [];
+    const asset = reference && imageAssets.find((entry) => entry.id === reference.assetId);
+    const duplicates =
+      target?.kind === 'role'
+        ? config.bindings.filter((entry) => entry.roleId === target.id)
+        : target
+          ? (config.productBindings ?? []).filter((entry) => entry.productId === target.id)
+          : [];
+    const preserved = target?.kind === 'role' && config.preservedRoleIds?.includes(target.id);
     return (
       <div className="video-recreation-binding">
         <label className="node-quick-editor-field">
           <span>{label}</span>
           <select
             aria-label={label}
-            value={reference?.assetId ?? ''}
+            value={reference?.assetId ?? (preserved ? '__preserve__' : '')}
             disabled={locked || duplicates.length > 1}
             onChange={(event) =>
               void bind(
                 imageAssets.find((asset) => asset.id === event.target.value),
-                roleId,
+                target,
+                event.target.value === '__preserve__',
               )
             }
           >
-            <option value="">{roleId ? '请选择人物图片' : '保留原视频商品（不替换）'}</option>
+            {target?.kind === 'role' ? (
+              <>
+                <option value="" disabled>
+                  请选择保留或替换人物
+                </option>
+                <option value="__preserve__">保留原视频人物（不替换）</option>
+              </>
+            ) : (
+              <option value="">保留原视频商品（不替换）</option>
+            )}
             {reference && !present ? (
               <option value={reference.assetId} disabled>
                 {reference.name}（不可用，请刷新）
@@ -581,6 +698,22 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             已冻结：{reference.name} · v{reference.assetVersion}
           </small>
         ) : null}
+        {reference && asset ? (
+          <div className="video-recreation-replacement">
+            <span>替换图片</span>
+            <AssetPreview
+              asset={{
+                ...asset,
+                name: reference.name,
+                latestVersion: reference.assetVersion,
+                contentUrl: resultAssetContentUrl(reference.assetId, reference.assetVersion),
+              }}
+              className="video-recreation-replacement-image"
+              mode="content"
+              interactive={false}
+            />
+          </div>
+        ) : null}
         {duplicates.length > 1 ? (
           <div role="alert">
             <p>
@@ -594,9 +727,17 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               onClick={() =>
                 void saveEdit({
                   ...latest.current.config,
-                  bindings: latest.current.config.bindings.filter(
-                    (entry) => entry.roleId !== roleId,
-                  ),
+                  ...(target?.kind === 'role'
+                    ? {
+                        bindings: latest.current.config.bindings.filter(
+                          (entry) => entry.roleId !== target.id,
+                        ),
+                      }
+                    : {
+                        productBindings: latest.current.config.productBindings?.filter(
+                          (entry) => entry.productId !== target?.id,
+                        ),
+                      }),
                 })
               }
             >
@@ -615,7 +756,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 event.target.value = '';
-                void upload(file, roleId);
+                void upload(file, target);
               }}
             />
           </label>
@@ -631,7 +772,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           <Clapperboard size={20} aria-hidden="true" />
           短视频复刻
         </h3>
-        <p className="video-recreation-path">分析整条视频 → 提供人物 → 可选换商品 → 生成</p>
+        <p className="video-recreation-path">分析整条视频 → 选择保留或替换 → 选择生成模型 → 生成</p>
         <details className="video-recreation-help">
           <summary>使用流程</summary>
           <VideoRecreationGuide />
@@ -662,7 +803,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           disabled={locked}
           value={request ? (model ? videoRecreationModelKey(model) : '') : modelValue}
           onChange={(event) => {
-            const selected = textModels.find(
+            const selected = models.find(
               (entry) =>
                 videoRecreationModelKey({
                   modelAlias: entry.id,
@@ -680,7 +821,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             {defaultModel ? `默认模型：${defaultModel.modelAlias}` : '等待服务端默认模型'}
           </option>
           {model &&
-          !textModels.some(
+          !models.some(
             (entry) =>
               videoRecreationModelKey({
                 modelAlias: entry.id,
@@ -688,10 +829,10 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               }) === videoRecreationModelKey(model),
           ) ? (
             <option value={videoRecreationModelKey(model)} disabled>
-              {model.modelAlias}（已保存身份）
+              {model.modelAlias}（当前模型身份）
             </option>
           ) : null}
-          {textModels.map((entry) => (
+          {models.map((entry) => (
             <option
               key={videoRecreationModelKey({
                 modelAlias: entry.id,
@@ -710,6 +851,27 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           ))}
         </select>
       </label>
+      <details className="video-recreation-help">
+        <summary>手动填写分析模型 ID</summary>
+        <label className="node-quick-editor-field">
+          <span>分析模型 ID</span>
+          <input
+            aria-label="分析模型 ID"
+            value={model?.modelAlias ?? ''}
+            disabled={locked}
+            placeholder="例如 qwen3.8-omni-flash"
+            onChange={(event) =>
+              setSelectedModel({
+                modelAlias: event.target.value,
+                credentialId: model?.credentialId,
+              })
+            }
+          />
+        </label>
+        <p className="video-recreation-hint">
+          沿用上方所选模型的分组身份，模型 ID 原样提交。视频输入是否受支持由 New API / 上游确认。
+        </p>
+      </details>
       <div className="video-recreation-actions">
         <button
           type="button"
@@ -723,7 +885,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             sourceChanged ||
             (!request &&
               !recovery &&
-              (loading || Boolean(sourceError) || invalidDuration || !model))
+              (loading || Boolean(sourceError) || invalidDuration || !model?.modelAlias.trim()))
           }
           onClick={() => void analyze()}
         >
@@ -759,7 +921,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
         ) : null}
       </div>
       <p className="video-recreation-hint">
-        分析按钮会明确提交模型任务，不会自动生成。换人物无需重新分析；最终提示词在原编辑区调整。
+        分析与视频生成使用独立模型。换人物或商品无需重新分析；最终提示词和视频生成模型在下方编辑区调整。
       </p>
       <p role="status">{uploading ? '正在上传图片…' : status}</p>
       {error ? (
@@ -772,6 +934,9 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           <div className="video-recreation-summary">
             <h4>整体摘要</h4>
             <p>{config.analysis.summary}</p>
+            {config.analysis.modelAlias ? (
+              <span>本次分析模型：{config.analysis.modelAlias}</span>
+            ) : null}
             <span>分析完整时长：{config.analysis.template.durationSeconds} 秒</span>
           </div>
           {config.analysis.template.unknowns.length ? (
@@ -800,16 +965,36 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             <p>声音：{config.analysis.template.audio || '未提供可靠的声音证据'}</p>
           </details>
           <div className="video-recreation-bindings">
-            <h4>人物替换</h4>
+            <h4>识别到的人物 · {config.analysis.template.roles.length}</h4>
             {config.analysis.template.roles.map((role) => (
-              <div key={role.id}>
+              <article
+                className="video-recreation-object"
+                key={role.id}
+                aria-label={`人物：${role.label}`}
+              >
+                <h4>{role.label}</h4>
+                <VideoRecreationPreview
+                  item={role}
+                  preview={previews.get(`role:${role.id}`)}
+                  onRetry={retryPreviews}
+                />
+                <p>{role.description || '此分析未提供可确认的外观描述'}</p>
+                <p className="video-recreation-hint">
+                  出现时间：
+                  {role.appearances
+                    ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
+                    .join('、') || '未提供可靠定位'}
+                </p>
                 {imagePicker(
                   role.label,
                   config.bindings.find((entry) => entry.roleId === role.id),
-                  role.id,
+                  { kind: 'role', id: role.id },
                 )}
-              </div>
+              </article>
             ))}
+            {config.analysis.template.roles.length === 0 ? (
+              <p>未识别到人物，可按商品继续处理。</p>
+            ) : null}
             {unknownBindings.length ? (
               <div role="alert">
                 <p>
@@ -836,25 +1021,150 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 </button>
               </div>
             ) : null}
+            {unknownPreserved.length ? (
+              <div role="alert">
+                <p>以下保留人物没有对应角色，已保留，请确认后清除：{unknownPreserved.join('、')}</p>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={locked}
+                  onClick={() =>
+                    void saveEdit({
+                      ...latest.current.config,
+                      preservedRoleIds: latest.current.config.preservedRoleIds?.filter(
+                        (id) => !unknownPreserved.includes(id),
+                      ),
+                    })
+                  }
+                >
+                  清除无对应角色的保留选择
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div className="video-recreation-bindings">
+            <h4>识别到的广告商品 · {config.analysis.template.products?.length ?? 0}</h4>
+            {config.analysis.template.products?.map((product) => {
+              const binding = config.productBindings?.find(
+                (entry) => entry.productId === product.id,
+              );
+              return (
+                <article
+                  className="video-recreation-object"
+                  key={product.id}
+                  aria-label={`商品：${product.label}`}
+                >
+                  <h4>{product.label}</h4>
+                  <VideoRecreationPreview
+                    item={product}
+                    preview={previews.get(`product:${product.id}`)}
+                    onRetry={retryPreviews}
+                  />
+                  <p>{product.description || '此分析未提供可确认的外观描述'}</p>
+                  <p className="video-recreation-hint">
+                    出现时间：
+                    {product.appearances
+                      ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
+                      .join('、') || '未提供可靠定位'}
+                  </p>
+                  {imagePicker(product.label, binding, { kind: 'product', id: product.id })}
+                  {binding ? (
+                    <label className="node-quick-editor-field">
+                      <span>用途与已确认卖点</span>
+                      <textarea
+                        aria-label={`${product.label}用途与已确认卖点`}
+                        value={binding.description ?? ''}
+                        disabled={baseLocked}
+                        placeholder="仅填写您确认的信息；不从图片猜测功效"
+                        onChange={(event) =>
+                          void saveEdit({
+                            ...latest.current.config,
+                            productBindings: latest.current.config.productBindings?.map((entry) =>
+                              entry.productId === product.id
+                                ? { ...entry, description: event.target.value }
+                                : entry,
+                            ),
+                          })
+                        }
+                      />
+                    </label>
+                  ) : null}
+                </article>
+              );
+            })}
+            {!config.analysis.template.products?.length ? (
+              <p>
+                {config.analysis.template.products
+                  ? '未识别到广告商品；原道具保留。'
+                  : '旧分析没有逐商品识别信息，可明确重新分析获取对象卡。'}
+              </p>
+            ) : null}
+            {unknownProducts.length ? (
+              <div role="alert">
+                <p>
+                  以下商品绑定没有对应对象，已保留，请确认后清除：
+                  {unknownProducts.map((entry) => `${entry.productId}：${entry.name}`).join('、')}
+                </p>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={locked}
+                  onClick={() =>
+                    void saveEdit({
+                      ...latest.current.config,
+                      productBindings: latest.current.config.productBindings?.filter(
+                        (entry) =>
+                          !unknownProducts.some((unknown) => unknown.productId === entry.productId),
+                      ),
+                    })
+                  }
+                >
+                  清除无对应商品的绑定
+                </button>
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}
-      <div className="video-recreation-product">
-        <h4>商品（可选）</h4>
-        {imagePicker('商品', config.product)}
-        <label className="node-quick-editor-field">
-          <span>商品用途与已确认卖点</span>
-          <textarea
-            aria-label="商品用途与已确认卖点"
-            value={config.productDescription ?? ''}
-            disabled={baseLocked}
-            placeholder="仅填写您确认的信息；不从图片猜测功效"
-            onChange={(event) =>
-              void saveEdit({ ...latest.current.config, productDescription: event.target.value })
-            }
-          />
-        </label>
-      </div>
+      {!config.analysis?.template.products || config.product ? (
+        <div className="video-recreation-product">
+          <h4>
+            {config.analysis?.template.products?.length
+              ? '旧商品绑定（尚未对应识别对象）'
+              : '旧版单商品替换（可选）'}
+          </h4>
+          {config.analysis?.template.products?.length ? (
+            <>
+              <p>
+                已保留旧图片：{config.product?.name} · v{config.product?.assetVersion}
+                。请清除旧绑定后，在上方逐商品选择。
+              </p>
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={locked}
+                onClick={() => void bind(undefined)}
+              >
+                清除旧商品绑定
+              </button>
+            </>
+          ) : (
+            imagePicker('商品', config.product)
+          )}
+          <label className="node-quick-editor-field">
+            <span>商品用途与已确认卖点</span>
+            <textarea
+              aria-label="商品用途与已确认卖点"
+              value={config.productDescription ?? ''}
+              disabled={baseLocked}
+              placeholder="仅填写您确认的信息；不从图片猜测功效"
+              onChange={(event) =>
+                void saveEdit({ ...latest.current.config, productDescription: event.target.value })
+              }
+            />
+          </label>
+        </div>
+      ) : null}
       {bindingIssues.map((message, index) => (
         <p role="alert" key={index}>
           {message}
@@ -865,7 +1175,9 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           {issue}
         </p>
       ) : !sourceError && !invalidDuration && !bindingIssues.length && !recovery ? (
-        <p className="video-recreation-hint">配置已齐备，请检查最终提示词后使用原生成按钮。</p>
+        <p className="video-recreation-hint">
+          配置已齐备，请在下方选择视频生成模型，检查最终提示词后点击「生成」。
+        </p>
       ) : null}
     </section>
   );

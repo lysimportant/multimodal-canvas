@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { StrictMode, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  videoRecreationConfigSchema,
   type Asset,
   type VideoRecreationConfig,
   type VideoRecreationTemplate,
@@ -116,7 +117,7 @@ const analysis: VideoRecreationAnalysis = {
   summary: '两个人物完成商品传递',
   prompt: JSON.stringify(template),
 };
-/** 目录仅允许文字输出模型，视频输入资格由服务端校验。 */
+/** 分组身份随精确模型 ID 保存，视频输入是否受支持交由 New API / 上游。 */
 const models = [
   { id: 'vision-a', name: '视觉分析甲', credentialId: 'group-a', mediaTypes: ['text'] as const },
   { id: 'vision-b', name: '视觉分析乙', credentialId: 'group-b', mediaTypes: ['text'] as const },
@@ -126,6 +127,23 @@ const ready: VideoRecreationConfig = {
   ...initial,
   analysis: { runId: analysis.runId, summary: analysis.summary!, template },
   productDescription: '仅确认可握持，未确认功效',
+};
+/** 对象卡夹具：两个人物、两个不同商品；预览解码另由浏览器和预览组件测试验证。 */
+const identified: VideoRecreationConfig = {
+  ...ready,
+  preservedRoleIds: ['actor_a', 'actor_b'],
+  analysis: {
+    ...ready.analysis!,
+    modelAlias: 'qwen3.8-omni-flash',
+    template: {
+      ...template,
+      roles: template.roles.map((role) => ({ ...role, description: `${role.label}穿浅色外套` })),
+      products: [
+        { id: 'bottle', label: '饮水瓶', description: '透明瓶身与蓝色瓶盖' },
+        { id: 'box', label: '包装盒', description: '白色长方形纸盒' },
+      ],
+    },
+  },
 };
 /** 持久化待确认身份。 */
 const pending = {
@@ -242,7 +260,7 @@ describe('短视频复刻面板', () => {
     const heading = screen.getByRole('heading', { name: '短视频复刻', level: 3 });
     expect(heading).toBeVisible();
     expect(heading.querySelector('.lucide-clapperboard')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByText('分析整条视频 → 提供人物 → 可选换商品 → 生成')).toBeVisible();
+    expect(screen.getByText('分析整条视频 → 选择保留或替换 → 选择生成模型 → 生成')).toBeVisible();
     const summary = screen.getByText('使用流程', { selector: 'summary' });
     expect(summary).toBeVisible();
     expect(summary.closest('details')).not.toHaveAttribute('open');
@@ -250,7 +268,7 @@ describe('短视频复刻面板', () => {
     expect(screen.getByRole('button', { name: '分析整条视频' })).toBeVisible();
   });
 
-  it('分析模型只显示文字模型，不把视频生成模型放入分析列表', async () => {
+  it('分析模型展示完整分组目录，不按目录媒体能力拒绝选择', async () => {
     render(
       <Harness
         models={[
@@ -268,7 +286,224 @@ describe('短视频复刻面板', () => {
 
     const select = screen.getByRole('combobox', { name: '分析模型' });
     expect(within(select).getByRole('option', { name: /视觉分析甲/ })).toBeInTheDocument();
-    expect(within(select).queryByRole('option', { name: /视频生成模型/ })).toBeNull();
+    expect(within(select).getByRole('option', { name: /视频生成模型/ })).toBeInTheDocument();
+  });
+
+  it('手工模型 ID 沿用所选分组，明确分析才提交精确身份', async () => {
+    render(<Harness />);
+    await screen.findByRole('option', { name: '默认模型：vision-a' });
+    fireEvent.change(screen.getByLabelText('分析模型'), {
+      target: {
+        value: videoRecreationModelKey({ modelAlias: 'vision-b', credentialId: 'group-b' }),
+      },
+    });
+    fireEvent.click(screen.getByText('手动填写分析模型 ID'));
+    fireEvent.change(screen.getByLabelText('分析模型 ID'), {
+      target: { value: 'qwen3.8-omni-flash' },
+    });
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('分析模型 ID'), { target: { value: '' } });
+    expect(screen.getByRole('button', { name: '分析整条视频' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('分析模型 ID'), {
+      target: { value: 'qwen3.8-omni-flash' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
+    await waitFor(() => expect(submitVideoRecreation).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(submitVideoRecreation).mock.calls[0]![2].model).toEqual({
+      modelAlias: 'qwen3.8-omni-flash',
+      credentialId: 'group-b',
+    });
+  });
+
+  it('新分析默认保留未绑定人物，保存实际分析模型，商品未替换', async () => {
+    vi.mocked(submitVideoRecreation).mockResolvedValue({
+      ...analysis,
+      modelAlias: 'qwen3.8-omni-flash',
+      prompt: JSON.stringify(identified.analysis!.template),
+    });
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
+    await screen.findByText('本次分析模型：qwen3.8-omni-flash');
+    expect(saved().preservedRoleIds).toEqual(['actor_a', 'actor_b']);
+    expect(screen.getByLabelText('左侧人物')).toHaveValue('__preserve__');
+    expect(screen.getByLabelText('饮水瓶')).toHaveValue('');
+    expect(screen.getByText('透明瓶身与蓝色瓶盖')).toBeVisible();
+    expect(screen.getByText(/配置已齐备/)).toBeVisible();
+    expect(saved().productBindings).toBeUndefined();
+  });
+
+  it('旧保留选择达到上限时仍保存新分析，显式清除后选择新人物且不重发分析', async () => {
+    const previousRoles = Array.from({ length: 12 }, (_, index) => ({
+      id: `previous_${index}`,
+      label: `旧人物${index + 1}`,
+    }));
+    const start: VideoRecreationConfig = {
+      ...ready,
+      analysis: {
+        ...ready.analysis!,
+        template: { ...template, roles: previousRoles },
+      },
+      preservedRoleIds: previousRoles.map((role) => role.id),
+    };
+    const save = vi.fn((next: VideoRecreationConfig) => {
+      videoRecreationConfigSchema.parse(next);
+    });
+    render(<Harness start={start} save={save} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
+    await screen.findByText('本次分析模型：vision-a');
+    expect(saved().analysis?.template).toEqual(template);
+    expect(saved().preservedRoleIds).toEqual(start.preservedRoleIds);
+    expect(videoRecreationConfigSchema.safeParse(saved()).success).toBe(true);
+    expect(screen.getByLabelText('左侧人物')).toHaveValue('');
+    expect(screen.queryByText(/已收到分析响应，但保存失败/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '清除无对应角色的保留选择' }));
+    await waitFor(() => expect(saved().preservedRoleIds).toEqual([]));
+    await waitFor(() => expect(screen.getByLabelText('左侧人物')).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('左侧人物'), { target: { value: '__preserve__' } });
+    await waitFor(() => expect(saved().preservedRoleIds).toEqual(['actor_a']));
+    await waitFor(() => expect(screen.getByLabelText('右侧人物')).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('右侧人物'), { target: { value: '__preserve__' } });
+    await waitFor(() => expect(saved().preservedRoleIds).toEqual(['actor_a', 'actor_b']));
+    expect(screen.getByText(/配置已齐备/)).toBeVisible();
+    expect(submitVideoRecreation).toHaveBeenCalledOnce();
+    expect(save).toHaveReturned();
+  });
+
+  it('已保存对象卡挂载不回写；人物可混合保留替换再恢复保留', async () => {
+    const save = vi.fn();
+    render(<Harness start={identified} save={save} />);
+    await screen.findByRole('option', { name: '默认模型：vision-a' });
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('左侧人物'), { target: { value: 'image-a' } });
+    await waitFor(() => expect(screen.getByLabelText('左侧人物')).toBeEnabled());
+    expect(saved().preservedRoleIds).toEqual(['actor_b']);
+    expect(saved().bindings[0]).toMatchObject({ roleId: 'actor_a', assetVersion: 3 });
+    expect(screen.getByLabelText('右侧人物')).toHaveValue('__preserve__');
+    fireEvent.change(screen.getByLabelText('左侧人物'), { target: { value: '__preserve__' } });
+    await waitFor(() => expect(saved().bindings).toEqual([]));
+    expect(saved().preservedRoleIds).toEqual(['actor_b', 'actor_a']);
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
+  });
+
+  it('导入的重复保留选择不被默认值撑大，保存新分析后可显式改选修复', async () => {
+    const start = { ...ready, preservedRoleIds: Array<string>(12).fill('actor_a') };
+    const save = vi.fn((next: VideoRecreationConfig) => {
+      videoRecreationConfigSchema.parse(next);
+    });
+    render(<Harness start={start} save={save} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
+    await screen.findByText('本次分析模型：vision-a');
+    expect(saved().preservedRoleIds).toEqual(start.preservedRoleIds);
+    expect(screen.getByText('同一角色不能重复保留')).toBeVisible();
+    expect(videoRecreationConfigSchema.safeParse(saved()).success).toBe(true);
+    await waitFor(() => expect(screen.getByLabelText('左侧人物')).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('左侧人物'), { target: { value: 'image-a' } });
+    await waitFor(() => expect(saved().preservedRoleIds).toEqual([]));
+    await waitFor(() => expect(screen.getByLabelText('右侧人物')).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('右侧人物'), { target: { value: '__preserve__' } });
+    await screen.findByText(/配置已齐备/);
+    expect(saved().preservedRoleIds).toEqual(['actor_b']);
+    expect(submitVideoRecreation).toHaveBeenCalledOnce();
+    expect(save).toHaveReturned();
+  });
+
+  it('逐商品替换及用途独立保存，另一商品仍保留，不自动分析或生成', async () => {
+    render(<Harness start={identified} />);
+    fireEvent.change(screen.getByLabelText('饮水瓶'), { target: { value: 'product' } });
+    await screen.findByText(/替换商品前请填写用途/);
+    fireEvent.change(screen.getByLabelText('饮水瓶用途与已确认卖点'), {
+      target: { value: '用户确认用于盛水' },
+    });
+    await waitFor(() => expect(screen.getByLabelText('包装盒')).toBeEnabled());
+    expect(saved().productBindings).toEqual([
+      {
+        productId: 'bottle',
+        assetId: 'product',
+        assetVersion: 2,
+        name: '商品照片',
+        description: '用户确认用于盛水',
+      },
+    ]);
+    expect(screen.getByLabelText('包装盒')).toHaveValue('');
+    expect(saved().source).toEqual(initial.source);
+    fireEvent.change(screen.getByLabelText('包装盒'), { target: { value: 'image-b' } });
+    await screen.findByLabelText('包装盒用途与已确认卖点');
+    fireEvent.change(screen.getByLabelText('包装盒用途与已确认卖点'), {
+      target: { value: '用户确认用于外包装' },
+    });
+    await waitFor(() => expect(screen.getByLabelText('饮水瓶')).toBeEnabled());
+    expect(saved().productBindings?.map((binding) => binding.description)).toEqual([
+      '用户确认用于盛水',
+      '用户确认用于外包装',
+    ]);
+    fireEvent.change(screen.getByLabelText('饮水瓶'), { target: { value: '' } });
+    await waitFor(() => expect(saved().productBindings).toHaveLength(1));
+    expect(saved().productBindings?.[0]?.productId).toBe('box');
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /^生成/ })).toBeNull();
+  });
+
+  it('旧单商品与新对象卡并存完整保留，明确清除后逐项选择', async () => {
+    const legacyProduct = { assetId: 'product', assetVersion: 2, name: '旧图片' };
+    render(<Harness start={{ ...identified, product: legacyProduct }} />);
+    expect(saved().product).toEqual(legacyProduct);
+    expect(screen.getByText(/旧商品替换尚未对应当前商品/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '清除旧商品绑定' }));
+    await waitFor(() => expect(saved().product).toBeUndefined());
+    expect(saved().productDescription).toBe(ready.productDescription);
+    expect(screen.getByLabelText('饮水瓶')).toHaveValue('');
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
+  });
+
+  it('无人物广告视频可以保留商品继续生成，不要求提供人物', async () => {
+    render(
+      <Harness
+        start={{
+          ...identified,
+          preservedRoleIds: [],
+          analysis: {
+            ...identified.analysis!,
+            template: { ...identified.analysis!.template, roles: [] },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText('未识别到人物，可按商品继续处理。')).toBeVisible();
+    expect(screen.getByText(/配置已齐备/)).toBeVisible();
+    expect(screen.getByLabelText('饮水瓶')).toHaveValue('');
+  });
+
+  it('无对应对象或重复商品绑定不静默删除，只有明确清除才移除', async () => {
+    const productBindings = [
+      { productId: 'bottle', assetId: 'product', assetVersion: 2, name: '甲' },
+      { productId: 'bottle', assetId: 'image-b', assetVersion: 5, name: '乙' },
+      { productId: 'old', assetId: 'product', assetVersion: 2, name: '旧商品' },
+    ];
+    render(
+      <Harness
+        start={{
+          ...identified,
+          preservedRoleIds: ['actor_a', 'actor_b', 'old_role'],
+          productBindings,
+        }}
+      />,
+    );
+    expect(screen.getByLabelText('饮水瓶')).toBeDisabled();
+    expect(saved().productBindings).toEqual(productBindings);
+    fireEvent.click(screen.getByRole('button', { name: '清除饮水瓶的重复绑定' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '清除无对应商品的绑定' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '清除无对应商品的绑定' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '清除无对应角色的保留选择' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '清除无对应角色的保留选择' }));
+    await waitFor(() => expect(saved().productBindings).toEqual([]));
+    expect(saved().preservedRoleIds).toEqual(['actor_a', 'actor_b']);
   });
 
   it.each([

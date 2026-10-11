@@ -4,6 +4,7 @@ import {
   getVideoRecreationIssue,
   parseVideoRecreationTemplate,
   videoRecreationConfigSchema,
+  VIDEO_RECREATION_ANALYSIS_INSTRUCTION,
   type VideoRecreationConfig,
   type VideoRecreationTemplate,
 } from './video-recreation';
@@ -37,6 +38,54 @@ const ready: VideoRecreationConfig = {
   analysis: { runId: 'analysis-1', summary: '先转身再展示商品', template },
   bindings: [{ roleId: 'character_a', assetId: 'person', assetVersion: 3, name: '我的人物' }],
 };
+/** 新分析保留来源对象的外观、出现时间和截图定位；人物与商品键彼此独立。 */
+const objectTemplate: VideoRecreationTemplate = {
+  ...template,
+  roles: [
+    {
+      id: 'character_a',
+      label: '主角',
+      description: '短发，浅色上衣，站在左侧',
+      appearances: [{ startSeconds: 0, endSeconds: 10 }],
+      preview: { timestampSeconds: 1, boundingBox: { x: 0.1, y: 0.1, width: 0.3, height: 0.8 } },
+    },
+    { id: 'character_b', label: '配角', description: '长发，站在右侧' },
+  ],
+  products: [
+    {
+      id: 'product_a',
+      label: '方形瓶装商品',
+      description: '透明瓶身、白色瓶盖；包装文字无法辨认',
+      appearances: [
+        { startSeconds: 0, endSeconds: 4 },
+        { startSeconds: 6, endSeconds: 10 },
+      ],
+      preview: { timestampSeconds: 7, boundingBox: { x: 0.4, y: 0.4, width: 0.2, height: 0.3 } },
+    },
+    { id: 'product_b', label: '圆形罐装商品' },
+    { id: 'product_c', label: '纸盒商品' },
+  ],
+};
+/** 一人替换、一人保留，商品逐项绑定；未绑定商品按来源保留。 */
+const objectReady: VideoRecreationConfig = {
+  ...ready,
+  analysis: {
+    ...ready.analysis!,
+    modelAlias: 'vision-analysis-model',
+    credentialId: 'analysis-credential',
+    template: objectTemplate,
+  },
+  preservedRoleIds: ['character_b'],
+  productBindings: [
+    {
+      productId: 'product_a',
+      assetId: 'perfume',
+      assetVersion: 4,
+      name: '我的香水',
+      description: '香水；喷洒在手腕，不饮用。',
+    },
+  ],
+};
 
 describe('整条短视频复刻合同', () => {
   it('解析完整时间轴并兼容旧反推返回', () => {
@@ -55,6 +104,23 @@ describe('整条短视频复刻合同', () => {
       parseReversePromptOutput('{"summary":"旧摘要","prompt":"旧提示词"}', 'video_recreation'),
     ).toThrow('反推结果格式无效');
   });
+  it('旧v1模板和配置不会插入对象卡、保留或商品绑定默认值', () => {
+    expect(parseVideoRecreationTemplate(JSON.stringify(template))).toEqual(template);
+    expect(videoRecreationConfigSchema.parse(ready)).toEqual(ready);
+    expect(parseVideoRecreationTemplate(JSON.stringify(objectTemplate))).toEqual(objectTemplate);
+  });
+  it('分析指令识别整片人物与广告商品，中文外观只用于对象识别', () => {
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('ENTIRE attached short video');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('"products"');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('Chinese visible appearance');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('never as replacement identity');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('normalized 0..1');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain(
+      'strictly earlier than durationSeconds',
+    );
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('without guessing brands');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('fail explicitly');
+  });
   it.each([
     { ...template, durationSeconds: 9 },
     { ...template, shots: [{ startSeconds: 1, endSeconds: 10, action: '转身', camera: '跟随' }] },
@@ -66,6 +132,138 @@ describe('整条短视频复刻合同', () => {
     { ...template, shots: [] },
   ])('拒绝缺段、重叠、无效时长或身份：%j', (value) =>
     expect(() => parseVideoRecreationTemplate(JSON.stringify(value))).toThrow('视频模板无效'),
+  );
+  it.each([
+    {
+      products: [
+        { id: 'product_a', label: '商品甲' },
+        { id: 'product_a', label: '商品乙' },
+      ],
+    },
+    { products: [{ id: 'character_a', label: '与人物冲突' }] },
+    { products: [{ id: 'bad product', label: '商品' }] },
+    { roles: [{ id: 'character_a', label: '人物', appearances: [] }] },
+    {
+      roles: [
+        { id: 'character_a', label: '人物', appearances: [{ startSeconds: -1, endSeconds: 2 }] },
+      ],
+    },
+    {
+      roles: [
+        { id: 'character_a', label: '人物', appearances: [{ startSeconds: 3, endSeconds: 3 }] },
+      ],
+    },
+    {
+      products: [
+        { id: 'product_a', label: '商品', appearances: [{ startSeconds: 0, endSeconds: 11 }] },
+      ],
+    },
+    {
+      products: [
+        {
+          id: 'product_a',
+          label: '商品',
+          appearances: [
+            { startSeconds: 4, endSeconds: 6 },
+            { startSeconds: 1, endSeconds: 2 },
+          ],
+        },
+      ],
+    },
+    {
+      products: [
+        {
+          id: 'product_a',
+          label: '商品',
+          appearances: [
+            { startSeconds: 0, endSeconds: 6 },
+            { startSeconds: 5, endSeconds: 10 },
+          ],
+        },
+      ],
+    },
+    { roles: [{ id: 'character_a', label: '人物', preview: { timestampSeconds: 11 } }] },
+    {
+      products: [
+        {
+          id: 'product_a',
+          label: '商品',
+          appearances: [{ startSeconds: 4, endSeconds: 10 }],
+          preview: { timestampSeconds: 3 },
+        },
+      ],
+    },
+    {
+      roles: [
+        {
+          id: 'character_a',
+          label: '人物',
+          preview: {
+            timestampSeconds: 1,
+            boundingBox: { x: 0.8, y: 0, width: 0.3, height: 1 },
+          },
+        },
+      ],
+    },
+    {
+      products: [
+        {
+          id: 'product_a',
+          label: '商品',
+          preview: {
+            timestampSeconds: 1,
+            boundingBox: { x: 0, y: 0.8, width: 1, height: 0.3 },
+          },
+        },
+      ],
+    },
+    {
+      products: [
+        {
+          id: 'product_a',
+          label: '商品',
+          preview: {
+            timestampSeconds: 1,
+            boundingBox: { x: -0.1, y: 0, width: 0.3, height: 0.3 },
+          },
+        },
+      ],
+    },
+    {
+      products: [
+        {
+          id: 'product_a',
+          label: '商品',
+          preview: {
+            timestampSeconds: 1,
+            boundingBox: { x: 0, y: 0, width: 0, height: 0.3 },
+          },
+        },
+      ],
+    },
+  ])('拒绝对象键冲突、越界或不可信的出现/预览时间：%j', (fields) => {
+    expect(() => parseVideoRecreationTemplate(JSON.stringify({ ...template, ...fields }))).toThrow(
+      '视频模板无效',
+    );
+  });
+  it.each(['roles', 'products'] as const)(
+    '%s的预览不能位于整片终点，出现区间可以覆盖到终点',
+    (kind) => {
+      const object = {
+        id: kind === 'roles' ? 'character_a' : 'product_a',
+        label: '可见对象',
+        appearances: [{ startSeconds: 0, endSeconds: template.durationSeconds }],
+        preview: { timestampSeconds: template.durationSeconds },
+      };
+      expect(() =>
+        parseVideoRecreationTemplate(JSON.stringify({ ...template, [kind]: [object] })),
+      ).toThrow('视频模板无效');
+      const beforeEnd = {
+        ...template,
+        [kind]: [{ ...object, preview: { timestampSeconds: template.durationSeconds - 0.001 } }],
+      };
+      expect(parseVideoRecreationTemplate(JSON.stringify(beforeEnd))).toEqual(beforeEnd);
+    },
   );
   it('创建时无分析和人物，不能执行生成', () => {
     expect(getVideoRecreationIssue({ version: 1, source: ready.source, bindings: [] })).toBe(
@@ -95,6 +293,98 @@ describe('整条短视频复刻合同', () => {
         analysis: { ...ready.analysis!, template: { ...template, roles: [] } },
       }),
     ).toContain('未识别');
+  });
+  it('人物明确保留可不上传，但拒绝重复、未知及保留替换冲突', () => {
+    expect(getVideoRecreationIssue(objectReady)).toBeUndefined();
+    expect(
+      getVideoRecreationIssue({ ...objectReady, preservedRoleIds: ['character_b', 'character_b'] }),
+    ).toContain('重复保留');
+    expect(getVideoRecreationIssue({ ...objectReady, preservedRoleIds: ['stranger'] })).toContain(
+      '不一致',
+    );
+    expect(
+      getVideoRecreationIssue({ ...objectReady, preservedRoleIds: ['character_a', 'character_b'] }),
+    ).toContain('同时保留和替换');
+    expect(
+      getVideoRecreationIssue({
+        ...objectReady,
+        bindings: [],
+        preservedRoleIds: ['character_a', 'character_b'],
+      }),
+    ).toBeUndefined();
+    expect(getVideoRecreationIssue({ ...objectReady, preservedRoleIds: undefined })).toContain(
+      '配角',
+    );
+  });
+  it('只替换明确绑定的人物和商品，保留人物原貌及未选商品', () => {
+    const before = structuredClone(objectReady);
+    const doc = buildVideoRecreationPrompt(objectReady);
+    const text = renderPromptDocument(doc);
+    expect(doc.blocks.filter((block) => block.type === 'mention')).toMatchObject([
+      { mentionId: 'recreation_source', assetId: 'video', assetVersion: 2 },
+      { mentionId: 'recreation_character_a', assetId: 'person', assetVersion: 3 },
+      { mentionId: 'recreation_product_a', assetId: 'perfume', assetVersion: 4 },
+    ]);
+    expect(text).toContain('Replace only characters and products explicitly bound');
+    expect(text).toContain('Character character_b: Preserve this source character unchanged');
+    expect(text).toContain('Product product_b: Preserve this source product');
+    expect(text).toContain('Product product_c: Preserve this source product');
+    expect(text).toContain('User-confirmed facts for product product_a');
+    expect(text).toContain('do not apply original faces or clothing to replacement identities');
+    expect(objectReady).toEqual(before);
+  });
+  it('没有人物而识别到商品时可仅替换商品，未绑定商品继续保留', () => {
+    const productOnly: VideoRecreationConfig = {
+      ...objectReady,
+      analysis: { ...objectReady.analysis!, template: { ...objectTemplate, roles: [] } },
+      bindings: [],
+      preservedRoleIds: [],
+    };
+    expect(getVideoRecreationIssue(productOnly)).toBeUndefined();
+    expect(
+      buildVideoRecreationPrompt(productOnly).blocks.filter((b) => b.type === 'mention'),
+    ).toHaveLength(2);
+    const allPreserved = { ...productOnly, productBindings: [] };
+    expect(getVideoRecreationIssue(allPreserved)).toBeUndefined();
+    expect(
+      buildVideoRecreationPrompt(allPreserved).blocks.filter((b) => b.type === 'mention'),
+    ).toHaveLength(1);
+  });
+  it('商品绑定须属于当前对象且不可重复、共用人物资源或缺少用途', () => {
+    const binding = objectReady.productBindings![0]!;
+    expect(
+      getVideoRecreationIssue({ ...objectReady, productBindings: [binding, binding] }),
+    ).toContain('重复绑定');
+    expect(
+      getVideoRecreationIssue({
+        ...objectReady,
+        productBindings: [{ ...binding, productId: 'stranger' }],
+      }),
+    ).toContain('不一致');
+    expect(
+      getVideoRecreationIssue({
+        ...objectReady,
+        productBindings: [{ ...binding, assetId: 'person', assetVersion: 99 }],
+      }),
+    ).toContain('同一资源');
+    expect(
+      getVideoRecreationIssue({
+        ...objectReady,
+        productBindings: [{ ...binding, description: undefined }],
+      }),
+    ).toContain('用途');
+    expect(
+      getVideoRecreationIssue({
+        ...objectReady,
+        productBindings: [{ ...binding, description: '  ' }],
+      }),
+    ).toContain('用途');
+    expect(
+      getVideoRecreationIssue({
+        ...objectReady,
+        productBindings: [{ ...binding, assetVersion: 0 }],
+      }),
+    ).toContain('资源版本');
   });
   it('换人物只重建提示词，保留原始分析并按冻结身份引用', () => {
     const before = structuredClone(ready);
@@ -128,6 +418,32 @@ describe('整条短视频复刻合同', () => {
     expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(2);
     expect(renderPromptDocument(doc)).toContain('same character image bound to character_a');
   });
+  it('多人与多商品按模板顺序引用，同类共享资源去重且不合并不同版本', () => {
+    const binding = objectReady.productBindings![0]!;
+    const config = {
+      ...objectReady,
+      preservedRoleIds: [],
+      bindings: [{ ...ready.bindings[0]!, roleId: 'character_b' }, ...ready.bindings],
+      productBindings: [
+        { ...binding, productId: 'product_c', assetVersion: 5 },
+        { ...binding, productId: 'product_b' },
+        binding,
+      ],
+    };
+    const doc = buildVideoRecreationPrompt(config);
+    expect(doc.blocks.filter((block) => block.type === 'mention')).toMatchObject([
+      { mentionId: 'recreation_source', assetId: 'video', assetVersion: 2 },
+      { mentionId: 'recreation_character_a', assetId: 'person', assetVersion: 3 },
+      { mentionId: 'recreation_product_a', assetId: 'perfume', assetVersion: 4 },
+      { mentionId: 'recreation_product_c', assetId: 'perfume', assetVersion: 5 },
+    ]);
+    expect(renderPromptDocument(doc)).toContain(
+      'Character character_b: Use the same character image bound to character_a',
+    );
+    expect(renderPromptDocument(doc)).toContain(
+      'Product product_b replacement appearance reference: Use the same product image bound to product_a',
+    );
+  });
   it('商品替换要求用途，组装适配动作约束且不添加未经确认卖点', () => {
     const product = { assetId: 'perfume', assetVersion: 4, name: '我的香水' };
     expect(getVideoRecreationIssue({ ...ready, product })).toContain('用途');
@@ -140,9 +456,28 @@ describe('整条短视频复刻合同', () => {
     expect(renderPromptDocument(doc)).toContain('香水；喷洒在手腕，不饮用。');
     expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(3);
   });
+  it('旧单商品与新对象卡并存时明确要求重新映射，不静默丢弃已保存绑定', () => {
+    const legacy = {
+      product: { assetId: 'old-product', assetVersion: 1, name: '旧商品' },
+      productDescription: '洗手液，用于清洁双手。',
+    };
+    const conflict = { ...objectReady, ...legacy };
+    expect(videoRecreationConfigSchema.parse(conflict)).toEqual(conflict);
+    expect(getVideoRecreationIssue(conflict)).toContain('旧商品替换');
+    expect(() => buildVideoRecreationPrompt(conflict)).toThrow('逐项重新选择');
+    expect(
+      buildVideoRecreationPrompt({ ...ready, ...legacy }).blocks.filter(
+        (b) => b.type === 'mention',
+      ),
+    ).toMatchObject([
+      { assetId: 'video' },
+      { assetId: 'person' },
+      { mentionId: 'recreation_product', assetId: 'old-product', assetVersion: 1 },
+    ]);
+  });
   it('配置与画布保存恢复不丢模板、绑定、幂等身份', () => {
     const config = {
-      ...ready,
+      ...objectReady,
       request: { idempotencyKey: 'pending-key', runId: 'pending-run', modelAlias: 'vision-model' },
     };
     const canvas = canvasDocumentSchema.parse({
@@ -167,6 +502,12 @@ describe('整条短视频复刻合同', () => {
       videoRecreationConfigSchema.parse({
         ...ready,
         source: { ...ready.source, assetVersion: undefined },
+      }),
+    ).toThrow();
+    expect(() =>
+      videoRecreationConfigSchema.parse({
+        ...objectReady,
+        productBindings: [{ ...objectReady.productBindings![0]!, assetVersion: undefined }],
       }),
     ).toThrow();
   });

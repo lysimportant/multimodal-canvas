@@ -947,7 +947,7 @@ describe('NodeQuickEditor', () => {
   });
 
   it.each(['快捷', '完整'] as const)(
-    '%s编辑器的短视频复刻仍使用专属流程，不显示普通 Skill 配置',
+    '%s编辑器的复刻生成模型独立选择，未知视频能力不隐藏目录选项',
     async (presentation) => {
       const user = userEvent.setup();
       const fetcher = vi.fn();
@@ -966,6 +966,10 @@ describe('NodeQuickEditor', () => {
             },
           },
         },
+        models: [
+          { id: 'video-model', name: '生成视频模型', mediaTypes: ['video'] },
+          { id: 'future-model', name: '新生成模型', mediaTypes: ['text'] },
+        ],
         onPromptSkillChange: vi.fn(),
       });
       renderRaw(<NodeQuickEditor {...inputs} />);
@@ -977,6 +981,13 @@ describe('NodeQuickEditor', () => {
         'title',
         '请先分析整条参考视频',
       );
+      const group = screen.getByText('视频生成模型').parentElement as HTMLElement;
+      await user.click(within(group).getByRole('combobox'));
+      await user.click(selectPopup(group).getByRole('option', { name: /新生成模型/ }));
+      expect(inputs.onModelChange).toHaveBeenCalledExactlyOnceWith({
+        modelAlias: 'future-model',
+        credentialId: testCredentialId,
+      });
       expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
       expect(inputs.onRun).not.toHaveBeenCalled();
       expect(fetcher).not.toHaveBeenCalled();

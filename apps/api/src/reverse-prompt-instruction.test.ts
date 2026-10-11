@@ -90,7 +90,11 @@ describe('专属整片复刻指令', () => {
       },
     ]);
     expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('ENTIRE');
-    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('neutral role ids');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain(
+      'distinct stable neutral ids such as character_a and product_a',
+    );
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('every advertised product');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('visible appearance intervals');
     expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('product handling');
     expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('fail explicitly');
   });

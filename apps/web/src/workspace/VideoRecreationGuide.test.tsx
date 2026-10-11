@@ -24,17 +24,20 @@ describe('短视频复刻使用流程', () => {
     expect(steps.map((step) => step.querySelector('strong')?.textContent)).toEqual([
       '准备原视频',
       '分析整条视频',
-      '提供人物',
+      '选择保留或替换',
       '检查并生成',
     ]);
     expect(steps[0]).toHaveTextContent('保留原视频。整条分析，无需选片段');
-    expect(steps[1]).toHaveTextContent('点击「分析整条视频」，提取镜头、动作与节奏');
-    expect(steps[2]).toHaveTextContent('人物必需：单人提供一张人物图，多人逐角色绑定');
-    expect(steps[2]).toHaveTextContent('商品可选替换，默认保留');
-    expect(steps[3]).toHaveTextContent('自动整理提示词，检查后点击「生成」');
+    expect(steps[1]).toHaveTextContent('先选择视频识别模型');
+    expect(steps[1]).toHaveTextContent('提取人物、广告商品、出现时间与镜头动作');
+    expect(steps[2]).toHaveTextContent('逐个人物、商品选择保留');
+    expect(steps[2]).toHaveTextContent('商品用途与卖点由你确认');
+    expect(steps[3]).toHaveTextContent('独立选择视频生成模型');
     expect(steps[3]).toHaveTextContent('动作与镜头仅作参考，效果取决于模型');
     expect(
-      screen.getByText('分析和生成均需你点击按钮才提交模型任务，不会自动付费。'),
+      screen.getByText(
+        '分析和生成均需你点击按钮才提交模型任务，不会自动付费。换素材无需重新分析。',
+      ),
     ).toBeVisible();
   });
 

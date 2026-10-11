@@ -371,6 +371,7 @@ export function NodeQuickEditor({
     currentModel,
     currentCredentialId,
     currentModelIsMissing,
+    Boolean(node.data.videoRecreation),
   );
   const parameters = readNodeMediaParameters(node.data);
   let imageOutputParameters: ImageOutputParameters | undefined;
@@ -936,7 +937,7 @@ export function NodeQuickEditor({
     <div className="node-quick-editor-controls node-quick-editor-topbar">
       <div className="node-quick-editor-settings">
         <NodeParameterSelect
-          label="模型"
+          label={node.data.videoRecreation ? '视频生成模型' : '模型'}
           value={currentModelValue}
           options={modelOptions}
           onChange={(value) => onModelChange(parseModelOptionValue(value))}
@@ -2458,7 +2459,7 @@ function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
   }));
 }
 
-/** 只展示声明支持当前节点媒体类型的模型；不改变节点已保存模型或提交校验。 */
+/** 普通节点沿用媒体分类；复刻流程展示完整目录，兼容未知能力，不限制模型提交。 */
 function buildModelOptions(
   models: ModelEntry[],
   mediaType: AssetFlowNode['data']['mediaType'],
@@ -2466,6 +2467,7 @@ function buildModelOptions(
   currentModel: string,
   currentCredentialId: string | undefined,
   currentModelIsMissing: boolean,
+  recreation = false,
 ): QuickOption[] {
   const options: QuickOption[] = [];
   if (currentModelIsMissing && currentValue) {
@@ -2475,7 +2477,9 @@ function buildModelOptions(
       description: currentCredentialId ? '已保存的分组身份' : '已保存模型',
     });
   }
-  const visibleModels = models.filter((model) => model.mediaTypes.includes(mediaType));
+  const visibleModels = recreation
+    ? models
+    : models.filter((model) => model.mediaTypes.includes(mediaType));
   for (const group of groupModelsByCredential(visibleModels)) {
     for (const model of group.models) {
       options.push({

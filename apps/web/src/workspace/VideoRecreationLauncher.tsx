@@ -64,7 +64,7 @@ export function VideoRecreationLauncher({
           </DialogClose>
         </header>
         <DialogDescription className="video-recreation-launcher-description">
-          参考原视频的动作与镜头，更换人物；需要做广告时，再选择要替换的商品。
+          先识别整条视频中的人物、广告商品，再逐项选择保留或替换，最后选择视频生成模型。
         </DialogDescription>
         <div className="video-recreation-launcher-body">
           <VideoRecreationGuide />
