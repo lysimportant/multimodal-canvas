@@ -588,8 +588,8 @@ describe('AssetPreview', () => {
     fireEvent.loadedMetadata(video);
     expect(video).toHaveAttribute('controls');
     expect(viewer.querySelector('.artifact-preview-viewer-stage')).toHaveStyle({
-      width: '1222px',
-      height: '687.375px',
+      width: '934px',
+      height: '525.375px',
     });
   });
 

@@ -522,8 +522,8 @@ type MediaDimensions = {
   height: number;
 };
 
-/** 对话框两侧留白合计，单位为 CSS 像素。 */
-const VIEWER_VIEWPORT_MARGIN = 32;
+/** 默认查看器最多占视口宽高的四分之三。 */
+const VIEWER_VIEWPORT_RATIO = 0.75;
 /** 对话框左右内边距与边框合计，须与样式保持一致。 */
 const VIEWER_HORIZONTAL_CHROME = 26;
 /** 对话框上下内边距、边框、标题栏和行间距合计，单位为 CSS 像素。 */
@@ -534,7 +534,7 @@ const VIEWER_VERTICAL_CHROME = 72;
  * @param naturalSize 已验证为有限正数的媒体原始尺寸。
  * @param viewport 当前视口的 CSS 像素尺寸。
  * @param controlsHeight 媒体下方工具栏预留高度，单位为 CSS 像素；图片不额外预留。
- * @returns 留出对话框边距和标题栏后的媒体显示尺寸。
+ * @returns 留出对话框内边距、标题栏和控制区后的媒体显示尺寸。
  */
 function fitMediaDimensions(
   naturalSize: MediaDimensions,
@@ -543,11 +543,11 @@ function fitMediaDimensions(
 ) {
   const availableWidth = Math.max(
     1,
-    viewport.width - VIEWER_VIEWPORT_MARGIN - VIEWER_HORIZONTAL_CHROME,
+    viewport.width * VIEWER_VIEWPORT_RATIO - VIEWER_HORIZONTAL_CHROME,
   );
   const availableHeight = Math.max(
     1,
-    viewport.height - VIEWER_VIEWPORT_MARGIN - VIEWER_VERTICAL_CHROME - controlsHeight,
+    viewport.height * VIEWER_VIEWPORT_RATIO - VIEWER_VERTICAL_CHROME - controlsHeight,
   );
   const scale = Math.min(
     1,
@@ -1282,7 +1282,7 @@ function MediaArtifactPreview({
           onPointerDown={(event) => event.stopPropagation()}
           onClick={openViewer}
         >
-          <Expand className="artifact-preview-open-icon" size={15} aria-hidden="true" />
+          <Expand className="artifact-preview-open-icon" size={24} aria-hidden="true" />
         </Button>
       )}
       {canPreviewInDialog && (

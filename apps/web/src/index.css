@@ -2871,6 +2871,11 @@ h2 {
 }
 
 .resource-mention-dialog.resource-mention-dialog {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  max-height: 75dvh;
+  overflow: hidden;
   z-index: 91;
 }
 
@@ -2878,6 +2883,31 @@ h2 {
   margin: 12px 0;
   max-height: min(60vh, 520px);
   overflow: auto;
+}
+
+.resource-mention-dialog-preview.is-image,
+.resource-mention-dialog-preview.is-video {
+  align-items: center;
+  display: flex;
+  flex: 0 1 min(50dvh, 520px);
+  height: min(50dvh, 520px);
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.resource-mention-dialog-preview.is-image .artifact-preview-media-shell,
+.resource-mention-dialog-preview.is-video .artifact-preview-media-shell {
+  height: 100%;
+  width: 100%;
+}
+
+.resource-mention-dialog-preview.is-image .artifact-preview-media,
+.resource-mention-dialog-preview.is-video .artifact-preview-media {
+  height: auto;
+  max-height: 100%;
+  max-width: 100%;
+  width: auto;
 }
 
 .resource-mention-dialog-name {

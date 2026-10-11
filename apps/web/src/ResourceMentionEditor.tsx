@@ -1790,11 +1790,12 @@ export function ResourceMentionEditor({
           <DialogContent
             className="resource-mention-dialog"
             overlayClassName="resource-mention-dialog-backdrop"
+            style={{ width: 'min(920px, 75vw)' }}
             aria-describedby={undefined}
             onPointerDown={(event) => event.stopPropagation()}
           >
             <DialogTitle>资源预览</DialogTitle>
-            <div className="resource-mention-dialog-preview">
+            <div className={`resource-mention-dialog-preview is-${dialogItem.mediaType}`}>
               {canPreviewMentionAsset(dialogItem.asset) ? (
                 <AssetPreview asset={dialogItem.asset as Asset} mode="content" />
               ) : (
