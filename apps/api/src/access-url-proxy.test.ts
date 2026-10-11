@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from './fixtures/test-app';
-import { MemoryAssetStore, type AssetStore } from './assets';
+import { MemoryAssetStore, type AssetContentSource, type AssetStore } from './assets';
 import { signHs256Jwt } from './auth';
 import type { S3DownloadMode } from './upload-transport';
 
@@ -111,6 +111,145 @@ async function createFixture(mode?: S3DownloadMode, logger: BuildAppOptions['log
 }
 
 describe('proxy asset access URLs', () => {
+  it.each([{}, { version: 1 }])('serves signed video ranges over HTTP for %j', async (selector) => {
+    const { app, store, ownerHeaders, presign } = await createFixture('direct');
+    const content = Buffer.from('video-bytes-for-range');
+    const video = await store.create({
+      name: 'preview.mp4',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      content,
+      ownerId,
+    });
+    const origin = await app.listen({ host: '127.0.0.1', port: 0 });
+    const issued = await fetch(`${origin}/v1/assets/${video.id}/access-url`, {
+      method: 'POST',
+      headers: { ...ownerHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...selector, mode: 'proxy' }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(issued.status).toBe(200);
+    const { url } = (await issued.json()) as { url: string };
+    const signedUrl = new URL(url, origin);
+    const head = await fetch(signedUrl, { method: 'HEAD', signal: AbortSignal.timeout(5_000) });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-type')).toBe('video/mp4');
+    expect(head.headers.get('content-length')).toBe(String(content.byteLength));
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+
+    const partial = await fetch(signedUrl, {
+      headers: { range: 'bytes=6-10' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get('content-range')).toBe(`bytes 6-10/${content.byteLength}`);
+    expect(partial.headers.get('content-length')).toBe('5');
+    expect(await partial.text()).toBe('bytes');
+    const invalidRange = await fetch(signedUrl, {
+      headers: { range: 'bytes=99-' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(invalidRange.status).toBe(416);
+    expect(invalidRange.headers.get('content-range')).toBe(`bytes */${content.byteLength}`);
+    expect((await invalidRange.arrayBuffer()).byteLength).toBe(0);
+    expect(presign).not.toHaveBeenCalled();
+  });
+
+  it.each(resources.slice(0, 2))('accepts signed HEAD for $name', async ({ body }) => {
+    const { app, asset, ownerHeaders } = await createFixture('proxy');
+    const issued = await app.inject({
+      method: 'POST',
+      url: `/v1/assets/${asset.id}/access-url`,
+      headers: ownerHeaders,
+      payload: body,
+    });
+    const { url } = issued.json<{ url: string }>();
+    const response = await app.inject({ method: 'HEAD', url });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('image/png');
+    expect(response.headers['content-length']).toBe('12');
+    expect(response.rawPayload.byteLength).toBe(0);
+  });
+
+  it.each(resources.slice(0, 2))('serves single byte ranges for signed $name', async ({ body }) => {
+    const { app, asset, ownerHeaders } = await createFixture('proxy');
+    const issued = await app.inject({
+      method: 'POST',
+      url: `/v1/assets/${asset.id}/access-url`,
+      headers: ownerHeaders,
+      payload: body,
+    });
+    const { url } = issued.json<{ url: string }>();
+    for (const [range, content, contentRange] of [
+      ['bytes=2-5', 'urce', 'bytes 2-5/12'],
+      ['bytes=6-', '-bytes', 'bytes 6-11/12'],
+      ['bytes=-5', 'bytes', 'bytes 7-11/12'],
+      ['bytes=0-99', 'source-bytes', 'bytes 0-11/12'],
+    ]) {
+      const response = await app.inject({ method: 'GET', url, headers: { range } });
+      expect(response.statusCode).toBe(206);
+      expect(response.headers['accept-ranges']).toBe('bytes');
+      expect(response.headers['content-range']).toBe(contentRange);
+      expect(response.headers['content-length']).toBe(String(content!.length));
+      expect(response.body).toBe(content);
+    }
+    for (const range of ['bytes=20-30', 'bytes=5-2', 'bytes=-0', 'bytes=0-2,4-6', 'invalid']) {
+      const response = await app.inject({ method: 'GET', url, headers: { range } });
+      expect(response.statusCode).toBe(416);
+      expect(response.headers['content-range']).toBe('bytes */12');
+      expect(response.rawPayload.byteLength).toBe(0);
+    }
+  });
+
+  it.each(resources.slice(0, 2))(
+    'does not open $name for HEAD or invalid ranges and streams only selected bytes for GET',
+    async ({ name, body }) => {
+      const { app, store, asset, ownerHeaders } = await createFixture('proxy');
+      const originalContent = store.getContentSource.bind(store);
+      const originalVersion = store.getVersionContentSource.bind(store);
+      const open = vi.fn((source: AssetContentSource, range?: { start: number; end: number }) =>
+        source.open(range),
+      );
+      const wrap = (source: AssetContentSource | undefined) =>
+        source && {
+          ...source,
+          open: (range?: { start: number; end: number }) => open(source, range),
+        };
+      vi.spyOn(store, 'getContentSource').mockImplementation(async (id, scope) =>
+        wrap(await originalContent(id, scope)),
+      );
+      vi.spyOn(store, 'getVersionContentSource').mockImplementation(async (id, version, scope) =>
+        wrap(await originalVersion(id, version, scope)),
+      );
+      const bufferedContent = vi.spyOn(store, 'get');
+      const bufferedVersion = vi.spyOn(store, 'getVersionContent');
+      const issued = await app.inject({
+        method: 'POST',
+        url: `/v1/assets/${asset.id}/access-url`,
+        headers: ownerHeaders,
+        payload: body,
+      });
+      const { url } = issued.json<{ url: string }>();
+      const head = await app.inject({ method: 'HEAD', url, headers: { range: 'bytes=2-5' } });
+      expect(head.statusCode).toBe(206);
+      expect(head.headers['content-range']).toBe('bytes 2-5/12');
+      expect(head.headers['content-length']).toBe('4');
+      expect(head.rawPayload.byteLength).toBe(0);
+      expect(
+        (await app.inject({ method: 'GET', url, headers: { range: 'bytes=20-30' } })).statusCode,
+      ).toBe(416);
+      expect(open).not.toHaveBeenCalled();
+      const partial = await app.inject({ method: 'GET', url, headers: { range: 'bytes=2-5' } });
+      expect(partial.body).toBe('urce');
+      expect(open).toHaveBeenCalledExactlyOnceWith(expect.any(Object), { start: 2, end: 5 });
+      expect(bufferedContent).not.toHaveBeenCalled();
+      expect(bufferedVersion).not.toHaveBeenCalled();
+      if (name === 'content')
+        expect(store.getContentSource).toHaveBeenCalledWith(asset.id, { ownerId });
+      else expect(store.getVersionContentSource).toHaveBeenCalledWith(asset.id, 1, { ownerId });
+    },
+  );
+
   it.each([
     {
       method: 'POST' as const,
@@ -183,6 +322,14 @@ describe('proxy asset access URLs', () => {
     expect(issued.statusCode).toBe(200);
     expect(get).toHaveBeenCalledExactlyOnceWith(asset.id, { ownerId });
     expect(getVersionContent).toHaveBeenCalledExactlyOnceWith(asset.id, 1, { ownerId });
+    const { url } = issued.json<{ url: string }>();
+    const range = await app.inject({ method: 'GET', url, headers: { range: 'bytes=2-5' } });
+    expect(range.statusCode).toBe(206);
+    expect(range.body).toBe('urce');
+    const head = await app.inject({ method: 'HEAD', url });
+    expect(head.statusCode).toBe(200);
+    expect(head.headers['content-length']).toBe('12');
+    expect(head.body).toBe('');
   });
 
   it.each(['proxy', 'direct'] as const)(
@@ -241,6 +388,7 @@ describe('proxy asset access URLs', () => {
     const getMetadata = vi.spyOn(store, 'getMetadata');
     const hasContent = vi.spyOn(store, 'hasContent');
     const getVersionContent = vi.spyOn(store, 'getVersionContent');
+    const getVersionContentSource = vi.spyOn(store, 'getVersionContentSource');
 
     const response = await app.inject({
       method: 'GET',
@@ -253,7 +401,8 @@ describe('proxy asset access URLs', () => {
     expect(get).not.toHaveBeenCalled();
     expect(getMetadata).toHaveBeenCalledExactlyOnceWith(asset.id, { ownerId });
     expect(hasContent).toHaveBeenCalledExactlyOnceWith(asset.id, {}, { ownerId });
-    expect(getVersionContent).toHaveBeenCalledExactlyOnceWith(asset.id, 1, { ownerId });
+    expect(getVersionContent).not.toHaveBeenCalled();
+    expect(getVersionContentSource).toHaveBeenCalledExactlyOnceWith(asset.id, 1, { ownerId });
   });
 
   it.each(resources)(
@@ -284,20 +433,20 @@ describe('proxy asset access URLs', () => {
       expect(downloaded.statusCode).toBe(200);
       expect(downloaded.headers['content-type']).toContain(mimeType);
       expect(downloaded.rawPayload).toEqual(Buffer.from(content));
-      if (path === '/content') {
-        expect(getAsset).toHaveBeenCalledWith(asset.id, { ownerId });
-      } else {
-        expect(getAsset).not.toHaveBeenCalled();
-        expect(getMetadata).toHaveBeenCalledWith(asset.id, { ownerId });
-      }
+      expect(getAsset).not.toHaveBeenCalled();
+      expect(getMetadata).toHaveBeenCalledWith(asset.id, { ownerId });
 
       parsed.searchParams.set('access_token', `${parsed.searchParams.get('access_token')}x`);
-      expect(
-        (await app.inject({ method: 'GET', url: `${parsed.pathname}${parsed.search}` })).statusCode,
-      ).toBe(401);
+      for (const method of ['GET', 'HEAD'] as const) {
+        expect(
+          (await app.inject({ method, url: `${parsed.pathname}${parsed.search}` })).statusCode,
+        ).toBe(401);
+      }
 
       vi.spyOn(Date, 'now').mockReturnValue(Date.parse(access.expiresAt));
-      expect((await app.inject({ method: 'GET', url: access.url })).statusCode).toBe(401);
+      for (const method of ['GET', 'HEAD'] as const) {
+        expect((await app.inject({ method, url: access.url })).statusCode).toBe(401);
+      }
     },
   );
 
@@ -375,6 +524,36 @@ describe('proxy asset access URLs', () => {
 });
 
 describe('direct asset access URL compatibility', () => {
+  it('allows an authorized caller to use proxy URLs in direct mode', async () => {
+    const { app, asset, ownerHeaders, otherHeaders, presign } = await createFixture('direct');
+    for (const resource of resources) {
+      const request = {
+        method: 'POST' as const,
+        url: `/v1/assets/${asset.id}/access-url`,
+        payload: { ...resource.body, mode: 'proxy' },
+      };
+      expect((await app.inject(request)).statusCode).toBe(401);
+      expect((await app.inject({ ...request, headers: otherHeaders })).statusCode).toBe(404);
+      const issued = await app.inject({ ...request, headers: ownerHeaders });
+      expect(issued.statusCode).toBe(200);
+      expect(issued.json().url).toMatch(/^\/v1\/assets\//);
+      expect((await app.inject(issued.json().url)).body).toBe(resource.content);
+    }
+    expect(presign).not.toHaveBeenCalled();
+  });
+
+  it.each(['direct', 'unsupported'])('rejects unsupported access mode %s', async (mode) => {
+    const { app, asset, ownerHeaders, presign } = await createFixture('proxy');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/assets/${asset.id}/access-url`,
+      headers: ownerHeaders,
+      payload: { mode },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(presign).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, 'direct'] as const)('prefers native URLs for mode %s', async (mode) => {
     const { app, asset, ownerHeaders, presign, nativeUrl } = await createFixture(mode);
     for (const resource of resources) {

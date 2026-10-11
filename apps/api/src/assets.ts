@@ -15,9 +15,11 @@ import { PrismaClient, type Prisma } from '@prisma/client';
 import type { Asset, AssetStatus, MediaType } from '@multimodal-canvas/domain';
 import type { AssetByteRange } from './asset-shares';
 
-/** 授权后的固定版本内容源；长度为实际对象字节数，open 只在 GET 时调用。 */
+/** 授权后的内容源；长度为实际对象字节数，open 只在 GET 时调用。 */
 export type AssetContentSource = {
+  /** 完整对象的实际长度，单位为字节。 */
   sizeBytes: number;
+  /** 打开完整对象或闭区间内容流；对象已删除时返回 undefined，传输错误抛出。 */
   open(range?: AssetByteRange): Promise<Readable | undefined>;
 };
 
@@ -517,6 +519,14 @@ export interface AssetStore {
    */
   hasContent?(id: string, selector?: AssetContentSelector, scope?: AssetScope): Promise<boolean>;
   get(id: string, scope?: AssetScope): Promise<StoredAsset | undefined>;
+  /**
+   * 读取授权范围内当前源对象的实际长度，延迟到 GET 才打开流。
+   * @param id 资源 ID。
+   * @param scope 资源归属范围；未授权时不读取对象。
+   * @returns 当前内容源，资源或对象缺失时返回 undefined；旧适配器可省略并回退到 get。
+   * @throws 元数据或对象存储查询失败时保留底层错误。
+   */
+  getContentSource?(id: string, scope?: AssetScope): Promise<AssetContentSource | undefined>;
   delete(id: string, scope?: AssetScope): Promise<boolean>;
   createVersion(
     assetId: string,
@@ -705,6 +715,23 @@ export class MemoryAssetStore implements AssetStore {
           this.latestVersionFor(id),
         )
       : undefined;
+  }
+
+  /** 读取当前内存对象的长度；HEAD 不复制内容，打开流时确认该对象仍是当前内容。 */
+  async getContentSource(
+    id: string,
+    scope: AssetScope = {},
+  ): Promise<AssetContentSource | undefined> {
+    const asset = this.assets.get(id);
+    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    return {
+      sizeBytes: asset.content.byteLength,
+      open: async (range) => {
+        if (this.assets.get(id) !== asset) return undefined;
+        const content = range ? asset.content.subarray(range.start, range.end + 1) : asset.content;
+        return Readable.from([Buffer.from(content)]);
+      },
+    };
   }
 
   /**
@@ -1085,6 +1112,18 @@ export class PrismaAssetStore implements AssetStore {
     };
   }
 
+  /** 校验归属后读取当前 contentKey 的实际长度，兼容没有版本记录的历史资源。 */
+  async getContentSource(
+    id: string,
+    scope: AssetScope = {},
+  ): Promise<AssetContentSource | undefined> {
+    const row = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+      select: { contentKey: true },
+    });
+    return row ? this.blobContentSource(row.contentKey) : undefined;
+  }
+
   /**
    * 从数据库读取公开元数据，不触发对象存储下载。
    * @returns 资源存在且获授权时返回元数据，缺失或未授权时返回 undefined。
@@ -1322,17 +1361,21 @@ export class PrismaAssetStore implements AssetStore {
       where: { assetId, version },
       select: { contentKey: true },
     });
-    if (!row) return undefined;
+    return row ? this.blobContentSource(row.contentKey) : undefined;
+  }
+
+  /** 查询选定对象的长度并延迟打开流；旧 BlobStore 沿用完整 Buffer，存储错误不回退。 */
+  private async blobContentSource(key: string): Promise<AssetContentSource | undefined> {
     if (this.blobStore.head && this.blobStore.open) {
-      const info = await this.blobStore.head(row.contentKey);
+      const info = await this.blobStore.head(key);
       return info
         ? {
             sizeBytes: info.sizeBytes,
-            open: (range) => this.blobStore.open!(row.contentKey, range, info.sizeBytes),
+            open: (range) => this.blobStore.open!(key, range, info.sizeBytes),
           }
         : undefined;
     }
-    const content = await this.blobStore.get(row.contentKey);
+    const content = await this.blobStore.get(key);
     if (content === undefined) return undefined;
     return {
       sizeBytes: content.byteLength,

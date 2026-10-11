@@ -32,6 +32,8 @@ export type ImagePreviewStageProps = {
   referrerPolicy?: ImgHTMLAttributes<HTMLImageElement>['referrerPolicy'];
   /** 父页面可在媒体失效后重新验证分享权限；不传时使用查看器内重试。 */
   onError?: () => void;
+  /** 私有资源显式重试先更新签名，公开分享仍由原来的错误回调验证权限。 */
+  onRetry?: () => void;
   /** 原文件成功解码后的真实像素，供节点信息显示；不改变节点尺寸。 */
   onNaturalSize?: (width: number, height: number) => void;
   /** 是否由父对话框铺满当前窗口，不修改浏览器或系统设置。 */
@@ -114,6 +116,7 @@ export function ImagePreviewStage({
   crossOrigin,
   referrerPolicy,
   onError,
+  onRetry,
   onNaturalSize,
   expanded,
   onExpandedChange,
@@ -519,6 +522,7 @@ export function ImagePreviewStage({
                 setError(undefined);
                 updateView(INITIAL_VIEW);
                 setAttempt((current) => current + 1);
+                onRetry?.();
               }}
             >
               重新加载预览

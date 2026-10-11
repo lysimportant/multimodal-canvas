@@ -215,23 +215,25 @@ describe('AssetPreview 签名请求共享', () => {
     const fetch = vi
       .fn()
       .mockImplementationOnce(async () => signedUrl('first'))
+      .mockImplementationOnce(async () => signedUrl('recovered'))
       .mockImplementationOnce(async () => signedUrl('reloaded'));
     vi.stubGlobal('fetch', fetch);
     const view = render(<AssetPreview asset={asset} mode="content" />);
+    fireEvent.error(await screen.findByRole('img'));
     fireEvent.error(await screen.findByRole('img'));
     fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
     expect(await screen.findByRole('img')).toHaveAttribute(
       'src',
       'https://assets.example/reloaded.png',
     );
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     view.unmount();
     render(<AssetPreview asset={asset} />);
     expect(await screen.findByRole('img')).toHaveAttribute(
       'src',
       'https://assets.example/reloaded.png',
     );
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it('重新加载旧资产后切换资产会复用新资产已有签名', async () => {
@@ -257,6 +259,7 @@ describe('AssetPreview 签名请求共享', () => {
 
     const current = render(<AssetPreview asset={asset} mode="content" />);
     fireEvent.error(await screen.findByAltText(asset.name));
+    fireEvent.error(await screen.findByAltText(asset.name));
     fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
     expect(await screen.findByAltText(asset.name)).toHaveAttribute(
       'src',
@@ -265,7 +268,7 @@ describe('AssetPreview 签名请求共享', () => {
     current.rerender(<AssetPreview asset={nextAsset} mode="content" />);
 
     await waitFor(() => expect(screen.getAllByAltText(nextAsset.name)).toHaveLength(2));
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it('重新加载旧资产后切换资产会继续共享新资产在途签名', async () => {
@@ -293,12 +296,13 @@ describe('AssetPreview 签名请求共享', () => {
     render(<AssetPreview asset={nextAsset} />);
     const current = render(<AssetPreview asset={asset} mode="content" />);
     fireEvent.error(await screen.findByAltText(asset.name));
+    fireEvent.error(await screen.findByAltText(asset.name));
     fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
     await screen.findByAltText(asset.name);
 
     current.rerender(<AssetPreview asset={nextAsset} mode="content" />);
     expect(nextCalls).toBe(1);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     await act(async () => pending.resolve(signedUrl('next-pending')));
     await waitFor(() => expect(screen.getAllByAltText(nextAsset.name)).toHaveLength(2));
     expect(

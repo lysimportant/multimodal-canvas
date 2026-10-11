@@ -97,7 +97,10 @@ let assetAccessUrlGeneration = getAuthSessionGeneration();
 let unsubscribeAssetAccessUrlAuth: (() => void) | undefined;
 
 /** 解析签名目标；版本或衍生类型属于服务端授权范围，查询参数不进入缓存键。 */
-function assetAccessUrlRequest(asset: Asset): {
+function assetAccessUrlRequest(
+  asset: Asset,
+  proxy = false,
+): {
   body: Record<string, unknown>;
   key: string;
   reusable: boolean;
@@ -116,9 +119,10 @@ function assetAccessUrlRequest(asset: Asset): {
     : derivativeMatch
       ? `derivative:${derivativeMatch[1]}`
       : 'current';
+  if (proxy) body.mode = 'proxy';
   return {
     body,
-    key: `${getAuthSessionGeneration()}:${asset.id}:${scope}`,
+    key: `${getAuthSessionGeneration()}:${asset.id}:${scope}:${proxy ? 'proxy' : 'default'}`,
     reusable: Boolean(versionMatch),
   };
 }
@@ -253,43 +257,67 @@ function acquireAssetAccessUrl(
   };
 }
 
+/** 当前账户的 API 资源需要短期签名；外部地址不向本站申请授权。 */
+function requiresAssetAuthorization(asset: Asset): boolean {
+  const url = asset.contentUrl ? resolveUploadUrl(asset.contentUrl, API_BASE_URL) : '';
+  return (
+    Boolean(readAuthSession()) &&
+    isApiResultUrl(url) &&
+    new URL(url, window.location.href).pathname.includes('/v1/assets/')
+  );
+}
+
 /**
  * 申请受保护产物的签名地址；相对签名按 API 地址解析，失败不降级成未鉴权请求。
  * @param asset 需要展示或链接的资源。
  * @param reloadKey 显式重载代次；变化时废弃当前版本的共享授权。
  * @param sign 是否需要为 API 产物申请签名。
- * @returns 当前会话下的地址、加载状态或授权错误；账户变化时立即隐藏旧地址。
+ * @returns 当前会话地址和状态；recover 仅为读取失败自动申请一次代理签名，解码或主动中止不重试。
  */
 function useAuthenticatedAssetUrl(
   asset: Asset,
   reloadKey: number,
   sign = true,
-): { url: string; loading: boolean; error?: string } {
+): {
+  url: string;
+  loading: boolean;
+  error?: string;
+  recover: (mediaErrorCode?: number) => boolean;
+} {
   const generation = useSyncExternalStore(
     subscribeAuthSession,
     getAuthSessionGeneration,
     getAuthSessionGeneration,
   );
   const fallback = asset.contentUrl ? resolveUploadUrl(asset.contentUrl, API_BASE_URL) : '';
-  const protectedAsset =
-    sign &&
-    Boolean(readAuthSession()) &&
-    isApiResultUrl(fallback) &&
-    new URL(fallback, window.location.href).pathname.includes('/v1/assets/');
+  const protectedAsset = sign && requiresAssetAuthorization(asset);
+  const resourceIdentity = `${generation}:${asset.id}:${fallback}:${reloadKey}`;
+  const [proxyIdentity, setProxyIdentity] = useState<string>();
+  const recovery = useRef<string | undefined>(undefined);
+  const proxy = proxyIdentity === resourceIdentity;
   const request = useMemo(
-    () => assetAccessUrlRequest(asset),
-    [asset.contentUrl, asset.id, generation],
+    () => assetAccessUrlRequest(asset, proxy),
+    [asset.contentUrl, asset.id, generation, proxy],
   );
   const identity = `${generation}:${request.key}:${fallback}:${reloadKey}`;
-  const [resolved, setResolved] = useState<{ identity: string; url: string; error?: string }>();
-  const observedReload = useRef({ key: request.key, reloadKey });
+  const [resolved, setResolved] = useState<AssetAccessUrl & { identity: string; error?: string }>();
+  const scopeKey = assetAccessUrlRequest(asset).key;
+  const observedReload = useRef({ key: scopeKey, reloadKey });
 
   useEffect(() => {
-    if (!protectedAsset) return;
+    recovery.current = undefined;
+    setProxyIdentity(undefined);
+  }, [resourceIdentity, sign]);
+
+  useEffect(() => {
+    if (!protectedAsset) {
+      setResolved(undefined);
+      return;
+    }
     const previousReload = observedReload.current;
     const explicitlyReloaded =
-      previousReload.key === request.key && reloadKey > previousReload.reloadKey;
-    observedReload.current = { key: request.key, reloadKey };
+      previousReload.key === scopeKey && reloadKey > previousReload.reloadKey;
+    observedReload.current = { key: scopeKey, reloadKey };
     if (explicitlyReloaded) {
       invalidateAssetAccessUrl(request.key);
     }
@@ -298,7 +326,7 @@ function useAuthenticatedAssetUrl(
     void lease.promise
       .then((result) => {
         if (active && generation === getAuthSessionGeneration())
-          setResolved({ identity, url: result.url });
+          setResolved({ identity, ...result });
       })
       .catch((reason: unknown) => {
         if (active && generation === getAuthSessionGeneration())
@@ -312,13 +340,30 @@ function useAuthenticatedAssetUrl(
       active = false;
       lease.release();
     };
-  }, [asset.id, generation, identity, protectedAsset, reloadKey, request]);
+  }, [asset.id, generation, identity, protectedAsset, reloadKey, request, scopeKey]);
 
-  return protectedAsset
+  /** 同一次展示只恢复一次；用户明确重试或更换资源后才重新获得恢复机会。 */
+  const recover = (mediaErrorCode?: number): boolean => {
+    if (
+      !protectedAsset ||
+      mediaErrorCode === 1 ||
+      mediaErrorCode === 3 ||
+      recovery.current === resourceIdentity
+    )
+      return false;
+    recovery.current = resourceIdentity;
+    const proxyKey = assetAccessUrlRequest(asset, true).key;
+    if (assetAccessUrlCache.get(proxyKey)?.reusableUntil !== Infinity)
+      invalidateAssetAccessUrl(proxyKey);
+    setProxyIdentity(resourceIdentity);
+    return true;
+  };
+  const access = protectedAsset
     ? resolved?.identity === identity
       ? { ...resolved, loading: false }
       : { url: '', loading: true }
     : { url: fallback, loading: false };
+  return { ...access, recover };
 }
 
 /** 根据资源类型显示真实内容，加载失败时提供重试入口。 */
@@ -434,6 +479,7 @@ export function AssetPreview({
       mediaClickPreviewEnabled={mediaClickPreviewEnabled}
       onInteractionChange={onInteractionChange}
       onRetry={retry}
+      onMediaError={originalAccess.recover}
       onLoadStateChange={onLoadStateChange}
       onNaturalSize={onNaturalSize}
     />
@@ -520,11 +566,15 @@ function NaturalMediaViewer({
   src,
   name,
   resetKey,
+  onMediaError,
+  onRetry,
 }: {
   kind: 'image' | 'video';
   src: string;
   name: string;
   resetKey: string;
+  onMediaError?: (mediaErrorCode?: number) => boolean;
+  onRetry?: () => void;
 }) {
   /** 当前资源解码尺寸；未知时让媒体按自身布局加载。 */
   const [naturalSize, setNaturalSize] = useState<MediaDimensions>();
@@ -564,6 +614,7 @@ function NaturalMediaViewer({
           setNaturalSize(undefined);
           setError(undefined);
           setAttempt((current) => current + 1);
+          onRetry?.();
         }}
       />
     );
@@ -579,6 +630,8 @@ function NaturalMediaViewer({
         src={src}
         name={name}
         autoPlay
+        onError={onMediaError}
+        onRetry={onRetry}
         className="artifact-preview-video-player"
         onLoadedMetadata={(event) => {
           const video = event.currentTarget as HTMLVideoElement;
@@ -819,12 +872,15 @@ export function AssetViewerDialog({
 }: AssetViewerDialogProps) {
   const asset = resolveOriginalImageAsset(inputAsset);
   const kind = resolveArtifactKind(asset);
+  const [reloadKey, setReloadKey] = useState(0);
   const originalSrc = asset.contentUrl === inputAsset.contentUrl ? src : undefined;
-  const needsSign = open && originalSrc == null && kind !== 'text';
-  const access = useAuthenticatedAssetUrl(asset, 0, needsSign);
-  const resolvedSrc = originalSrc ?? access.url;
+  const needsSign = open && kind !== 'text';
+  const access = useAuthenticatedAssetUrl(asset, reloadKey, needsSign);
+  const resolvedSrc =
+    needsSign && requiresAssetAuthorization(asset) ? access.url : (originalSrc ?? access.url);
+  const retry = () => setReloadKey((current) => current + 1);
   const viewerTitleId = useId();
-  const resetKey = `${asset.id}:${resolvedSrc}:${open ? 'open' : 'closed'}`;
+  const resetKey = `${asset.id}:${resolvedSrc}:${reloadKey}:${open ? 'open' : 'closed'}`;
   const canDownload = kind === 'image' || kind === 'video' || kind === 'audio';
   const downloadIdentity = `${asset.id}:${asset.contentUrl}:${asset.mimeType}:${asset.latestVersion ?? ''}`;
   /** 请求按原文件版本隔离，不随预览签名地址刷新而重新下载。 */
@@ -964,6 +1020,8 @@ export function AssetViewerDialog({
               className="artifact-preview-viewer-state"
               state="error"
               message={access.error}
+              actionLabel="重新加载预览"
+              onAction={retry}
             />
           ) : !resolvedSrc ? (
             <ArtifactState
@@ -979,6 +1037,8 @@ export function AssetViewerDialog({
               onNaturalSize={onNaturalSize}
               expanded={imageExpanded}
               onExpandedChange={setImageExpanded}
+              onError={access.recover}
+              onRetry={retry}
             />
           ) : kind === 'video' ? (
             <NaturalMediaViewer
@@ -987,6 +1047,8 @@ export function AssetViewerDialog({
               kind={kind}
               src={resolvedSrc}
               name={asset.name}
+              onMediaError={access.recover}
+              onRetry={retry}
             />
           ) : kind === 'audio' ? (
             <div className="artifact-preview-viewer-audio">
@@ -996,6 +1058,8 @@ export function AssetViewerDialog({
                 src={resolvedSrc}
                 name={asset.name}
                 autoPlay
+                onError={access.recover}
+                onRetry={retry}
               />
             </div>
           ) : kind === 'text' ? (
@@ -1005,7 +1069,7 @@ export function AssetViewerDialog({
               asset={asset}
               src={resolvedSrc}
               className="artifact-preview-viewer-file"
-              onRetry={() => onOpenChange(true)}
+              onRetry={retry}
             />
           )}
         </DialogContent>
@@ -1028,6 +1092,7 @@ function MediaArtifactPreview({
   allowOpen,
   mediaClickPreviewEnabled,
   onRetry,
+  onMediaError,
   onLoadStateChange,
   onNaturalSize,
   onInteractionChange,
@@ -1041,6 +1106,7 @@ function MediaArtifactPreview({
   allowOpen: boolean;
   mediaClickPreviewEnabled: boolean;
   onRetry: () => void;
+  onMediaError?: (mediaErrorCode?: number) => boolean;
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
   onNaturalSize?: (width: number, height: number) => void;
   onInteractionChange?: (active: boolean) => void;
@@ -1075,7 +1141,9 @@ function MediaArtifactPreview({
   const useNativeVideoControls = kind === 'video' && controls && !canPreviewInDialog;
   const mediaClassName = `asset-preview-${kind} artifact-preview-media ${className}`;
   const markReady = () => setLoadState('ready');
-  const markError = () => setLoadState('error');
+  const markError = (mediaErrorCode?: number) => {
+    if (!onMediaError?.(mediaErrorCode)) setLoadState('error');
+  };
   /** 切换节点内播放；播放失败保留浏览器错误并提供原位重试。 */
   const toggleVideoPlayback = () => {
     const video = videoRef.current;
@@ -1110,7 +1178,7 @@ function MediaArtifactPreview({
           if (!isThumbnail)
             onNaturalSize?.(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
         }}
-        onError={markError}
+        onError={() => markError()}
         onPointerDown={() => {
           previewGestureEnabled.current = mediaClickPreviewEnabled;
         }}
@@ -1142,7 +1210,7 @@ function MediaArtifactPreview({
           markReady();
           onNaturalSize?.(event.currentTarget.videoWidth, event.currentTarget.videoHeight);
         }}
-        onError={markError}
+        onError={(event) => markError(event.currentTarget.error?.code)}
         onPlay={() => {
           setVideoPlaying(true);
           setPlaybackError(undefined);
@@ -1160,7 +1228,7 @@ function MediaArtifactPreview({
         onPause={() => setVideoPlaying(false)}
         onEnded={() => setVideoPlaying(false)}
         onLoadedMetadata={markReady}
-        onError={markError}
+        onError={(event) => markError(event.currentTarget.error?.code)}
       />
     );
 

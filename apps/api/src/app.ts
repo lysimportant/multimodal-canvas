@@ -2,7 +2,7 @@ import { accountError } from './account-errors';
 import { AssetThumbnailService, sendAssetThumbnail } from './asset-thumbnails';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createProviderAssetUrlSignerFromEnvironment } from '@multimodal-canvas/credential-crypto';
 
@@ -12,6 +12,7 @@ import {
   MemoryAssetStore,
   verifyAssetAccessToken,
   type AssetScope,
+  type AssetContentSource,
   type AssetListOptions,
   type AssetStore,
 } from './assets';
@@ -1442,7 +1443,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       return;
     }
-    if (request.method === 'GET') {
+    if (request.method === 'GET' || request.method === 'HEAD') {
       const signedResource = assetContentResource(pathname);
       if (signedResource) {
         const token = new URL(request.url, 'http://localhost').searchParams.get('access_token');
@@ -4105,6 +4106,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const result = z
         .object({
           expiresInSeconds: z.number().int().min(30).max(900).optional(),
+          mode: z.literal('proxy').optional(),
           version: z.number().int().min(1).optional(),
           derivative: z.enum(['thumbnail', 'poster', 'waveform', 'final_frame']).optional(),
         })
@@ -4139,7 +4141,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
       const expiresIn = result.data.expiresInSeconds ?? 300;
       const expiresAt = Date.now() + expiresIn * 1000;
-      if (s3DownloadMode === 'direct') {
+      if (s3DownloadMode === 'direct' && result.data.mode !== 'proxy') {
         const nativeUrl = await assetStore.createPresignedGetUrl?.(
           request.params.assetId,
           {
@@ -4169,20 +4171,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
-  app.get<{ Params: { assetId: string } }>(
-    '/v1/assets/:assetId/content',
-    async (request, reply) => {
-      const asset = await assetStore.get(
-        request.params.assetId,
-        assetScope(requestPrincipals, request),
-      );
-      if (!asset) {
-        return reply.code(404).send({ error: 'asset not found' });
+  app.route<{ Params: { assetId: string } }>({
+    method: ['GET', 'HEAD'],
+    url: '/v1/assets/:assetId/content',
+    handler: async (request, reply) => {
+      const scope = assetScope(requestPrincipals, request);
+      if (assetStore.getMetadata && assetStore.getContentSource) {
+        const asset = await assetStore.getMetadata(request.params.assetId, scope);
+        if (!asset) return reply.code(404).send({ error: 'asset not found' });
+        const source = await assetStore.getContentSource(request.params.assetId, scope);
+        return sendAssetContent(request, reply, source, asset.mimeType, 'asset not found');
       }
-
-      return reply.type(asset.mimeType).send(asset.content);
+      const asset = await assetStore.get(request.params.assetId, scope);
+      if (!asset) return reply.code(404).send({ error: 'asset not found' });
+      return sendAssetContent(request, reply, asset.content, asset.mimeType, 'asset not found');
     },
-  );
+  });
 
   app.get<{ Params: { assetId: string } }>(
     '/v1/assets/:assetId/versions',
@@ -4285,9 +4289,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
   );
 
-  app.get<{ Params: { assetId: string; version: string } }>(
-    '/v1/assets/:assetId/versions/:version/content',
-    async (request, reply) => {
+  app.route<{ Params: { assetId: string; version: string } }>({
+    method: ['GET', 'HEAD'],
+    url: '/v1/assets/:assetId/versions/:version/content',
+    handler: async (request, reply) => {
       if (!/^\d+$/.test(request.params.version)) {
         return reply.code(400).send({ error: 'invalid asset version' });
       }
@@ -4298,11 +4303,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const scope = assetScope(requestPrincipals, request);
       const asset = await getReadableAssetMetadata(assetStore, request.params.assetId, scope);
       if (!asset) return reply.code(404).send({ error: 'asset version not found' });
-      const content = await assetStore.getVersionContent(request.params.assetId, version, scope);
-      if (!content) return reply.code(404).send({ error: 'asset version not found' });
-      return reply.type(asset.mimeType).send(content);
+      const content = assetStore.getVersionContentSource
+        ? await assetStore.getVersionContentSource(request.params.assetId, version, scope)
+        : await assetStore.getVersionContent(request.params.assetId, version, scope);
+      return sendAssetContent(request, reply, content, asset.mimeType, 'asset version not found');
     },
-  );
+  });
 
   app.get<{ Params: { assetId: string; version: string } }>(
     '/v1/assets/:assetId/versions/:version/derivatives/thumbnail',
@@ -4508,6 +4514,52 @@ type AccessUrlRequest = {
   version?: number;
   derivative?: 'thumbnail' | 'poster' | 'waveform' | 'final_frame';
 };
+
+/**
+ * 返回完整内容或单段字节范围；流式内容只在 GET 打开，HEAD 和非法范围不下载对象。
+ * @param request 已通过资源授权的 GET/HEAD 请求。
+ * @param reply 当前响应。
+ * @param content 实际对象内容源；旧适配器可传 Buffer，缺失时返回 404。
+ * @param mimeType 资源登记的 MIME 类型。
+ * @param notFoundError 保持当前资源路由的缺失错误语义。
+ * @returns 带实际长度的 200/206 响应；非法范围返回 416。
+ * @throws 打开内容流失败时保留底层传输错误，交由统一错误处理器处理。
+ */
+async function sendAssetContent(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  content: AssetContentSource | Buffer | undefined,
+  mimeType: string,
+  notFoundError: string,
+) {
+  if (content === undefined) return reply.code(404).send({ error: notFoundError });
+  const sizeBytes = Buffer.isBuffer(content) ? content.byteLength : content.sizeBytes;
+  const range = parseAssetByteRange(request.headers.range, sizeBytes);
+  reply.header('cache-control', 'private, no-store').header('accept-ranges', 'bytes');
+  if (range === null) {
+    return reply.code(416).header('content-range', `bytes */${sizeBytes}`).send();
+  }
+  const payload =
+    request.method === 'HEAD'
+      ? undefined
+      : Buffer.isBuffer(content)
+        ? range
+          ? content.subarray(range.start, range.end + 1)
+          : content
+        : await content.open(range ?? undefined);
+  if (request.method !== 'HEAD' && payload === undefined) {
+    return reply.code(404).send({ error: notFoundError });
+  }
+  reply.type(mimeType);
+  if (range) {
+    return reply
+      .code(206)
+      .header('content-range', `bytes ${range.start}-${range.end}/${sizeBytes}`)
+      .header('content-length', String(range.end - range.start + 1))
+      .send(payload);
+  }
+  return reply.header('content-length', String(sizeBytes)).send(payload);
+}
 
 /**
  * 读取可公开的资源元数据并确认当前源对象仍可读。内置存储只做 HEAD/存在性检查；

@@ -37,6 +37,9 @@ describe('历史项目资源的受约束授权读取', () => {
     expect((await assets.getVersionContent(legacy.id, 1, { ownerId: 'owner-a' }))?.toString()).toBe(
       'legacy-source',
     );
+    expect(await assets.getContentSource!(legacy.id, { ownerId: 'owner-a' })).toMatchObject({
+      sizeBytes: 13,
+    });
     for (const scope of [
       { ownerId: 'owner-b' },
       { ownerId: 'owner-a', projectId: null },
@@ -45,6 +48,7 @@ describe('历史项目资源的受约束授权读取', () => {
       expect(await assets.get(legacy.id, scope)).toBeUndefined();
       expect(await assets.listVersions(legacy.id, scope)).toEqual([]);
       expect(await assets.getVersionContent(legacy.id, 1, scope)).toBeUndefined();
+      expect(await assets.getContentSource!(legacy.id, scope)).toBeUndefined();
     }
     expect(await assets.get(unassigned.id, { ownerId: 'owner-a' })).toBeUndefined();
     expect(await raw.getOwnership(legacy.id)).toEqual({ ownerId: null, projectId: projectA.id });

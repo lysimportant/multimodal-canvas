@@ -14,8 +14,10 @@ export type MediaPreviewPlayerProps = {
   /** 分享页面保持跨域匿名读取，私有预览保持已有地址的访问方式。 */
   crossOrigin?: 'anonymous';
   className?: string;
-  /** 解码失败时通知父页面；分享页据此重新验证链接有效性。 */
-  onError?: () => void;
+  /** 读取或解码失败时通知父页面；错误码用于区分网络、解码和主动中止，分享页据此验证链接。 */
+  onError?: (mediaErrorCode?: number) => void;
+  /** 私有资源重试先重新申请签名；未传入时只重建当前媒体元素。 */
+  onRetry?: () => void;
   /** 解码尺寸交给 Dialog 的适配算法，不改变节点外框。 */
   onLoadedMetadata?: (event: SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) => void;
   /** Dialog 将媒体放入可缩放舞台，播放工具栏仍在舞台外，避免被缩放或裁切。 */
@@ -42,6 +44,7 @@ function MediaPlayerSession({
   crossOrigin,
   className = '',
   onError,
+  onRetry,
   onLoadedMetadata,
   renderMedia,
 }: MediaPreviewPlayerProps) {
@@ -119,13 +122,13 @@ function MediaPlayerSession({
     },
     onRateChange: (event: SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) =>
       setRate(event.currentTarget.playbackRate),
-    onError: () => {
+    onError: (event: SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) => {
       requestId.current += 1;
       setFailed(true);
       setPlaying(false);
       setWaiting(false);
       setError(`${label}加载失败，请重新加载预览`);
-      onError?.();
+      onError?.(event.currentTarget.error?.code);
     },
   };
   const media = (
@@ -234,6 +237,7 @@ function MediaPlayerSession({
               setEnded(false);
               setError(undefined);
               setAttempt((value) => value + 1);
+              onRetry?.();
             }}
           >
             重新加载预览

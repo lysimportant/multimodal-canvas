@@ -127,6 +127,35 @@ describe('PrismaAssetStore', () => {
     ).toBeUndefined();
   });
 
+  it('opens the current object without buffering and keeps old version content separate', async () => {
+    const blobStore = new MemoryBlobStore();
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, { blobStore, projectId: 'project-1' });
+    const asset = await store.create({
+      name: 'source.mp4',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      content: Buffer.from('old-content'),
+    });
+    await store.createVersion(asset.id, { content: Buffer.from('new-content') });
+    const get = vi.spyOn(blobStore, 'get');
+    const head = vi.spyOn(blobStore, 'head');
+    const open = vi.spyOn(blobStore, 'open');
+    const source = await store.getContentSource(asset.id);
+    expect(source?.sizeBytes).toBe(11);
+    expect(head).toHaveBeenCalledExactlyOnceWith(`assets/${asset.id}/v2`);
+    expect(open).not.toHaveBeenCalled();
+    const chunks: Buffer[] = [];
+    for await (const chunk of (await source!.open({ start: 0, end: 2 }))!) {
+      chunks.push(Buffer.from(chunk));
+    }
+    expect(Buffer.concat(chunks).toString()).toBe('new');
+    expect(open).toHaveBeenCalledExactlyOnceWith(`assets/${asset.id}/v2`, { start: 0, end: 2 }, 11);
+    expect(get).not.toHaveBeenCalled();
+    expect(await store.getContentSource(asset.id, { projectId: 'other-project' })).toBeUndefined();
+    expect(await store.getVersionContent(asset.id, 1)).toEqual(Buffer.from('old-content'));
+  });
+
   it('checks source and version objects without downloading their bytes', async () => {
     const blobStore = new MemoryBlobStore();
     const exists = vi.spyOn(blobStore, 'exists');

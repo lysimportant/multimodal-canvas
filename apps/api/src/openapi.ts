@@ -15,6 +15,48 @@ const errorSchema = {
   additionalProperties: true,
 } as const;
 
+/** 普通素材与固定版本 GET/HEAD 共用的短期授权和单段字节范围参数。 */
+const assetContentReadParameters = [
+  { $ref: '#/components/parameters/AssetId' },
+  {
+    name: 'access_token',
+    in: 'query',
+    required: false,
+    description: 'access-url 签发的短期令牌；只允许读取所签资源。',
+    schema: { type: 'string' },
+  },
+  {
+    name: 'Range',
+    in: 'header',
+    required: false,
+    description: '单段字节范围，支持闭区间、开放尾部及后缀范围；非法或多段范围返回 416。',
+    schema: { type: 'string' },
+  },
+] as const;
+
+/** GET/HEAD 成功响应均使用对象的实际字节长度。 */
+const assetContentReadHeaders = {
+  'Accept-Ranges': { schema: { type: 'string', enum: ['bytes'] } },
+  'Content-Length': { schema: { type: 'integer', minimum: 0 } },
+} as const;
+
+/** 字节范围响应说明；HEAD 仅返回这些响应头，GET 同时返回选定字节。 */
+const assetContentRangeResponses = {
+  '206': {
+    description: '返回选定字节范围；HEAD 无响应体。',
+    headers: {
+      ...assetContentReadHeaders,
+      'Content-Range': { schema: { type: 'string' }, description: 'bytes start-end/total' },
+    },
+  },
+  '416': {
+    description: '字节范围无效或不支持多段范围，无响应体。',
+    headers: {
+      'Content-Range': { schema: { type: 'string' }, description: 'bytes */total' },
+    },
+  },
+} as const;
+
 /** 密码分享读取未携带有效短期授权时的固定响应。 */
 const sharePasswordRequiredErrorSchema = {
   type: 'object',
@@ -1378,21 +1420,30 @@ export const openApiDocument = {
     '/v1/assets/{assetId}/content': {
       get: {
         tags: ['assets'],
-        parameters: [
-          { $ref: '#/components/parameters/AssetId' },
-          {
-            name: 'access_token',
-            in: 'query',
-            required: false,
-            description: 'Short-lived token returned by the access URL endpoint',
-            schema: { type: 'string' },
-          },
-        ],
+        parameters: assetContentReadParameters,
         responses: {
           '200': {
-            description: 'Asset content',
+            description: '当前资源内容；支持单段 Range，直接流式读取对象。',
+            headers: assetContentReadHeaders,
             content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
           },
+          ...assetContentRangeResponses,
+          '206': {
+            ...assetContentRangeResponses['206'],
+            content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
+          },
+          '404': response('Not found', errorSchema),
+        },
+      },
+      head: {
+        tags: ['assets'],
+        parameters: assetContentReadParameters,
+        responses: {
+          '200': {
+            description: '当前资源实际长度与类型，无响应体。',
+            headers: assetContentReadHeaders,
+          },
+          ...assetContentRangeResponses,
           '404': response('Not found', errorSchema),
         },
       },
@@ -1409,6 +1460,12 @@ export const openApiDocument = {
                 type: 'object',
                 properties: {
                   expiresInSeconds: { type: 'integer', minimum: 30, maximum: 900 },
+                  mode: {
+                    type: 'string',
+                    enum: ['proxy'],
+                    description:
+                      '可选强制使用 API 代理链接；省略时遵循部署下载方式，不允许强制 direct。',
+                  },
                   version: { type: 'integer', minimum: 1 },
                   derivative: {
                     type: 'string',
@@ -1930,26 +1987,41 @@ export const openApiDocument = {
       get: {
         tags: ['assets'],
         parameters: [
-          { $ref: '#/components/parameters/AssetId' },
+          ...assetContentReadParameters,
           {
             name: 'version',
             in: 'path',
             required: true,
             schema: { type: 'integer', minimum: 1 },
           },
-          {
-            name: 'access_token',
-            in: 'query',
-            required: false,
-            description: 'Short-lived token returned by the access URL endpoint',
-            schema: { type: 'string' },
-          },
         ],
         responses: {
           '200': {
-            description: 'Asset version content',
+            description: '固定版本资源内容；支持单段 Range，直接流式读取对象。',
+            headers: assetContentReadHeaders,
             content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
           },
+          ...assetContentRangeResponses,
+          '206': {
+            ...assetContentRangeResponses['206'],
+            content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
+          },
+          '400': response('Invalid asset version', errorSchema),
+          '404': response('Asset version not found', errorSchema),
+        },
+      },
+      head: {
+        tags: ['assets'],
+        parameters: [
+          ...assetContentReadParameters,
+          { name: 'version', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+        ],
+        responses: {
+          '200': {
+            description: '固定版本实际长度与类型，无响应体。',
+            headers: assetContentReadHeaders,
+          },
+          ...assetContentRangeResponses,
           '400': response('Invalid asset version', errorSchema),
           '404': response('Asset version not found', errorSchema),
         },
