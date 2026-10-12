@@ -322,6 +322,75 @@ describe('AssetNode result presentation', () => {
     expect(screen.queryByText('点击节点，按流程开始复刻')).not.toBeInTheDocument();
   });
 
+  it.each([
+    { label: '图片', mimeType: 'image/png', element: 'img', extension: 'png' },
+    { label: '视频', mimeType: 'video/mp4', element: 'video', extension: 'mp4' },
+  ])(
+    '复刻生成成功后在原节点回显$label，媒体加载不改变用户尺寸',
+    ({ mimeType, element, extension }) => {
+      const node = makeNode({
+        mediaType: 'video',
+        label: '短视频复刻',
+        runStatus: 'running',
+        videoRecreation: {
+          version: 1,
+          source: { assetId: 'clip', assetVersion: 2, name: '参考视频' },
+          bindings: [],
+        },
+      });
+      node.width = 400;
+      node.height = 266;
+      const onResizeStart = vi.fn();
+      const scene = (data: AssetFlowNode['data']) => (
+        <NodeResizeStartContext.Provider value={onResizeStart}>
+          <div className="react-flow__node" style={{ width: node.width, height: node.height }}>
+            <AssetNode {...({ id: node.id, data } as NodeProps<AssetFlowNode>)} />
+          </div>
+        </NodeResizeStartContext.Provider>
+      );
+      const view = render(scene(node.data));
+      expect(
+        view.container.querySelector('.flow-node-preview img, .flow-node-preview video'),
+      ).toBeNull();
+      const resultAsset = {
+        assetId: 'generated-result',
+        version: 3,
+        mimeType,
+        contentUrl: `https://assets.example/generated-result/versions/3/result.${extension}`,
+      };
+
+      view.rerender(scene({ ...node.data, runStatus: 'succeeded', resultAsset }));
+
+      const media = view.container.querySelector(`.flow-node-preview ${element}`)!;
+      expect(media).toHaveAttribute('src', resultAsset.contentUrl);
+      if (element === 'img') {
+        Object.defineProperties(media, {
+          naturalWidth: { value: 3840 },
+          naturalHeight: { value: 2160 },
+        });
+        fireEvent.load(media);
+      } else {
+        Object.defineProperties(media, {
+          videoWidth: { value: 3840 },
+          videoHeight: { value: 2160 },
+        });
+        fireEvent.loadedMetadata(media);
+      }
+      expect(screen.getByLabelText('运行成功')).toBeInTheDocument();
+      expect(view.container.querySelector('.flow-node-recreation-badge')).toHaveTextContent(
+        '短视频复刻',
+      );
+      expect(screen.queryByText('点击节点，按流程开始复刻')).not.toBeInTheDocument();
+      expect(view.container.querySelector('.react-flow__node')).toHaveStyle({
+        width: '400px',
+        height: '266px',
+      });
+      expect(onResizeStart).not.toHaveBeenCalled();
+      expect(node.data.mediaType).toBe('video');
+      expect(node).toMatchObject({ width: 400, height: 266 });
+    },
+  );
+
   it('大画布缩放摘要保留场记板标识，不依赖悬浮操作栏挂载', () => {
     viewportMock.zoom = 0.2;
     const node = makeNode({

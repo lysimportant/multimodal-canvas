@@ -1058,11 +1058,8 @@ describe('通用 Run 提交的复刻守卫', () => {
     '分析待完成',
     '缺少人物绑定',
     '来源时长不匹配',
+    '错误媒体类型',
     '错误视频模式',
-    '缺失保存时长',
-    '保存时长默认为五秒',
-    '提交覆盖为五秒',
-    '提交时长为 null',
     '旧普通反推',
     '分析 Run 不存在',
     '分析属于其他项目',
@@ -1075,16 +1072,12 @@ describe('通用 Run 提交的复刻守卫', () => {
   ])('%s 在创建或入队前拒绝', async (kind) => {
     const ctx = await readyRecreation();
     const node = ctx.canvas.nodes[0]!;
-    let parameters: Record<string, unknown> | undefined;
     if (kind === '未分析') delete ctx.config.analysis;
     if (kind === '分析待完成') ctx.config.request = { idempotencyKey: 'pending-analysis' };
     if (kind === '缺少人物绑定') ctx.config.bindings = [];
     if (kind === '来源时长不匹配') ctx.config.source.durationSeconds = 20;
+    if (kind === '错误媒体类型') node.data.mediaType = 'image';
     if (kind === '错误视频模式') node.data.videoMode = 'text_to_video';
-    if (kind === '缺失保存时长') delete node.data.parameters;
-    if (kind === '保存时长默认为五秒') node.data.parameters = { duration: 5 };
-    if (kind === '提交覆盖为五秒') parameters = { duration: 5 };
-    if (kind === '提交时长为 null') parameters = { duration: null };
     if (kind === '修改观察模板')
       ctx.config.analysis!.template.shots[0]!.action = 'character_a 执行未观察到的动作。';
     if (kind === '商品用途缺失')
@@ -1114,7 +1107,7 @@ describe('通用 Run 提交的复刻守卫', () => {
     const response = await ctx.app.inject({
       method: 'POST',
       url: '/v1/nodes/recreation-node/runs',
-      payload: { projectId: ctx.project.id, ...(parameters ? { parameters } : {}) },
+      payload: { projectId: ctx.project.id },
     });
     expect(response.statusCode, response.body).toBe(400);
     expect(response.json()).toMatchObject({
@@ -1147,25 +1140,31 @@ describe('通用 Run 提交的复刻守卫', () => {
     },
   );
 
-  it('整片非整秒时长不能被旧视频参数映射静默省略', async () => {
+  it('来源非整秒时长仍按完整分析冻结，生成时长独立使用用户选择', async () => {
     const template = structuredClone(recreationTemplate);
     template.durationSeconds = 12.5;
     template.shots[1]!.endSeconds = 12.5;
     const ctx = await readyRecreation(template, 12.5);
+    ctx.canvas.nodes[0]!.data.parameters = { duration: 7 };
     await ctx.projectStore.updateCanvas(ctx.project.id, ctx.canvas);
     const existing = (await ctx.runService.get(ctx.config.analysis!.runId))!;
     const create = vi.spyOn(ctx.runService, 'create').mockResolvedValue(existing);
     const response = await ctx.app.inject({
       method: 'POST',
       url: '/v1/nodes/recreation-node/runs',
-      payload: { projectId: ctx.project.id },
+      payload: { projectId: ctx.project.id, parameters: { duration: 7 } },
     });
-    expect(response.statusCode, response.body).toBe(400);
-    expect(response.json()).toMatchObject({
-      code: 'VIDEO_RECREATION_NOT_READY',
-      error: expect.stringContaining('整秒'),
-    });
-    expect(create).not.toHaveBeenCalled();
+    expect(response.statusCode, response.body).toBe(202);
+    const snapshot = create.mock.calls[0]![0];
+    expect(snapshot.parameters.duration).toBe(7);
+    expect(snapshot.promptMentions).toContainEqual(
+      expect.objectContaining({
+        mentionId: 'recreation_source',
+        assetId: ctx.asset.id,
+        assetVersion: 1,
+        durationSeconds: 12.5,
+      }),
+    );
   });
 
   it('只按来源固定版本复核时长，不跟随同一资源最新版本漂移', async () => {
@@ -1229,7 +1228,7 @@ describe('通用 Run 提交的复刻守卫', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('body 不能在 mention 校验后替换已解析文档、来源快照或完整时长', async () => {
+  it('body 不能在 mention 校验后替换已解析文档或来源快照，输出时长独立保留', async () => {
     const ctx = await readyRecreation(recreationTemplate, 12);
     await ctx.projectStore.updateCanvas(ctx.project.id, ctx.canvas);
     const savedCanvas = await ctx.projectStore.getCanvas(ctx.project.id);
@@ -1248,7 +1247,7 @@ describe('通用 Run 提交的复刻守卫', () => {
         projectId: ctx.project.id,
         promptDocument: document,
         parameters: {
-          duration: 12,
+          duration: 7,
           seconds: 5,
           durationSeconds: 5,
           promptDocument: injected,
@@ -1263,7 +1262,7 @@ describe('通用 Run 提交的复刻守卫', () => {
     });
     expect(response.statusCode, response.body).toBe(202);
     const snapshot = create.mock.calls[0]![0];
-    expect(snapshot.parameters.duration).toBe(12);
+    expect(snapshot.parameters.duration).toBe(7);
     expect(snapshot.nodes[0]!.data.promptDocument).toEqual(document);
     expect(snapshot.nodes[0]!.data.videoRecreation).toEqual(ctx.config);
     expect(snapshot.promptMentions).toHaveLength(2);
@@ -1290,8 +1289,9 @@ describe('通用 Run 提交的复刻守卫', () => {
     expect(await ctx.projectStore.getCanvas(ctx.project.id)).toEqual(savedCanvas);
   });
 
-  it('整片分析、人物绑定、全能参考与完整时长一致时允许提交，保持非五秒时长', async () => {
-    const ctx = await readyRecreation();
+  it('用户选择 7 秒生成可提交并保留快照，整片分析与来源 12 秒仍冻结', async () => {
+    const ctx = await readyRecreation(recreationTemplate, 12);
+    ctx.canvas.nodes[0]!.data.parameters = { duration: 7 };
     await ctx.projectStore.updateCanvas(ctx.project.id, ctx.canvas);
     // 本用例只验收入队边界，不把合成文字执行器用作付费视频生成。
     const existing = (await ctx.runService.get(ctx.config.analysis!.runId))!;
@@ -1299,15 +1299,28 @@ describe('通用 Run 提交的复刻守卫', () => {
     const response = await ctx.app.inject({
       method: 'POST',
       url: '/v1/nodes/recreation-node/runs',
-      payload: { projectId: ctx.project.id, parameters: { duration: 12 } },
+      payload: { projectId: ctx.project.id, parameters: { duration: 7 } },
     });
     expect(response.statusCode, response.body).toBe(202);
     expect(create).toHaveBeenCalledOnce();
-    expect(create.mock.calls[0]![0].parameters.duration).toBe(12);
-    expect(create.mock.calls[0]![0].nodes[0]!.data).toMatchObject({
+    const snapshot = create.mock.calls[0]![0];
+    expect(snapshot.parameters.duration).toBe(7);
+    expect(snapshot.nodes[0]!.data).toMatchObject({
       videoMode: 'omni_reference',
-      parameters: { duration: 12 },
+      parameters: { duration: 7 },
+      videoRecreation: {
+        source: { assetId: ctx.asset.id, assetVersion: 1, durationSeconds: 12 },
+        analysis: { template: { durationSeconds: 12 } },
+      },
     });
+    expect(snapshot.promptMentions).toContainEqual(
+      expect.objectContaining({
+        mentionId: 'recreation_source',
+        assetId: ctx.asset.id,
+        assetVersion: 1,
+        durationSeconds: 12,
+      }),
+    );
   });
 
   it.each([

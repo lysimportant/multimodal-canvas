@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, Upload, X } from 'lucide-react';
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '@multimodal-canvas/ui';
-import type { Asset } from '@multimodal-canvas/domain';
+import type { Asset, MediaType } from '@multimodal-canvas/domain';
 import type { ProjectResourceSearch, ProjectResourceSearchPage } from './project-resource-search';
 import { AssetPreview } from './workspace/AssetPreview';
 import { mediaLabels } from './workspace/contracts';
@@ -14,6 +14,10 @@ type ReferenceResourceDialogProps = {
   nodeId: string;
   /** 未提供远程查询时，调用方传入的完整项目目录。 */
   assets: readonly Asset[];
+  /** 限定本次选择的资源类型；省略时保留 @ 资料窗口的全部类型。 */
+  mediaType?: MediaType;
+  /** 调用场景的窗口标题，默认选择参考资料。 */
+  title?: string;
   /** 已绑定当前项目和认证会话的分页查询；失败不回退为本地缓存。 */
   onSearchProjectResources?: ProjectResourceSearch;
   /** 成功上传后刷新目录，不改变当前正文或搜索词。 */
@@ -54,6 +58,8 @@ function previewAsset(asset: Asset): Asset {
 export function ReferenceResourceDialog({
   nodeId,
   assets,
+  mediaType,
+  title = '选择参考资料',
   onSearchProjectResources,
   uploadRevision,
   uploading,
@@ -72,7 +78,14 @@ export function ReferenceResourceDialog({
     result?: ProjectResourceSearchPage;
     error?: string;
   } | null>(null);
-  const requestKey = JSON.stringify([nodeId, query.trim(), page, revision, uploadRevision]);
+  const requestKey = JSON.stringify([
+    nodeId,
+    mediaType,
+    query.trim(),
+    page,
+    revision,
+    uploadRevision,
+  ]);
   const currentResponse =
     response?.key === requestKey && response.source === onSearchProjectResources ? response : null;
 
@@ -83,7 +96,12 @@ export function ReferenceResourceDialog({
     const timer = setTimeout(() => {
       void Promise.resolve()
         .then(() =>
-          source({ query: query.trim(), mediaType: 'all', page, signal: controller.signal }),
+          source({
+            query: query.trim(),
+            mediaType: mediaType ?? 'all',
+            page,
+            signal: controller.signal,
+          }),
         )
         .then(
           (result) => {
@@ -103,7 +121,7 @@ export function ReferenceResourceDialog({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [onSearchProjectResources, requestKey, query, page]);
+  }, [onSearchProjectResources, requestKey, query, page, mediaType]);
 
   const localAssets = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
@@ -118,13 +136,17 @@ export function ReferenceResourceDialog({
       return (
         asset.status === 'ready' &&
         !asset.archivedAt &&
+        (!mediaType || asset.mediaType === mediaType) &&
         searchable.some((value) => value.toLocaleLowerCase().includes(keyword))
       );
     });
-  }, [assets, query]);
+  }, [assets, query, mediaType]);
   const resources = onSearchProjectResources
     ? (currentResponse?.result?.assets ?? []).filter(
-        (asset) => asset.status === 'ready' && !asset.archivedAt,
+        (asset) =>
+          asset.status === 'ready' &&
+          !asset.archivedAt &&
+          (!mediaType || asset.mediaType === mediaType),
       )
     : localAssets.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const total = onSearchProjectResources
@@ -155,7 +177,7 @@ export function ReferenceResourceDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="reference-resource-dialog nodrag nopan nowheel">
         <header className="reference-resource-dialog-header">
-          <DialogTitle>选择参考资料</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <div>
             <Button
               type="button"

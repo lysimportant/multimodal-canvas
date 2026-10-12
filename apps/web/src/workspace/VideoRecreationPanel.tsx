@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clapperboard } from 'lucide-react';
+import { Select, Tabs, Tooltip } from 'antd';
+import { Button, Textarea } from '@multimodal-canvas/ui';
 import {
   getVideoRecreationIssue,
   parseVideoRecreationTemplate,
@@ -16,7 +18,8 @@ import {
   type VideoRecreationAnalysis,
 } from '../video-recreation';
 import { API_BASE_URL, type ModelEntry, type ModelSelection } from './contracts';
-import { VideoRecreationGuide } from './VideoRecreationGuide';
+import { ReferenceResourceDialog } from '../ReferenceResourceDialog';
+import type { ProjectResourceSearch } from '../project-resource-search';
 import { AssetPreview } from './AssetPreview';
 import { resultAssetContentUrl } from './node-echo-text';
 import { useVideoRecreationPreviews, VideoRecreationPreview } from './VideoRecreationPreviews';
@@ -33,6 +36,10 @@ export type VideoRecreationPanelProps = {
   onChange: (config: VideoRecreationConfig) => Promise<void> | void;
   /** 上传返回有真实 latestVersion 的图片；缺少版本时提示刷新，不推测第一版。 */
   onUploadResource?: (file: File) => Promise<Asset>;
+  /** 沿用 @ 资源窗口的项目搜索；不跨项目查询。 */
+  onSearchProjectResources?: ProjectResourceSearch;
+  /** 来自冻结版本播放器的真实尺寸，用于生成参数缺省值。 */
+  onSourceMetadata?: (metadata: { width: number; height: number }) => void;
 };
 
 /** 尚未成功保存的已知响应，只重试保存，不能再次提交付费分析。 */
@@ -118,6 +125,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
   const [authChanged, setAuthChanged] = useState(false);
   const [defaultModel, setDefaultModel] = useState<ModelSelection>();
   const [selectedModel, setSelectedModel] = useState<ModelSelection>();
+  const [picker, setPicker] = useState<{ label: string; target?: BindingTarget }>();
   const [candidate, setCandidate] = useState<VideoRecreationAnalysis>();
   const [recovery, setRecovery] = useState<UnsavedAnalysis>();
   const [submitting, setSubmitting] = useState(false);
@@ -376,10 +384,18 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     authChanged ||
     sourceChanged;
   const locked = baseLocked || editing;
+  const analysisModels = models.filter((entry) => entry.mediaTypes.includes('text'));
+  const preferredModel = analysisModels.find((entry) => entry.id === 'qwen3.8-omni-flash');
   const model = request?.modelAlias
     ? { modelAlias: request.modelAlias, credentialId: request.credentialId }
-    : (selectedModel ?? defaultModel);
-  const modelValue = selectedModel ? videoRecreationModelKey(selectedModel) : '';
+    : (selectedModel ?? {
+        modelAlias: 'qwen3.8-omni-flash',
+        credentialId:
+          preferredModel?.credentialId ??
+          (defaultModel?.modelAlias === 'qwen3.8-omni-flash'
+            ? defaultModel.credentialId
+            : undefined),
+      });
   const imageAssets = assets.filter(
     (entry) => entry.mediaType === 'image' && entry.status === 'ready' && !entry.archivedAt,
   );
@@ -664,43 +680,56 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
       <div className="video-recreation-binding">
         <label className="node-quick-editor-field">
           <span>{label}</span>
-          <select
+          <Select
             aria-label={label}
             value={reference?.assetId ?? (preserved ? '__preserve__' : '')}
             disabled={locked || duplicates.length > 1}
-            onChange={(event) =>
+            virtual={false}
+            showSearch={{ optionFilterProp: 'label' }}
+            getPopupContainer={(trigger: HTMLElement) =>
+              trigger.closest<HTMLElement>('.node-quick-editor-dialog') ?? document.body
+            }
+            styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+            onChange={(value) =>
               void bind(
-                imageAssets.find((asset) => asset.id === event.target.value),
+                imageAssets.find((asset) => asset.id === value),
                 target,
-                event.target.value === '__preserve__',
+                value === '__preserve__',
               )
             }
-          >
-            {target?.kind === 'role' ? (
-              <>
-                <option value="" disabled>
-                  请选择保留或替换人物
-                </option>
-                <option value="__preserve__">保留原视频人物（不替换）</option>
-              </>
-            ) : (
-              <option value="">保留原视频商品（不替换）</option>
-            )}
-            {reference && !present ? (
-              <option value={reference.assetId} disabled>
-                {reference.name}（不可用，请刷新）
-              </option>
-            ) : null}
-            {imageAssets.map((asset) => (
-              <option key={asset.id} value={asset.id} disabled={!hasVersion(asset.latestVersion)}>
-                {asset.name}
-                {hasVersion(asset.latestVersion)
-                  ? ` · v${asset.latestVersion}`
-                  : '（缺少版本，请刷新）'}
-              </option>
-            ))}
-          </select>
+            options={[
+              ...(target?.kind === 'role'
+                ? [
+                    { value: '', label: '请选择保留或替换人物', disabled: true },
+                    { value: '__preserve__', label: '保留原视频人物（不替换）' },
+                  ]
+                : [{ value: '', label: '保留原视频商品（不替换）' }]),
+              ...(reference && !present
+                ? [
+                    {
+                      value: reference.assetId,
+                      label: `${reference.name}（不可用，请刷新）`,
+                      disabled: true,
+                    },
+                  ]
+                : []),
+              ...imageAssets.map((entry) => ({
+                value: entry.id,
+                label: `${entry.name}${hasVersion(entry.latestVersion) ? ` · v${entry.latestVersion}` : '（缺少版本，请刷新）'}`,
+                disabled: !hasVersion(entry.latestVersion),
+              })),
+            ]}
+          />
         </label>
+        <Button
+          type="button"
+          className="video-recreation-resource-search"
+          aria-label={`搜索${label}替换资源`}
+          disabled={locked || duplicates.length > 1}
+          onClick={() => setPicker({ label, target })}
+        >
+          @ 搜索替换资源
+        </Button>
         {reference ? (
           <small>
             已冻结：{reference.name} · v{reference.assetVersion}
@@ -718,7 +747,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               }}
               className="video-recreation-replacement-image"
               mode="content"
-              interactive={false}
+              interactive
             />
           </div>
         ) : null}
@@ -728,7 +757,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               该角色存在重复绑定：
               {duplicates.map((entry) => `${entry.name} v${entry.assetVersion}`).join('、')}
             </p>
-            <button
+            <Button
               type="button"
               className="button button-secondary"
               disabled={locked}
@@ -750,13 +779,24 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               }
             >
               清除{label}的重复绑定
-            </button>
+            </Button>
           </div>
         ) : null}
         {onUploadResource ? (
-          <label className="video-recreation-upload">
-            上传{label}图片
+          <div className="video-recreation-upload">
+            <Button
+              type="button"
+              disabled={locked || duplicates.length > 1}
+              onClick={(event) =>
+                event.currentTarget.parentElement
+                  ?.querySelector<HTMLInputElement>('input[type="file"]')
+                  ?.click()
+              }
+            >
+              上传{label}图片
+            </Button>
             <input
+              hidden
               type="file"
               aria-label={`上传${label}图片`}
               accept="image/*"
@@ -767,7 +807,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 void upload(file, target);
               }}
             />
-          </label>
+          </div>
         ) : null}
       </div>
     );
@@ -798,117 +838,95 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 mode="content"
                 interactive
                 allowOpen={false}
+                onNaturalSize={(width, height) => props.onSourceMetadata?.({ width, height })}
               />
             ) : (
               <p className="video-recreation-hint">原视频不可用，请刷新资源或重新选择。</p>
             )}
           </div>
-          <strong>{config.source.name}</strong>
-          <span>
-            来源版本：
-            {hasVersion(config.source.assetVersion)
-              ? `v${config.source.assetVersion}`
-              : '缺失，请刷新资源'}
-          </span>
-          <span>
-            完整时长：
-            {invalidDuration
-              ? '无效，请核实来源'
-              : config.source.durationSeconds === undefined
-                ? '尚未确认，分析将读取整条视频'
-                : `${config.source.durationSeconds} 秒`}
-          </span>
-          <p className="video-recreation-path">
-            分析整条视频 → 选择保留或替换 → 选择生成模型 → 生成
-          </p>
-          <details className="video-recreation-help">
-            <summary>使用流程</summary>
-            <VideoRecreationGuide />
-          </details>
+          <div className="video-recreation-source-meta" aria-label="来源信息">
+            <span>
+              来源：
+              {hasVersion(config.source.assetVersion)
+                ? `v${config.source.assetVersion}`
+                : '版本未知'}
+            </span>
+            <span>
+              时长：
+              {invalidDuration
+                ? '无效'
+                : (config.source.durationSeconds ?? config.analysis?.template.durationSeconds) ===
+                    undefined
+                  ? '待分析'
+                  : `${config.source.durationSeconds ?? config.analysis?.template.durationSeconds} 秒`}
+            </span>
+            <Tooltip title={config.source.name}>
+              <span className="video-recreation-source-name">文件：{config.source.name}</span>
+            </Tooltip>
+          </div>
         </header>
         {sourceError ? <p role="alert">{sourceError}</p> : null}
         {invalidDuration ? (
           <p role="alert">来源时长必须是有限的正数；不会截断或补造时长。</p>
         ) : null}
         {sourceChanged ? <p role="alert">来源已改变，请重新打开节点编辑器。</p> : null}
-        <label className="node-quick-editor-field">
-          <span>分析模型</span>
-          <select
-            aria-label="分析模型"
-            disabled={locked}
-            value={request ? (model ? videoRecreationModelKey(model) : '') : modelValue}
-            onChange={(event) => {
-              const selected = models.find(
-                (entry) =>
-                  videoRecreationModelKey({
+        <div className="video-recreation-model-actions">
+          <label className="node-quick-editor-field">
+            <span>分析模型</span>
+            <Select
+              aria-label="分析模型"
+              disabled={locked}
+              value={videoRecreationModelKey(model)}
+              virtual={false}
+              getPopupContainer={(trigger: HTMLElement) =>
+                trigger.closest<HTMLElement>('.node-quick-editor-dialog') ?? document.body
+              }
+              styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+              onChange={(value) => {
+                const selected = analysisModels.find(
+                  (entry) =>
+                    videoRecreationModelKey({
+                      modelAlias: entry.id,
+                      credentialId: entry.credentialId,
+                    }) === value,
+                );
+                setSelectedModel(
+                  selected
+                    ? { modelAlias: selected.id, credentialId: selected.credentialId }
+                    : undefined,
+                );
+              }}
+              options={[
+                ...(!analysisModels.some(
+                  (entry) =>
+                    videoRecreationModelKey({
+                      modelAlias: entry.id,
+                      credentialId: entry.credentialId,
+                    }) === videoRecreationModelKey(model),
+                )
+                  ? [
+                      {
+                        value: videoRecreationModelKey(model),
+                        label: model.modelAlias,
+                        disabled: Boolean(request),
+                      },
+                    ]
+                  : []),
+                ...analysisModels.map((entry) => ({
+                  value: videoRecreationModelKey({
                     modelAlias: entry.id,
                     credentialId: entry.credentialId,
-                  }) === event.target.value,
-              );
-              setSelectedModel(
-                selected
-                  ? { modelAlias: selected.id, credentialId: selected.credentialId }
-                  : undefined,
-              );
-            }}
-          >
-            <option value="">
-              {defaultModel ? `默认模型：${defaultModel.modelAlias}` : '等待服务端默认模型'}
-            </option>
-            {model &&
-            !models.some(
-              (entry) =>
-                videoRecreationModelKey({
-                  modelAlias: entry.id,
-                  credentialId: entry.credentialId,
-                }) === videoRecreationModelKey(model),
-            ) ? (
-              <option value={videoRecreationModelKey(model)} disabled>
-                {model.modelAlias}（当前模型身份）
-              </option>
-            ) : null}
-            {models.map((entry) => (
-              <option
-                key={videoRecreationModelKey({
-                  modelAlias: entry.id,
-                  credentialId: entry.credentialId,
-                })}
-                value={videoRecreationModelKey({
-                  modelAlias: entry.id,
-                  credentialId: entry.credentialId,
-                })}
-              >
-                {[entry.name || entry.id, entry.group ?? entry.credentialLabel]
-                  .filter(Boolean)
-                  .join(' · ')}
-                {entry.unavailableReason ? `（${entry.unavailableReason}）` : ''}
-              </option>
-            ))}
-          </select>
-        </label>
-        <details className="video-recreation-help">
-          <summary>手动填写分析模型 ID</summary>
-          <label className="node-quick-editor-field">
-            <span>分析模型 ID</span>
-            <input
-              aria-label="分析模型 ID"
-              value={model?.modelAlias ?? ''}
-              disabled={locked}
-              placeholder="例如 qwen3.8-omni-flash"
-              onChange={(event) =>
-                setSelectedModel({
-                  modelAlias: event.target.value,
-                  credentialId: model?.credentialId,
-                })
-              }
+                  }),
+                  label:
+                    [entry.name || entry.id, entry.group ?? entry.credentialLabel]
+                      .filter(Boolean)
+                      .join(' · ') +
+                    (entry.unavailableReason ? `（${entry.unavailableReason}）` : ''),
+                })),
+              ]}
             />
           </label>
-          <p className="video-recreation-hint">
-            沿用上方所选模型的分组身份，模型 ID 原样提交。视频输入是否受支持由 New API / 上游确认。
-          </p>
-        </details>
-        <div className="video-recreation-actions">
-          <button
+          <Button
             type="button"
             className="button button-secondary"
             disabled={
@@ -933,26 +951,28 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                   : request
                     ? '确认原分析请求'
                     : '分析整条视频'}
-          </button>
+          </Button>
+        </div>
+        <div className="video-recreation-actions">
           {!request && !recovery && candidate && candidate.runId !== config.analysis?.runId ? (
-            <button
+            <Button
               type="button"
               className="button button-secondary"
               disabled={locked}
               onClick={() => void adoptExistingAnalysis()}
             >
               采用已有分析
-            </button>
+            </Button>
           ) : null}
           {error && !submitting && !recovery ? (
-            <button
+            <Button
               type="button"
               className="button button-secondary"
               disabled={authChanged || sourceChanged || busy || editing}
               onClick={queryAgain}
             >
               重新查询
-            </button>
+            </Button>
           ) : null}
         </div>
         <p className="video-recreation-hint">
@@ -965,26 +985,41 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           </p>
         ) : null}
         {config.analysis ? (
-          <>
-            <div className="video-recreation-summary">
-              <h4>整体摘要</h4>
-              <p>{config.analysis.summary}</p>
-              {config.analysis.modelAlias ? (
-                <span>本次分析模型：{config.analysis.modelAlias}</span>
-              ) : null}
-              <span>分析完整时长：{config.analysis.template.durationSeconds} 秒</span>
-            </div>
-            {config.analysis.template.unknowns.length ? (
-              <div className="video-recreation-unknowns">
-                <h4>未确认的证据</h4>
-                <ul>
-                  {config.analysis.template.unknowns.map((unknown, index) => (
-                    <li key={index}>{unknown}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </>
+          <Tabs
+            className="video-recreation-evidence-tabs"
+            items={[
+              {
+                key: 'summary',
+                label: '整体摘要',
+                children: (
+                  <div className="video-recreation-summary">
+                    <p>{config.analysis.summary}</p>
+                    {config.analysis.modelAlias ? (
+                      <span>本次分析模型：{config.analysis.modelAlias}</span>
+                    ) : null}
+                    <span>分析完整时长：{config.analysis.template.durationSeconds} 秒</span>
+                  </div>
+                ),
+              },
+              {
+                key: 'unknowns',
+                label: '未确认证据',
+                children: (
+                  <div className="video-recreation-unknowns">
+                    {config.analysis.template.unknowns.length ? (
+                      <ul>
+                        {config.analysis.template.unknowns.map((unknown, index) => (
+                          <li key={index}>{unknown}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>没有未确认证据。</p>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+          />
         ) : null}
       </section>
       <section className="video-recreation-resources-column" aria-label="替换资源">
@@ -1006,42 +1041,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               <p className="video-recreation-hint">
                 来自分析的首个镜头，保留原视频场景与镜头结构。
               </p>
-              <details className="video-recreation-template">
-                <summary>查看完整模板、镜头动作与台词</summary>
-                <ol>
-                  {config.analysis.template.shots.map((shot, index) => (
-                    <li key={index}>
-                      <strong>
-                        {shot.startSeconds} 至 {shot.endSeconds} 秒
-                      </strong>
-                      <p>动作：{shot.action}</p>
-                      <p>镜头：{shot.camera}</p>
-                    </li>
-                  ))}
-                </ol>
-                {config.analysis.template.dialogue?.length ? (
-                  <>
-                    <h5>人物台词</h5>
-                    <ol>
-                      {config.analysis.template.dialogue.map((line, index) => (
-                        <li key={index}>
-                          {line.startSeconds} 至 {line.endSeconds} 秒 ·{' '}
-                          {config.analysis?.template.roles.find(
-                            (role) => role.id === line.speakerId,
-                          )?.label ?? '说话人未确认'}
-                          ：{line.text}
-                        </li>
-                      ))}
-                    </ol>
-                  </>
-                ) : (
-                  <p>
-                    人物台词：
-                    {config.analysis.template.dialogue ? '未听到可辨认的台词' : '旧分析未提取台词'}
-                  </p>
-                )}
-                <p>声音：{config.analysis.template.audio || '未提供可靠的声音证据'}</p>
-              </details>
             </div>
             <div className="video-recreation-bindings">
               <h4>识别到的人物 · {config.analysis.template.roles.length}</h4>
@@ -1051,19 +1050,26 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                   key={role.id}
                   aria-label={`人物：${role.label}`}
                 >
-                  <h4>{role.label}</h4>
+                  <Tooltip
+                    title={
+                      <>
+                        <p>{role.description || '此分析未提供可确认的外观描述'}</p>
+                        <p>
+                          出现时间：
+                          {role.appearances
+                            ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
+                            .join('、') || '未提供可靠定位'}
+                        </p>
+                      </>
+                    }
+                  >
+                    <h4 tabIndex={0}>{role.label}</h4>
+                  </Tooltip>
                   <VideoRecreationPreview
                     item={role}
                     preview={previews.get(`role:${role.id}`)}
                     onRetry={retryPreviews}
                   />
-                  <p>{role.description || '此分析未提供可确认的外观描述'}</p>
-                  <p className="video-recreation-hint">
-                    出现时间：
-                    {role.appearances
-                      ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
-                      .join('、') || '未提供可靠定位'}
-                  </p>
                   {imagePicker(
                     role.label,
                     config.bindings.find((entry) => entry.roleId === role.id),
@@ -1082,7 +1088,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                       .map((binding) => `${binding.roleId}：${binding.name}`)
                       .join('、')}
                   </p>
-                  <button
+                  <Button
                     type="button"
                     className="button button-secondary"
                     disabled={locked}
@@ -1097,7 +1103,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     }
                   >
                     清除无对应角色的绑定
-                  </button>
+                  </Button>
                 </div>
               ) : null}
               {unknownPreserved.length ? (
@@ -1105,7 +1111,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                   <p>
                     以下保留人物没有对应角色，已保留，请确认后清除：{unknownPreserved.join('、')}
                   </p>
-                  <button
+                  <Button
                     type="button"
                     className="button button-secondary"
                     disabled={locked}
@@ -1119,7 +1125,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     }
                   >
                     清除无对应角色的保留选择
-                  </button>
+                  </Button>
                 </div>
               ) : null}
             </div>
@@ -1135,24 +1141,31 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     key={product.id}
                     aria-label={`商品：${product.label}`}
                   >
-                    <h4>{product.label}</h4>
+                    <Tooltip
+                      title={
+                        <>
+                          <p>{product.description || '此分析未提供可确认的外观描述'}</p>
+                          <p>
+                            出现时间：
+                            {product.appearances
+                              ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
+                              .join('、') || '未提供可靠定位'}
+                          </p>
+                        </>
+                      }
+                    >
+                      <h4 tabIndex={0}>{product.label}</h4>
+                    </Tooltip>
                     <VideoRecreationPreview
                       item={product}
                       preview={previews.get(`product:${product.id}`)}
                       onRetry={retryPreviews}
                     />
-                    <p>{product.description || '此分析未提供可确认的外观描述'}</p>
-                    <p className="video-recreation-hint">
-                      出现时间：
-                      {product.appearances
-                        ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
-                        .join('、') || '未提供可靠定位'}
-                    </p>
                     {imagePicker(product.label, binding, { kind: 'product', id: product.id })}
                     {binding ? (
                       <label className="node-quick-editor-field">
                         <span>用途与已确认卖点</span>
-                        <textarea
+                        <Textarea
                           aria-label={`${product.label}用途与已确认卖点`}
                           value={binding.description ?? ''}
                           disabled={baseLocked}
@@ -1187,7 +1200,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     以下商品绑定没有对应对象，已保留，请确认后清除：
                     {unknownProducts.map((entry) => `${entry.productId}：${entry.name}`).join('、')}
                   </p>
-                  <button
+                  <Button
                     type="button"
                     className="button button-secondary"
                     disabled={locked}
@@ -1204,7 +1217,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     }
                   >
                     清除无对应商品的绑定
-                  </button>
+                  </Button>
                 </div>
               ) : null}
             </div>
@@ -1225,21 +1238,21 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                   已保留旧图片：{config.product?.name} · v{config.product?.assetVersion}
                   。请清除旧绑定后，在上方逐商品选择。
                 </p>
-                <button
+                <Button
                   type="button"
                   className="button button-secondary"
                   disabled={locked}
                   onClick={() => void bind(undefined)}
                 >
                   清除旧商品绑定
-                </button>
+                </Button>
               </>
             ) : (
               imagePicker('商品', config.product)
             )}
             <label className="node-quick-editor-field">
               <span>商品用途与已确认卖点</span>
-              <textarea
+              <Textarea
                 aria-label="商品用途与已确认卖点"
                 value={config.productDescription ?? ''}
                 disabled={baseLocked}
@@ -1269,6 +1282,23 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           </p>
         ) : null}
       </section>
+      {picker && !locked ? (
+        <ReferenceResourceDialog
+          key={JSON.stringify(picker)}
+          nodeId={sourceIdentity}
+          title="选择替换图片"
+          mediaType="image"
+          assets={assets}
+          onSearchProjectResources={props.onSearchProjectResources}
+          uploadRevision={0}
+          uploading={uploading}
+          uploadError={null}
+          onSelect={(asset) => {
+            if (isCurrent()) void bind(asset, picker.target);
+          }}
+          onClose={() => setPicker(undefined)}
+        />
+      ) : null}
     </section>
   );
 }

@@ -3156,27 +3156,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             error: issue ?? '请先分析整条参考视频',
           });
         }
-        const duration = config.analysis.template.durationSeconds;
-        // 当前视频适配器只发送正整数秒数，非整秒不能被省略后落到供应商默认值。
-        if (!Number.isSafeInteger(duration)) {
+        if (node.data.mediaType !== 'video' || node.data.videoMode !== 'omni_reference') {
           return reply.code(400).send({
             code: 'VIDEO_RECREATION_NOT_READY',
             nodeId: node.id,
-            error: '当前视频接口仅支持整秒时长，不能取整、裁剪或省略整片分析时长',
-          });
-        }
-        if (
-          node.data.mediaType !== 'video' ||
-          node.data.videoMode !== 'omni_reference' ||
-          node.data.parameters?.duration !== duration ||
-          (node.id === request.params.nodeId &&
-            body.parameters?.duration !== undefined &&
-            body.parameters.duration !== duration)
-        ) {
-          return reply.code(400).send({
-            code: 'VIDEO_RECREATION_NOT_READY',
-            nodeId: node.id,
-            error: '视频复刻必须使用全能参考模式和分析得到的完整时长，不能默认或截短为 5 秒',
+            error: '视频复刻必须使用视频节点和全能参考模式',
           });
         }
         // 文本允许编辑，资源身份必须保持领域模板生成的角色映射，含共享人物图的去重规则。

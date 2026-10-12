@@ -14,7 +14,12 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { PROMPT_SKILLS, videoModeLabels, type PromptDocument } from '@multimodal-canvas/domain';
+import {
+  PROMPT_SKILLS,
+  videoModeLabels,
+  type PromptDocument,
+  type VideoRecreationConfig,
+} from '@multimodal-canvas/domain';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
 import {
   useWorkspacePreferences,
@@ -965,7 +970,7 @@ describe('NodeQuickEditor', () => {
     expect(dialog.querySelectorAll('.prompt-skill-panel')).toHaveLength(1);
   });
 
-  it('复刻 Dialog 独立选择生成模型，未知视频能力不隐藏目录选项', async () => {
+  it('复刻 Dialog 只列视频生成模型，保留新视频型号且不触发生成', async () => {
     const user = userEvent.setup();
     const fetcher = vi.fn();
     vi.stubGlobal('fetch', fetcher);
@@ -985,7 +990,9 @@ describe('NodeQuickEditor', () => {
       },
       models: [
         { id: 'video-model', name: '生成视频模型', mediaTypes: ['video'] },
-        { id: 'future-model', name: '新生成模型', mediaTypes: ['text'] },
+        { id: 'future-model', name: '新生成模型', mediaTypes: ['video'] },
+        { id: 'text-model', name: '分析文字模型', mediaTypes: ['text'] },
+        { id: 'image-model', name: '图片生成模型', mediaTypes: ['image'] },
       ],
       onPromptSkillChange: vi.fn(),
     });
@@ -999,6 +1006,8 @@ describe('NodeQuickEditor', () => {
     );
     const group = screen.getByText('视频生成模型').parentElement as HTMLElement;
     await user.click(within(group).getByRole('combobox'));
+    expect(selectPopup(group).queryByRole('option', { name: /分析文字模型/ })).toBeNull();
+    expect(selectPopup(group).queryByRole('option', { name: /图片生成模型/ })).toBeNull();
     await user.click(selectPopup(group).getByRole('option', { name: /新生成模型/ }));
     expect(inputs.onModelChange).toHaveBeenCalledExactlyOnceWith({
       modelAlias: 'future-model',
@@ -1007,6 +1016,250 @@ describe('NodeQuickEditor', () => {
     expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
     expect(inputs.onRun).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('复刻参数与生成模型同栏，默认取冻结来源尺寸和分析秒数，并接受用户自定义值', async () => {
+    const user = userEvent.setup();
+    const config: VideoRecreationConfig = {
+      version: 1,
+      source: { assetId: 'source-video', assetVersion: 2, name: '参考视频' },
+      analysis: {
+        runId: 'analysis-run',
+        summary: '全片分析',
+        template: {
+          version: 1,
+          durationSeconds: 8.5,
+          roles: [
+            {
+              id: 'character_a',
+              label: '原视频人物',
+              description: '穿白色衬衫的人物',
+              appearances: [{ startSeconds: 0, endSeconds: 8.5 }],
+            },
+          ],
+          shots: [
+            { startSeconds: 0, endSeconds: 8.5, action: 'character_a 转身', camera: '固定镜头' },
+          ],
+          unknowns: [],
+        },
+      },
+      bindings: [],
+      preservedRoleIds: ['character_a'],
+    };
+    const onParametersChange = vi.fn();
+    const onRun = vi.fn();
+    /** 用受控父状态保存参数，检查编辑和清空后不会重新写入来源默认值。 */
+    function RecreationEditor() {
+      const [parameters, setParameters] = useState<Record<string, unknown>>({ custom: true });
+      return (
+        <NodeQuickEditor
+          {...makeProps({
+            node: {
+              ...videoNode,
+              data: {
+                ...videoNode.data,
+                modelAlias: 'video-model',
+                videoMode: 'omni_reference',
+                videoRecreation: config,
+                parameters,
+              },
+            },
+            assets: [
+              {
+                id: 'source-video',
+                name: '参考视频',
+                latestVersion: 2,
+                mediaType: 'video',
+                mimeType: 'video/mp4',
+                sizeBytes: 1024,
+                status: 'ready',
+                contentUrl: 'https://example.com/source.mp4',
+                tags: [],
+                metadata: { width: 1080, height: 1920, durationSeconds: 9 },
+              },
+            ],
+            onParametersChange: (next) => {
+              onParametersChange(next);
+              setParameters(next);
+            },
+            onRun,
+          })}
+          recreationDialogOpen
+        />
+      );
+    }
+    renderRaw(<RecreationEditor />);
+    expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      custom: true,
+      resolution: '1080p',
+      aspectRatio: '9:16',
+      duration: 8.5,
+    });
+    const model = screen.getByRole('combobox', { name: /视频生成模型/ });
+    const resolution = screen.getByRole('combobox', { name: '视频清晰度：1080p' });
+    const ratio = screen.getByRole('combobox', { name: '视频比例：9:16' });
+    const duration = screen.getByRole('button', { name: '时长（秒）：8.5 秒' });
+    const parameterRow = model.closest('.node-quick-editor-settings');
+    expect(parameterRow).toContainElement(resolution);
+    expect(parameterRow).toContainElement(ratio);
+    expect(parameterRow).toContainElement(duration);
+    expect(screen.getAllByRole('textbox', { name: '提示词' })).toHaveLength(1);
+
+    await user.click(duration);
+    fireEvent.change(screen.getByRole('spinbutton', { name: '自定义时长（秒）' }), {
+      target: { value: '42.25' },
+    });
+    expect(onParametersChange).toHaveBeenLastCalledWith({
+      custom: true,
+      resolution: '1080p',
+      aspectRatio: '9:16',
+      duration: 42.25,
+    });
+    await user.click(screen.getByRole('button', { name: '清除时长' }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({
+      custom: true,
+      resolution: '1080p',
+      aspectRatio: '9:16',
+    });
+    expect(screen.getByRole('button', { name: '时长（秒）：未设置' })).toBeInTheDocument();
+    await user.click(resolution);
+    await user.type(screen.getByRole('textbox', { name: '自定义视频清晰度' }), 'future-8k');
+    await user.click(screen.getByRole('button', { name: '采用参数' }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({
+      custom: true,
+      resolution: 'future-8k',
+      aspectRatio: '9:16',
+    });
+    fireEvent.keyDown(resolution, { key: 'Escape' });
+    await user.click(ratio);
+    await user.type(screen.getByRole('textbox', { name: '自定义视频比例' }), '13:24');
+    await user.click(screen.getByRole('button', { name: '采用参数' }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({
+      custom: true,
+      resolution: 'future-8k',
+      aspectRatio: '13:24',
+    });
+    fireEvent.keyDown(ratio, { key: 'Escape' });
+    const generate = screen.getByRole('button', { name: '生成' });
+    expect(generate).toBeEnabled();
+    await user.click(generate);
+    expect(onRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('复刻来源仅有新版元数据时不误用，精确冻结版本到达后再补非标准尺寸', () => {
+    const onParametersChange = vi.fn();
+    const inputs = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          videoRecreation: {
+            version: 1,
+            source: { assetId: 'source-video', assetVersion: 1, name: '参考视频' },
+            bindings: [],
+          },
+          parameters: { seconds: 6.25 },
+        },
+      },
+      assets: [
+        {
+          id: 'source-video',
+          name: '参考视频',
+          latestVersion: 2,
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          sizeBytes: 1024,
+          status: 'ready',
+          contentUrl: 'https://example.com/source.mp4',
+          tags: [],
+          metadata: { width: 1920, height: 1080 },
+        },
+      ],
+      onParametersChange,
+    });
+    const view = renderRaw(<NodeQuickEditor {...inputs} recreationDialogOpen />);
+    expect(onParametersChange).not.toHaveBeenCalled();
+    view.rerender(
+      <NodeQuickEditor
+        {...inputs}
+        assets={[
+          {
+            id: 'source-video',
+            name: '参考视频',
+            latestVersion: 1,
+            mediaType: 'video',
+            mimeType: 'video/mp4',
+            sizeBytes: 1024,
+            status: 'ready',
+            contentUrl: 'https://example.com/source.mp4',
+            tags: [],
+            metadata: { width: 1040, height: 1920 },
+          },
+        ]}
+        recreationDialogOpen
+      />,
+    );
+    expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      seconds: 6.25,
+      resolution: '1040p',
+      aspectRatio: '13:24',
+    });
+  });
+
+  it('复刻冻结来源无匹配元数据时采用播放器实际尺寸，保留用户时长且不自动生成', () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}'));
+    vi.stubGlobal('fetch', fetcher);
+    const inputs = makeProps({
+      projectId: 'project-a',
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          videoRecreation: {
+            version: 1,
+            source: { assetId: 'source-video', assetVersion: 1, name: '参考视频' },
+            bindings: [],
+          },
+          parameters: { seconds: 7, custom: true },
+        },
+      },
+      assets: [
+        {
+          id: 'source-video',
+          name: '参考视频',
+          latestVersion: 2,
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          sizeBytes: 1024,
+          status: 'ready',
+          contentUrl: 'https://example.com/source-v2.mp4',
+          tags: [],
+          metadata: { width: 3840, height: 2160 },
+        },
+      ],
+      onVideoRecreationChange: vi.fn(),
+      onParametersChange: vi.fn(),
+    });
+    renderRaw(<NodeQuickEditor {...inputs} recreationDialogOpen />);
+    const video = screen.getByRole('region', { name: '原视频与分析' }).querySelector('video')!;
+    expect(video).toHaveAttribute(
+      'src',
+      'http://localhost:3000/v1/assets/source-video/versions/1/content',
+    );
+    expect(inputs.onParametersChange).not.toHaveBeenCalled();
+    Object.defineProperties(video, {
+      videoWidth: { value: 960, configurable: true },
+      videoHeight: { value: 540, configurable: true },
+    });
+    fireEvent.loadedMetadata(video);
+    expect(inputs.onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      seconds: 7,
+      custom: true,
+      resolution: '540p',
+      aspectRatio: '16:9',
+    });
+    expect(inputs.onVideoRecreationChange).not.toHaveBeenCalled();
+    expect(inputs.onRun).not.toHaveBeenCalled();
   });
 
   it.each(['text', 'image', 'audio', 'video'] as const)(

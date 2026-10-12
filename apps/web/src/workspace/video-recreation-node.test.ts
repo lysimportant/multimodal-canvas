@@ -20,7 +20,7 @@ const config: VideoRecreationConfig = {
   },
   bindings: [{ roleId: 'actor', assetId: 'face', assetVersion: 2, name: '人物' }],
 };
-/** 原节点参数必须保留非时长项，但不能继承上一个模型的五秒默认。 */
+/** 模拟已有用户参数，验证默认值和分析保存不覆盖显式选择。 */
 const data: FlowNodeData = {
   label: '复刻',
   mediaType: 'video',
@@ -36,7 +36,10 @@ describe('复刻节点集成数据', () => {
     );
   });
   it('一次更新配置、引用、英文提示词和全片时长', () => {
-    const next = applyVideoRecreationConfig(data, config);
+    const next = applyVideoRecreationConfig(
+      { ...data, parameters: { resolution: '720p' } },
+      config,
+    );
     expect(next.parameters).toEqual({ duration: 8, resolution: '720p' });
     expect(next.videoMode).toBe('omni_reference');
     expect(next.resourceRefs?.map((ref) => ref.assetId)).toEqual(['clip', 'face']);
@@ -55,13 +58,54 @@ describe('复刻节点集成数据', () => {
     });
     expect(recreationGenerationIssue(pending)).toContain('原请求');
   });
-  it('所有生成入口拒绝擅改时长或关闭参考视频模式', () => {
+  it('生成入口保留参考模式校验，允许用户显式设置不同秒数', () => {
     const next = applyVideoRecreationConfig(data, config);
     expect(recreationGenerationIssue({ ...next, videoMode: 'text_to_video' })).toContain(
       '全能参考',
     );
-    expect(recreationGenerationIssue({ ...next, parameters: { duration: 5 } })).toContain('时长');
+    expect(recreationGenerationIssue({ ...next, parameters: { duration: 5 } })).toBeUndefined();
+    expect(recreationGenerationIssue({ ...next, parameters: { duration: 42.25 } })).toBeUndefined();
     expect(recreationGenerationIssue(data)).toBeUndefined();
+  });
+  it('后续人物绑定和重新分析不覆盖用户参数，包括显式清空的秒数', () => {
+    const next = applyVideoRecreationConfig(data, config);
+    const changed = applyVideoRecreationConfig(
+      { ...next, parameters: { seconds: 42.25, resolution: 'future-8k', ratio: '13:24' } },
+      { ...config, bindings: [] },
+    );
+    expect(changed.parameters).toEqual({
+      seconds: 42.25,
+      resolution: 'future-8k',
+      ratio: '13:24',
+    });
+    const cleared = applyVideoRecreationConfig({ ...next, parameters: {} }, config);
+    expect(cleared.parameters).toEqual({});
+  });
+  it('首次分析和更换来源保留用户秒数及别名，只有缺省时才补完整秒数', () => {
+    const next = applyVideoRecreationConfig(
+      {
+        ...data,
+        videoRecreation: { ...config, analysis: undefined },
+        parameters: { seconds: 7, custom: true },
+      },
+      config,
+    );
+    expect(next.parameters).toEqual({ seconds: 7, custom: true });
+    const changedSource = applyVideoRecreationConfig(
+      { ...next, parameters: { duration: 42.25, custom: true } },
+      { ...config, source: { ...config.source, assetVersion: 5 } },
+    );
+    expect(changedSource.parameters).toEqual({ duration: 42.25, custom: true });
+    const unsetSource = applyVideoRecreationConfig(
+      { ...next, parameters: { custom: true } },
+      { ...config, source: { ...config.source, assetVersion: 5 } },
+    );
+    expect(unsetSource.parameters).toEqual({ duration: 8, custom: true });
+    const alias = applyVideoRecreationConfig(
+      { ...data, parameters: { durationSeconds: 7, custom: true } },
+      config,
+    );
+    expect(alias.parameters).toEqual({ durationSeconds: 7, custom: true });
   });
   it('非整秒分析完整保存和提交，不省略或取整时长', () => {
     const fractional = {
@@ -75,7 +119,7 @@ describe('复刻节点集成数据', () => {
         },
       },
     };
-    const next = applyVideoRecreationConfig(data, fractional);
+    const next = applyVideoRecreationConfig({ ...data, parameters: {} }, fractional);
     expect(next.parameters?.duration).toBe(8.5);
     expect(next.prompt).toContain('Full observed duration: 8.5 seconds');
     expect(recreationGenerationIssue(next)).toBeUndefined();

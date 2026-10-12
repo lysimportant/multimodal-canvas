@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearAuthSession } from '../auth-client';
 import {
@@ -83,6 +83,27 @@ afterEach(() => {
 });
 
 describe('原视频卡片预览', () => {
+  it('点击原截图打开同一帧的大图，关闭后不重建读取批次或释放仍使用的截图', async () => {
+    render(<Harness />);
+    act(() => callbacks[0](items[0].id, ready()));
+    fireEvent.click(screen.getByRole('img', { name: '左侧人物的原视频画面' }));
+    const preview = await screen.findByRole('dialog');
+    expect(within(preview).getByRole('img', { name: '左侧人物的原视频画面' })).toHaveAttribute(
+      'src',
+      'blob:frame-a',
+    );
+    expect(createVideoRecreationFrameBatch).toHaveBeenCalledTimes(1);
+    expect(releases[0]).not.toHaveBeenCalled();
+    fireEvent.keyDown(preview, { key: 'Escape', code: 'Escape', keyCode: 27 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByRole('img', { name: '左侧人物的原视频画面' })).toHaveAttribute(
+      'src',
+      'blob:frame-a',
+    );
+    expect(createVideoRecreationFrameBatch).toHaveBeenCalledTimes(1);
+    expect(releases[0]).not.toHaveBeenCalled();
+  });
+
   it('相同定位在绑定、说明和标签重新渲染后不重复读取视频，旧无定位不伪造图片', () => {
     const view = render(<Harness />);
     expect(screen.getByText('分析未提供画面定位')).toBeInTheDocument();

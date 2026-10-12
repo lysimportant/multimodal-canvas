@@ -7,7 +7,10 @@ import {
 } from '@multimodal-canvas/domain';
 import type { FlowNodeData } from '../canvas-utils';
 
-/** 原子保存复刻配置、固定资源和提示词；未完成时清空旧提示词防止错用人物。 */
+/**
+ * 原子保存复刻配置、固定资源和提示词；未完成时清空旧提示词防止错用人物。
+ * 首次分析或更换来源时补上缺省秒数，保留用户已填写的参数与后续显式清空。
+ */
 export function applyVideoRecreationConfig(
   data: FlowNodeData,
   input: VideoRecreationConfig,
@@ -17,17 +20,27 @@ export function applyVideoRecreationConfig(
   const promptDocument = issue
     ? { version: 1 as const, blocks: [{ type: 'text' as const, text: '' }] }
     : buildVideoRecreationPrompt(config);
-  const { duration: _duration, ...parameters } = data.parameters ?? {};
+  const parameters = { ...data.parameters };
+  const previous = data.videoRecreation;
+  const sameSource =
+    previous?.source.assetId === config.source.assetId &&
+    previous.source.assetVersion === config.source.assetVersion;
+  if (
+    config.analysis &&
+    (!sameSource || !previous?.analysis) &&
+    parameters.duration === undefined &&
+    parameters.seconds === undefined &&
+    parameters.durationSeconds === undefined
+  ) {
+    parameters.duration = config.analysis.template.durationSeconds;
+  }
   return {
     ...data,
     videoRecreation: config,
     videoMode: 'omni_reference',
     promptDocument,
     prompt: renderPromptDocument(promptDocument),
-    parameters: {
-      ...parameters,
-      ...(config.analysis ? { duration: config.analysis.template.durationSeconds } : {}),
-    },
+    parameters,
     resourceRefs: promptDocument.blocks.flatMap((block) =>
       block.type === 'mention'
         ? [
@@ -44,7 +57,7 @@ export function applyVideoRecreationConfig(
   };
 }
 
-/** 所有生成入口共用的复刻预检；专属节点不能切换模式或静默更改全片时长。 */
+/** 所有生成入口共用的复刻预检；核对冻结来源和绑定，不按分析时长限制用户参数。 */
 export function recreationGenerationIssue(data: FlowNodeData): string | undefined {
   if (data.videoRecreationDraft) return '请先选择参考视频并完成分析';
   if (!data.videoRecreation) return undefined;
@@ -52,9 +65,6 @@ export function recreationGenerationIssue(data: FlowNodeData): string | undefine
     getVideoRecreationIssue(data.videoRecreation) ??
     (data.videoMode !== 'omni_reference'
       ? '复刻节点需要支持参考视频与人物图片的全能参考模式'
-      : undefined) ??
-    (data.parameters?.duration !== data.videoRecreation.analysis?.template.durationSeconds
-      ? '复刻时长必须与整条参考视频一致，不能静默裁剪或延长'
       : undefined)
   );
 }

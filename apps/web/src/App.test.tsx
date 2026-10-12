@@ -2158,6 +2158,134 @@ describe('App 组件库迁移', () => {
   });
 });
 
+describe('App 复刻节点创建', () => {
+  it('空复刻草稿不继承普通视频参数，普通视频创建仍沿用最近参数', async () => {
+    const node = videoNode('ordinary-video', 'video-model');
+    node.data.parameters = {
+      duration: 15,
+      resolution: '1080p',
+      aspectRatio: '16:9',
+      providerOption: 'preserve',
+    };
+    canvas.nodes = [node];
+    await renderCanvas(0);
+
+    act(() => view.canvas!.onAddGenerateNode('video'));
+    expect(view.canvas!.nodes).toHaveLength(2);
+    expect(view.canvas!.nodes[1].data.parameters).toEqual(node.data.parameters);
+
+    await act(async () => view.canvas!.onRecreateVideo!());
+    expect(view.canvas!.nodes).toHaveLength(3);
+    expect(view.canvas!.nodes[2].data).toMatchObject({
+      mediaType: 'video',
+      mode: 'generate',
+      videoMode: 'omni_reference',
+      videoRecreationDraft: true,
+      generationCount: 1,
+      modelAlias: 'video-model',
+      parameters: {},
+    });
+    expect(view.canvas!.nodes[2].data.parameters).toEqual({});
+    expect(view.canvas!.nodes[0].data.parameters).toEqual(node.data.parameters);
+    expect(view.canvas!.nodes[1].data.parameters).toEqual(node.data.parameters);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+});
+
+describe('App 复刻节点结果回显', () => {
+  it.each([
+    { origin: '实时完成', media: '图片', mimeType: 'image/png', restore: false },
+    { origin: '实时完成', media: '视频', mimeType: 'video/mp4', restore: false },
+    { origin: '历史恢复', media: '图片', mimeType: 'image/png', restore: true },
+    { origin: '历史恢复', media: '视频', mimeType: 'video/mp4', restore: true },
+  ])(
+    '$origin的$media结果保留在原复刻节点，不改变类型、配置或尺寸',
+    async ({ mimeType, restore }) => {
+      const node = videoNode('recreation-node', 'video-model');
+      node.width = 400;
+      node.height = 266;
+      node.data.videoRecreation = {
+        version: 1,
+        source: { assetId: 'clip', assetVersion: 2, name: '参考视频' },
+        bindings: [],
+      };
+      canvas = { revision: 1, nodes: [node], edges: [] };
+      const resultAsset = { assetId: 'recreation-result', version: 3, mimeType };
+      const result: RunRecord['result'] = {
+        summary: '复刻结果已归档',
+        mediaType: mimeType.startsWith('image/') ? 'image' : 'video',
+        targetNodeId: node.id,
+        provider: 'newapi',
+        inputCount: 1,
+        asset: resultAsset,
+      };
+      const run = runRecord({
+        id: 'recreation-run',
+        targetNodeId: node.id,
+        status: restore ? 'succeeded' : 'running',
+        progress: restore ? 100 : 20,
+        error: undefined,
+        modelAlias: node.data.modelAlias!,
+        snapshot: {
+          projectId: project.id,
+          canvasRevision: canvas.revision,
+          targetNodeId: node.id,
+          modelAlias: node.data.modelAlias!,
+          parameters: {},
+          submittedAt: project.createdAt,
+          nodes: structuredClone(canvas.nodes),
+          edges: [],
+          inputs: [],
+        },
+        ...(restore ? { result } : {}),
+      });
+      projectRuns = [run];
+      let emit: ((event: string, data: string) => void) | undefined;
+      vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, onEvent) => {
+        emit = onEvent;
+      });
+      await renderCanvas(0);
+      await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe(run.status));
+
+      if (!restore) {
+        await waitFor(() => expect(emit).toBeDefined());
+        const { snapshot: _snapshot, ...publicRun } = run;
+        act(() =>
+          emit!(
+            'run.updated',
+            JSON.stringify({
+              ...publicRun,
+              status: 'succeeded',
+              progress: 100,
+              updatedAt: '2026-09-25T00:02:00.000Z',
+              result,
+            }),
+          ),
+        );
+      }
+
+      await waitFor(() => expect(view.canvas!.nodes[0].data.resultAsset).toEqual(resultAsset));
+      expect(view.canvas!.nodes).toHaveLength(1);
+      expect(view.canvas!.nodes[0]).toMatchObject({
+        id: node.id,
+        width: 400,
+        height: 266,
+        data: {
+          mediaType: 'video',
+          runStatus: 'succeeded',
+          videoRecreation: node.data.videoRecreation,
+          resultAsset,
+        },
+      });
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) => init?.method === 'POST' && String(url).includes('/runs'),
+        ),
+      ).toHaveLength(0);
+    },
+  );
+});
+
 describe('App 节点参数提交', () => {
   it('新建图片节点不因旧节点参数冲突失败，并保留旧节点参数', async () => {
     const node = imageNode('image-node', 'image-model');

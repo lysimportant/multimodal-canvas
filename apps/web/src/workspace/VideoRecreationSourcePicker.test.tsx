@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Asset } from '@multimodal-canvas/domain';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -25,6 +25,12 @@ function videoAsset(id: string, overrides: Partial<Asset> = {}): Asset {
   };
 }
 
+/** 在真实 Ant Design 下拉中选择视频，只改变候选而不绑定来源。 */
+async function selectVideo(label: string) {
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: '参考视频' }));
+  fireEvent.click(await screen.findByRole('option', { name: label }));
+}
+
 describe('VideoRecreationSourcePicker', () => {
   it('只列出就绪视频并禁用版本未知的候选；选择不自动绑定', async () => {
     const onBind = vi.fn();
@@ -41,14 +47,21 @@ describe('VideoRecreationSourcePicker', () => {
     );
 
     const source = screen.getByRole('combobox', { name: '参考视频' });
-    expect(within(source).getByRole('option', { name: '完整视频 · v3' })).toBeEnabled();
-    expect(within(source).getByRole('option', { name: '版本未知（版本未知）' })).toBeDisabled();
-    expect(within(source).queryByRole('option', { name: /已归档|图片/ })).not.toBeInTheDocument();
+    fireEvent.mouseDown(source);
+    expect(await screen.findByRole('option', { name: '完整视频 · v3' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.getByRole('option', { name: '版本未知（版本未知）' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.queryByRole('option', { name: /已归档|图片/ })).not.toBeInTheDocument();
     const bind = screen.getByRole('button', { name: '使用此视频' });
     expect(bind).toBeDisabled();
     expect(onBind).not.toHaveBeenCalled();
 
-    await userEvent.selectOptions(source, '完整视频');
+    fireEvent.click(screen.getByRole('option', { name: '完整视频 · v3' }));
     expect(bind).toBeEnabled();
     expect(onBind).not.toHaveBeenCalled();
     await userEvent.click(bind);
@@ -115,10 +128,12 @@ describe('VideoRecreationSourcePicker', () => {
     const onBind = vi.fn().mockRejectedValue(new Error('保存参考视频失败'));
     render(<VideoRecreationSourcePicker assets={[videoAsset('clip')]} onBind={onBind} />);
 
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: '参考视频' }), 'clip');
+    await selectVideo('clip · v2');
     await userEvent.click(screen.getByRole('button', { name: '使用此视频' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('保存参考视频失败');
-    expect(screen.getByRole('combobox', { name: '参考视频' })).toHaveValue('clip');
+    expect(
+      screen.getByRole('combobox', { name: '参考视频' }).closest('.ant-select'),
+    ).toHaveTextContent('clip · v2');
     expect(screen.getByRole('button', { name: '使用此视频' })).toBeEnabled();
     expect(onBind).toHaveBeenCalledTimes(1);
   });

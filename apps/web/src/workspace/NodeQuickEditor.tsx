@@ -349,6 +349,21 @@ export function NodeQuickEditor({
   const [expandedEditorOpen, setExpandedEditorOpen] = useState(false);
   const isRecreation = Boolean(node.data.videoRecreation || node.data.videoRecreationDraft);
   const dialogOpen = isRecreation ? recreationDialogOpen : expandedEditorOpen;
+  const recreationSourceIdentity = node.data.videoRecreation
+    ? `${node.id}:${node.data.videoRecreation.source.assetId}:${node.data.videoRecreation.source.assetVersion}`
+    : undefined;
+  /** 实际媒体尺寸按冻结来源缓存，旧视频迟到的元数据不能套用到新来源。 */
+  const [sourceMetadata, setSourceMetadata] = useState<{
+    identity: string;
+    width: number;
+    height: number;
+  }>();
+  /** 来源默认值只补一次；显式清空或编辑后不在重新渲染时恢复。 */
+  const recreationDefaultsRef = useRef<{
+    identity?: string;
+    dimensions: boolean;
+    duration: boolean;
+  }>({ dimensions: false, duration: false });
   /** 参数页 Escape 关闭后的回焦目标；外点关闭不干预用户正在操作的控件。 */
   const mediaSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const expandTriggerRef = useRef<HTMLButtonElement>(null);
@@ -380,9 +395,74 @@ export function NodeQuickEditor({
     currentModel,
     currentCredentialId,
     currentModelIsMissing,
-    Boolean(node.data.videoRecreation),
   );
   const parameters = readNodeMediaParameters(node.data);
+  const recreationSourceAsset = node.data.videoRecreation
+    ? assets.find(
+        (asset) =>
+          asset.id === node.data.videoRecreation!.source.assetId &&
+          asset.latestVersion === node.data.videoRecreation!.source.assetVersion,
+      )
+    : undefined;
+  const sourceWidth = recreationSourceAsset?.metadata?.width;
+  const sourceHeight = recreationSourceAsset?.metadata?.height;
+  const sourceDimensions = recreationVideoDimensions(
+    sourceWidth,
+    sourceHeight,
+    sourceMetadata?.identity === recreationSourceIdentity ? sourceMetadata : undefined,
+  );
+  const analysisDuration = node.data.videoRecreation?.analysis?.template.durationSeconds;
+  useEffect(() => {
+    if (!recreationSourceIdentity || !onParametersChange) return;
+    if (recreationDefaultsRef.current.identity !== recreationSourceIdentity) {
+      recreationDefaultsRef.current = {
+        identity: recreationSourceIdentity,
+        dimensions: false,
+        duration: false,
+      };
+    }
+    const applied = recreationDefaultsRef.current;
+    const next = readNodeMediaParameters(node.data);
+    let changed = false;
+    if (sourceDimensions && !applied.dimensions) {
+      applied.dimensions = true;
+      if (
+        next.resolution === undefined &&
+        next.video_resolution === undefined &&
+        next.videoResolution === undefined
+      ) {
+        next.resolution = `${Math.min(sourceDimensions.width, sourceDimensions.height)}p`;
+        changed = true;
+      }
+      if (
+        next.aspectRatio === undefined &&
+        next.aspect_ratio === undefined &&
+        next.ratio === undefined
+      ) {
+        next.aspectRatio = videoDimensionsRatio(sourceDimensions.width, sourceDimensions.height);
+        changed = true;
+      }
+    }
+    if (analysisDuration !== undefined && !applied.duration) {
+      applied.duration = true;
+      if (
+        next.duration === undefined &&
+        next.seconds === undefined &&
+        next.durationSeconds === undefined
+      ) {
+        next.duration = analysisDuration;
+        changed = true;
+      }
+    }
+    if (changed) onParametersChange(next);
+  }, [
+    recreationSourceIdentity,
+    sourceDimensions?.width,
+    sourceDimensions?.height,
+    analysisDuration,
+    node.data.parameters,
+    onParametersChange,
+  ]);
   const storedInferenceStrength = readStoredInferenceStrength(node.data, parameters);
   let imageOutputParameters: ImageOutputParameters | undefined;
   let imageOutputParameterIssue: string | undefined;
@@ -983,6 +1063,46 @@ export function NodeQuickEditor({
           onChange={(value) => onModelChange(parseModelOptionValue(value))}
           className="node-quick-editor-select-group"
         />
+        {isRecreation && (
+          <>
+            <NodeParameterSelect
+              label="视频清晰度"
+              allowCustomValue
+              value={normalizeCurrentOptionValue(
+                parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
+              )}
+              options={mediaOptions.resolution}
+              onChange={(value) => updateVideoParameter('resolution', value)}
+              disabled={!onParametersChange}
+              className="node-quick-editor-select-group"
+              optionLayout="grid"
+            />
+            <VideoDurationControl
+              value={durationDraft}
+              issue={durationIssue}
+              inputDisabled={!onParametersChange}
+              onChange={(value) => {
+                setDurationDraft(value);
+                if (value === '') updateVideoParameter('duration', undefined);
+                else if (
+                  Number.isFinite(Number(value)) &&
+                  (Number(value) > 0 || Number(value) === -1)
+                )
+                  updateVideoParameter('duration', Number(value));
+              }}
+            />
+            <NodeParameterSelect
+              label="视频比例"
+              allowCustomValue
+              value={normalizeCurrentOptionValue(storedAspectRatio)}
+              options={mediaOptions.aspectRatio}
+              onChange={(value) => updateVideoParameter('aspectRatio', value)}
+              disabled={!onParametersChange}
+              className="node-quick-editor-select-group"
+              optionLayout="grid"
+            />
+          </>
+        )}
         {videoModeEditor}
         {node.data.mediaType === 'text' ? inferenceEditor : !isRecreation && mediaSummary}
       </div>
@@ -1135,6 +1255,17 @@ export function NodeQuickEditor({
         busy={busy}
         onChange={onVideoRecreationChange}
         onUploadResource={onUploadResource}
+        onSearchProjectResources={onSearchProjectResources}
+        onSourceMetadata={(metadata) => {
+          if (!recreationSourceIdentity) return;
+          setSourceMetadata((current) =>
+            current?.identity === recreationSourceIdentity &&
+            current.width === metadata.width &&
+            current.height === metadata.height
+              ? current
+              : { identity: recreationSourceIdentity, ...metadata },
+          );
+        }}
       />
     ) : null;
   const recreationSource =
@@ -1282,6 +1413,47 @@ export function NodeQuickEditor({
       </Dialog>
     </>
   );
+}
+
+/**
+ * 读取冻结资源的正整数像素尺寸；元数据缺失时使用同一来源实际解码的尺寸。
+ * 无可信宽高时返回 undefined，不伪造清晰度或比例。
+ */
+function recreationVideoDimensions(
+  width: unknown,
+  height: unknown,
+  decoded?: { width: number; height: number },
+): { width: number; height: number } | undefined {
+  if (
+    typeof width === 'number' &&
+    typeof height === 'number' &&
+    Number.isSafeInteger(width) &&
+    Number.isSafeInteger(height) &&
+    width > 0 &&
+    height > 0
+  )
+    return { width, height };
+  if (
+    decoded &&
+    Number.isSafeInteger(decoded.width) &&
+    Number.isSafeInteger(decoded.height) &&
+    decoded.width > 0 &&
+    decoded.height > 0
+  )
+    return decoded;
+  return undefined;
+}
+
+/** 将已验证的正整数像素宽高约分为原视频比例，不吸附到常用枚举。 */
+function videoDimensionsRatio(width: number, height: number): string {
+  let divisor = width;
+  let remainder = height;
+  while (remainder !== 0) {
+    const next = divisor % remainder;
+    divisor = remainder;
+    remainder = next;
+  }
+  return `${width / divisor}:${height / divisor}`;
 }
 
 /** 返回两到三个当前参数标签，仅用于显示，不修改未设置项。 */
@@ -2112,6 +2284,7 @@ export function applyNodeGenerationDefaults(
 ): AssetFlowNode['data'] {
   const mediaType = data.mediaType;
   const parameters = readNodeMediaParameters(data);
+  if (data.videoRecreationDraft || data.videoRecreation) return { ...data, parameters };
   if (
     mediaType === 'video' &&
     parameters.duration === undefined &&
@@ -2575,7 +2748,7 @@ function normalizeInferenceMap(value: Record<string, unknown>): MediaOption[] {
   }));
 }
 
-/** 普通节点沿用媒体分类；复刻流程展示完整目录，兼容未知能力，不限制模型提交。 */
+/** 按节点媒体类型展示目录，保留已保存但目录缺失的精确模型身份。 */
 function buildModelOptions(
   models: ModelEntry[],
   mediaType: AssetFlowNode['data']['mediaType'],
@@ -2583,7 +2756,6 @@ function buildModelOptions(
   currentModel: string,
   currentCredentialId: string | undefined,
   currentModelIsMissing: boolean,
-  recreation = false,
 ): QuickOption[] {
   const options: QuickOption[] = [];
   if (currentModelIsMissing && currentValue) {
@@ -2593,9 +2765,7 @@ function buildModelOptions(
       description: currentCredentialId ? '已保存的分组身份' : '已保存模型',
     });
   }
-  const visibleModels = recreation
-    ? models
-    : models.filter((model) => model.mediaTypes.includes(mediaType));
+  const visibleModels = models.filter((model) => model.mediaTypes.includes(mediaType));
   for (const group of groupModelsByCredential(visibleModels)) {
     for (const model of group.models) {
       options.push({

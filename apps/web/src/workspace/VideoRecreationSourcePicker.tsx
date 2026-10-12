@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { Select } from 'antd';
 import { Film, Upload } from 'lucide-react';
 import {
   videoRecreationConfigSchema,
@@ -28,6 +29,7 @@ export function VideoRecreationSourcePicker({
   onBind,
 }: VideoRecreationSourcePickerProps) {
   const [selectedId, setSelectedId] = useState('');
+  const fileInput = useRef<HTMLInputElement>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string>();
   const videos = assets.filter((asset) => asset.mediaType === 'video' && asset.status === 'ready');
@@ -71,20 +73,25 @@ export function VideoRecreationSourcePicker({
       </div>
       <label className="node-quick-editor-field">
         <span>参考视频</span>
-        <select
+        <Select
           aria-label="参考视频"
           value={selectedId}
           disabled={working}
-          onChange={(event) => setSelectedId(event.target.value)}
-        >
-          <option value="">选择项目视频</option>
-          {videos.map((asset) => (
-            <option key={asset.id} value={asset.id} disabled={!asset.latestVersion}>
-              {asset.name}
-              {asset.latestVersion ? ` · v${asset.latestVersion}` : '（版本未知）'}
-            </option>
-          ))}
-        </select>
+          onChange={setSelectedId}
+          virtual={false}
+          getPopupContainer={(trigger: HTMLElement) =>
+            trigger.closest<HTMLElement>('.node-quick-editor-dialog') ?? document.body
+          }
+          styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+          options={[
+            { value: '', label: '选择项目视频' },
+            ...videos.map((asset) => ({
+              value: asset.id,
+              disabled: !asset.latestVersion,
+              label: `${asset.name}${asset.latestVersion ? ` · v${asset.latestVersion}` : '（版本未知）'}`,
+            })),
+          ]}
+        />
       </label>
       <div className="video-recreation-draft-actions">
         <Button
@@ -101,10 +108,14 @@ export function VideoRecreationSourcePicker({
           使用此视频
         </Button>
         {onUploadResource ? (
-          <label className="button button-secondary video-recreation-draft-upload">
-            <Upload size={16} aria-hidden="true" />
-            上传视频
+          <div className="video-recreation-draft-upload">
+            <Button type="button" disabled={working} onClick={() => fileInput.current?.click()}>
+              <Upload size={16} aria-hidden="true" />
+              上传视频
+            </Button>
             <input
+              hidden
+              ref={fileInput}
               type="file"
               accept="video/*"
               aria-label="上传参考视频"
@@ -125,7 +136,7 @@ export function VideoRecreationSourcePicker({
                 }
               }}
             />
-          </label>
+          </div>
         ) : null}
       </div>
       {working ? <p role="status">正在保存参考视频…</p> : null}

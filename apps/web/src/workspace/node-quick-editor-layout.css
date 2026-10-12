@@ -196,11 +196,38 @@
 }
 
 .node-quick-editor-recreation-generate .node-quick-editor-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 6px;
   width: 100%;
 }
 
 .node-quick-editor-recreation-generate .node-quick-editor-select-group {
+  min-width: 0;
   width: 100%;
+}
+
+.node-quick-editor-recreation-generate .node-quick-editor-settings .compact-select-label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.node-quick-editor-recreation-generate .node-quick-editor-settings .ant-select,
+.node-quick-editor-recreation-generate .node-quick-editor-duration-trigger {
+  padding-inline: 7px;
+  font-size: 11px;
+}
+
+.node-quick-editor-recreation-generate .node-quick-editor-duration-trigger {
+  width: 100%;
+  min-width: 0;
+  gap: 3px;
 }
 
 .node-quick-editor-recreation-generate .node-quick-editor-prompt-group {

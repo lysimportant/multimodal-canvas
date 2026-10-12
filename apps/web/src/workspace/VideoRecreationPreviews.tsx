@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Image } from 'antd';
+import { Button } from '@multimodal-canvas/ui';
 import { getAuthSessionGeneration, subscribeAuthSession } from '../auth-client';
 import {
   createVideoRecreationFrameBatch,
@@ -122,7 +124,7 @@ export function VideoRecreationPreview({ item, preview, onRetry }: VideoRecreati
     >
       {state.status === 'ready' ? (
         <>
-          <img
+          <Image
             className="video-recreation-preview-image"
             src={state.url}
             alt={`${item.label}的原视频画面`}
@@ -142,14 +144,14 @@ export function VideoRecreationPreview({ item, preview, onRetry }: VideoRecreati
             {state.status === 'loading' ? '正在截取原视频画面…' : state.error}
           </p>
           {state.status === 'error' && (
-            <button
+            <Button
               type="button"
               className="video-recreation-preview-retry"
               aria-label={`重试${item.label}截图`}
               onClick={onRetry}
             >
               重试截图
-            </button>
+            </Button>
           )}
         </>
       )}

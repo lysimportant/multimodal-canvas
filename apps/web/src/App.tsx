@@ -4556,6 +4556,7 @@ function WorkspaceApp({
           videoMode: 'omni_reference',
           videoRecreationDraft: true,
           generationCount: 1,
+          parameters: {},
         });
         rememberHistory();
         appendNodesAndSelect([child]);
