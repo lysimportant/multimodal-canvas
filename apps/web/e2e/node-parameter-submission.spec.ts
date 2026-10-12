@@ -507,6 +507,266 @@ async function dragDuration(page: Page, slider: Locator) {
   return seconds;
 }
 
+test.describe('节点参数保存回显', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+  test.describe.configure({ timeout: 90_000 });
+
+  for (const presentation of ['快捷', '完整'] as const) {
+    test(`${presentation}图片全部比例与像素档位连续选择后保存刷新提交`, async ({
+      page,
+      baseURL,
+    }, testInfo) => {
+      const fixture = await installFixture(page, baseURL, {
+        parameters: { size: '1024x1024', quality: 'high', seed: 0 },
+      });
+      const node = page.locator('.react-flow__node[data-id="parameter-node"]');
+      const initialBounds = (await node.boundingBox())!;
+      if (presentation === '完整')
+        await page.getByRole('button', { name: '打开完整编辑器' }).click();
+      await openParameters(page);
+
+      for (const [ratio, size] of [
+        ['1:1', '1024x1024'],
+        ['16:9', '1024x576'],
+        ['9:16', '576x1024'],
+        ['4:3', '1024x768'],
+        ['3:4', '768x1024'],
+        ['3:2', '1024x688'],
+        ['2:3', '688x1024'],
+        ['21:9', '1024x432'],
+      ]) {
+        await choose(page, '图片比例', new RegExp(`^${ratio}(?:\\s|$)`));
+        await expect(page.getByRole('combobox', { name: `图片比例：${ratio}` })).toBeVisible();
+        await expect
+          .poll(() => fixture.canvas().nodes[0]!.data.parameters)
+          .toEqual({ size, quality: 'high', seed: 0 });
+        await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+        await expect(page.getByRole('button', { name: '媒体参数', exact: true })).toHaveAttribute(
+          'title',
+          `分辨率：${size!.replace('x', ' × ')} · 比例：${ratio}`,
+        );
+        await openParameters(page);
+      }
+      for (const size of ['2048x880', '3072x1312', '3840x1648']) {
+        await choose(page, '图片分辨率', new RegExp(`^${size.replace('x', '\\s*×\\s*')}(?:\\s|$)`));
+        await expect(page.getByRole('combobox', { name: '图片比例：21:9' })).toBeVisible();
+        await expect
+          .poll(() => fixture.canvas().nodes[0]!.data.parameters)
+          .toEqual({ size, quality: 'high', seed: 0 });
+      }
+      await page.screenshot({
+        path: testInfo.outputPath(`image-ratio-${presentation}.png`),
+        animations: 'disabled',
+      });
+      const updatedBounds = (await node.boundingBox())!;
+      expect(updatedBounds.width).toBeCloseTo(initialBounds.width, 2);
+      expect(updatedBounds.height).toBeCloseTo(initialBounds.height, 2);
+      await page.reload();
+      await selectNode(page);
+      await expect(page.getByRole('button', { name: '媒体参数', exact: true })).toHaveAttribute(
+        'title',
+        '分辨率：3840 × 1648 · 比例：21:9',
+      );
+      await openParameters(page);
+      await expect(page.getByRole('combobox', { name: '图片比例：21:9' })).toBeVisible();
+      await expect(page.getByLabel('请求像素')).toHaveText('3840 × 1648');
+      expect(fixture.submissions).toHaveLength(0);
+      await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+      await page.getByRole('button', { name: '生成', exact: true }).click();
+      await expect.poll(() => fixture.submissions.length).toBe(1);
+      expect(fixture.submissions[0]!.parameters).toEqual({
+        size: '3840x1648',
+        quality: 'high',
+        seed: 0,
+        prompt: 'Create a scene with soft light.',
+      });
+      expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  for (const alias of ['video_resolution', 'videoResolution']) {
+    test(`视频 ${alias} 与字符串自动时长打开刷新不改原值`, async ({ page, baseURL }) => {
+      const parameters = { [alias]: '1080p', aspect_ratio: '21:9', seconds: '-1', seed: 0 };
+      const fixture = await installFixture(page, baseURL, {
+        mediaType: 'video',
+        modelAlias: 'parameter-video-fixture',
+        parameters,
+      });
+      for (const refresh of [false, true]) {
+        if (refresh) {
+          await page.reload();
+          await selectNode(page);
+        }
+        await expect(page.getByRole('button', { name: '媒体参数', exact: true })).toHaveAttribute(
+          'title',
+          /清晰度：1080p · 比例：21:9 · 时长：自动/i,
+        );
+        await openParameters(page);
+        await expect(page.getByRole('combobox', { name: /^视频清晰度：1080p$/i })).toBeVisible();
+        await expect(page.getByRole('combobox', { name: '视频比例：21:9' })).toBeVisible();
+        await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+      }
+      expect(fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
+      expect(fixture.patches).toHaveLength(0);
+      await page.getByRole('button', { name: '生成', exact: true }).click();
+      await expect.poll(() => fixture.submissions.length).toBe(1);
+      expect(fixture.submissions[0]!.parameters).toEqual({
+        ...parameters,
+        prompt: 'Create a scene with soft light.',
+      });
+      expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  test('视频零时长摘要与控件保持一致，刷新不改写参数', async ({ page, baseURL }, testInfo) => {
+    const parameters = { durationSeconds: 0, resolution: '720p', aspect_ratio: '21:9' };
+    const fixture = await installFixture(page, baseURL, {
+      mediaType: 'video',
+      modelAlias: 'parameter-video-fixture',
+      parameters,
+    });
+    for (const refresh of [false, true]) {
+      if (refresh) {
+        await page.reload();
+        await selectNode(page);
+      }
+      await expect(page.getByRole('button', { name: '媒体参数', exact: true })).toHaveAttribute(
+        'title',
+        '清晰度：720p · 比例：21:9 · 时长：0s',
+      );
+      await openParameters(page);
+      await expect(page.getByRole('button', { name: '时长（秒）：0 秒' })).toBeVisible();
+      await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+      await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+    }
+    expect(fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
+    expect(fixture.patches).toHaveLength(0);
+    expect(fixture.submissions).toHaveLength(0);
+    expect(fixture.errors).toEqual([]);
+    await page.screenshot({ path: testInfo.outputPath('zero-video-duration.png') });
+  });
+
+  test('音频全部格式与零语速选择后保存刷新提交', async ({ page, baseURL }) => {
+    const fixture = await installFixture(page, baseURL, {
+      mediaType: 'audio',
+      modelAlias: 'parameter-audio-fixture',
+      parameters: { voice: 'custom-voice', speed: 1.25 },
+    });
+    await openParameters(page);
+    for (const format of ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']) {
+      await choose(page, '音频格式', new RegExp(`^${format}$`, 'i'));
+      await expect
+        .poll(() => fixture.canvas().nodes[0]!.data.parameters?.response_format)
+        .toBe(format);
+      await expect(
+        page.getByRole('combobox', { name: `音频格式：${format.toUpperCase()}` }),
+      ).toBeVisible();
+    }
+    await page.getByRole('spinbutton', { name: '语速', exact: true }).fill('0');
+    await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters?.speed).toBe(0);
+    await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+    await expect(page.getByRole('button', { name: '媒体参数', exact: true })).toHaveAttribute(
+      'title',
+      '音色：custom-voice · 格式：PCM · 语速：0x',
+    );
+    await page.reload();
+    await selectNode(page);
+    await expect(page.getByRole('button', { name: '媒体参数', exact: true })).toHaveAttribute(
+      'title',
+      '音色：custom-voice · 格式：PCM · 语速：0x',
+    );
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+    await expect.poll(() => fixture.submissions.length).toBe(1);
+    expect(fixture.submissions[0]!.parameters).toEqual({
+      voice: 'custom-voice',
+      response_format: 'pcm',
+      speed: 0,
+      prompt: 'Create a scene with soft light.',
+    });
+    expect(fixture.errors).toEqual([]);
+  });
+
+  test('文字全部推理强度选择后保存刷新提交', async ({ page, baseURL }) => {
+    const efforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    const fixture = await installFixture(page, baseURL, {
+      mediaType: 'text',
+      modelAlias: 'parameter-text-fixture',
+      parameters: { seed: 0 },
+      capabilities: { reasoning_effort: efforts },
+    });
+    await expect(page.getByRole('combobox', { name: '推理强度：未设置' })).toBeVisible();
+    for (const [index, effort] of efforts.entries()) {
+      const label = ['轻度', '中', '高', '极高', '最高', 'Ultra'][index]!;
+      await choose(page, '推理强度', new RegExp(`^${label}(?:\\s|$)`, 'i'));
+      await expect.poll(() => fixture.canvas().nodes[0]!.data.inferenceStrength).toBe(effort);
+    }
+    await page.reload();
+    await selectNode(page);
+    await expect(page.getByRole('combobox', { name: /^推理强度：ultra$/i })).toBeVisible();
+    expect(fixture.submissions).toHaveLength(0);
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+    await expect.poll(() => fixture.submissions.length).toBe(1);
+    expect(fixture.submissions[0]!.parameters).toEqual({
+      seed: 0,
+      inferenceStrength: 'ultra',
+      prompt: 'Create a scene with soft light.',
+    });
+    expect(fixture.errors).toEqual([]);
+  });
+
+  for (const alias of ['inferenceStrength', 'reasoning_effort']) {
+    test(`文字 ${alias} 显示已存值，重新选择只保存一份推理强度`, async ({ page, baseURL }) => {
+      const fixture = await installFixture(page, baseURL, {
+        mediaType: 'text',
+        modelAlias: 'parameter-text-fixture',
+        parameters: { [alias]: 'low', seed: 0 },
+      });
+      await expect(page.getByRole('combobox', { name: '推理强度：轻度' })).toBeVisible();
+      expect(fixture.patches).toHaveLength(0);
+      await choose(page, '推理强度', /^高(?:\s|$)/);
+      await expect.poll(() => fixture.canvas().nodes[0]!.data.inferenceStrength).toBe('high');
+      expect(fixture.canvas().nodes[0]!.data.parameters).toEqual({ seed: 0 });
+      await page.reload();
+      await selectNode(page);
+      await expect(page.getByRole('combobox', { name: '推理强度：高' })).toBeVisible();
+      await page.getByRole('button', { name: '生成', exact: true }).click();
+      await expect.poll(() => fixture.submissions.length).toBe(1);
+      expect(fixture.submissions[0]!.parameters).toEqual({
+        seed: 0,
+        inferenceStrength: 'high',
+        prompt: 'Create a scene with soft light.',
+      });
+      expect(fixture.errors).toEqual([]);
+    });
+  }
+
+  test('图片未知清晰度与比例打开刷新及修改质量不改写尺寸', async ({ page, baseURL }) => {
+    const fixture = await installFixture(page, baseURL, {
+      parameters: { resolution: '8k', aspect_ratio: 'panorama', seed: 0 },
+    });
+    await openParameters(page);
+    await expect(page.getByRole('combobox', { name: '图片分辨率：8k' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: '图片比例：panorama' })).toBeVisible();
+    expect(fixture.patches).toHaveLength(0);
+    await choose(page, '生成质量', /^high$/i);
+    const parameters = { resolution: '8k', aspect_ratio: 'panorama', seed: 0, quality: 'high' };
+    await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
+    await page.reload();
+    await selectNode(page);
+    await openParameters(page);
+    await expect(page.getByRole('combobox', { name: '图片分辨率：8k' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: '图片比例：panorama' })).toBeVisible();
+    await page.getByRole('button', { name: '媒体参数', exact: true }).click();
+    await page.getByRole('button', { name: '生成', exact: true }).click();
+    await expect.poll(() => fixture.submissions.length).toBe(1);
+    expect(fixture.submissions[0]!.parameters).toEqual({
+      ...parameters,
+      prompt: 'Create a scene with soft light.',
+    });
+    expect(fixture.errors).toEqual([]);
+  });
+});
+
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 1366, height: 768 },

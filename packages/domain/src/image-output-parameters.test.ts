@@ -64,6 +64,52 @@ describe('resolveImageOutputParameters', () => {
     [{ quality: 'hd' }, { quality: 'hd' }],
     [{ quality: 'medium' }, { quality: 'medium' }],
     [{ quality: 'low' }, { quality: 'low' }],
+    [{ aspectRatio: 'panorama' }, { aspectRatio: 'panorama' }],
+    [{ aspect_ratio: 'adaptive' }, { aspectRatio: 'adaptive' }],
+    [{ ratio: 'future-wide' }, { aspectRatio: 'future-wide' }],
+    [
+      { resolution: '8k', aspectRatio: '16:9' },
+      { resolution: '8k', aspectRatio: '16:9' },
+    ],
+    [
+      { resolution: 'future-size', aspectRatio: '16:9' },
+      { resolution: 'future-size', aspectRatio: '16:9' },
+    ],
+    [
+      { resolution: '4k', aspectRatio: 'panorama' },
+      { resolution: '4k', aspectRatio: 'panorama' },
+    ],
+    [
+      { image_size: 'future-size', aspectRatio: '16:9' },
+      { size: 'future-size', aspectRatio: '16:9' },
+    ],
+    [{ quality: '8k' }, { quality: '8k' }],
+    [
+      { quality: '8k', aspectRatio: '16:9' },
+      {
+        size: '1024x576',
+        width: 1024,
+        height: 576,
+        resolution: '1k',
+        aspectRatio: '16:9',
+        quality: '8k',
+      },
+    ],
+    [{ resolution: 'auto' }, { size: 'auto' }],
+    [
+      { resolution: 'auto', quality: '4k', aspectRatio: '9:16' },
+      { size: '2160x3840', width: 2160, height: 3840, resolution: '4k', aspectRatio: '9:16' },
+    ],
+    [
+      { resolution: 'auto', aspectRatio: '9:16' },
+      { size: '576x1024', width: 576, height: 1024, resolution: '1k', aspectRatio: '9:16' },
+    ],
+    [{ size: 'future-size', aspectRatio: 'auto' }, { size: 'future-size' }],
+    [
+      { image_size: 'future-size', resolution: '4k', aspect_ratio: 'auto' },
+      { size: 'future-size', resolution: '4k' },
+    ],
+    [{ aspectRatio: '0:1' }, { aspectRatio: '0:1' }],
     [{ prompt: 'Do not modify this input.' }, {}],
     [{}, {}],
   ])('resolves only declared image output semantics: %j', (parameters, expected) => {
@@ -110,6 +156,54 @@ describe('automatic size model compatibility', () => {
 });
 
 describe('normalizeImageOutputParameters', () => {
+  it.each([
+    { aspectRatio: 'panorama', seed: 0 },
+    { resolution: '4k', aspect_ratio: 'adaptive', useWatermark: false },
+    { quality: '4k', ratio: 'future-wide' },
+    { resolution: '8K', aspectRatio: '16:9', providerOption: '' },
+    { image_size: 'future-size', aspectRatio: '16:9' },
+    { size: '1024x576', resolution: '8k', aspect_ratio: 'future-wide', quality: 'high' },
+    { quality: '8k' },
+    { aspectRatio: '0:1' },
+    { size: 'future-size', aspectRatio: 'auto' },
+    { image_size: 'future-size', aspectRatio: 'auto' },
+    { size: 'future-size', resolution: '4k', aspect_ratio: 'auto' },
+    { size: 'auto', resolution: '8k', aspectRatio: '16:9' },
+  ])('无法解释的尺寸或比例保留原字段和值，不降级为方形或 1K：%j', (parameters) => {
+    const before = structuredClone(parameters);
+    expect(normalizeImageOutputParameters(parameters)).toEqual(before);
+    expect(parameters).toEqual(before);
+  });
+
+  it('仅比例产生的对齐像素可重复规范化，结果不会再次舍入或补入参数', () => {
+    const normalized = normalizeImageOutputParameters({ aspectRatio: '21:9', seed: 0 });
+    expect(normalized).toEqual({ size: '1024x432', seed: 0 });
+    expect(normalizeImageOutputParameters(normalized)).toEqual(normalized);
+  });
+
+  it.each([
+    [{ resolution: 'auto', quality: '4k', aspectRatio: '9:16' }, { size: '2160x3840' }],
+    [{ resolution: 'auto', aspectRatio: '9:16' }, { size: '576x1024' }],
+    [
+      { resolution: '4k', aspect_ratio: 'auto' },
+      { resolution: '4k', aspect_ratio: 'auto', size: 'auto' },
+    ],
+    [
+      { resolution: 'auto', quality: '4k', aspectRatio: 'auto' },
+      { size: 'auto', quality: '4k', aspectRatio: 'auto' },
+    ],
+  ])('自动尺寸别名在 Web 和 Provider 重复转换后保持相同请求 %j', (parameters, expected) => {
+    const normalized = normalizeImageOutputParameters(parameters);
+    expect(normalized).toEqual(expected);
+    expect(normalizeImageOutputParameters(normalized)).toEqual(normalized);
+  });
+
+  it('数值比例过于极端时明确报错，不生成零像素或静默换比例', () => {
+    expect(() => normalizeImageOutputParameters({ aspectRatio: '1:1000000' })).toThrow(
+      ImageOutputParameterError,
+    );
+  });
+
   it('只保留官方 size 与真实 quality，并原样保留其它字段和假值', () => {
     const parameters = {
       size: '2160x3840',

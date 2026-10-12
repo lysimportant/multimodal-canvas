@@ -181,6 +181,35 @@ describe.each([false, true])('image output parameters (edit=%s)', (edit) => {
 });
 
 describe.each([false, true])('image model parameters (edit=%s)', (edit) => {
+  it.each([
+    { resolution: '8k', aspect_ratio: '16:9' },
+    { aspect_ratio: 'panorama' },
+    { size: '1280x720', aspect_ratio: 'panorama' },
+    { resolution: '4k', aspect_ratio: 'adaptive' },
+    { size: 'future-size', aspect_ratio: 'auto' },
+    { image_size: 'future-size', aspect_ratio: 'auto' },
+  ])('未知图片参数保持原值提交且不补默认像素：%j', async (parameters) => {
+    const { provider, fetchImpl } = imageProvider();
+    const snapshot = imageSnapshot({ ...parameters, quality: 'high', seed: 0 }, edit);
+    const before = structuredClone(snapshot);
+    await provider.execute({ snapshot });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const init = fetchImpl.mock.calls[0]![1]!;
+    const body = edit
+      ? Object.fromEntries((init.body as FormData).entries())
+      : JSON.parse(init.body as string);
+    expect(body).toMatchObject(
+      Object.fromEntries(
+        Object.entries({ ...parameters, quality: 'high', seed: 0 }).map(([key, value]) => [
+          key,
+          edit ? String(value) : value,
+        ]),
+      ),
+    );
+    if (!('size' in parameters)) expect(body).not.toHaveProperty('size');
+    expect(snapshot).toEqual(before);
+  });
+
   it.each(['9:16', '16:9', '21:9'])(
     'sends supported UHD %s through the exact model',
     async (aspectRatio) => {

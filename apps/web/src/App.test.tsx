@@ -2472,6 +2472,80 @@ describe('App 节点参数提交', () => {
       expect(view.canvas!.nodes[0]!.data.inferenceStrength).toBeUndefined();
     },
   );
+
+  it.each([
+    ['修改', 'low'],
+    ['清除', ''],
+  ] as const)(
+    '%s 历史推理强度后，保存、提交与重新加载不残留冲突别名',
+    async (_action, inferenceStrength) => {
+      const node = emptyNode('legacy-inference-node');
+      node.data = {
+        ...node.data,
+        modelAlias: 'exact-text-model',
+        prompt: 'Summarize the sample.',
+        parameters: {
+          max_tokens: 256,
+          inferenceStrength: 'high',
+          reasoning_effort: 'high',
+          providerOption: false,
+          temperature: 0,
+        },
+      };
+      canvas.nodes = [node];
+      const rendered = await renderCanvas(0);
+      act(() => view.canvas!.onInferenceStrengthChange(inferenceStrength, node.id));
+      const editedNode = view.canvas!.nodes[0]!;
+      const expectedParameters = { max_tokens: 256, providerOption: false, temperature: 0 };
+      expect(editedNode.data.parameters).toEqual(expectedParameters);
+      expect(editedNode.data.inferenceStrength).toBe(inferenceStrength || undefined);
+      expect(node.data.parameters).toHaveProperty('reasoning_effort', 'high');
+      await act(async () => view.canvas!.onRunNode(editedNode));
+
+      const requests = fetchMock.mock.calls.filter(
+        ([url, init]) => init?.method === 'POST' && String(url).endsWith(`/nodes/${node.id}/runs`),
+      );
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(String(requests[0]![1]!.body))).toEqual({
+        projectId: project.id,
+        modelAlias: 'exact-text-model',
+        parameters: {
+          ...expectedParameters,
+          prompt: 'Summarize the sample.',
+          ...(inferenceStrength ? { inferenceStrength } : {}),
+        },
+      });
+      expect(canvas.nodes[0]!.data.parameters).toEqual(expectedParameters);
+      expect(canvas.nodes[0]!.data.inferenceStrength).toBe(inferenceStrength || undefined);
+
+      rendered.unmount();
+      await renderCanvas(0);
+      expect(view.canvas!.nodes[0]!.data.parameters).toEqual(expectedParameters);
+      expect(view.canvas!.nodes[0]!.data.inferenceStrength).toBe(inferenceStrength || undefined);
+    },
+  );
+
+  it.each([undefined, { max_tokens: 256 }] as const)(
+    '修改推理强度不改写无别名的参数 %j',
+    async (parameters) => {
+      const node = emptyNode('clean-inference-node');
+      node.data = {
+        label: node.id,
+        mediaType: 'text',
+        mode: 'generate',
+        prompt: 'Summarize the sample.',
+        ...(parameters ? { parameters } : {}),
+      };
+      canvas.nodes = [node];
+      await renderCanvas(0);
+      const loadedParameters = view.canvas!.nodes[0]!.data.parameters;
+      act(() => view.canvas!.onInferenceStrengthChange('low', node.id));
+      expect(view.canvas!.nodes[0]!.data.parameters).toBe(loadedParameters);
+      await act(async () => view.canvas!.onRunNode(view.canvas!.nodes[0]!));
+      expect(canvas.nodes[0]!.data.parameters).toEqual(parameters);
+      if (!parameters) expect(canvas.nodes[0]!.data).not.toHaveProperty('parameters');
+    },
+  );
 });
 
 describe('App 历史与共享保存快照', () => {

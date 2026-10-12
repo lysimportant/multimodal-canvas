@@ -11,13 +11,13 @@ const resolutionLongEdges: Readonly<Record<string, number>> = {
 
 /** 图片输出参数的只读解析结果；没有设置尺寸时不臆造供应商默认值。 */
 export type ImageOutputParameters = {
-  /** Images 接口的 WIDTHxHEIGHT 或 auto；不含清晰度档位字符串。 */
+  /** Images 接口的 WIDTHxHEIGHT、auto 或无法解释的原始尺寸；不代替未知值。 */
   size?: string;
   /** 请求宽度，单位 px；自动尺寸时缺省。 */
   width?: number;
   /** 请求高度，单位 px；自动尺寸时缺省。 */
   height?: number;
-  /** 新 resolution 或旧 quality 中识别出的清晰度档位。 */
+  /** 新 resolution 的原值或旧 quality 中识别出的已知清晰度档位。 */
   resolution?: ImageResolution;
   /** 用户填写的比例；单独选择清晰度时使用明确的 1:1 默认比例。 */
   aspectRatio?: string;
@@ -51,6 +51,17 @@ function readAlias(
   return undefined;
 }
 
+/** 只解析正有限数值比例；文本比例及零值交给上游，不替换为方形。 */
+function parseAspectRatio(value: string | undefined): readonly [number, number] | undefined {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/.exec(value ?? '');
+  if (!match) return undefined;
+  const horizontal = Number(match[1]);
+  const vertical = Number(match[2]);
+  return Number.isFinite(horizontal) && Number.isFinite(vertical) && horizontal > 0 && vertical > 0
+    ? [horizontal, vertical]
+    : undefined;
+}
+
 /** 根据长边和比例计算像素；短边按 16 px 对齐，不能舍入成零。 */
 function dimensionsForRatio(
   longEdge: number,
@@ -74,7 +85,8 @@ function dimensionsForRatio(
  * @param parameters 节点或冻结 Run 参数；不会修改输入，也不包含模型能力猜测。
  * @param modelAlias 兼容保留的模型别名；不会用于本地能力门禁。
  * @returns 明确 size、独立 quality 和用于界面解释的清晰度/像素。仅选比例时以 1K 长边计算，
- * 仅选清晰度时按 1:1 计算；显式像素保持原值。短边对齐可能使实际比例有微小差异。
+ * 仅选已知清晰度时按 1:1 计算；显式像素保持原值。未知尺寸、档位或比例保留原值，
+ * 不补默认像素。短边对齐可能使实际比例有微小差异。
  * @throws ImageOutputParameterError 比例过于极端，无法转换为有效尺寸时抛出。
  * @example resolveImageOutputParameters({ quality: '4k', aspectRatio: '9:16' }).size // '2160x3840'
  */
@@ -84,41 +96,51 @@ export function resolveImageOutputParameters(
 ): ImageOutputParameters {
   void modelAlias;
   const rawQuality = readAlias(parameters, ['quality', 'image_quality', 'imageQuality']);
-  const rawAspectRatio = readAlias(parameters, ['aspectRatio', 'aspect_ratio']);
+  const rawAspectRatio = readAlias(parameters, ['aspectRatio', 'aspect_ratio', 'ratio']);
   const rawSize = readAlias(parameters, ['size', 'image_size', 'imageSize']);
   const rawResolution = readAlias(parameters, ['resolution']);
   const pixelResolution = /^\d+\s*[x×]\s*\d+$/.test(rawResolution ?? '');
-  const explicitSize = (rawSize ?? (pixelResolution ? rawResolution : undefined))?.replace(
-    /\s*[x×]\s*/i,
-    'x',
-  );
+  const automaticResolution = rawResolution?.toLowerCase() === 'auto';
+  const explicitSize = (
+    rawSize ?? (pixelResolution || automaticResolution ? rawResolution : undefined)
+  )?.replace(/\s*[x×]\s*/i, 'x');
   const explicitDimensions = explicitSize ? /^(\d+)x(\d+)$/i.exec(explicitSize) : undefined;
+  const knownQualityResolution = Object.hasOwn(
+    resolutionLongEdges,
+    rawQuality?.toLowerCase() ?? '',
+  );
   const rawKResolution = pixelResolution
     ? undefined
-    : (rawResolution ?? (/^\d+k$/i.test(rawQuality ?? '') ? rawQuality : undefined));
-  const canonicalResolution = /^\d+k$/i.test(rawKResolution ?? '')
+    : ((automaticResolution ? undefined : rawResolution) ??
+      (knownQualityResolution ? rawQuality : undefined));
+  const knownResolution = Object.hasOwn(resolutionLongEdges, rawKResolution?.toLowerCase() ?? '');
+  const canonicalResolution = knownResolution
     ? rawKResolution!.trim().toLowerCase()
     : rawKResolution;
   const quality =
     canonicalResolution &&
-    /^\d+k$/i.test(rawQuality ?? '') &&
+    knownQualityResolution &&
     canonicalResolution === rawQuality!.trim().toLowerCase()
       ? undefined
       : rawQuality;
-  const ratioMatch = /^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/.exec(rawAspectRatio ?? '');
-  const ratio = ratioMatch ? ([Number(ratioMatch[1]), Number(ratioMatch[2])] as const) : undefined;
+  const ratio = parseAspectRatio(rawAspectRatio);
   const longEdge =
-    (canonicalResolution ? resolutionLongEdges[canonicalResolution] : undefined) ??
-    (rawAspectRatio && rawAspectRatio.trim().toLowerCase() !== 'auto' ? 1024 : undefined);
+    (knownResolution ? resolutionLongEdges[canonicalResolution!] : undefined) ??
+    ((rawResolution === undefined || automaticResolution) && ratio ? 1024 : undefined);
   const generatedDimensions =
-    !explicitDimensions && longEdge && rawAspectRatio?.trim().toLowerCase() !== 'auto'
-      ? dimensionsForRatio(longEdge, ratio && ratio[0] > 0 && ratio[1] > 0 ? ratio : [1, 1])
+    !explicitDimensions &&
+    (explicitSize === undefined || explicitSize.toLowerCase() === 'auto') &&
+    longEdge &&
+    (rawAspectRatio === undefined || ratio)
+      ? dimensionsForRatio(longEdge, ratio ?? [1, 1])
       : undefined;
   const size = generatedDimensions
     ? `${generatedDimensions.width}x${generatedDimensions.height}`
-    : explicitSize === 'auto' || rawAspectRatio?.trim().toLowerCase() === 'auto'
-      ? 'auto'
-      : explicitSize;
+    : explicitSize !== undefined && explicitSize.toLowerCase() !== 'auto'
+      ? explicitSize
+      : explicitSize?.toLowerCase() === 'auto' || rawAspectRatio?.toLowerCase() === 'auto'
+        ? 'auto'
+        : undefined;
   const dimensions =
     explicitDimensions ??
     (generatedDimensions ? ['', generatedDimensions.width, generatedDimensions.height] : undefined);
@@ -128,7 +150,7 @@ export function resolveImageOutputParameters(
       : (rawAspectRatio ?? (generatedDimensions ? '1:1' : undefined));
   const effectiveResolution =
     canonicalResolution ??
-    (generatedDimensions && !rawResolution && !rawQuality ? '1k' : undefined);
+    (generatedDimensions && (!rawResolution || automaticResolution) ? '1k' : undefined);
   return {
     ...(size ? { size } : {}),
     ...(dimensions ? { width: Number(dimensions[1]), height: Number(dimensions[2]) } : {}),
@@ -143,8 +165,8 @@ export function resolveImageOutputParameters(
  *
  * @param parameters 节点或冻结 Run 参数；函数复制输入，不修改原对象。
  * @param modelAlias 兼容保留的模型别名；不会用于本地能力门禁。
- * @returns 删除图片尺寸、清晰度、比例和质量别名后的新对象；已解析尺寸写入
- * `size`，供应商原生质量写入 `quality`，其它字段及假值保持不变。
+ * @returns 已解析尺寸写入 `size`，供应商原生质量写入 `quality`；仅删除完成转换的别名。
+ * 无法解释的尺寸、清晰度和比例保留原字段和值，其它字段及假值保持不变。
  * @throws ImageOutputParameterError 比例过于极端，无法转换为有效尺寸时抛出。
  * @example normalizeImageOutputParameters({ size: '2160x3840', quality: 'high' })
  * // { size: '2160x3840', quality: 'high' }
@@ -155,24 +177,38 @@ export function normalizeImageOutputParameters(
 ): Record<string, unknown> {
   const output = resolveImageOutputParameters(parameters, modelAlias);
   const normalized = { ...parameters };
-  for (const key of [
-    'size',
-    'image_size',
-    'imageSize',
-    'resolution',
-    'quality',
-    'image_quality',
-    'imageQuality',
-    'aspectRatio',
-    'aspect_ratio',
-  ]) {
-    delete normalized[key];
+  const hasCanonicalSize = /^(?:\d+x\d+|auto)$/i.test(output.size ?? '');
+  if (hasCanonicalSize) {
+    for (const key of ['size', 'image_size', 'imageSize', 'resolution']) {
+      const value = readAlias(parameters, [key]);
+      if (
+        /^(?:\d+\s*[x×]\s*\d+|auto)$/i.test(value ?? '') ||
+        (key === 'resolution' &&
+          output.width !== undefined &&
+          Object.hasOwn(resolutionLongEdges, value?.toLowerCase() ?? ''))
+      )
+        delete normalized[key];
+    }
+    for (const key of ['aspectRatio', 'aspect_ratio', 'ratio']) {
+      const value = readAlias(parameters, [key]);
+      if (
+        (output.width !== undefined && parseAspectRatio(value)) ||
+        (value?.toLowerCase() === 'auto' &&
+          output.size === 'auto' &&
+          output.resolution === undefined)
+      )
+        delete normalized[key];
+    }
+    normalized.size = output.size;
   }
-  if (output.size !== undefined) normalized.size = output.size;
+  for (const key of ['quality', 'image_quality', 'imageQuality']) {
+    const value = readAlias(parameters, [key]);
+    if (
+      output.quality !== undefined ||
+      (output.width !== undefined && Object.hasOwn(resolutionLongEdges, value?.toLowerCase() ?? ''))
+    )
+      delete normalized[key];
+  }
   if (output.quality !== undefined) normalized.quality = output.quality;
-  if (output.width === undefined && output.resolution !== undefined)
-    normalized.resolution = output.resolution;
-  if (output.width === undefined && output.aspectRatio !== undefined)
-    normalized.aspect_ratio = output.aspectRatio;
   return normalized;
 }

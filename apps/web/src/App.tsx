@@ -3291,17 +3291,27 @@ function WorkspaceApp({
     [rememberHistory, updateNodeDataAndMarkDownstreamStale],
   );
 
-  /** 更新指定或选中节点的推理强度；空值明确移除配置，并标记下游结果过期。 */
+  /** 显式修改推理强度时移除历史参数别名；空值清除配置，并标记下游结果过期。 */
   const updateSelectedInferenceStrength = useCallback(
     (inferenceStrength: InferenceStrength, nodeId?: string) => {
       const targetNodeId = nodeId ?? effectiveSelectedNodeId;
       if (!targetNodeId) return;
       rememberHistory();
       canvasDirtyRef.current = true;
-      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
-        ...data,
-        inferenceStrength: inferenceStrength || undefined,
-      }));
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => {
+        const nextData = { ...data, inferenceStrength: inferenceStrength || undefined };
+        if (
+          data.parameters &&
+          (Object.hasOwn(data.parameters, 'inferenceStrength') ||
+            Object.hasOwn(data.parameters, 'reasoning_effort'))
+        ) {
+          const parameters = { ...data.parameters };
+          delete parameters.inferenceStrength;
+          delete parameters.reasoning_effort;
+          return { ...nextData, parameters };
+        }
+        return nextData;
+      });
     },
     [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );

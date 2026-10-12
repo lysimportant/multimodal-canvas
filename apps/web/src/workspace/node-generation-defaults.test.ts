@@ -136,6 +136,23 @@ describe('applyNodeGenerationDefaults', () => {
     expect(original.parameters).toEqual({ resolution: 'legacy', width: 1920, custom: true });
   });
 
+  it.each([{ reasoning_effort: 'low' }, { inferenceStrength: 'custom-effort' }])(
+    '切换模型沿用参数级推理强度 %j，不补 high 覆盖已保存值',
+    (parameters) => {
+      const original = { ...data('text'), parameters };
+      const configured = applyNodeGenerationDefaults(
+        original,
+        model('text', { reasoning_effort: ['low', 'high'] }),
+      );
+      expect(configured.inferenceStrength).toBe(
+        parameters.reasoning_effort ?? parameters.inferenceStrength,
+      );
+      expect(configured.parameters).toEqual(parameters);
+      expect(original.parameters).toEqual(parameters);
+      expect(original).not.toHaveProperty('inferenceStrength');
+    },
+  );
+
   it('缺失模型、不兼容媒体或未声明的媒体枚举不能使用旧菜单回退值', () => {
     for (const candidate of [undefined, model('image'), model('text')]) {
       expect(applyNodeGenerationDefaults(data('image'), candidate).parameters).toEqual({});
@@ -328,6 +345,27 @@ describe('applyNodeGenerationDefaults', () => {
       aspectRatio: '9:16',
       providerOption: false,
     });
+  });
+
+  it.each([
+    { size: '1024x688', aspectRatio: '1.5:1', seed: 0 },
+    { size: '1024x576', aspect_ratio: '64:36', custom: false },
+    { size: '1024x576', ratio: 'future-wide', quality: 'high' },
+  ])('新建图片沿用时保留明确的自定义比例与未知字段 %j', (parameters) => {
+    const previous: AssetFlowNode = {
+      id: 'node_custom_ratio',
+      type: 'image',
+      position: { x: 0, y: 0 },
+      data: { ...data('image'), parameters },
+    };
+    const seed = resolvePreviousOperationSeed([previous], 'image', 'generate');
+    expect(seed?.parameters).toEqual(parameters);
+    const configured = applyNodeGenerationDefaults(
+      { ...data('image'), ...seed },
+      model('image', { resolutions: ['4k'], aspectRatios: ['1:1'] }),
+    );
+    expect(configured.parameters).toEqual(parameters);
+    expect(previous.data.parameters).toEqual(parameters);
   });
 
   it('目录文案是默认值时仍用实际档位计算像素', () => {
