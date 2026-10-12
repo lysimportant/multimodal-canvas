@@ -1,5 +1,7 @@
 import { AccountAccessError as AccountServiceError, accountError } from './account-errors';
 import { randomUUID } from 'node:crypto';
+import type { RunRecord } from '@multimodal-canvas/domain';
+import { ExecutionError } from '@multimodal-canvas/execution';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { AuthService, toPublicUser, type AuthenticatedSession } from './auth-service';
@@ -7,7 +9,7 @@ import { extractBearerToken } from './auth';
 import type { AuthStore } from './auth-store';
 import type { AssetStore, ManagementAsset } from './assets';
 import type { ProjectStore } from './projects';
-import type { RunService } from './runs';
+import { RunServiceError, type RunService } from './runs';
 
 /** 通用分页最大一百条，空值和无效枚举均明确拒绝。 */
 const paginationSchema = z.object({
@@ -360,6 +362,95 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
       }),
     );
   }
+  for (const admin of [false, true]) {
+    const base = admin ? '/v1/admin/runs' : '/v1/account/runs';
+    app.get(
+      `${base}/:id`,
+      handler(async (request) => {
+        const current = session(request, admin);
+        z.object({}).strict().parse(request.query);
+        const run = await authorizedRun(
+          options,
+          idParams(request).id,
+          admin ? undefined : current.user.id,
+          admin,
+        );
+        if (!run) throw new AccountServiceError('run_not_found', '任务不存在或无权访问', 404);
+        const users = new Map(
+          (await options.store.listUsers()).map((user) => [user.id, toPublicUser(user)]),
+        );
+        return { run: managedRunDto(run.run, run.project, users) };
+      }),
+    );
+    app.post(
+      `${base}/:id/recover`,
+      handler(async (request, reply) => {
+        const current = session(request, admin);
+        z.object({}).strict().parse(request.query);
+        z.object({})
+          .strict()
+          .parse(request.body === undefined ? {} : request.body);
+        const authorized = await authorizedRun(
+          options,
+          idParams(request).id,
+          admin ? undefined : current.user.id,
+          admin,
+        );
+        if (!authorized)
+          throw new AccountServiceError('run_not_found', '任务不存在或无权访问', 404);
+        const users = new Map(
+          (await options.store.listUsers()).map((user) => [user.id, toPublicUser(user)]),
+        );
+        const dto = managedRunDto(authorized.run, authorized.project, users);
+        if (!dto.recoverableVideo)
+          throw new AccountServiceError(
+            'recovery_unavailable',
+            '该任务没有可获取的原视频结果',
+            409,
+          );
+        if (!options.runs.recover)
+          throw new AccountServiceError(
+            'recovery_unavailable',
+            '当前执行后端不支持持久任务恢复',
+            409,
+          );
+        await audit(
+          options.store,
+          current.user.id,
+          authorized.run.userId,
+          authorized.run.id,
+          'run.video.retrieve.request',
+          '请求查询原视频平台任务并获取结果',
+        );
+        let recovered: RunRecord;
+        try {
+          recovered = await options.runs.recover(authorized.run.id, { retrieveOnly: true });
+        } catch (error) {
+          if (error instanceof RunServiceError)
+            throw new AccountServiceError('recovery_unavailable', error.message, 409);
+          if (error instanceof ExecutionError)
+            throw new AccountServiceError(
+              error.code,
+              error.message,
+              error.code === 'authorization_revoked' ? 403 : 409,
+            );
+          throw error;
+        }
+        if (
+          recovered.id !== authorized.run.id ||
+          recovered.projectId !== authorized.run.projectId ||
+          recovered.userId !== authorized.run.userId ||
+          recovered.targetNodeId !== authorized.run.targetNodeId ||
+          recovered.attempt !== authorized.run.attempt
+        )
+          throw new AccountServiceError('recovery_conflict', '恢复任务身份已变化', 409);
+        return reply.code(202).send({
+          run: managedRunDto(recovered, authorized.project, users),
+          accepted: true,
+        });
+      }),
+    );
+  }
   app.get(
     '/v1/admin/audit',
     handler(async (request) => {
@@ -517,48 +608,134 @@ async function managedRuns(options: AccountRoutesOptions, ownerId?: string) {
     await Promise.all(
       projects.map(async (project) =>
         (await options.runs.listByProject(project.id))
-          .filter((run) => !ownerId || !run.userId || run.userId === ownerId)
-          .map((run) => ({
-            id: run.id,
-            projectId: run.projectId,
-            projectName: project.name,
-            targetNodeId: run.targetNodeId,
-            status: run.status,
-            progress: run.progress,
-            attempt: run.attempt,
-            provider: run.provider,
-            modelAlias: run.modelAlias,
-            createdAt: run.createdAt,
-            updatedAt: run.updatedAt,
-            ownerId: run.userId ?? project.ownerId ?? null,
-            user: users.get(run.userId ?? project.ownerId ?? '') ?? null,
-            ...(run.error ? { error: run.error } : {}),
-            ...(run.result
-              ? {
-                  result: {
-                    summary: run.result.summary,
-                    targetNodeId: run.result.targetNodeId,
-                    mediaType: run.result.mediaType,
-                    provider: run.result.provider,
-                    inputCount: run.result.inputCount,
-                    ...(run.result.asset
-                      ? {
-                          asset: {
-                            assetId: run.result.asset.assetId,
-                            version: run.result.asset.version,
-                            mimeType: run.result.asset.mimeType,
-                            sizeBytes: run.result.asset.sizeBytes,
-                          },
-                        }
-                      : {}),
-                  },
-                }
-              : {}),
-          })),
+          .filter(
+            (run) =>
+              (!ownerId || !run.userId || run.userId === ownerId) &&
+              !(run.userId && project.ownerId && run.userId !== project.ownerId),
+          )
+          .map((run) => managedRunDto(run, project, users)),
       ),
     )
   ).flat();
   return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+}
+/** 管理任务列表、详情和受理响应共用的公开字段；不承载原始执行数据。 */
+type ManagedRunDto = {
+  id: string;
+  projectId: string;
+  projectName: string;
+  targetNodeId: string;
+  status: RunRecord['status'];
+  progress: number;
+  attempt: number;
+  provider: string;
+  modelAlias: string;
+  createdAt: string;
+  updatedAt: string;
+  ownerId: string | null;
+  user: ReturnType<typeof toPublicUser> | null;
+  recoverableVideo: boolean;
+  error?: string;
+  result?: {
+    summary: string;
+    targetNodeId: string;
+    mediaType: string;
+    provider: string;
+    inputCount: number;
+    asset?: { assetId: string; version?: number; mimeType?: string; sizeBytes?: number };
+  };
+};
+
+/**
+ * 将已核对归属的 Run 转成管理页安全 DTO，不返回平台任务 ID、冻结快照或凭据。
+ * @param run 原任务记录，恢复资格仅表示可发起查询，执行层仍须验证持久授权。
+ * @param project 原任务项目及其当前所有者。
+ * @param users 用户公开信息索引，不含会话和凭据。
+ * @returns 可用于列表、独立详情和受理响应的状态与归档资源标识。
+ */
+function managedRunDto(
+  run: RunRecord,
+  project: { id: string; name: string; ownerId?: string },
+  users: ReadonlyMap<string, ReturnType<typeof toPublicUser>>,
+): ManagedRunDto {
+  const ownerId = run.userId ?? project.ownerId ?? null;
+  const user = users.get(ownerId ?? '') ?? null;
+  const target = run.snapshot.nodes.find((node) => node.id === run.targetNodeId);
+  const recoverableVideo = Boolean(
+    ownerId &&
+    project.ownerId === ownerId &&
+    run.userId === ownerId &&
+    ['failed', 'cancelled'].includes(run.status) &&
+    target?.data.mediaType === 'video' &&
+    run.provider === 'newapi' &&
+    run.providerJob?.provider === 'newapi' &&
+    Boolean(run.providerJob.platformJobId?.trim()) &&
+    !run.result?.asset,
+  );
+  return {
+    id: run.id,
+    projectId: run.projectId,
+    projectName: project.name,
+    targetNodeId: run.targetNodeId,
+    status: run.status,
+    progress: run.progress,
+    attempt: run.attempt,
+    provider: run.provider,
+    modelAlias: run.modelAlias,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    ownerId,
+    user,
+    recoverableVideo,
+    ...(run.error ? { error: run.error } : {}),
+    ...(run.result
+      ? {
+          result: {
+            summary: run.result.summary,
+            targetNodeId: run.result.targetNodeId,
+            mediaType: run.result.mediaType,
+            provider: run.result.provider,
+            inputCount: run.result.inputCount,
+            ...(run.result.asset
+              ? {
+                  asset: {
+                    assetId: run.result.asset.assetId,
+                    version: run.result.asset.version,
+                    mimeType: run.result.asset.mimeType,
+                    sizeBytes: run.result.asset.sizeBytes,
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * 读取原任务并核对 Run 与项目所有权；身份冲突统一作为不存在处理。
+ * @param options 管理路由所依赖的任务和项目存储。
+ * @param id 服务端持久 Run ID，不是平台任务 ID。
+ * @param ownerId 个人路由的已登录用户；管理员路由省略，不接受客户端替换。
+ * @param admin 调用方已通过管理员会话校验时为 true。
+ * @returns 已授权的任务与项目；不存在或归属冲突返回 undefined，存储错误继续抛出。
+ */
+async function authorizedRun(
+  options: AccountRoutesOptions,
+  id: string,
+  ownerId: string | undefined,
+  admin: boolean,
+): Promise<
+  { run: RunRecord; project: { id: string; name: string; ownerId?: string } } | undefined
+> {
+  const run = await options.runs.get(id);
+  if (!run) return undefined;
+  const project = await options.projects.get(run.projectId, ownerId ? { ownerId } : {});
+  if (!project) return undefined;
+  if (run.userId && project.ownerId && run.userId !== project.ownerId) return undefined;
+  if (!admin && (project.ownerId !== ownerId || (run.userId && run.userId !== ownerId)))
+    return undefined;
+  return { run, project };
 }
 /** 对每次敏感命令写入脱敏审计，调用方明确区分申请与完成。 */
 async function audit(

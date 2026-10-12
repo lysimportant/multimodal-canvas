@@ -55,20 +55,19 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
     await this.prisma.$disconnect();
   }
 
-  /** outbox 取消意图不随生命周期更新消失；历史任务同时读取 Run 取消状态。 */
-  async isCancellationRequested(runId: string): Promise<boolean> {
+  /** outbox 取消意图不随生命周期更新消失；已受理只读恢复不继承旧取消终态。 */
+  async isCancellationRequested(runId: string, retrieveOnly = false): Promise<boolean> {
     const [outbox, run] = await Promise.all([
       this.prisma.runOutbox.findUnique({ where: { runId }, select: { payload: true } }),
       this.prisma.run.findUnique({ where: { id: databaseRunId(runId) }, select: { status: true } }),
     ]);
     const payload = outbox?.payload;
+    const outboxPayload =
+      payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : undefined;
     return Boolean(
-      (payload &&
-        typeof payload === 'object' &&
-        !Array.isArray(payload) &&
-        payload.cancelRequested === true) ||
+      outboxPayload?.cancelRequested === true ||
       run?.status === 'CANCEL_REQUESTED' ||
-      run?.status === 'CANCELLED',
+      (run?.status === 'CANCELLED' && !(retrieveOnly && outboxPayload?.retrieveOnly === true)),
     );
   }
 

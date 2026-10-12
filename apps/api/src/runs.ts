@@ -1979,9 +1979,13 @@ export class BullMqRunService implements RunService {
       }
       const state = await existing.getState();
       if (state === 'completed') {
-        return this.withDurableRunFields(await this.toRunRecord(existing), durable);
+        // 取消后的 Worker 会以 completed Job 保存本地取消终态；只读恢复必须
+        // 重新走持久平台任务核对，再把同一 Job 重新入队查询原视频任务。
+        if (durable.status !== 'cancelled') {
+          return this.withDurableRunFields(await this.toRunRecord(existing), durable);
+        }
       }
-      if (state !== 'failed') {
+      if (state !== 'failed' && !(state === 'completed' && durable.status === 'cancelled')) {
         throw new RunServiceError(
           'invalid_state',
           '原任务仍在队列或执行中，请等待状态更新后再获取资源',
@@ -2032,7 +2036,10 @@ export class BullMqRunService implements RunService {
             throw new ExecutionError('authorization_conflict', 'outbox 与队列任务身份或快照不一致');
           }
           const durable = await this.persistence?.getRun?.(entry.runId);
-          if (durable?.status === 'cancel_requested' || durable?.status === 'cancelled')
+          if (
+            !data.retrieveOnly &&
+            (durable?.status === 'cancel_requested' || durable?.status === 'cancelled')
+          )
             data.cancelRequested = true;
           if (existing) {
             const state = await existing.getState();
@@ -2042,10 +2049,14 @@ export class BullMqRunService implements RunService {
             existingData ??= runJobDataSchema.parse(existing.data);
             // outbox 中的恢复标志必须传给已经存在的 Job；否则恢复请求和
             // 并发派发相撞时，Worker 仍会按普通生成路径再次 POST。
+            const readOnlyRecovery = data.retrieveOnly || existingData.retrieveOnly;
             const mergedData = runJobDataSchema.parse({
               ...existingData,
-              ...(data.cancelRequested ? { cancelRequested: true } : {}),
-              ...(data.retrieveOnly && state === 'failed' ? { retrieveOnly: true } : {}),
+              ...(readOnlyRecovery
+                ? { cancelRequested: false, retrieveOnly: true }
+                : data.cancelRequested
+                  ? { cancelRequested: true }
+                  : {}),
             });
             if (
               mergedData.cancelRequested !== existingData.cancelRequested ||
@@ -2055,10 +2066,10 @@ export class BullMqRunService implements RunService {
               existingData = mergedData;
             }
             // 已核验的只读恢复复用同一个 BullMQ ID；普通 outbox 不重试失败 Job。
-            if (data.retrieveOnly && state === 'failed') {
+            if (data.retrieveOnly && (state === 'failed' || state === 'completed')) {
               let retried = false;
               try {
-                await existing.retry('failed');
+                await existing.retry(state);
                 retried = true;
               } catch (error) {
                 // 并发派发可能已经先将同一个只读 Job 重新入队；其余失败仍保留 outbox。
@@ -2082,7 +2093,8 @@ export class BullMqRunService implements RunService {
               }
             }
           } else {
-            await this.queue.add('run', data, {
+            const queueData = data.retrieveOnly ? { ...data, cancelRequested: false } : data;
+            await this.queue.add('run', queueData, {
               jobId: entry.runId,
               // 使用同一运行恢复已归档结果与发送状态；Worker 的发送意图阻止重复生成。
               attempts: 3,
@@ -2094,7 +2106,8 @@ export class BullMqRunService implements RunService {
           const latest = await transaction.runOutbox.findUniqueOrThrow({
             where: { id: entry.id },
           });
-          if (runJobDataSchema.parse(latest.payload).cancelRequested) {
+          const latestPayload = runJobDataSchema.parse(latest.payload);
+          if (latestPayload.cancelRequested && !latestPayload.retrieveOnly) {
             const published = await this.queue.getJob(entry.runId);
             if (published)
               await published.updateData({
@@ -2138,8 +2151,14 @@ export class BullMqRunService implements RunService {
     let result: RunRecord['result'];
     let error: string | undefined;
 
-    // failed Job 重用同一 ID 后，Worker 首次写入前仍可能读到上一轮的 progress。
-    if (data.retrieveOnly && state !== 'failed' && progressResult?.status === 'failed') {
+    // 原 Job 重用同一 ID 后，Worker 首次写入前仍可能读到上一轮失败或取消进度。
+    if (
+      data.retrieveOnly &&
+      state !== 'failed' &&
+      state !== 'completed' &&
+      progressResult &&
+      ['failed', 'cancelled', 'cancel_requested'].includes(progressResult.status)
+    ) {
       status = state === 'active' ? 'running' : 'queued';
       progress = 0;
     }

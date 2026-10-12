@@ -44,21 +44,23 @@
   max-height: 180px;
 }
 
-.artifact-preview-open-button {
+.artifact-preview-open-button.ant-btn {
   align-items: center;
   background: rgb(17 24 39 / 78%);
   border: 0;
   border-radius: 4px;
+  box-sizing: border-box;
   bottom: 7px;
   color: #ffffff;
   cursor: pointer;
   display: inline-flex;
   justify-content: center;
-  height: 32px;
+  height: 40px;
+  min-width: 40px;
   padding: 0;
   position: absolute;
   right: 7px;
-  width: 32px;
+  width: 40px;
   z-index: 2;
 }
 .artifact-preview-open-button:hover {

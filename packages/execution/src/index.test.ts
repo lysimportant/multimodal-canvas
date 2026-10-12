@@ -254,6 +254,140 @@ describe('PrismaExecutionService', () => {
     expect(rows.run.get(databaseRunId)).toMatchObject({ status: 'CANCEL_REQUESTED' });
     expect(rows.outbox.get(runId)?.payload).toMatchObject({ cancelRequested: true });
   });
+
+  it.each(['sending', 'unknown', 'sent'])(
+    '发送状态 %s 已提交或不明确时拒绝取消，保留 Run 和 outbox 原状',
+    async (status) => {
+      const f = recoveryFixture('video');
+      f.intent(status, f.input('run_receipt', 'upstream', 7));
+      const runBefore = structuredClone(f.original.run);
+      const outboxBefore = structuredClone(f.original.outbox);
+
+      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
+        code: 'send_requires_review',
+      });
+      expect(f.original.run).toEqual(runBefore);
+      expect(f.original.outbox).toEqual(outboxBefore);
+    },
+  );
+
+  it.each(['send-intent', 'provider-job'])(
+    '%s 有平台任务 ID 时拒绝普通取消，保留持久状态',
+    async (source) => {
+      const f = recoveryFixture('video');
+      if (source === 'send-intent') f.intent('sent', f.input('run_receipt', 'upstream'), 'task-1');
+      else
+        f.rows.providerJob.set('provider-job-1', {
+          runId: f.original.run.id,
+          provider: 'newapi',
+          platformJobId: 'task-1',
+        });
+      const runBefore = structuredClone(f.original.run);
+      const outboxBefore = structuredClone(f.original.outbox);
+
+      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
+        code: 'send_requires_review',
+      });
+      expect(f.original.run).toEqual(runBefore);
+      expect(f.original.outbox).toEqual(outboxBefore);
+    },
+  );
+
+  it.each(['sending', 'unknown', 'sent'])(
+    '视频 Run 的 %s 发送节点无法归属时仍拒绝取消',
+    async (status) => {
+      const f = recoveryFixture('video');
+      f.intent(status, f.input('run_receipt', 'legacy-unknown-node'));
+      const runBefore = structuredClone(f.original.run);
+      const outboxBefore = structuredClone(f.original.outbox);
+
+      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
+        code: 'send_requires_review',
+      });
+
+      expect(f.rows.run.get(f.original.run.id)).toEqual(runBefore);
+      expect(f.rows.outbox.get('run_receipt')).toEqual(outboxBefore);
+    },
+  );
+
+  it.each(['sending', 'unknown', 'sent'])(
+    '非视频请求发送状态 %s 仍允许本地取消',
+    async (status) => {
+      const f = recoveryFixture('text');
+      f.intent(status, f.input(), 'text-platform-id');
+      f.rows.providerJob.set('provider-job-1', {
+        runId: f.original.run.id,
+        provider: 'newapi',
+        platformJobId: 'text-platform-id',
+        payload: { workflowNodeId: 'target' },
+      });
+
+      await f.service.requestCancellation('run_receipt');
+
+      expect(f.rows.run.get(f.original.run.id)?.status).toBe('CANCEL_REQUESTED');
+      expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ cancelRequested: true });
+    },
+  );
+
+  it('视频 DAG 的已发送文字前置节点不阻止视频发送前取消', async () => {
+    const f = recoveryFixture('video');
+    f.frozen.nodes[1]!.data.mediaType = 'text';
+    for (const value of [f.original.run, f.original.authorization, f.original.outbox.payload]) {
+      value.snapshot.nodes[1]!.data.mediaType = 'text';
+    }
+    f.intent('sent', f.input('run_receipt', 'upstream'), 'text-platform-id');
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'newapi',
+      platformJobId: 'text-platform-id',
+      payload: { workflowNodeId: 'upstream' },
+    });
+
+    await f.service.requestCancellation('run_receipt');
+
+    expect(f.rows.run.get(f.original.run.id)?.status).toBe('CANCEL_REQUESTED');
+    expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ cancelRequested: true });
+  });
+
+  it.each(['sending', 'unknown', 'sent', 'platform-id'])(
+    '损坏冻结快照且有 %s 证据时拒绝取消，不把未知媒体当作非视频',
+    async (evidence) => {
+      const f = recoveryFixture('video');
+      f.original.run.snapshot.nodes = [];
+      if (evidence === 'platform-id')
+        f.rows.providerJob.set('provider-job-1', {
+          runId: f.original.run.id,
+          platformJobId: 'task-existing',
+        });
+      else f.intent(evidence);
+      const runBefore = structuredClone(f.original.run);
+      const outboxBefore = structuredClone(f.original.outbox);
+
+      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
+        code: 'send_requires_review',
+      });
+
+      expect(f.rows.run.get(f.original.run.id)).toEqual(runBefore);
+      expect(f.rows.outbox.get('run_receipt')).toEqual(outboxBefore);
+    },
+  );
+
+  it('历史快照缺失且已发送时拒绝取消，缺少发送证据时仍可本地取消', async () => {
+    const { client, rows } = fakeExecutionClient();
+    const service = new PrismaExecutionService(client as never);
+    const runId = 'run_legacy_unknown_media';
+    const databaseRunId = executionDatabaseRunId(runId);
+    rows.run.set(databaseRunId, { id: databaseRunId, status: 'RUNNING' });
+    rows.sendIntent.set('intent-legacy', { runId, nodeId: 'target', status: 'sent' });
+
+    await expect(service.requestCancellation(runId)).rejects.toMatchObject({
+      code: 'send_requires_review',
+    });
+    expect(rows.run.get(databaseRunId)?.status).toBe('RUNNING');
+    rows.sendIntent.clear();
+    await service.requestCancellation(runId);
+    expect(rows.run.get(databaseRunId)?.status).toBe('CANCEL_REQUESTED');
+  });
 });
 
 function fakeExecutionClient() {
@@ -699,6 +833,69 @@ describe('暂存回执与重试发送边界', () => {
     await expect(
       f.service.requestRecovery('run_receipt', 'synthetic-review', true),
     ).rejects.toMatchObject({ code: 'send_requires_review' });
+  });
+
+  it('历史取消终态只用匹配的平台视频身份恢复，清除旧取消标志且不领取新发送', async () => {
+    const f = recoveryFixture('video');
+    f.original.run.status = 'CANCELLED';
+    f.original.outbox.payload.cancelRequested = true;
+    f.intent('sent', f.input(), 'platform-existing');
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'newapi',
+      platformJobId: 'platform-existing',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: f.frozen.executionBindings!.target!.contract,
+      },
+    });
+
+    await expect(f.service.requestRecovery('run_receipt', 'synthetic-review')).resolves.toBe(false);
+    await expect(f.service.requestRecovery('run_receipt', 'synthetic-review', true)).resolves.toBe(
+      true,
+    );
+    expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({
+      retrieveOnly: true,
+      cancelRequested: false,
+    });
+    await expect(f.service.beginSend(f.input())).rejects.toMatchObject({
+      code: 'send_requires_review',
+    });
+    await expect(
+      f.service.beginSend({ ...f.input(), resumePlatformJobId: 'platform-existing' }),
+    ).resolves.toMatchObject({ status: 'sent', platformJobId: 'platform-existing' });
+    expect(f.rows.sendIntent.size).toBe(1);
+    expect(f.original.run.status).toBe('CANCELLED');
+  });
+
+  it.each([
+    ['撤销授权', 'revoked', { workflowNodeId: 'target' }],
+    ['错误节点', 'active', { workflowNodeId: 'upstream' }],
+    ['错误合同', 'active', { contract: 'other-contract' }],
+  ])('历史取消后%s不能进入只读恢复', async (_label, authorizationStatus, evidence) => {
+    const f = recoveryFixture('video');
+    f.original.run.status = 'CANCELLED';
+    f.original.outbox.payload.cancelRequested = true;
+    f.original.authorization.status = authorizationStatus;
+    f.rows.providerJob.set('provider-job-1', {
+      runId: f.original.run.id,
+      provider: 'newapi',
+      platformJobId: 'platform-existing',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: f.frozen.executionBindings!.target!.contract,
+        ...evidence,
+      },
+    });
+    const before = structuredClone(f.original.outbox);
+    await expect(
+      f.service.requestRecovery('run_receipt', 'synthetic-review', true),
+    ).rejects.toMatchObject({
+      code: authorizationStatus === 'revoked' ? 'authorization_revoked' : 'send_requires_review',
+    });
+    expect(f.original.outbox).toEqual(before);
   });
 
   it.each(['sending', 'unknown', 'sent'])('拒绝原 Run 任意 attempt 的 %s 证据', async (status) => {

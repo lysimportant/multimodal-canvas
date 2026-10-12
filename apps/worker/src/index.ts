@@ -154,8 +154,8 @@ export type WorkerProviderCredentials = {
  * dependency and can still run in tests or local development.
  */
 export type RunPersistence = {
-  /** 查询持久取消意图，outbox 写入优先于生命周期状态，避免迟到队列消息继续执行。 */
-  isCancellationRequested?(runId: string): Promise<boolean>;
+  /** 查询持久取消意图；只读恢复需核对 outbox，不能把历史取消终态当作新取消。 */
+  isCancellationRequested?(runId: string, retrieveOnly?: boolean): Promise<boolean>;
   /** 读取当前平台节点超时（毫秒）；在开始执行节点时读取，不改写冻结凭据。 */
   getProviderTimeoutMs?(reference: WorkerCredentialReference): Promise<number | undefined>;
   /** Resolve the exact encrypted credential captured in a run snapshot. */
@@ -518,7 +518,10 @@ export function createRunWorker(options: {
       const cancellationRequested = async () => {
         if (!durableCancellationRequested)
           durableCancellationRequested =
-            (await options.persistence?.isCancellationRequested?.(initialData.runId)) ?? false;
+            (await options.persistence?.isCancellationRequested?.(
+              initialData.runId,
+              retrieveOnlyObserved,
+            )) ?? false;
         return durableCancellationRequested || isCancellationRequested(queue, job.id);
       };
       await cancellationRequested();

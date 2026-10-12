@@ -357,6 +357,7 @@ export class PrismaExecutionService {
    *
    * 历史任务可能早于 ExecutionAuthorization，但取消不是执行授权。此路径允许它们
    * 按稳定 Run 身份停止本地投递，同时仍由 Worker 的只读恢复规则禁止新建请求。
+   * 视频请求已提交、送达未知或有平台 ID 时拒绝普通取消；非视频保留本地取消语义。
    */
   async requestCancellation(runId: string): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
@@ -367,12 +368,71 @@ export class PrismaExecutionService {
       const databaseRunId = authorization?.databaseRunId ?? executionDatabaseRunId(runId);
       const run = await transaction.run.findUnique({
         where: { id: databaseRunId },
-        select: { id: true },
+        select: { id: true, snapshot: true },
       });
       if (!run) throw new ExecutionError('authorization_required', '任务缺少持久运行记录');
       const outbox = await transaction.runOutbox.findUnique({ where: { runId } });
-      if (outbox) {
-        const payload = runJobDataSchema.parse(outbox.payload);
+      const payload = outbox ? runJobDataSchema.parse(outbox.payload) : undefined;
+      const frozen = runSnapshotSchema.safeParse(
+        run.snapshot ?? authorization?.snapshot ?? payload?.snapshot,
+      );
+      const nodeIds = new Set(frozen.success ? frozen.data.nodes.map((node) => node.id) : []);
+      const videoNodeIds = new Set(
+        frozen.success
+          ? frozen.data.nodes
+              .filter((node) => node.data.mediaType === 'video' && node.data.mode !== 'source')
+              .map((node) => node.id)
+          : [],
+      );
+      const sendIntents = await transaction.runSendIntent.findMany({
+        where: { runId },
+      });
+      const submittedIntents = sendIntents.filter(
+        (intent) =>
+          intent.status === 'sending' || intent.status === 'unknown' || intent.status === 'sent',
+      );
+      const videoSentOrUncertain = submittedIntents.some(
+        (intent) =>
+          videoNodeIds.has(intent.nodeId) || (videoNodeIds.size > 0 && !nodeIds.has(intent.nodeId)),
+      );
+      const providerJobs = await transaction.providerJob.findMany({
+        where: { runId: databaseRunId },
+      });
+      if (
+        !frozen.success &&
+        (submittedIntents.length > 0 ||
+          [...sendIntents, ...providerJobs].some((entry) => Boolean(entry.platformJobId?.trim())))
+      ) {
+        throw new ExecutionError(
+          'send_requires_review',
+          '无法核对原任务媒体类型，且请求已发送或状态不明，请核实原任务后再操作',
+        );
+      }
+      const hasVideoSendId = sendIntents.some(
+        (intent) =>
+          Boolean(intent.platformJobId?.trim()) &&
+          (videoNodeIds.has(intent.nodeId) ||
+            (videoNodeIds.size > 0 && !nodeIds.has(intent.nodeId))),
+      );
+      const hasVideoPlatformJob = providerJobs.some((entry) => {
+        if (!entry.platformJobId?.trim()) return false;
+        const jobPayload = entry.payload;
+        const nodeId =
+          jobPayload && typeof jobPayload === 'object' && !Array.isArray(jobPayload)
+            ? jobPayload.workflowNodeId
+            : undefined;
+        return (
+          (typeof nodeId === 'string' && videoNodeIds.has(nodeId)) ||
+          (videoNodeIds.size > 0 && (typeof nodeId !== 'string' || !nodeIds.has(nodeId)))
+        );
+      });
+      if (videoSentOrUncertain || hasVideoSendId || hasVideoPlatformJob) {
+        throw new ExecutionError(
+          'send_requires_review',
+          '渠道商 Provider 视频请求已发送或发送状态不明，无法普通取消，请恢复或核实原任务',
+        );
+      }
+      if (outbox && payload) {
         await transaction.runOutbox.update({
           where: { id: outbox.id },
           data: { payload: { ...payload, cancelRequested: true } as Prisma.InputJsonValue },
@@ -390,7 +450,7 @@ export class PrismaExecutionService {
    * @param runId 原 API/BullMQ 运行编号。
    * @param queueName 当前部署队列；禁止把其他部署的任务转移进来。
    * @param retrieveOnly 只恢复已有视频平台任务，不创建新的 Provider 请求。
-   * @returns 完成或取消的任务返回 false；其余任务复核成功后返回 true。
+   * @returns 已成功或普通取消的任务返回 false；其余任务复核成功后返回 true。
    * @throws {ExecutionError} 授权、快照或归属不一致，以及原请求发送结果尚不明确。
    */
   async requestRecovery(runId: string, queueName: string, retrieveOnly = false): Promise<boolean> {
@@ -432,14 +492,15 @@ export class PrismaExecutionService {
       ) {
         throw new ExecutionError('authorization_conflict', '原任务的队列、身份或冻结快照不一致');
       }
-      if (run.status === 'SUCCEEDED' || run.status === 'CANCELLED') return false;
+      if (run.status === 'SUCCEEDED' || (run.status === 'CANCELLED' && !retrieveOnly)) return false;
       if (authorization.status !== 'active') {
         throw new ExecutionError('authorization_revoked', '原任务执行授权已撤销');
       }
       assertExecutionBindings(authorizedSnapshot.data);
+      const historicalCancelled = run.status === 'CANCELLED';
       const cancelled = run.status === 'CANCEL_REQUESTED' || payload.data.cancelRequested;
       if (retrieveOnly) {
-        if (cancelled) {
+        if (cancelled && !historicalCancelled) {
           throw new ExecutionError('send_requires_review', '原任务已取消，无法只读获取资源');
         }
         const targetNodeId = authorizedSnapshot.data.targetNodeId;
@@ -521,17 +582,25 @@ export class PrismaExecutionService {
         data: {
           publishedAt: null,
           lastError: null,
-          ...(cancelled
+          ...(historicalCancelled && retrieveOnly
             ? {
                 payload: {
                   ...payload.data,
-                  cancelRequested: true,
-                  ...(retrieveOnly ? { retrieveOnly: true } : {}),
+                  cancelRequested: false,
+                  retrieveOnly: true,
                 } as Prisma.InputJsonValue,
               }
-            : retrieveOnly
-              ? { payload: { ...payload.data, retrieveOnly: true } as Prisma.InputJsonValue }
-              : {}),
+            : cancelled
+              ? {
+                  payload: {
+                    ...payload.data,
+                    cancelRequested: true,
+                    ...(retrieveOnly ? { retrieveOnly: true } : {}),
+                  } as Prisma.InputJsonValue,
+                }
+              : retrieveOnly
+                ? { payload: { ...payload.data, retrieveOnly: true } as Prisma.InputJsonValue }
+                : {}),
         },
       });
       return true;
@@ -578,11 +647,17 @@ export class PrismaExecutionService {
         where: { id: currentAuthorization.databaseRunId },
         select: { status: true },
       });
-      if (!run || run.status === 'CANCEL_REQUESTED' || run.status === 'CANCELLED') {
+      if (!run || run.status === 'CANCEL_REQUESTED') {
         throw new ExecutionError('authorization_revoked', '任务已取消，禁止发送新请求');
       }
       const outbox = await transaction.runOutbox.findUnique({ where: { runId: input.runId } });
       const retrieveOnly = runJobDataSchema.safeParse(outbox?.payload);
+      if (
+        run.status === 'CANCELLED' &&
+        (!retrieveOnly.success || !retrieveOnly.data.retrieveOnly)
+      ) {
+        throw new ExecutionError('authorization_revoked', '任务已取消，禁止发送新请求');
+      }
       if (retrieveOnly.success && retrieveOnly.data.retrieveOnly) {
         if (!input.resumePlatformJobId) {
           throw new ExecutionError('send_requires_review', '原任务已进入只读获取，禁止创建新请求');

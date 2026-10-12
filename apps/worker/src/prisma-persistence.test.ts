@@ -51,6 +51,25 @@ describe('Worker 持久取消意图', () => {
       );
     },
   );
+
+  it('只有只读恢复的 outbox 可以越过旧取消终态；新取消意图仍生效', async () => {
+    let status = 'CANCELLED';
+    let payload = { retrieveOnly: true, cancelRequested: false };
+    const persistence = new WorkerPrismaRunPersistence({
+      run: { findUnique: vi.fn(async () => ({ status })) },
+      runOutbox: { findUnique: vi.fn(async () => ({ payload })) },
+    } as never);
+
+    await expect(persistence.isCancellationRequested(runId)).resolves.toBe(true);
+    await expect(persistence.isCancellationRequested(runId, true)).resolves.toBe(false);
+    status = 'CANCEL_REQUESTED';
+    await expect(persistence.isCancellationRequested(runId, true)).resolves.toBe(true);
+    status = 'CANCELLED';
+    payload = { retrieveOnly: true, cancelRequested: true };
+    await expect(persistence.isCancellationRequested(runId, true)).resolves.toBe(true);
+    payload = { retrieveOnly: false, cancelRequested: false };
+    await expect(persistence.isCancellationRequested(runId, true)).resolves.toBe(true);
+  });
 });
 
 describe('Worker 节点超时设置', () => {

@@ -939,7 +939,7 @@ describe('BullMQ run result integrity', () => {
       id: runId,
       data: { ...payload },
       progress: { status: 'failed', progress: 80, updatedAt: durable.updatedAt },
-      returnvalue: undefined,
+      returnvalue: undefined as { status: string; progress: number } | undefined,
       failedReason: '上游查询超时',
       timestamp: Date.parse(durable.createdAt),
       getState: vi.fn(async () => jobState),
@@ -965,7 +965,16 @@ describe('BullMQ run result integrity', () => {
       return state.job;
     });
     const requestRecovery = vi.fn(async (_id: string, _queue: string, retrieveOnly: boolean) => {
-      outbox.payload = { ...payload, ...(retrieveOnly ? { retrieveOnly: true } : {}) };
+      outbox.payload = {
+        ...outbox.payload,
+        ...(retrieveOnly
+          ? {
+              retrieveOnly: true,
+              cancelRequested:
+                durable.status === 'cancelled' ? false : outbox.payload.cancelRequested,
+            }
+          : {}),
+      };
       outbox.publishedAt = null;
       return true;
     });
@@ -1047,6 +1056,53 @@ describe('BullMQ run result integrity', () => {
         code: 'invalid_state',
       });
       expect(requestRecovery).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('已完成的本地取消 Job 仅在只读核验后按原 ID 重新入队', async () => {
+    const { runId, job, durable, outbox, requestRecovery, service, setState } =
+      createRecoveryFixture();
+    durable.status = 'cancelled';
+    outbox.payload.cancelRequested = true;
+    job.data.cancelRequested = true;
+    setState('completed');
+    job.returnvalue = { status: 'cancelled', progress: 80 };
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).resolves.toMatchObject({
+        id: runId,
+        status: 'queued',
+      });
+      expect(requestRecovery).toHaveBeenCalledOnce();
+      expect(job.updateData).toHaveBeenCalledWith(
+        expect.objectContaining({ cancelRequested: false, retrieveOnly: true }),
+      );
+      expect(job.retry).toHaveBeenCalledExactlyOnceWith('completed');
+      expect(state.add).not.toHaveBeenCalled();
+      expect(outbox.payload.cancelRequested).toBe(false);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('历史取消 Job 已丢失时仍只投递取消标志清除的原任务', async () => {
+    const { runId, durable, outbox, requestRecovery, service } = createRecoveryFixture();
+    durable.status = 'cancelled';
+    outbox.payload.cancelRequested = true;
+    state.job = undefined;
+    try {
+      await expect(service.recover(runId, { retrieveOnly: true })).resolves.toMatchObject({
+        id: runId,
+        status: 'queued',
+      });
+      expect(requestRecovery).toHaveBeenCalledOnce();
+      expect(state.add).toHaveBeenCalledWith(
+        'run',
+        expect.objectContaining({ runId, cancelRequested: false, retrieveOnly: true }),
+        expect.anything(),
+      );
+      expect(outbox.payload.cancelRequested).toBe(false);
     } finally {
       await service.close();
     }
@@ -1169,18 +1225,52 @@ describe('BullMQ run result integrity', () => {
     }
   });
 
-  it('并发派发同一只读 outbox 时串行核对最新记录，只重试一次原 Job', async () => {
-    const { runId, job, outbox, service } = createRecoveryFixture();
-    outbox.publishedAt = null;
-    outbox.payload.retrieveOnly = true;
+  it.each(['failed', 'completed'])(
+    '并发派发 %s 只读 outbox 时只重试一次原 Job',
+    async (jobState) => {
+      const { runId, job, durable, outbox, service, setState } = createRecoveryFixture();
+      if (jobState === 'completed') {
+        durable.status = 'cancelled';
+        job.data.cancelRequested = true;
+        job.returnvalue = { status: 'cancelled', progress: 80 };
+        setState(jobState);
+      }
+      outbox.publishedAt = null;
+      outbox.payload.retrieveOnly = true;
+      try {
+        await expect(
+          Promise.all([service.dispatchOutbox(runId), service.dispatchOutbox(runId)]),
+        ).resolves.toEqual([undefined, undefined]);
+        expect(job.retry).toHaveBeenCalledTimes(1);
+        expect(job.updateProgress).toHaveBeenCalledTimes(1);
+        expect(state.add).not.toHaveBeenCalled();
+        expect(outbox.publishedAt).toBeInstanceOf(Date);
+      } finally {
+        await service.close();
+      }
+    },
+  );
+
+  it.each([
+    ['waiting', 'cancelled', 'queued'],
+    ['waiting', 'cancel_requested', 'queued'],
+    ['active', 'cancelled', 'running'],
+    ['active', 'cancel_requested', 'running'],
+    ['completed', 'cancelled', 'cancelled'],
+    ['failed', 'cancel_requested', 'failed'],
+  ])('只读恢复 %s Job 的旧 %s 进度显示为 %s', async (jobState, oldProgressStatus, expected) => {
+    const { runId, job, durable, service, setState } = createRecoveryFixture();
+    durable.status = 'cancelled';
+    Object.assign(job.data, { retrieveOnly: true, cancelRequested: false });
+    job.progress.status = oldProgressStatus!;
+    job.returnvalue = { status: 'cancelled', progress: 80 };
+    setState(jobState!);
     try {
-      await expect(
-        Promise.all([service.dispatchOutbox(runId), service.dispatchOutbox(runId)]),
-      ).resolves.toEqual([undefined, undefined]);
-      expect(job.retry).toHaveBeenCalledTimes(1);
-      expect(job.updateProgress).toHaveBeenCalledTimes(1);
-      expect(state.add).not.toHaveBeenCalled();
-      expect(outbox.publishedAt).toBeInstanceOf(Date);
+      await expect(service.get(runId)).resolves.toMatchObject({
+        id: runId,
+        status: expected,
+        progress: jobState === 'waiting' || jobState === 'active' ? 0 : 80,
+      });
     } finally {
       await service.close();
     }

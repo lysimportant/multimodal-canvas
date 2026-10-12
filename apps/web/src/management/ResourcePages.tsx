@@ -994,21 +994,26 @@ type ManagedRun = {
   updatedAt: string;
   ownerId?: string | null;
   user?: ManagedUser | null;
+  recoverableVideo: boolean;
   result?: { summary?: string; asset?: { assetId: string } };
 };
 
-/** 任务中心只刷新已创建任务，点击行不会触发付费重试。 */
+/** 任务中心只在用户显式点击时查询原视频任务；详情轮询从不发起生成。 */
 export function RunsPage({ userId, admin = false }: { userId: string; admin?: boolean }) {
+  const queryClient = useQueryClient();
   const filterId = useId();
   const [status, setStatus] = useState('');
   const [ownerId, setOwnerId] = useState('');
   const [page, setPage] = useState(1);
   const [selectedSnapshot, setSelected] = useState<ManagedRun | null>(null);
+  const [recovering, setRecovering] = useState<{ id: string; updatedAt: string } | null>(null);
+  const action = useAction();
+  const basePath = `${admin ? '/admin' : '/account'}/runs`;
   const query = useQuery({
     queryKey: ['management', userId, 'runs', admin, ownerId, status, page],
     queryFn: ({ signal }) =>
       managementRequest<{ runs: ManagedRun[]; total: number; page: number; pageSize: number }>(
-        `${admin ? '/admin' : '/account'}/runs${queryString({ ...(admin ? { ownerId } : {}), status, page, pageSize: 20 })}`,
+        `${basePath}${queryString({ ...(admin ? { ownerId } : {}), status, page, pageSize: 20 })}`,
         { signal },
       ),
     refetchInterval: 10_000,
@@ -1019,8 +1024,38 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
       managementRequest<{ groups: ResourceGroup[] }>('/admin/resource-groups', { signal }),
     enabled: admin,
   });
-  const selected =
-    query.data?.runs.find((run) => run.id === selectedSnapshot?.id) ?? selectedSnapshot;
+  const detail = useQuery({
+    queryKey: ['management', userId, 'run', admin, selectedSnapshot?.id],
+    queryFn: ({ signal }) =>
+      managementRequest<{ run: ManagedRun }>(
+        `${basePath}/${encodeURIComponent(selectedSnapshot!.id)}`,
+        { signal },
+      ),
+    enabled: Boolean(selectedSnapshot),
+    retry: false,
+    refetchInterval: selectedSnapshot ? 5_000 : false,
+  });
+  const selected = detail.data?.run ?? selectedSnapshot;
+  useEffect(() => {
+    if (!recovering || detail.data?.run.id !== recovering.id) return;
+    const current = detail.data.run;
+    if (current.result?.asset?.assetId) {
+      setRecovering(null);
+      action.setNotice({ kind: 'success', text: '视频资源已归档，可在资源库查看' });
+      void queryClient.invalidateQueries({ queryKey: ['management', userId, 'runs'] });
+      void queryClient.invalidateQueries({ queryKey: ['management', userId, 'resources'] });
+      void queryClient.invalidateQueries({ queryKey: ['management', userId, 'resource-groups'] });
+    } else if (
+      ['failed', 'cancelled', 'succeeded'].includes(current.status) &&
+      (current.updatedAt !== recovering.updatedAt || current.status === 'succeeded')
+    ) {
+      setRecovering(null);
+      action.setNotice({
+        kind: 'error',
+        text: current.error || '原视频任务查询未得到可归档资源',
+      });
+    }
+  }, [action.setNotice, detail.data, queryClient, recovering, userId]);
   return (
     <>
       <header className="mg-heading">
@@ -1150,7 +1185,15 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
               title: '操作',
               key: 'actions',
               render: (_, run) => (
-                <Button type="button" className="mg-text-button" onClick={() => setSelected(run)}>
+                <Button
+                  type="button"
+                  className="mg-text-button"
+                  onClick={() => {
+                    action.setNotice(null);
+                    setRecovering(null);
+                    setSelected(run);
+                  }}
+                >
                   详情
                   <ArrowRight size={15} />
                 </Button>
@@ -1169,7 +1212,10 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
         />
       )}
       {selected && (
-        <Modal title="任务详情" onClose={() => setSelected(null)}>
+        <Modal title="任务详情" busy={action.busy} onClose={() => setSelected(null)}>
+          {detail.error && (
+            <QueryState error={detail.error} onRetry={() => void detail.refetch()} />
+          )}
           <dl className="mg-details is-horizontal">
             <div>
               <dt>任务</dt>
@@ -1194,11 +1240,46 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
               <dd>{formatDate(selected.createdAt)}</dd>
             </div>
           </dl>
-          {selected.error && <Notice value={{ kind: 'error', text: selected.error }} />}
+          <Notice value={action.notice} />
+          {!action.notice && selected.error && (
+            <Notice value={{ kind: 'error', text: selected.error }} />
+          )}
           {selected.result?.summary && (
             <pre className="mg-run-result">{selected.result.summary}</pre>
           )}
           <div className="mg-form-actions">
+            {!detail.error && detail.data?.run.recoverableVideo && (
+              <Button
+                className="mg-button is-primary"
+                type="button"
+                disabled={action.busy || recovering?.id === selected.id}
+                onClick={() =>
+                  void action.execute(async () => {
+                    const response = await managementRequest<{
+                      run: ManagedRun;
+                      accepted: boolean;
+                    }>(`${basePath}/${encodeURIComponent(selected.id)}/recover`, {
+                      method: 'POST',
+                    });
+                    if (!response.accepted) throw new Error('查询请求未被受理');
+                    await queryClient.cancelQueries({
+                      queryKey: ['management', userId, 'run', admin, selected.id],
+                    });
+                    action.setNotice({ kind: 'info', text: '已受理，正在查询原视频任务' });
+                    setRecovering({ id: selected.id, updatedAt: response.run.updatedAt });
+                    queryClient.setQueryData(['management', userId, 'run', admin, selected.id], {
+                      run: response.run,
+                    });
+                    await queryClient.invalidateQueries({
+                      queryKey: ['management', userId, 'runs'],
+                    });
+                  })
+                }
+              >
+                <RefreshCw size={16} />
+                查询并获取视频
+              </Button>
+            )}
             {(!admin || selected.ownerId === userId) && (
               <AppLink
                 className="mg-button is-primary"
@@ -1219,7 +1300,12 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
               <Database size={16} />
               查看结果资源
             </AppLink>
-            <Button className="mg-button" type="button" onClick={() => setSelected(null)}>
+            <Button
+              className="mg-button"
+              type="button"
+              disabled={action.busy}
+              onClick={() => setSelected(null)}
+            >
               <Check size={16} />
               关闭
             </Button>

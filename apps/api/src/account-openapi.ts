@@ -158,6 +158,77 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
       },
     },
   };
+  /** 管理任务只公开归属、状态和归档资源标识，不暴露冻结输入或平台地址。 */
+  const managedRun = object(
+    {
+      id: string,
+      projectId: string,
+      projectName: string,
+      targetNodeId: string,
+      status: string,
+      progress: { type: 'integer', minimum: 0, maximum: 100 },
+      attempt: { type: 'integer', minimum: 1 },
+      provider: string,
+      modelAlias: string,
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' },
+      ownerId: { type: ['string', 'null'] },
+      user: { anyOf: [user, { type: 'null' }] },
+      recoverableVideo: { type: 'boolean', description: '仅原视频平台任务可手动只读查询' },
+      error: string,
+      result: object({
+        summary: string,
+        targetNodeId: string,
+        mediaType: string,
+        provider: string,
+        inputCount: { type: 'integer' },
+        asset: object({
+          assetId: string,
+          version: { type: 'integer' },
+          mimeType: string,
+          sizeBytes: { type: 'integer' },
+        }),
+      }),
+    },
+    [
+      'id',
+      'projectId',
+      'projectName',
+      'targetNodeId',
+      'status',
+      'progress',
+      'attempt',
+      'provider',
+      'modelAlias',
+      'createdAt',
+      'updatedAt',
+      'ownerId',
+      'user',
+      'recoverableVideo',
+    ],
+  );
+  /** 独立详情使用相同安全 DTO，不依赖列表页或筛选结果。 */
+  const runDetail = (admin: boolean) => ({
+    parameters: [id],
+    get: operation(
+      admin ? '管理员查询已授权原任务详情' : '查询本人原任务详情',
+      object({ run: managedRun }, ['run']),
+    ),
+  });
+  /** 查询原视频任务不接受执行参数；空 JSON 请求体可以省略，202 仅表示受理。 */
+  const runRecovery = (admin: boolean) => ({
+    parameters: [id],
+    post: {
+      ...operation(
+        admin
+          ? '管理员查询原视频平台任务并获取资源，不重新创建'
+          : '查询本人原视频平台任务并获取资源，不重新创建',
+        object({ run: managedRun, accepted: { type: 'boolean' } }, ['run', 'accepted']),
+        '202',
+      ),
+      requestBody: { ...body({}), required: false },
+    },
+  });
   return {
     '/v1/auth/newapi/start': {
       get: {
@@ -309,10 +380,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     '/v1/account/resources/{id}/content': resourceContent,
     '/v1/admin/runs': {
       get: {
-        ...operation(
-          '管理员查看跨用户运行任务，不自动重试已发送请求',
-          page('runs', { type: 'object' }),
-        ),
+        ...operation('管理员查看跨用户运行任务，不自动重试已发送请求', page('runs', managedRun)),
         parameters: [
           ...paging,
           ...['ownerId', 'projectId', 'status'].map((name) => ({
@@ -325,13 +393,17 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     },
     '/v1/account/runs': {
       get: {
-        ...operation('查看自己的运行任务', page('runs', { type: 'object' })),
+        ...operation('查看自己的运行任务', page('runs', managedRun)),
         parameters: [
           ...paging,
           ...['projectId', 'status'].map((name) => ({ name, in: 'query', schema: string })),
         ],
       },
     },
+    '/v1/admin/runs/{id}': runDetail(true),
+    '/v1/account/runs/{id}': runDetail(false),
+    '/v1/admin/runs/{id}/recover': runRecovery(true),
+    '/v1/account/runs/{id}/recover': runRecovery(false),
     '/v1/admin/audit': {
       get: {
         ...operation('管理员查询不可修改的脱敏操作审计', page('events', { type: 'object' })),
