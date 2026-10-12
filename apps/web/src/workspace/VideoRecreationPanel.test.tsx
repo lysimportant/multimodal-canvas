@@ -11,7 +11,7 @@ import {
   type VideoRecreationTemplate,
 } from '@multimodal-canvas/domain';
 
-import { clearAuthSession } from '../auth-client';
+import { clearAuthSession, persistAuthSession } from '../auth-client';
 import {
   fetchVideoRecreation,
   submitVideoRecreation,
@@ -25,6 +25,12 @@ vi.mock('../video-recreation', async (original) => ({
   ...(await original<typeof import('../video-recreation')>()),
   fetchVideoRecreation: vi.fn(),
   submitVideoRecreation: vi.fn(),
+}));
+
+/** 截帧解码由预览组件和浏览器回归验证；面板用例不读取真实视频。 */
+vi.mock('./VideoRecreationPreviews', async (original) => ({
+  ...(await original<typeof import('./VideoRecreationPreviews')>()),
+  useVideoRecreationPreviews: vi.fn(() => ({ previews: new Map(), retry: vi.fn() })),
 }));
 
 /** 角色、商品和来源均使用明确版本，验证不生成隐式版本 1。 */
@@ -221,6 +227,7 @@ function saved(): VideoRecreationConfig {
 }
 
 beforeEach(() => {
+  clearAuthSession();
   vi.mocked(fetchVideoRecreation)
     .mockReset()
     .mockResolvedValue({
@@ -231,6 +238,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  clearAuthSession();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -239,13 +247,16 @@ afterEach(() => {
 const panelCss = readFileSync('src/workspace/VideoRecreationPanel.css', 'utf8');
 
 describe('短视频复刻面板', () => {
-  it('受限高度的 flex 编辑器禁止压缩面板，长内容只在既有滚动区展开', () => {
+  it('分析和替换两栏铺满有限高度，各自在栏内滚动', () => {
     const styles = panelCss.match(/\.video-recreation-panel\s*\{([^}]+)\}/)?.[1];
-    expect(styles).toContain('flex-shrink: 0;');
-    expect(styles).toContain('min-height: 160px;');
-    expect(styles).toContain('max-height: 640px;');
-    expect(styles).toContain('overflow: auto;');
-    expect(styles).toContain('grid-column: 1 / -1;');
+    expect(styles).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);');
+    expect(styles).toContain('min-height: 0;');
+    expect(styles).toContain('height: 100%;');
+    expect(styles).toContain('overflow: hidden;');
+    expect(styles).toContain('grid-column: 1 / 3;');
+    const columnStyles = panelCss.match(/\.video-recreation-resources-column\s*\{([^}]+)\}/)?.[1];
+    expect(columnStyles).toContain('min-height: 0;');
+    expect(columnStyles).toContain('overflow-y: auto;');
     const guideStyles = panelCss.match(
       /\.video-recreation-help > \.video-recreation-guide\s*\{([^}]+)\}/,
     )?.[1];
@@ -257,7 +268,7 @@ describe('短视频复刻面板', () => {
     render(<Harness />);
     await screen.findByRole('option', { name: '默认模型：vision-a' });
 
-    const heading = screen.getByRole('heading', { name: '短视频复刻', level: 3 });
+    const heading = screen.getByRole('heading', { name: '分析视频', level: 3 });
     expect(heading).toBeVisible();
     expect(heading.querySelector('.lucide-clapperboard')).toHaveAttribute('aria-hidden', 'true');
     expect(screen.getByText('分析整条视频 → 选择保留或替换 → 选择生成模型 → 生成')).toBeVisible();
@@ -266,6 +277,78 @@ describe('短视频复刻面板', () => {
     expect(summary.closest('details')).not.toHaveAttribute('open');
     expect(screen.getByText('使用流程', { selector: 'h4' })).not.toBeVisible();
     expect(screen.getByRole('button', { name: '分析整条视频' })).toBeVisible();
+  });
+
+  it('来源播放器读取冻结版本，不随资源最新版本变化，分析和替换保持分栏', async () => {
+    const save = vi.fn();
+    render(
+      <Harness
+        start={identified}
+        save={save}
+        assets={[
+          { ...assets[0]!, latestVersion: 9, contentUrl: '/latest-video' },
+          ...assets.slice(1),
+        ]}
+      />,
+    );
+    await screen.findByRole('option', { name: '默认模型：vision-a' });
+
+    const source = screen.getByRole('region', { name: '原视频与分析' });
+    const resources = screen.getByRole('region', { name: '替换资源' });
+    const video = source.querySelector('video');
+    expect(video).toHaveAttribute(
+      'src',
+      'http://localhost:3000/v1/assets/video-a/versions/4/content',
+    );
+    expect(video).toHaveAttribute('controls');
+    expect(within(source).getByLabelText('分析模型')).toBeVisible();
+    expect(within(source).queryByLabelText('左侧人物')).not.toBeInTheDocument();
+    expect(within(resources).getByLabelText('左侧人物')).toBeVisible();
+    expect(within(resources).getByRole('heading', { name: '场景图 · 原视频镜头' })).toBeVisible();
+    expect(save).not.toHaveBeenCalled();
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
+  });
+
+  it('冻结视频鉴权携带原版本，显示加载、解码错误及明确重试', async () => {
+    persistAuthSession({
+      user: { id: 'frozen-preview-user', role: 'user', createdAt: '2026-10-12T00:00:00.000Z' },
+    });
+    const gate = deferred<Response>();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(gate.promise)
+      .mockResolvedValue(
+        new Response(JSON.stringify({ url: 'https://media.example/frozen-video-retry.mp4' })),
+      );
+    vi.stubGlobal('fetch', fetcher);
+    render(<Harness assets={[{ ...assets[0]!, latestVersion: 9 }, ...assets.slice(1)]} />);
+
+    const source = screen.getByRole('region', { name: '原视频与分析' });
+    expect(within(source).getByText('正在读取产物…')).toBeVisible();
+    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(fetcher.mock.calls[0]![0]).toBe('http://localhost:3000/v1/assets/video-a/access-url');
+    expect(JSON.parse(fetcher.mock.calls[0]![1]!.body as string)).toEqual({ version: 4 });
+    expect(fetcher.mock.calls[0]![1]?.credentials).toBe('include');
+    await act(async () => {
+      gate.resolve(new Response(JSON.stringify({ url: 'https://media.example/frozen-video.mp4' })));
+    });
+    const video = source.querySelector('video')!;
+    expect(video).toHaveAttribute('src', 'https://media.example/frozen-video.mp4');
+    fireEvent.loadedMetadata(video);
+    Object.defineProperty(video, 'error', { value: { code: 3 }, configurable: true });
+    fireEvent.error(video);
+    expect(within(source).getByText('视频加载失败')).toBeVisible();
+    expect(fetcher).toHaveBeenCalledOnce();
+    fireEvent.click(within(source).getByRole('button', { name: '重新加载' }));
+    await waitFor(() =>
+      expect(source.querySelector('video')).toHaveAttribute(
+        'src',
+        'https://media.example/frozen-video-retry.mp4',
+      ),
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetcher.mock.calls[1]![1]!.body as string)).toEqual({ version: 4 });
+    expect(submitVideoRecreation).not.toHaveBeenCalled();
   });
 
   it('分析模型展示完整分组目录，不按目录媒体能力拒绝选择', async () => {

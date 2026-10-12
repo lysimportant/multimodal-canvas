@@ -30,6 +30,11 @@ const data: FlowNodeData = {
 };
 
 describe('复刻节点集成数据', () => {
+  it('空草稿即使有手写提示词也不能生成', () => {
+    expect(recreationGenerationIssue({ ...data, videoRecreationDraft: true })).toContain(
+      '选择参考视频',
+    );
+  });
   it('一次更新配置、引用、英文提示词和全片时长', () => {
     const next = applyVideoRecreationConfig(data, config);
     expect(next.parameters).toEqual({ duration: 8, resolution: '720p' });

@@ -994,6 +994,8 @@ export const nodeDataSchema = z.object({
   imageEditSource: imageEditSourceSchema.optional(),
   /** 整条短视频复刻专属工作流；保持普通video媒体与Provider合同。 */
   videoRecreation: videoRecreationConfigSchema.optional(),
+  /** 未选择来源的短视频复刻草稿；冻结来源后移除，不为旧节点补默认值。 */
+  videoRecreationDraft: z.literal(true).optional(),
 });
 
 /** Legacy canvases omit this field; only an explicit false disables a node. */
@@ -1001,15 +1003,34 @@ export function isCanvasNodeEnabled(node: Pick<CanvasNode, 'data'>): boolean {
   return node.data.enabled !== false;
 }
 
-export const canvasNodeSchema = z.object({
-  id: z.string().min(1),
-  type: mediaTypeSchema,
-  position: z.object({ x: z.number(), y: z.number() }),
-  /** User-resizable dimensions. React Flow keeps these on the node itself. */
-  width: z.number().finite().positive().max(10_000).optional(),
-  height: z.number().finite().positive().max(10_000).optional(),
-  data: nodeDataSchema,
-});
+/** 画布节点合同；空复刻草稿仅能保存在尚未冻结来源的视频生成节点。 */
+export const canvasNodeSchema = z
+  .object({
+    id: z.string().min(1),
+    type: mediaTypeSchema,
+    position: z.object({ x: z.number(), y: z.number() }),
+    /** User-resizable dimensions. React Flow keeps these on the node itself. */
+    width: z.number().finite().positive().max(10_000).optional(),
+    height: z.number().finite().positive().max(10_000).optional(),
+    data: nodeDataSchema,
+  })
+  .superRefine((node, context) => {
+    if (!node.data.videoRecreationDraft) return;
+    if (node.type !== 'video' || node.data.mediaType !== 'video' || node.data.mode !== 'generate') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '短视频复刻草稿必须是视频生成节点',
+        path: ['data', 'videoRecreationDraft'],
+      });
+    }
+    if (node.data.videoRecreation) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '复刻来源已冻结，请移除空草稿标记',
+        path: ['data', 'videoRecreationDraft'],
+      });
+    }
+  });
 
 export const canvasEdgeSchema = z.object({
   id: z.string().min(1),
@@ -1276,6 +1297,7 @@ export function parseReversePromptOutput(
   }
 }
 
+/** 冻结执行输入与图关系；保留未执行草稿，但执行目标及启用上游须先绑定完整来源。 */
 export const runSnapshotSchema = z
   .object({
     projectId: z.string().min(1),
@@ -1338,6 +1360,29 @@ export const runSnapshotSchema = z
     }
 
     const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    // 快照可保留未执行草稿；目标及启用上游不能将空来源提交给 Provider。
+    if (snapshot.nodes.some((node) => node.data.videoRecreationDraft)) {
+      const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+      const visited = new Set<string>();
+      const pending = [snapshot.targetNodeId];
+      while (pending.length > 0) {
+        const nodeId = pending.pop()!;
+        if (visited.has(nodeId)) continue;
+        visited.add(nodeId);
+        const node = nodesById.get(nodeId);
+        if (!node || (node.id !== snapshot.targetNodeId && node.data.enabled === false)) continue;
+        if (node.data.videoRecreationDraft) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: '请先选择或上传完整参考视频，再分析或生成复刻视频',
+            path: ['nodes', snapshot.nodes.indexOf(node), 'data', 'videoRecreationDraft'],
+          });
+        }
+        for (const edge of snapshot.edges) {
+          if (edge.targetNodeId === nodeId) pending.push(edge.sourceNodeId);
+        }
+      }
+    }
     if (snapshot.promptOptimization) {
       const target = snapshot.nodes[0];
       if (

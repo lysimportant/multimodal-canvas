@@ -131,8 +131,15 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
   const requestKey = requestIdentity(request);
   const sourceChanged = initialIdentity.current !== sourceIdentity;
   const target = { projectId, assetId: config.source.assetId, version: config.source.assetVersion };
+  const scenePreview = useMemo(() => {
+    const shot = config.analysis?.template.shots[0];
+    return shot
+      ? { id: 'scene:0', label: '原视频场景', preview: { timestampSeconds: shot.startSeconds } }
+      : undefined;
+  }, [config.analysis?.template]);
   const previewItems = useMemo(
     () => [
+      ...(scenePreview ? [scenePreview] : []),
       ...(config.analysis?.template.roles ?? []).map((item) => ({
         ...item,
         id: `role:${item.id}`,
@@ -142,7 +149,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
         id: `product:${item.id}`,
       })),
     ],
-    [config.analysis?.template],
+    [config.analysis?.template, scenePreview],
   );
   const { previews, retry: retryPreviews } = useVideoRecreationPreviews(
     config.source,
@@ -355,6 +362,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     queryRevision,
   ]);
 
+  const sourceAsset = assets.find((asset) => asset.id === config.source.assetId);
   const sourceError = resourceIssue(config.source, assets, 'video');
   const invalidDuration =
     config.source.durationSeconds !== undefined &&
@@ -767,418 +775,479 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
 
   return (
     <section className="video-recreation-panel nodrag nowheel" aria-label="短视频复刻">
-      <header className="video-recreation-source">
-        <h3 className="video-recreation-title">
-          <Clapperboard size={20} aria-hidden="true" />
-          短视频复刻
-        </h3>
-        <p className="video-recreation-path">分析整条视频 → 选择保留或替换 → 选择生成模型 → 生成</p>
-        <details className="video-recreation-help">
-          <summary>使用流程</summary>
-          <VideoRecreationGuide />
-        </details>
-        <strong>{config.source.name}</strong>
-        <span>
-          来源版本：
-          {hasVersion(config.source.assetVersion)
-            ? `v${config.source.assetVersion}`
-            : '缺失，请刷新资源'}
-        </span>
-        <span>
-          完整时长：
-          {invalidDuration
-            ? '无效，请核实来源'
-            : config.source.durationSeconds === undefined
-              ? '尚未确认，分析将读取整条视频'
-              : `${config.source.durationSeconds} 秒`}
-        </span>
-      </header>
-      {sourceError ? <p role="alert">{sourceError}</p> : null}
-      {invalidDuration ? <p role="alert">来源时长必须是有限的正数；不会截断或补造时长。</p> : null}
-      {sourceChanged ? <p role="alert">来源已改变，请重新打开节点编辑器。</p> : null}
-      <label className="node-quick-editor-field">
-        <span>分析模型</span>
-        <select
-          aria-label="分析模型"
-          disabled={locked}
-          value={request ? (model ? videoRecreationModelKey(model) : '') : modelValue}
-          onChange={(event) => {
-            const selected = models.find(
+      <section className="video-recreation-analysis-column" aria-label="原视频与分析">
+        <header className="video-recreation-source">
+          <h3 className="video-recreation-title">
+            <Clapperboard size={20} aria-hidden="true" />
+            分析视频
+          </h3>
+          <div className="video-recreation-source-preview" aria-label="原视频预览">
+            {sourceAsset && !sourceError ? (
+              <AssetPreview
+                key={sourceIdentity}
+                asset={{
+                  ...sourceAsset,
+                  name: config.source.name,
+                  latestVersion: config.source.assetVersion,
+                  contentUrl: resultAssetContentUrl(
+                    config.source.assetId,
+                    config.source.assetVersion,
+                  ),
+                }}
+                className="video-recreation-source-video"
+                mode="content"
+                interactive
+                allowOpen={false}
+              />
+            ) : (
+              <p className="video-recreation-hint">原视频不可用，请刷新资源或重新选择。</p>
+            )}
+          </div>
+          <strong>{config.source.name}</strong>
+          <span>
+            来源版本：
+            {hasVersion(config.source.assetVersion)
+              ? `v${config.source.assetVersion}`
+              : '缺失，请刷新资源'}
+          </span>
+          <span>
+            完整时长：
+            {invalidDuration
+              ? '无效，请核实来源'
+              : config.source.durationSeconds === undefined
+                ? '尚未确认，分析将读取整条视频'
+                : `${config.source.durationSeconds} 秒`}
+          </span>
+          <p className="video-recreation-path">
+            分析整条视频 → 选择保留或替换 → 选择生成模型 → 生成
+          </p>
+          <details className="video-recreation-help">
+            <summary>使用流程</summary>
+            <VideoRecreationGuide />
+          </details>
+        </header>
+        {sourceError ? <p role="alert">{sourceError}</p> : null}
+        {invalidDuration ? (
+          <p role="alert">来源时长必须是有限的正数；不会截断或补造时长。</p>
+        ) : null}
+        {sourceChanged ? <p role="alert">来源已改变，请重新打开节点编辑器。</p> : null}
+        <label className="node-quick-editor-field">
+          <span>分析模型</span>
+          <select
+            aria-label="分析模型"
+            disabled={locked}
+            value={request ? (model ? videoRecreationModelKey(model) : '') : modelValue}
+            onChange={(event) => {
+              const selected = models.find(
+                (entry) =>
+                  videoRecreationModelKey({
+                    modelAlias: entry.id,
+                    credentialId: entry.credentialId,
+                  }) === event.target.value,
+              );
+              setSelectedModel(
+                selected
+                  ? { modelAlias: selected.id, credentialId: selected.credentialId }
+                  : undefined,
+              );
+            }}
+          >
+            <option value="">
+              {defaultModel ? `默认模型：${defaultModel.modelAlias}` : '等待服务端默认模型'}
+            </option>
+            {model &&
+            !models.some(
               (entry) =>
                 videoRecreationModelKey({
                   modelAlias: entry.id,
                   credentialId: entry.credentialId,
-                }) === event.target.value,
-            );
-            setSelectedModel(
-              selected
-                ? { modelAlias: selected.id, credentialId: selected.credentialId }
-                : undefined,
-            );
-          }}
-        >
-          <option value="">
-            {defaultModel ? `默认模型：${defaultModel.modelAlias}` : '等待服务端默认模型'}
-          </option>
-          {model &&
-          !models.some(
-            (entry) =>
-              videoRecreationModelKey({
-                modelAlias: entry.id,
-                credentialId: entry.credentialId,
-              }) === videoRecreationModelKey(model),
-          ) ? (
-            <option value={videoRecreationModelKey(model)} disabled>
-              {model.modelAlias}（当前模型身份）
-            </option>
-          ) : null}
-          {models.map((entry) => (
-            <option
-              key={videoRecreationModelKey({
-                modelAlias: entry.id,
-                credentialId: entry.credentialId,
-              })}
-              value={videoRecreationModelKey({
-                modelAlias: entry.id,
-                credentialId: entry.credentialId,
-              })}
-            >
-              {[entry.name || entry.id, entry.group ?? entry.credentialLabel]
-                .filter(Boolean)
-                .join(' · ')}
-              {entry.unavailableReason ? `（${entry.unavailableReason}）` : ''}
-            </option>
-          ))}
-        </select>
-      </label>
-      <details className="video-recreation-help">
-        <summary>手动填写分析模型 ID</summary>
-        <label className="node-quick-editor-field">
-          <span>分析模型 ID</span>
-          <input
-            aria-label="分析模型 ID"
-            value={model?.modelAlias ?? ''}
-            disabled={locked}
-            placeholder="例如 qwen3.8-omni-flash"
-            onChange={(event) =>
-              setSelectedModel({
-                modelAlias: event.target.value,
-                credentialId: model?.credentialId,
-              })
-            }
-          />
-        </label>
-        <p className="video-recreation-hint">
-          沿用上方所选模型的分组身份，模型 ID 原样提交。视频输入是否受支持由 New API / 上游确认。
-        </p>
-      </details>
-      <div className="video-recreation-actions">
-        <button
-          type="button"
-          className="button button-secondary"
-          disabled={
-            busy ||
-            submitting ||
-            uploading ||
-            editing ||
-            authChanged ||
-            sourceChanged ||
-            (!request &&
-              !recovery &&
-              (loading || Boolean(sourceError) || invalidDuration || !model?.modelAlias.trim()))
-          }
-          onClick={() => void analyze()}
-        >
-          {submitting
-            ? '提交中…'
-            : recovery
-              ? '保存已返回分析'
-              : request?.runId
-                ? '查询原分析任务'
-                : request
-                  ? '确认原分析请求'
-                  : '分析整条视频'}
-        </button>
-        {!request && !recovery && candidate && candidate.runId !== config.analysis?.runId ? (
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={locked}
-            onClick={() => void adoptExistingAnalysis()}
-          >
-            采用已有分析
-          </button>
-        ) : null}
-        {error && !submitting && !recovery ? (
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={authChanged || sourceChanged || busy || editing}
-            onClick={queryAgain}
-          >
-            重新查询
-          </button>
-        ) : null}
-      </div>
-      <p className="video-recreation-hint">
-        分析与视频生成使用独立模型。换人物或商品无需重新分析；最终提示词和视频生成模型在下方编辑区调整。
-      </p>
-      <p role="status">{uploading ? '正在上传图片…' : status}</p>
-      {error ? (
-        <p className="video-recreation-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {config.analysis ? (
-        <>
-          <div className="video-recreation-summary">
-            <h4>整体摘要</h4>
-            <p>{config.analysis.summary}</p>
-            {config.analysis.modelAlias ? (
-              <span>本次分析模型：{config.analysis.modelAlias}</span>
+                }) === videoRecreationModelKey(model),
+            ) ? (
+              <option value={videoRecreationModelKey(model)} disabled>
+                {model.modelAlias}（当前模型身份）
+              </option>
             ) : null}
-            <span>分析完整时长：{config.analysis.template.durationSeconds} 秒</span>
-          </div>
-          {config.analysis.template.unknowns.length ? (
-            <div className="video-recreation-unknowns">
-              <h4>未确认的证据</h4>
-              <ul>
-                {config.analysis.template.unknowns.map((unknown, index) => (
-                  <li key={index}>{unknown}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          <details className="video-recreation-template">
-            <summary>查看完整模板与镜头动作</summary>
-            <ol>
-              {config.analysis.template.shots.map((shot, index) => (
-                <li key={index}>
-                  <strong>
-                    {shot.startSeconds} 至 {shot.endSeconds} 秒
-                  </strong>
-                  <p>动作：{shot.action}</p>
-                  <p>镜头：{shot.camera}</p>
-                </li>
-              ))}
-            </ol>
-            <p>声音：{config.analysis.template.audio || '未提供可靠的声音证据'}</p>
-          </details>
-          <div className="video-recreation-bindings">
-            <h4>识别到的人物 · {config.analysis.template.roles.length}</h4>
-            {config.analysis.template.roles.map((role) => (
-              <article
-                className="video-recreation-object"
-                key={role.id}
-                aria-label={`人物：${role.label}`}
+            {models.map((entry) => (
+              <option
+                key={videoRecreationModelKey({
+                  modelAlias: entry.id,
+                  credentialId: entry.credentialId,
+                })}
+                value={videoRecreationModelKey({
+                  modelAlias: entry.id,
+                  credentialId: entry.credentialId,
+                })}
               >
-                <h4>{role.label}</h4>
-                <VideoRecreationPreview
-                  item={role}
-                  preview={previews.get(`role:${role.id}`)}
-                  onRetry={retryPreviews}
-                />
-                <p>{role.description || '此分析未提供可确认的外观描述'}</p>
-                <p className="video-recreation-hint">
-                  出现时间：
-                  {role.appearances
-                    ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
-                    .join('、') || '未提供可靠定位'}
-                </p>
-                {imagePicker(
-                  role.label,
-                  config.bindings.find((entry) => entry.roleId === role.id),
-                  { kind: 'role', id: role.id },
-                )}
-              </article>
+                {[entry.name || entry.id, entry.group ?? entry.credentialLabel]
+                  .filter(Boolean)
+                  .join(' · ')}
+                {entry.unavailableReason ? `（${entry.unavailableReason}）` : ''}
+              </option>
             ))}
-            {config.analysis.template.roles.length === 0 ? (
-              <p>未识别到人物，可按商品继续处理。</p>
-            ) : null}
-            {unknownBindings.length ? (
-              <div role="alert">
-                <p>
-                  以下绑定没有对应角色，已保留，请确认后清除：
-                  {unknownBindings
-                    .map((binding) => `${binding.roleId}：${binding.name}`)
-                    .join('、')}
-                </p>
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  disabled={locked}
-                  onClick={() =>
-                    void saveEdit({
-                      ...latest.current.config,
-                      bindings: latest.current.config.bindings.filter(
-                        (binding) =>
-                          !unknownBindings.some((unknown) => unknown.roleId === binding.roleId),
-                      ),
-                    })
-                  }
-                >
-                  清除无对应角色的绑定
-                </button>
-              </div>
-            ) : null}
-            {unknownPreserved.length ? (
-              <div role="alert">
-                <p>以下保留人物没有对应角色，已保留，请确认后清除：{unknownPreserved.join('、')}</p>
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  disabled={locked}
-                  onClick={() =>
-                    void saveEdit({
-                      ...latest.current.config,
-                      preservedRoleIds: latest.current.config.preservedRoleIds?.filter(
-                        (id) => !unknownPreserved.includes(id),
-                      ),
-                    })
-                  }
-                >
-                  清除无对应角色的保留选择
-                </button>
-              </div>
-            ) : null}
-          </div>
-          <div className="video-recreation-bindings">
-            <h4>识别到的广告商品 · {config.analysis.template.products?.length ?? 0}</h4>
-            {config.analysis.template.products?.map((product) => {
-              const binding = config.productBindings?.find(
-                (entry) => entry.productId === product.id,
-              );
-              return (
-                <article
-                  className="video-recreation-object"
-                  key={product.id}
-                  aria-label={`商品：${product.label}`}
-                >
-                  <h4>{product.label}</h4>
-                  <VideoRecreationPreview
-                    item={product}
-                    preview={previews.get(`product:${product.id}`)}
-                    onRetry={retryPreviews}
-                  />
-                  <p>{product.description || '此分析未提供可确认的外观描述'}</p>
-                  <p className="video-recreation-hint">
-                    出现时间：
-                    {product.appearances
-                      ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
-                      .join('、') || '未提供可靠定位'}
-                  </p>
-                  {imagePicker(product.label, binding, { kind: 'product', id: product.id })}
-                  {binding ? (
-                    <label className="node-quick-editor-field">
-                      <span>用途与已确认卖点</span>
-                      <textarea
-                        aria-label={`${product.label}用途与已确认卖点`}
-                        value={binding.description ?? ''}
-                        disabled={baseLocked}
-                        placeholder="仅填写您确认的信息；不从图片猜测功效"
-                        onChange={(event) =>
-                          void saveEdit({
-                            ...latest.current.config,
-                            productBindings: latest.current.config.productBindings?.map((entry) =>
-                              entry.productId === product.id
-                                ? { ...entry, description: event.target.value }
-                                : entry,
-                            ),
-                          })
-                        }
-                      />
-                    </label>
-                  ) : null}
-                </article>
-              );
-            })}
-            {!config.analysis.template.products?.length ? (
-              <p>
-                {config.analysis.template.products
-                  ? '未识别到广告商品；原道具保留。'
-                  : '旧分析没有逐商品识别信息，可明确重新分析获取对象卡。'}
-              </p>
-            ) : null}
-            {unknownProducts.length ? (
-              <div role="alert">
-                <p>
-                  以下商品绑定没有对应对象，已保留，请确认后清除：
-                  {unknownProducts.map((entry) => `${entry.productId}：${entry.name}`).join('、')}
-                </p>
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  disabled={locked}
-                  onClick={() =>
-                    void saveEdit({
-                      ...latest.current.config,
-                      productBindings: latest.current.config.productBindings?.filter(
-                        (entry) =>
-                          !unknownProducts.some((unknown) => unknown.productId === entry.productId),
-                      ),
-                    })
-                  }
-                >
-                  清除无对应商品的绑定
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </>
-      ) : null}
-      {!config.analysis?.template.products || config.product ? (
-        <div className="video-recreation-product">
-          <h4>
-            {config.analysis?.template.products?.length
-              ? '旧商品绑定（尚未对应识别对象）'
-              : '旧版单商品替换（可选）'}
-          </h4>
-          {config.analysis?.template.products?.length ? (
-            <>
-              <p>
-                已保留旧图片：{config.product?.name} · v{config.product?.assetVersion}
-                。请清除旧绑定后，在上方逐商品选择。
-              </p>
-              <button
-                type="button"
-                className="button button-secondary"
-                disabled={locked}
-                onClick={() => void bind(undefined)}
-              >
-                清除旧商品绑定
-              </button>
-            </>
-          ) : (
-            imagePicker('商品', config.product)
-          )}
+          </select>
+        </label>
+        <details className="video-recreation-help">
+          <summary>手动填写分析模型 ID</summary>
           <label className="node-quick-editor-field">
-            <span>商品用途与已确认卖点</span>
-            <textarea
-              aria-label="商品用途与已确认卖点"
-              value={config.productDescription ?? ''}
-              disabled={baseLocked}
-              placeholder="仅填写您确认的信息；不从图片猜测功效"
+            <span>分析模型 ID</span>
+            <input
+              aria-label="分析模型 ID"
+              value={model?.modelAlias ?? ''}
+              disabled={locked}
+              placeholder="例如 qwen3.8-omni-flash"
               onChange={(event) =>
-                void saveEdit({ ...latest.current.config, productDescription: event.target.value })
+                setSelectedModel({
+                  modelAlias: event.target.value,
+                  credentialId: model?.credentialId,
+                })
               }
             />
           </label>
+          <p className="video-recreation-hint">
+            沿用上方所选模型的分组身份，模型 ID 原样提交。视频输入是否受支持由 New API / 上游确认。
+          </p>
+        </details>
+        <div className="video-recreation-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={
+              busy ||
+              submitting ||
+              uploading ||
+              editing ||
+              authChanged ||
+              sourceChanged ||
+              (!request &&
+                !recovery &&
+                (loading || Boolean(sourceError) || invalidDuration || !model?.modelAlias.trim()))
+            }
+            onClick={() => void analyze()}
+          >
+            {submitting
+              ? '提交中…'
+              : recovery
+                ? '保存已返回分析'
+                : request?.runId
+                  ? '查询原分析任务'
+                  : request
+                    ? '确认原分析请求'
+                    : '分析整条视频'}
+          </button>
+          {!request && !recovery && candidate && candidate.runId !== config.analysis?.runId ? (
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={locked}
+              onClick={() => void adoptExistingAnalysis()}
+            >
+              采用已有分析
+            </button>
+          ) : null}
+          {error && !submitting && !recovery ? (
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={authChanged || sourceChanged || busy || editing}
+              onClick={queryAgain}
+            >
+              重新查询
+            </button>
+          ) : null}
         </div>
-      ) : null}
-      {bindingIssues.map((message, index) => (
-        <p role="alert" key={index}>
-          {message}
-        </p>
-      ))}
-      {issue ? (
-        <p className="video-recreation-hint" role="status">
-          {issue}
-        </p>
-      ) : !sourceError && !invalidDuration && !bindingIssues.length && !recovery ? (
         <p className="video-recreation-hint">
-          配置已齐备，请在下方选择视频生成模型，检查最终提示词后点击「生成」。
+          分析与视频生成使用独立模型。换人物或商品无需重新分析；最终提示词和视频生成模型在右侧调整。
         </p>
-      ) : null}
+        <p role="status">{uploading ? '正在上传图片…' : status}</p>
+        {error ? (
+          <p className="video-recreation-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {config.analysis ? (
+          <>
+            <div className="video-recreation-summary">
+              <h4>整体摘要</h4>
+              <p>{config.analysis.summary}</p>
+              {config.analysis.modelAlias ? (
+                <span>本次分析模型：{config.analysis.modelAlias}</span>
+              ) : null}
+              <span>分析完整时长：{config.analysis.template.durationSeconds} 秒</span>
+            </div>
+            {config.analysis.template.unknowns.length ? (
+              <div className="video-recreation-unknowns">
+                <h4>未确认的证据</h4>
+                <ul>
+                  {config.analysis.template.unknowns.map((unknown, index) => (
+                    <li key={index}>{unknown}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </section>
+      <section className="video-recreation-resources-column" aria-label="替换资源">
+        <header className="video-recreation-resources-header">
+          <h3>替换资源</h3>
+          <p className="video-recreation-hint">逐项保留原对象，或选择、上传替换图片。</p>
+        </header>
+        {config.analysis ? (
+          <>
+            <div className="video-recreation-scenes">
+              <h4>场景图 · 原视频镜头</h4>
+              {scenePreview ? (
+                <VideoRecreationPreview
+                  item={scenePreview}
+                  preview={previews.get(scenePreview.id)}
+                  onRetry={retryPreviews}
+                />
+              ) : null}
+              <p className="video-recreation-hint">
+                来自分析的首个镜头，保留原视频场景与镜头结构。
+              </p>
+              <details className="video-recreation-template">
+                <summary>查看完整模板与镜头动作</summary>
+                <ol>
+                  {config.analysis.template.shots.map((shot, index) => (
+                    <li key={index}>
+                      <strong>
+                        {shot.startSeconds} 至 {shot.endSeconds} 秒
+                      </strong>
+                      <p>动作：{shot.action}</p>
+                      <p>镜头：{shot.camera}</p>
+                    </li>
+                  ))}
+                </ol>
+                <p>声音：{config.analysis.template.audio || '未提供可靠的声音证据'}</p>
+              </details>
+            </div>
+            <div className="video-recreation-bindings">
+              <h4>识别到的人物 · {config.analysis.template.roles.length}</h4>
+              {config.analysis.template.roles.map((role) => (
+                <article
+                  className="video-recreation-object"
+                  key={role.id}
+                  aria-label={`人物：${role.label}`}
+                >
+                  <h4>{role.label}</h4>
+                  <VideoRecreationPreview
+                    item={role}
+                    preview={previews.get(`role:${role.id}`)}
+                    onRetry={retryPreviews}
+                  />
+                  <p>{role.description || '此分析未提供可确认的外观描述'}</p>
+                  <p className="video-recreation-hint">
+                    出现时间：
+                    {role.appearances
+                      ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
+                      .join('、') || '未提供可靠定位'}
+                  </p>
+                  {imagePicker(
+                    role.label,
+                    config.bindings.find((entry) => entry.roleId === role.id),
+                    { kind: 'role', id: role.id },
+                  )}
+                </article>
+              ))}
+              {config.analysis.template.roles.length === 0 ? (
+                <p>未识别到人物，可按商品继续处理。</p>
+              ) : null}
+              {unknownBindings.length ? (
+                <div role="alert">
+                  <p>
+                    以下绑定没有对应角色，已保留，请确认后清除：
+                    {unknownBindings
+                      .map((binding) => `${binding.roleId}：${binding.name}`)
+                      .join('、')}
+                  </p>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    disabled={locked}
+                    onClick={() =>
+                      void saveEdit({
+                        ...latest.current.config,
+                        bindings: latest.current.config.bindings.filter(
+                          (binding) =>
+                            !unknownBindings.some((unknown) => unknown.roleId === binding.roleId),
+                        ),
+                      })
+                    }
+                  >
+                    清除无对应角色的绑定
+                  </button>
+                </div>
+              ) : null}
+              {unknownPreserved.length ? (
+                <div role="alert">
+                  <p>
+                    以下保留人物没有对应角色，已保留，请确认后清除：{unknownPreserved.join('、')}
+                  </p>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    disabled={locked}
+                    onClick={() =>
+                      void saveEdit({
+                        ...latest.current.config,
+                        preservedRoleIds: latest.current.config.preservedRoleIds?.filter(
+                          (id) => !unknownPreserved.includes(id),
+                        ),
+                      })
+                    }
+                  >
+                    清除无对应角色的保留选择
+                  </button>
+                </div>
+              ) : null}
+            </div>
+            <div className="video-recreation-bindings">
+              <h4>识别到的广告商品 · {config.analysis.template.products?.length ?? 0}</h4>
+              {config.analysis.template.products?.map((product) => {
+                const binding = config.productBindings?.find(
+                  (entry) => entry.productId === product.id,
+                );
+                return (
+                  <article
+                    className="video-recreation-object"
+                    key={product.id}
+                    aria-label={`商品：${product.label}`}
+                  >
+                    <h4>{product.label}</h4>
+                    <VideoRecreationPreview
+                      item={product}
+                      preview={previews.get(`product:${product.id}`)}
+                      onRetry={retryPreviews}
+                    />
+                    <p>{product.description || '此分析未提供可确认的外观描述'}</p>
+                    <p className="video-recreation-hint">
+                      出现时间：
+                      {product.appearances
+                        ?.map((time) => `${time.startSeconds}–${time.endSeconds} 秒`)
+                        .join('、') || '未提供可靠定位'}
+                    </p>
+                    {imagePicker(product.label, binding, { kind: 'product', id: product.id })}
+                    {binding ? (
+                      <label className="node-quick-editor-field">
+                        <span>用途与已确认卖点</span>
+                        <textarea
+                          aria-label={`${product.label}用途与已确认卖点`}
+                          value={binding.description ?? ''}
+                          disabled={baseLocked}
+                          placeholder="仅填写您确认的信息；不从图片猜测功效"
+                          onChange={(event) =>
+                            void saveEdit({
+                              ...latest.current.config,
+                              productBindings: latest.current.config.productBindings?.map(
+                                (entry) =>
+                                  entry.productId === product.id
+                                    ? { ...entry, description: event.target.value }
+                                    : entry,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                    ) : null}
+                  </article>
+                );
+              })}
+              {!config.analysis.template.products?.length ? (
+                <p>
+                  {config.analysis.template.products
+                    ? '未识别到广告商品；原道具保留。'
+                    : '旧分析没有逐商品识别信息，可明确重新分析获取对象卡。'}
+                </p>
+              ) : null}
+              {unknownProducts.length ? (
+                <div role="alert">
+                  <p>
+                    以下商品绑定没有对应对象，已保留，请确认后清除：
+                    {unknownProducts.map((entry) => `${entry.productId}：${entry.name}`).join('、')}
+                  </p>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    disabled={locked}
+                    onClick={() =>
+                      void saveEdit({
+                        ...latest.current.config,
+                        productBindings: latest.current.config.productBindings?.filter(
+                          (entry) =>
+                            !unknownProducts.some(
+                              (unknown) => unknown.productId === entry.productId,
+                            ),
+                        ),
+                      })
+                    }
+                  >
+                    清除无对应商品的绑定
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <p className="video-recreation-empty">先分析整条视频，再查看场景、人物与商品。</p>
+        )}
+        {!config.analysis?.template.products || config.product ? (
+          <div className="video-recreation-product">
+            <h4>
+              {config.analysis?.template.products?.length
+                ? '旧商品绑定（尚未对应识别对象）'
+                : '旧版单商品替换（可选）'}
+            </h4>
+            {config.analysis?.template.products?.length ? (
+              <>
+                <p>
+                  已保留旧图片：{config.product?.name} · v{config.product?.assetVersion}
+                  。请清除旧绑定后，在上方逐商品选择。
+                </p>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={locked}
+                  onClick={() => void bind(undefined)}
+                >
+                  清除旧商品绑定
+                </button>
+              </>
+            ) : (
+              imagePicker('商品', config.product)
+            )}
+            <label className="node-quick-editor-field">
+              <span>商品用途与已确认卖点</span>
+              <textarea
+                aria-label="商品用途与已确认卖点"
+                value={config.productDescription ?? ''}
+                disabled={baseLocked}
+                placeholder="仅填写您确认的信息；不从图片猜测功效"
+                onChange={(event) =>
+                  void saveEdit({
+                    ...latest.current.config,
+                    productDescription: event.target.value,
+                  })
+                }
+              />
+            </label>
+          </div>
+        ) : null}
+        {bindingIssues.map((message, index) => (
+          <p role="alert" key={index}>
+            {message}
+          </p>
+        ))}
+        {issue ? (
+          <p className="video-recreation-hint" role="status">
+            {issue}
+          </p>
+        ) : !sourceError && !invalidDuration && !bindingIssues.length && !recovery ? (
+          <p className="video-recreation-hint">
+            配置已齐备，请在右侧选择视频生成模型，检查最终提示词后点击「生成」。
+          </p>
+        ) : null}
+      </section>
     </section>
   );
 }

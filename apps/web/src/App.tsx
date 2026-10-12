@@ -2974,14 +2974,22 @@ function WorkspaceApp({
   const updateVideoRecreation = useCallback(
     async (config: VideoRecreationConfig, nodeId: string) => {
       const current = nodesRef.current.find((candidate) => candidate.id === nodeId);
-      if (!current?.data.videoRecreation || !projectId || isNodeBusy(nodeId))
+      if (
+        (!current?.data.videoRecreation && !current?.data.videoRecreationDraft) ||
+        !projectId ||
+        isNodeBusy(nodeId)
+      )
         throw new Error('复刻节点不可编辑，请稍后重试');
       if (
-        current.data.videoRecreation.source.assetId !== config.source.assetId ||
-        current.data.videoRecreation.source.assetVersion !== config.source.assetVersion
+        current.data.videoRecreation &&
+        (current.data.videoRecreation.source.assetId !== config.source.assetId ||
+          current.data.videoRecreation.source.assetVersion !== config.source.assetVersion)
       )
         throw new Error('视频来源已变更，请重新打开复刻节点');
-      const next = applyVideoRecreationConfig(current.data, config);
+      const { videoRecreationDraft: _draft, ...next } = applyVideoRecreationConfig(
+        current.data,
+        config,
+      );
       rememberHistory();
       canvasDirtyRef.current = true;
       updateNodeDataAndMarkDownstreamStale(nodeId, () => next);
@@ -4530,10 +4538,32 @@ function WorkspaceApp({
     [commitForkGraph, createGenerateNode, isNodeBusy, projectId],
   );
 
-  /** 从有回显的视频创建专属复刻草稿；冻结版本后打开配置，不执行分析或生成。 */
+  /** 无来源时直接创建空草稿；从视频节点发起时仍冻结该节点的回显版本。 */
   const handleCreateVideoRecreationNode = useCallback(
-    async (sourceNodeId: string) => {
-      if (!projectId || recreationCreatingRef.current.has(sourceNodeId)) return;
+    async (sourceNodeId?: string) => {
+      if (!projectId) return;
+      if (!sourceNodeId) {
+        const count = nodesRef.current.length;
+        const position = canvasCenterPositionRef.current ?? {
+          x: 100 + (count % 3) * 250,
+          y: 100 + Math.floor(count / 3) * 220,
+        };
+        const child = createGenerateNode('video', position, {
+          label: createUniqueNodeLabel(
+            '短视频复刻',
+            nodesRef.current.map((item) => item.data.label),
+          ),
+          videoMode: 'omni_reference',
+          videoRecreationDraft: true,
+          generationCount: 1,
+        });
+        rememberHistory();
+        appendNodesAndSelect([child]);
+        canvasDirtyRef.current = true;
+        setNotice({ kind: 'success', message: '已创建短视频复刻节点' });
+        return;
+      }
+      if (recreationCreatingRef.current.has(sourceNodeId)) return;
       const source = nodesRef.current.find((item) => item.id === sourceNodeId);
       if (!source || source.data.mediaType !== 'video' || isNodeBusy(sourceNodeId)) return;
       const result = source.data.manualOutput ? undefined : source.data.resultAsset;
@@ -4609,7 +4639,15 @@ function WorkspaceApp({
         recreationCreatingRef.current.delete(sourceNodeId);
       }
     },
-    [assets, projectId, isNodeBusy, createGenerateNode, commitForkGraph],
+    [
+      assets,
+      projectId,
+      isNodeBusy,
+      createGenerateNode,
+      commitForkGraph,
+      appendNodesAndSelect,
+      rememberHistory,
+    ],
   );
 
   const retryNodeRun = useCallback(

@@ -46,6 +46,7 @@ export function applyVideoRecreationConfig(
 
 /** 所有生成入口共用的复刻预检；专属节点不能切换模式或静默更改全片时长。 */
 export function recreationGenerationIssue(data: FlowNodeData): string | undefined {
+  if (data.videoRecreationDraft) return '请先选择参考视频并完成分析';
   if (!data.videoRecreation) return undefined;
   return (
     getVideoRecreationIssue(data.videoRecreation) ??

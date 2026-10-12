@@ -128,7 +128,7 @@ const recreationAssetSchema = z.object({
   assetVersion: z.number().int().positive(),
   name: z.string().trim().min(1).max(160),
 });
-/** 专属节点的可选配置；未存在时沿用普通视频节点。 */
+/** 已冻结完整来源的复刻配置；未选来源的节点单独保存 videoRecreationDraft，不进入此合同。 */
 export const videoRecreationConfigSchema = z.object({
   version: z.literal(1),
   source: recreationAssetSchema.extend({

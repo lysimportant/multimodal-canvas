@@ -965,53 +965,49 @@ describe('NodeQuickEditor', () => {
     expect(dialog.querySelectorAll('.prompt-skill-panel')).toHaveLength(1);
   });
 
-  it.each(['快捷', '完整'] as const)(
-    '%s编辑器的复刻生成模型独立选择，未知视频能力不隐藏目录选项',
-    async (presentation) => {
-      const user = userEvent.setup();
-      const fetcher = vi.fn();
-      vi.stubGlobal('fetch', fetcher);
-      const inputs = makeProps({
-        node: {
-          ...videoNode,
-          data: {
-            ...videoNode.data,
-            modelAlias: 'video-model',
-            promptSkillId: 'character',
-            videoRecreation: {
-              version: 1,
-              source: { assetId: 'source-video', assetVersion: 1, name: '参考视频' },
-              bindings: [],
-            },
+  it('复刻 Dialog 独立选择生成模型，未知视频能力不隐藏目录选项', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const inputs = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'video-model',
+          promptSkillId: 'character',
+          videoRecreation: {
+            version: 1,
+            source: { assetId: 'source-video', assetVersion: 1, name: '参考视频' },
+            bindings: [],
           },
         },
-        models: [
-          { id: 'video-model', name: '生成视频模型', mediaTypes: ['video'] },
-          { id: 'future-model', name: '新生成模型', mediaTypes: ['text'] },
-        ],
-        onPromptSkillChange: vi.fn(),
-      });
-      renderRaw(<NodeQuickEditor {...inputs} />);
-      if (presentation === '完整')
-        await user.click(screen.getByRole('button', { name: '打开完整编辑器' }));
-      expect(screen.queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
-        'title',
-        '请先分析整条参考视频',
-      );
-      const group = screen.getByText('视频生成模型').parentElement as HTMLElement;
-      await user.click(within(group).getByRole('combobox'));
-      await user.click(selectPopup(group).getByRole('option', { name: /新生成模型/ }));
-      expect(inputs.onModelChange).toHaveBeenCalledExactlyOnceWith({
-        modelAlias: 'future-model',
-        credentialId: testCredentialId,
-      });
-      expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
-      expect(inputs.onRun).not.toHaveBeenCalled();
-      expect(fetcher).not.toHaveBeenCalled();
-    },
-  );
+      },
+      models: [
+        { id: 'video-model', name: '生成视频模型', mediaTypes: ['video'] },
+        { id: 'future-model', name: '新生成模型', mediaTypes: ['text'] },
+      ],
+      onPromptSkillChange: vi.fn(),
+    });
+    renderRaw(<NodeQuickEditor {...inputs} recreationDialogOpen />);
+    expect(screen.getByRole('dialog', { name: '短视频复刻' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
+      'title',
+      '请先分析整条参考视频',
+    );
+    const group = screen.getByText('视频生成模型').parentElement as HTMLElement;
+    await user.click(within(group).getByRole('combobox'));
+    await user.click(selectPopup(group).getByRole('option', { name: /新生成模型/ }));
+    expect(inputs.onModelChange).toHaveBeenCalledExactlyOnceWith({
+      modelAlias: 'future-model',
+      credentialId: testCredentialId,
+    });
+    expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
+    expect(inputs.onRun).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 
   it.each(['text', 'image', 'audio', 'video'] as const)(
     '%s 节点数量复用参数选择器，历史节点仍默认一份',

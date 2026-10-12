@@ -430,30 +430,72 @@ describe('WorkflowCanvas context menu', () => {
     expect(props.onRunNode).not.toHaveBeenCalled();
   });
 
-  it('底部复刻入口先展示流程，明确创建后才将视频来源交回 App，不调用生成', async () => {
-    const video = {
-      ...sourceNode,
-      id: 'source-video',
-      type: 'video',
-      data: {
-        ...sourceNode.data,
-        mediaType: 'video',
-        label: '原视频',
-        assetId: 'clip',
-        contentUrl: '/clip.mp4',
-      },
-    } as AssetFlowNode;
-    const props = createProps({ nodes: [video], onRecreateVideo: vi.fn() });
+  it('底部复刻入口直接创建节点，不要求先选择来源或调用生成', async () => {
+    const props = createProps({ onRecreateVideo: vi.fn() });
     render(<WorkflowCanvas {...props} />);
     await userEvent.click(screen.getByRole('button', { name: '短视频复刻' }));
-    const dialog = screen.getByRole('dialog', { name: '短视频复刻 · 使用流程' });
-    await waitFor(() => expect(dialog).toBeVisible());
-    expect(props.onRecreateVideo).not.toHaveBeenCalled();
-    await userEvent.click(within(dialog).getByRole('button', { name: '创建复刻节点' }));
-    expect(props.onRecreateVideo).toHaveBeenCalledExactlyOnceWith(video.id);
+    expect(props.onRecreateVideo).toHaveBeenCalledExactlyOnceWith();
     expect(props.onRunNode).not.toHaveBeenCalled();
     expect(props.onAddGenerateNode).not.toHaveBeenCalled();
-    expect(screen.queryByRole('dialog', { name: '短视频复刻 · 使用流程' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: '参考视频节点' })).not.toBeInTheDocument();
+  });
+
+  it('点击复刻节点打开独立 Dialog，关闭后可再次打开且不执行模型', async () => {
+    const recreation = {
+      ...generateNode,
+      id: 'recreation-draft',
+      type: 'video',
+      selected: false,
+      data: {
+        ...generateNode.data,
+        label: '短视频复刻',
+        mediaType: 'video',
+        videoRecreationDraft: true,
+      },
+    } as AssetFlowNode;
+    const props = createProps({ nodes: [recreation], onVideoRecreationChange: vi.fn() });
+    const view = render(<WorkflowCanvas {...props} />);
+    const node = screen.getByTestId(`canvas-node-${recreation.id}`);
+    expect(screen.queryByRole('dialog', { name: /短视频复刻/ })).not.toBeInTheDocument();
+
+    fireEvent.click(node);
+    expect(props.onNodeSelect).toHaveBeenCalledWith(recreation);
+    view.rerender(<WorkflowCanvas {...props} selectedNode={recreation} />);
+    const dialog = await screen.findByRole('dialog', { name: /短视频复刻/ });
+    await waitFor(() => expect(dialog).toBeVisible());
+    expect(dialog).toHaveClass('node-quick-editor-recreation-dialog');
+    expect(within(dialog).getByRole('combobox', { name: '参考视频' })).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: '参考视频节点' })).not.toBeInTheDocument();
+    expect(document.querySelector('.quick-editor-overlay')).not.toBeInTheDocument();
+    expect(props.onVideoRecreationChange).not.toHaveBeenCalled();
+    expect(props.onRunNode).not.toHaveBeenCalled();
+
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /短视频复刻/ })).not.toBeInTheDocument(),
+    );
+    fireEvent.click(node);
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /短视频复刻/ })).toBeVisible());
+    expect(props.onRunNode).not.toHaveBeenCalled();
+    expect(props.onVideoRecreationChange).not.toHaveBeenCalled();
+  });
+
+  it('普通视频节点点击仍使用现有生成编辑器', async () => {
+    const video = {
+      ...generateNode,
+      id: 'ordinary-video',
+      type: 'video',
+      selected: false,
+      data: { ...generateNode.data, label: '普通视频', mediaType: 'video' },
+    } as AssetFlowNode;
+    const props = createProps({ nodes: [video] });
+    const view = render(<WorkflowCanvas {...props} />);
+    fireEvent.click(screen.getByTestId(`canvas-node-${video.id}`));
+    expect(props.onNodeSelect).toHaveBeenCalledWith(video);
+    view.rerender(<WorkflowCanvas {...props} selectedNode={video} />);
+    expect(await screen.findByRole('region', { name: '普通视频生成设置' })).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: /短视频复刻/ })).not.toBeInTheDocument();
   });
 
   it('视口缩放或平移只暂停装饰层，结束后恢复且不改变节点或连线', () => {

@@ -8,7 +8,17 @@ import {
   type VideoRecreationConfig,
   type VideoRecreationTemplate,
 } from './video-recreation';
-import { canvasDocumentSchema, parseReversePromptOutput, renderPromptDocument } from './index';
+import {
+  canvasDocumentSchema,
+  canvasNodeSchema,
+  nodeDataSchema,
+  parseReversePromptOutput,
+  renderPromptDocument,
+  runJobDataSchema,
+  runSnapshotSchema,
+  type CanvasNode,
+  type RunSnapshot,
+} from './index';
 
 /** 完整十秒双镜头，人物身份仅由角色键表达。 */
 const template: VideoRecreationTemplate = {
@@ -86,6 +96,143 @@ const objectReady: VideoRecreationConfig = {
     },
   ],
 };
+
+/** 尚未选择来源的空复刻节点，仅持久化专属入口标记。 */
+const draftNode: CanvasNode = {
+  id: 'recreation-draft',
+  type: 'video',
+  position: { x: 0, y: 0 },
+  data: { label: '短视频复刻', mediaType: 'video', mode: 'generate', videoRecreationDraft: true },
+};
+/** 独立普通视频目标，用于验证未执行草稿不会阻止其他节点生成。 */
+const ordinaryNode: CanvasNode = {
+  ...draftNode,
+  id: 'ordinary-video',
+  data: { label: '普通视频', mediaType: 'video', mode: 'generate' },
+};
+/** 尝试直接执行空草稿的快照，必须在进入队列前被拒绝。 */
+const draftSnapshot: RunSnapshot = {
+  projectId: 'project',
+  canvasRevision: 1,
+  targetNodeId: draftNode.id,
+  modelAlias: 'video-model',
+  parameters: {},
+  submittedAt: '2026-10-12T00:00:00.000Z',
+  nodes: [draftNode],
+  edges: [],
+  inputs: [],
+};
+
+describe('短视频复刻空草稿', () => {
+  it('保存与 JSON 恢复保留空草稿，不插入来源、分析或默认参数', () => {
+    const canvas = { revision: 1, nodes: [draftNode], edges: [] };
+    expect(canvasDocumentSchema.parse(JSON.parse(JSON.stringify(canvas)))).toEqual(canvas);
+    expect(nodeDataSchema.parse(draftNode.data)).toEqual(draftNode.data);
+    expect(nodeDataSchema.shape.videoRecreationDraft.parse(true)).toBe(true);
+  });
+
+  it('普通节点与旧冻结配置不补草稿标记，已冻结来源配置保持兼容', () => {
+    const frozenNode = {
+      ...ordinaryNode,
+      id: 'frozen-recreation',
+      data: { ...ordinaryNode.data, videoRecreation: ready },
+    };
+    const canvas = { revision: 1, nodes: [draftNode, ordinaryNode, frozenNode], edges: [] };
+    const restored = canvasDocumentSchema.parse(JSON.parse(JSON.stringify(canvas)));
+    expect(restored).toEqual(canvas);
+    expect(restored.nodes[1]!.data).not.toHaveProperty('videoRecreationDraft');
+    expect(restored.nodes[2]!.data).not.toHaveProperty('videoRecreationDraft');
+  });
+
+  it.each([false, 1, 'true', {}, null])('拒绝无效草稿标记：%j', (videoRecreationDraft) => {
+    expect(
+      canvasNodeSchema.safeParse({
+        ...draftNode,
+        data: { ...draftNode.data, videoRecreationDraft },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    { ...draftNode, type: 'image' },
+    { ...draftNode, data: { ...draftNode.data, mediaType: 'image' } },
+    { ...draftNode, data: { ...draftNode.data, mode: 'source' } },
+    { ...draftNode, data: { ...draftNode.data, videoRecreation: ready } },
+  ])('空草稿只适用于未冻结来源的视频生成节点：%j', (node) => {
+    expect(canvasNodeSchema.safeParse(node).success).toBe(false);
+  });
+
+  it('明确选择来源后移除草稿标记，保存完整 v1 配置', () => {
+    const { videoRecreationDraft: _draft, ...data } = draftNode.data;
+    const configured = { ...draftNode, data: { ...data, videoRecreation: ready } };
+    expect(canvasNodeSchema.parse(configured)).toEqual(configured);
+    expect(canvasNodeSchema.parse(configured).data).not.toHaveProperty('videoRecreationDraft');
+  });
+
+  it('空来源不满足分析或生成配置，不放宽已有来源版本要求', () => {
+    const missingSource = { ...ready, source: undefined } as unknown as VideoRecreationConfig;
+    expect(videoRecreationConfigSchema.safeParse(draftNode.data).success).toBe(false);
+    expect(videoRecreationConfigSchema.safeParse(missingSource).success).toBe(false);
+    expect(getVideoRecreationIssue(missingSource)).toContain('配置无效');
+    expect(() => buildVideoRecreationPrompt(missingSource)).toThrow('配置无效');
+  });
+
+  it('执行目标仍为空草稿时拒绝运行快照和队列合同', () => {
+    const result = runSnapshotSchema.safeParse(draftSnapshot);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['nodes', 0, 'data', 'videoRecreationDraft'],
+          message: '请先选择或上传完整参考视频，再分析或生成复刻视频',
+        }),
+      );
+    }
+    expect(
+      runJobDataSchema.safeParse({
+        runId: 'draft-run',
+        snapshot: draftSnapshot,
+        attempt: 1,
+        provider: 'newapi',
+        cancelRequested: false,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('未执行的独立草稿不阻止其他视频目标的快照', () => {
+    const snapshot = {
+      ...draftSnapshot,
+      targetNodeId: ordinaryNode.id,
+      nodes: [draftNode, ordinaryNode],
+    };
+    expect(runSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+  });
+
+  it('启用上游空草稿不能进入生成，禁用上游草稿不阻止目标', () => {
+    const snapshot = {
+      ...draftSnapshot,
+      targetNodeId: ordinaryNode.id,
+      nodes: [draftNode, ordinaryNode],
+      edges: [
+        {
+          id: 'draft-reference',
+          sourceNodeId: draftNode.id,
+          sourceHandle: 'output:video',
+          targetNodeId: ordinaryNode.id,
+          targetHandle: 'input:content',
+          order: 0,
+        },
+      ],
+    };
+    expect(runSnapshotSchema.safeParse(snapshot).success).toBe(false);
+    expect(
+      runSnapshotSchema.safeParse({
+        ...snapshot,
+        nodes: [{ ...draftNode, data: { ...draftNode.data, enabled: false } }, ordinaryNode],
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe('整条短视频复刻合同', () => {
   it('解析完整时间轴并兼容旧反推返回', () => {

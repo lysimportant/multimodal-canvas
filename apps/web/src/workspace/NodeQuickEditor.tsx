@@ -49,6 +49,7 @@ import {
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
 import { VideoRecreationPanel } from './VideoRecreationPanel';
+import { VideoRecreationSourcePicker } from './VideoRecreationSourcePicker';
 import { recreationGenerationIssue } from './video-recreation-node';
 import { AssetPreview } from './AssetPreview';
 import type { ConnectedPromptAsset } from './connected-prompt-assets';
@@ -127,6 +128,10 @@ export type NodeQuickEditorProps = {
   onResourceAttach?: (asset: Asset) => void;
   /** 修改复刻工作流配置；资源引用与生成提示词由父层原子更新。 */
   onVideoRecreationChange?: (config: VideoRecreationConfig) => void | Promise<void>;
+  /** 复刻节点的专用 Dialog 由画布点击状态控制。 */
+  recreationDialogOpen?: boolean;
+  /** 关闭复刻 Dialog，不改变节点选择和草稿内容。 */
+  onRecreationDialogClose?: () => void;
   /** 当前节点连续添加画布参考资源的开关；不触发生成。 */
   referencePickActive?: boolean;
   onReferencePickToggle?: () => void;
@@ -305,6 +310,8 @@ export function NodeQuickEditor({
   onUploadResource,
   onResourceAttach,
   onVideoRecreationChange,
+  recreationDialogOpen = false,
+  onRecreationDialogClose,
   referencePickActive,
   onReferencePickToggle,
   onSearchProjectResources,
@@ -340,6 +347,8 @@ export function NodeQuickEditor({
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   /** 同一节点在快速面板和 Dialog 之间共用父层保存的文档。 */
   const [expandedEditorOpen, setExpandedEditorOpen] = useState(false);
+  const isRecreation = Boolean(node.data.videoRecreation || node.data.videoRecreationDraft);
+  const dialogOpen = isRecreation ? recreationDialogOpen : expandedEditorOpen;
   /** 参数页 Escape 关闭后的回焦目标；外点关闭不干预用户正在操作的控件。 */
   const mediaSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const expandTriggerRef = useRef<HTMLButtonElement>(null);
@@ -675,7 +684,7 @@ export function NodeQuickEditor({
 
   /** 视频模式在快速编辑器控制栏常驻，避免用户为切换模式打开参数页。 */
   const videoModeEditor =
-    node.data.mediaType === 'video' ? (
+    node.data.mediaType === 'video' && !isRecreation ? (
       <NodeParameterSelect
         label="生成模式"
         value={displayVideoMode(node.data, connectedInputRoles)}
@@ -968,16 +977,16 @@ export function NodeQuickEditor({
     <div className="node-quick-editor-controls node-quick-editor-topbar">
       <div className="node-quick-editor-settings">
         <NodeParameterSelect
-          label={node.data.videoRecreation ? '视频生成模型' : '模型'}
+          label={isRecreation ? '视频生成模型' : '模型'}
           value={currentModelValue}
           options={modelOptions}
           onChange={(value) => onModelChange(parseModelOptionValue(value))}
           className="node-quick-editor-select-group"
         />
         {videoModeEditor}
-        {node.data.mediaType === 'text' ? inferenceEditor : mediaSummary}
+        {node.data.mediaType === 'text' ? inferenceEditor : !isRecreation && mediaSummary}
       </div>
-      {!expandedEditorOpen && (
+      {!expandedEditorOpen && !isRecreation && (
         <Button
           type="button"
           ref={expandTriggerRef}
@@ -998,7 +1007,7 @@ export function NodeQuickEditor({
   const controls = (
     <div className="node-quick-editor-controls">
       <div className="node-quick-editor-run-group">
-        {!node.data.videoRecreation && skillPanel}
+        {!isRecreation && skillPanel}
         <NodeParameterSelect
           label="生成数量"
           className="node-quick-editor-generation-count"
@@ -1128,41 +1137,59 @@ export function NodeQuickEditor({
         onUploadResource={onUploadResource}
       />
     ) : null;
+  const recreationSource =
+    node.data.videoRecreationDraft && onVideoRecreationChange ? (
+      <VideoRecreationSourcePicker
+        assets={assets}
+        onUploadResource={onUploadResource}
+        onBind={onVideoRecreationChange}
+      />
+    ) : null;
   return (
     <>
-      <section
-        className="node-quick-editor nodrag nowheel nopan"
-        aria-label={
-          imageEditSource ? `${node.data.label}图片修改设置` : `${node.data.label}生成设置`
-        }
-        hidden={expandedEditorOpen}
-        onPointerDown={(event) => event.stopPropagation()}
+      {!isRecreation && (
+        <section
+          className="node-quick-editor nodrag nowheel nopan"
+          aria-label={
+            imageEditSource ? `${node.data.label}图片修改设置` : `${node.data.label}生成设置`
+          }
+          hidden={expandedEditorOpen}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {!expandedEditorOpen && (
+            <>
+              {recreationPanel}
+              {topControls}
+              <div className="node-quick-editor-prompt-group">
+                {imageEditSourcePreview}
+                {promptEditor}
+              </div>
+              {controls}
+              {generationCountIssue && (
+                <p className="node-quick-editor-parameter-issue" role="status">
+                  {generationCountIssue}
+                </p>
+              )}
+            </>
+          )}
+        </section>
+      )}
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          if (isRecreation) {
+            if (!open) onRecreationDialogClose?.();
+          } else setExpandedEditorOpen(open);
+        }}
       >
-        {!expandedEditorOpen && (
-          <>
-            {recreationPanel}
-            {topControls}
-            <div className="node-quick-editor-prompt-group">
-              {imageEditSourcePreview}
-              {promptEditor}
-            </div>
-            {controls}
-            {generationCountIssue && (
-              <p className="node-quick-editor-parameter-issue" role="status">
-                {generationCountIssue}
-              </p>
-            )}
-          </>
-        )}
-      </section>
-      <Dialog open={expandedEditorOpen} onOpenChange={setExpandedEditorOpen}>
         <DialogContent
           ref={expandedDialogRef}
-          className="node-quick-editor-dialog"
+          className={`node-quick-editor-dialog${isRecreation ? ' node-quick-editor-recreation-dialog' : ''}`}
           overlayClassName="node-quick-editor-dialog-backdrop"
           aria-labelledby={dialogTitleId}
           aria-describedby={undefined}
           onOpenAutoFocus={(event) => {
+            if (isRecreation) return;
             event.preventDefault();
             const dialog = expandedDialogRef.current;
             // 库默认落在首个关闭按钮；动画结束只修正默认落点，不抢走其他业务控件焦点。
@@ -1179,7 +1206,7 @@ export function NodeQuickEditor({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            expandTriggerRef.current?.focus();
+            if (!isRecreation) expandTriggerRef.current?.focus();
           }}
           onEscapeKeyDown={(event) => {
             // 子浮层先处理 Escape，不能同时关闭完整编辑器。
@@ -1196,7 +1223,9 @@ export function NodeQuickEditor({
         >
           <div className="node-quick-editor-dialog-header">
             <div>
-              <DialogTitle id={dialogTitleId}>{node.data.label} · 编辑设置</DialogTitle>
+              <DialogTitle id={dialogTitleId}>
+                {isRecreation ? '短视频复刻' : `${node.data.label} · 编辑设置`}
+              </DialogTitle>
             </div>
             <DialogClose asChild>
               <Button
@@ -1209,15 +1238,44 @@ export function NodeQuickEditor({
               </Button>
             </DialogClose>
           </div>
-          <div className="node-quick-editor-dialog-body">
-            {expandedEditorOpen && recreationPanel}
-            {topControls}
-            <div className="node-quick-editor-prompt-group">{promptEditor}</div>
-            {controls}
-            {generationCountIssue && (
-              <p className="node-quick-editor-parameter-issue" role="status">
-                {generationCountIssue}
-              </p>
+          <div
+            className={`node-quick-editor-dialog-body${isRecreation ? ' node-quick-editor-recreation-body' : ''}`}
+          >
+            {isRecreation ? (
+              <>
+                {recreationPanel ?? (
+                  <div className="node-quick-editor-recreation-source">{recreationSource}</div>
+                )}
+                {!recreationPanel && (
+                  <section className="node-quick-editor-recreation-pending" aria-label="替换资源">
+                    <h3>替换资源</h3>
+                    <p>选择参考视频后，分析结果中的人物和商品会显示在这里。</p>
+                  </section>
+                )}
+                <section className="node-quick-editor-recreation-generate" aria-label="生成设置">
+                  <h3>生成视频</h3>
+                  {topControls}
+                  <h4>提示词</h4>
+                  <div className="node-quick-editor-prompt-group">{promptEditor}</div>
+                  {controls}
+                  {generationCountIssue && (
+                    <p className="node-quick-editor-parameter-issue" role="status">
+                      {generationCountIssue}
+                    </p>
+                  )}
+                </section>
+              </>
+            ) : (
+              <>
+                {topControls}
+                <div className="node-quick-editor-prompt-group">{promptEditor}</div>
+                {controls}
+                {generationCountIssue && (
+                  <p className="node-quick-editor-parameter-issue" role="status">
+                    {generationCountIssue}
+                  </p>
+                )}
+              </>
             )}
           </div>
         </DialogContent>

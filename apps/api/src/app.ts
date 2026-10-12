@@ -3102,6 +3102,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const canvas = await projectStore.getCanvas(body.projectId, scope);
     if (!canvas) return reply.code(404).send({ error: 'project not found' });
+    if (canvas.nodes.find((node) => node.id === request.params.nodeId)?.data.videoRecreationDraft)
+      return reply.code(400).send({
+        error: '请先选择参考视频并完成分析',
+        code: 'VIDEO_RECREATION_NOT_READY',
+      });
 
     try {
       // A request may submit a freshly edited document before the canvas PATCH

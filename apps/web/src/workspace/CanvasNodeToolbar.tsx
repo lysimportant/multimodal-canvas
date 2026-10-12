@@ -30,7 +30,6 @@ import { ClearCanvasMenu, type ClearActionCounts } from './ClearCanvasMenu';
 import { mediaIcons, mediaLabels } from './contracts';
 import { useMobileWorkspace } from './MobileWorkspacePanel';
 import './CanvasNodeToolbar.mobile.css';
-import './VideoRecreationLauncher.css';
 
 /**
  * 画布底部工具胶囊。
@@ -67,7 +66,7 @@ export function CanvasNodeToolbar({
 }: {
   /** 打开所有节点共用的用户技能工作台。 */
   onOpenSkillWorkbench?: () => void;
-  /** 打开整条短视频复刻的使用流程与来源选择；不执行分析或生成。 */
+  /** 直接创建空复刻节点；分析与生成留给用户显式操作。 */
   onOpenVideoRecreation?: () => void;
   onAddGenerateNode: (mediaType: MediaType) => void;
   /** 将画布缩放并平移到能完整看到所有节点的位置。 */
@@ -159,7 +158,7 @@ export function CanvasNodeToolbar({
         type="button"
         className="canvas-node-tool canvas-node-action-tool canvas-video-recreation-tool"
         aria-label="短视频复刻"
-        title="短视频复刻：查看使用流程并选择原视频"
+        title="新建短视频复刻节点"
         key="video-recreation"
         onPointerDown={stopCanvasEvent}
         onClick={(event) => {

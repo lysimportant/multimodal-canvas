@@ -95,7 +95,6 @@ import {
   type NodeResizeHandler,
 } from './AssetNode';
 import { CanvasNodeToolbar } from './CanvasNodeToolbar';
-import { VideoRecreationLauncher } from './VideoRecreationLauncher';
 import { CanvasPerformanceContext, LARGE_CANVAS_NODE_COUNT } from './canvas-render-detail';
 import {
   CanvasEdgeAppearanceProvider,
@@ -308,7 +307,7 @@ export type WorkflowCanvasProps = {
    */
   onEditImage?: (sourceNodeId: string) => void;
   /** 创建视频复刻草稿，仅引用已存在的视频版本。 */
-  onRecreateVideo?: (sourceNodeId: string) => void;
+  onRecreateVideo?: (sourceNodeId?: string) => void;
   /** 保存专属节点分析状态和人物绑定；同时由App重建引用提示词。 */
   onVideoRecreationChange?: (config: VideoRecreationConfig, nodeId: string) => void | Promise<void>;
   /** 从悬空连线创建生成节点并立刻连到拖线起点。 */
@@ -471,7 +470,7 @@ export function WorkflowCanvas({
   useCanvasPageZoomLock();
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const flowStore = useStoreApi();
-  const [recreationLauncherOpen, setRecreationLauncherOpen] = useState(false);
+  const [recreationDialogNodeId, setRecreationDialogNodeId] = useState<string | null>(null);
   const canvasAreaRef = useRef<HTMLElement>(null);
   /** 画布相对 React Flow 容器的屏幕边界，移动帧只读缓存，单位为 CSS 像素。 */
   const canvasBoundsRef = useRef<CanvasViewportBounds | null>(null);
@@ -1042,6 +1041,10 @@ export function WorkflowCanvas({
   const handleNodeClick = useCallback(
     (event: ReactMouseEvent, node: AssetFlowNode) => {
       selectNodeByData(node.data, event);
+      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+      setRecreationDialogNodeId(
+        node.data.videoRecreation || node.data.videoRecreationDraft ? node.id : null,
+      );
     },
     [selectNodeByData],
   );
@@ -1310,6 +1313,8 @@ export function WorkflowCanvas({
         skillLibraryError={skillLibraryError}
         skillLibraryLoading={skillLibraryLoading}
         node={editorNode}
+        recreationDialogOpen={recreationDialogNodeId === editorNode.id}
+        onRecreationDialogClose={() => setRecreationDialogNodeId(null)}
         models={models}
         busy={editorBusy}
         runControlStore={nodeRunControlStore}
@@ -1445,6 +1450,7 @@ export function WorkflowCanvas({
     );
   }, [
     editorNode,
+    recreationDialogNodeId,
     editorNodes,
     editorBusy,
     nodeRunControlStore,
@@ -1531,7 +1537,7 @@ export function WorkflowCanvas({
       )}
       <CanvasNodeToolbar
         onOpenSkillWorkbench={onOpenSkillWorkbench}
-        onOpenVideoRecreation={onRecreateVideo ? () => setRecreationLauncherOpen(true) : undefined}
+        onOpenVideoRecreation={onRecreateVideo ? () => onRecreateVideo() : undefined}
         onAddGenerateNode={handleAddGenerateNode}
         onFitView={handleFitView}
         onRequestUpload={onRequestUpload}
@@ -1556,15 +1562,6 @@ export function WorkflowCanvas({
         canUndo={canUndo}
         canRedo={canRedo}
       />
-      {recreationLauncherOpen && onRecreateVideo ? (
-        <VideoRecreationLauncher
-          nodes={nodes}
-          busyNodeIds={busyNodeIds}
-          onClose={() => setRecreationLauncherOpen(false)}
-          onCreate={onRecreateVideo}
-          onRequestUpload={onRequestUpload}
-        />
-      ) : null}
       <CanvasSelectionModeContext.Provider value={suppressNodeInteractions}>
         <NodeRunControlStoreContext.Provider value={nodeRunControlStore ?? null}>
           <NodeStopContext.Provider value={onStopNode ?? null}>
@@ -1697,18 +1694,24 @@ export function WorkflowCanvas({
           </NodeStopContext.Provider>
         </NodeRunControlStoreContext.Provider>
       </CanvasSelectionModeContext.Provider>
-      {quickEditorNode && (
-        <QuickEditorOverlay
-          key={quickEditorNode.id}
-          nodeId={quickEditorNode.id}
-          canvasAreaRef={canvasAreaRef}
-          hidden={
-            draggingNodeIdsKey !== '[]' || tabSelectionActive || contextMenu?.kind === 'selection'
-          }
-        >
-          {quickEditor}
-        </QuickEditorOverlay>
-      )}
+      {quickEditorNode &&
+        (quickEditorNode.data.videoRecreation || quickEditorNode.data.videoRecreationDraft) &&
+        recreationDialogNodeId === quickEditorNode.id &&
+        quickEditor}
+      {quickEditorNode &&
+        !quickEditorNode.data.videoRecreation &&
+        !quickEditorNode.data.videoRecreationDraft && (
+          <QuickEditorOverlay
+            key={quickEditorNode.id}
+            nodeId={quickEditorNode.id}
+            canvasAreaRef={canvasAreaRef}
+            hidden={
+              draggingNodeIdsKey !== '[]' || tabSelectionActive || contextMenu?.kind === 'selection'
+            }
+          >
+            {quickEditor}
+          </QuickEditorOverlay>
+        )}
       {nodes.length === 0 && (
         <div className="canvas-welcome">
           <span className="canvas-kicker">工作流画布</span>

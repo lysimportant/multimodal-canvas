@@ -37,7 +37,7 @@ describe('CanvasNodeToolbar', () => {
       'canvas-node-action-tool',
       'canvas-video-recreation-tool',
     );
-    expect(button).toHaveAttribute('title', '短视频复刻：查看使用流程并选择原视频');
+    expect(button).toHaveAttribute('title', '新建短视频复刻节点');
     expect(button).toHaveAccessibleName('短视频复刻');
     expect(button.textContent).toBe('');
     const icon = button.querySelector('svg.lucide-clapperboard');
@@ -46,7 +46,7 @@ describe('CanvasNodeToolbar', () => {
     expect(icon).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('短视频复刻只打开流程，不创建媒体节点或把点击和指针按下传给画布', async () => {
+  it('短视频复刻直接请求创建节点，不创建普通媒体节点或把事件传给画布', async () => {
     const user = userEvent.setup();
     const onOpenVideoRecreation = vi.fn();
     const onAddGenerateNode = vi.fn();
@@ -63,7 +63,7 @@ describe('CanvasNodeToolbar', () => {
     const button = screen.getByRole('button', { name: '短视频复刻' });
     fireEvent.pointerDown(button);
     await user.click(button);
-    expect(onOpenVideoRecreation).toHaveBeenCalledOnce();
+    expect(onOpenVideoRecreation).toHaveBeenCalledExactlyOnceWith();
     expect(onAddGenerateNode).not.toHaveBeenCalled();
     expect(parentClick).not.toHaveBeenCalled();
     expect(parentPointerDown).not.toHaveBeenCalled();
@@ -72,7 +72,7 @@ describe('CanvasNodeToolbar', () => {
   it.each([
     { label: 'Enter', key: '{Enter}' },
     { label: 'Space', key: ' ' },
-  ])('短视频复刻可通过 Tab 聚焦并用 $label 打开流程', async ({ key }) => {
+  ])('短视频复刻可通过 Tab 聚焦并用 $label 创建节点', async ({ key }) => {
     const user = userEvent.setup();
     const onOpenVideoRecreation = vi.fn();
     const onAddGenerateNode = vi.fn();
@@ -97,18 +97,13 @@ describe('CanvasNodeToolbar', () => {
     }
     expect(onOpenVideoRecreation).not.toHaveBeenCalled();
     await user.keyboard(key);
-    expect(onOpenVideoRecreation).toHaveBeenCalledOnce();
+    expect(onOpenVideoRecreation).toHaveBeenCalledExactlyOnceWith();
     expect(onAddGenerateNode).not.toHaveBeenCalled();
     expect(parentClick).not.toHaveBeenCalled();
   });
 
   it('短视频复刻复用胶囊按钮样式及 hover/focus 提示，不单独覆盖宽度和颜色', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
-    const launcherCss = readFileSync(
-      resolve(process.cwd(), 'src/workspace/VideoRecreationLauncher.css'),
-      'utf8',
-    );
-    expect(launcherCss).not.toContain('.canvas-video-recreation-tool');
     expect(css).toMatch(/\.canvas-node-tool::after \{[^}]*content: attr\(aria-label\);/);
     expect(css).toMatch(/\.canvas-node-tool:hover::after,[^{]*\{[^}]*opacity: 1;/);
     expect(css).toMatch(/\.canvas-node-tool:focus-visible::after \{[^}]*opacity: 1;/);

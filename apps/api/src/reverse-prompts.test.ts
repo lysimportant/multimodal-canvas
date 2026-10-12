@@ -931,6 +931,23 @@ async function readyRecreation(
 }
 
 describe('通用 Run 提交的复刻守卫', () => {
+  it('空复刻草稿直接返回明确错误，不创建 Run', async () => {
+    const ctx = await readyRecreation();
+    const node = ctx.canvas.nodes[0]!;
+    const { videoRecreation: _config, ...data } = node.data;
+    node.data = { ...data, videoRecreationDraft: true, prompt: '手写提示词' };
+    await ctx.projectStore.updateCanvas(ctx.project.id, ctx.canvas);
+    const create = vi.spyOn(ctx.runService, 'create');
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: '/v1/nodes/recreation-node/runs',
+      payload: { projectId: ctx.project.id },
+    });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'VIDEO_RECREATION_NOT_READY' });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it.each(['正常', '删除商品引用', '商品版本换绑', '跨项目商品'] as const)(
     '对象卡保留与多商品替换：%s 通过真实分析记录和冻结引用校验',
     async (kind) => {

@@ -1,21 +1,72 @@
-/* 复用节点编辑器颜色与控件尺度；长摘要和镜头只在面板内滚动。 */
+/* 分析与替换各占一栏，长内容只在栏内滚动。 */
 .video-recreation-panel {
   display: grid;
-  gap: 12px;
-  /* 浮层高度受限时交给外层编辑器滚动，不能将面板压成零高。 */
-  flex-shrink: 0;
-  min-height: 160px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  min-height: 0;
   min-width: 0;
-  grid-column: 1 / -1;
+  grid-column: 1 / 3;
   width: 100%;
   max-width: 100%;
-  max-height: 640px;
-  overflow: auto;
-  overscroll-behavior: contain;
+  height: 100%;
+  overflow: hidden;
   color: var(--mc-text, #18212f);
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.video-recreation-analysis-column,
+.video-recreation-resources-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+  padding-right: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.video-recreation-analysis-column > *,
+.video-recreation-resources-column > * {
+  flex-shrink: 0;
+}
+
+.video-recreation-resources-header,
+.video-recreation-scenes {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.video-recreation-source-preview {
+  display: grid;
+  place-items: center;
+  height: clamp(200px, 28vh, 320px);
+  min-width: 0;
+  overflow: hidden;
+  contain: layout paint;
+  border: 1px solid var(--mc-border, #d3dce0);
+  border-radius: 6px;
+  background: var(--mc-surface-soft, #f7f8fa);
+}
+
+.video-recreation-source-video {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.video-recreation-source-preview video {
+  object-fit: contain;
+}
+
+.video-recreation-empty {
+  padding: 16px 12px;
+  border: 1px dashed var(--mc-border, #d3dce0);
+  border-radius: 6px;
+  color: var(--mc-text-muted, #687386);
 }
 
 .video-recreation-panel h3,
