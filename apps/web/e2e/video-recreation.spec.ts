@@ -29,6 +29,7 @@ const template: VideoRecreationTemplate = {
       camera: '推进至商品特写',
     },
   ],
+  dialogue: [{ startSeconds: 1.2, endSeconds: 2.8, speakerId: 'character_a', text: '请看这个。' }],
   unknowns: ['原包装文字无法确认'],
 };
 /** 两个人物与两件物品的合成识别结果，仅验证选择、定位和保存，不代表演示视频真实内容。 */
@@ -957,7 +958,16 @@ test('整条分析、绑定人物、自动组装和明确生成，保存重载�
   const saved = ctx.canvas().nodes.find((n) => n.data.videoRecreation)!;
   expect(saved.data.parameters?.duration).toBe(10);
   expect(saved.data.resourceRefs?.map((r) => r.assetId)).toEqual(['clip', 'person-a']);
+  expect(saved.data.videoRecreation?.analysis?.template.dialogue).toEqual(template.dialogue);
+  expect(saved.data.prompt).toContain('请看这个。');
+  await panel.getByText('查看完整模板、镜头动作与台词').click();
+  await expect(panel.getByText('1.2 至 2.8 秒 · 主角：请看这个。')).toBeVisible();
   expect(ctx.posts).toHaveLength(1);
+  await expect(
+    page
+      .getByRole('dialog', { name: '短视频复刻', exact: true })
+      .getByRole('textbox', { name: '提示词', exact: true }),
+  ).toContainText('请看这个。');
   expect(ctx.generates).toHaveLength(0);
   const after = await node.boundingBox();
   expect(after?.width).toBeCloseTo(size!.width, 0);
@@ -977,6 +987,9 @@ test('整条分析、绑定人物、自动组装和明确生成，保存重载�
   expect(
     ctx.generates[0]!.snapshot.nodes?.find((n) => n.id === saved.id)?.data.videoRecreation?.source,
   ).toMatchObject({ assetId: 'clip', assetVersion: 2 });
+  expect(ctx.generates[0]!.snapshot.nodes?.find((n) => n.id === saved.id)?.data.prompt).toContain(
+    '请看这个。',
+  );
   expect(ctx.errors).toEqual([]);
 });
 

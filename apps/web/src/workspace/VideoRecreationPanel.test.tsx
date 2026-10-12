@@ -651,8 +651,9 @@ describe('短视频复刻面板', () => {
     await waitFor(() => expect(screen.getByLabelText('左侧人物')).toBeEnabled());
     expect(saved().request).toBeUndefined();
     expect(screen.getByText('遮挡处的手势无法确认')).toBeVisible();
-    fireEvent.click(screen.getByText('查看完整模板与镜头动作'));
+    fireEvent.click(screen.getByText('查看完整模板、镜头动作与台词'));
     expect(screen.getByText('动作：actor_a 递出商品，actor_b 接住')).toBeVisible();
+    expect(screen.getByText('人物台词：旧分析未提取台词')).toBeVisible();
     fireEvent.change(screen.getByLabelText('左侧人物'), { target: { value: 'image-a' } });
     await waitFor(() => expect(screen.getByLabelText('右侧人物')).toBeEnabled());
     fireEvent.change(screen.getByLabelText('右侧人物'), { target: { value: 'image-b' } });
@@ -663,6 +664,30 @@ describe('短视频复刻面板', () => {
     expect(saved().productDescription).toBe('原说明');
     expect(submitVideoRecreation).toHaveBeenCalledTimes(1);
     expect(vi.mocked(submitVideoRecreation).mock.calls[0]![2].idempotencyKey).toBe(key);
+  });
+
+  it('展示分析得到的逐句台词、说话人和起止秒数', () => {
+    const withDialogue: VideoRecreationConfig = {
+      ...ready,
+      analysis: {
+        ...ready.analysis!,
+        template: {
+          ...template,
+          dialogue: [
+            { startSeconds: 2, endSeconds: 3, speakerId: 'actor_a', text: '试试这个。' },
+            { startSeconds: 5, endSeconds: 6, text: '好的。' },
+          ],
+        },
+      },
+    };
+    render(<Harness start={withDialogue} />);
+    fireEvent.click(screen.getByText('查看完整模板、镜头动作与台词'));
+    expect(screen.getByText('试试这个。', { exact: false, selector: 'li' })).toHaveTextContent(
+      '2 至 3 秒 · 左侧人物：试试这个。',
+    );
+    expect(screen.getByText('好的。', { exact: false, selector: 'li' })).toHaveTextContent(
+      '5 至 6 秒 · 说话人未确认：好的。',
+    );
   });
 
   it('首次身份保存失败不 POST，同键确认也必须等待再次保存', async () => {

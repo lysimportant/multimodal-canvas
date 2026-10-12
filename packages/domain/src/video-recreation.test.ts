@@ -267,6 +267,49 @@ describe('整条短视频复刻合同', () => {
     );
     expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('without guessing brands');
     expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('fail explicitly');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('"dialogue"');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain(
+      'Transcribe every intelligible spoken line verbatim',
+    );
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('Use an empty dialogue array');
+  });
+  it('逐句台词保留原话、说话人和秒数，随分析模板进入生成提示词', () => {
+    const withDialogue: VideoRecreationTemplate = {
+      ...template,
+      dialogue: [
+        { startSeconds: 1.2, endSeconds: 2.8, speakerId: 'character_a', text: '这款怎么用？' },
+        { startSeconds: 4.5, endSeconds: 5.4, text: '请看这里。' },
+      ],
+    };
+    expect(parseVideoRecreationTemplate(JSON.stringify(withDialogue))).toEqual(withDialogue);
+    const prompt = renderPromptDocument(
+      buildVideoRecreationPrompt({
+        ...ready,
+        analysis: { ...ready.analysis!, template: withDialogue },
+      }),
+    );
+    expect(prompt).toContain(
+      '"startSeconds":1.2,"endSeconds":2.8,"speakerId":"character_a","text":"这款怎么用？"',
+    );
+    expect(prompt).toContain('"startSeconds":4.5,"endSeconds":5.4,"text":"请看这里。"');
+    expect(prompt).toContain('preserve their text and timing unless the user changes them');
+    expect(prompt).not.toContain('do not clone the original speaker or copy original dialogue');
+  });
+  it.each([
+    { dialogue: [{ startSeconds: 1, endSeconds: 11, text: '超出时长' }] },
+    { dialogue: [{ startSeconds: 2, endSeconds: 2, text: '没有时长' }] },
+    {
+      dialogue: [
+        { startSeconds: 3, endSeconds: 4, text: '后一句' },
+        { startSeconds: 1, endSeconds: 2, text: '前一句' },
+      ],
+    },
+    { dialogue: [{ startSeconds: 1, endSeconds: 2, speakerId: 'product_a', text: '错误说话人' }] },
+    { dialogue: [{ startSeconds: 1, endSeconds: 2, text: '' }] },
+  ])('拒绝越界、倒序、无效说话人或空台词：%j', ({ dialogue }) => {
+    expect(() => parseVideoRecreationTemplate(JSON.stringify({ ...template, dialogue }))).toThrow(
+      '视频模板无效',
+    );
   });
   it.each([
     { ...template, durationSeconds: 9 },

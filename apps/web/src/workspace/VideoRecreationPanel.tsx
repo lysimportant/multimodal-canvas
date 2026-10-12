@@ -1007,7 +1007,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 来自分析的首个镜头，保留原视频场景与镜头结构。
               </p>
               <details className="video-recreation-template">
-                <summary>查看完整模板与镜头动作</summary>
+                <summary>查看完整模板、镜头动作与台词</summary>
                 <ol>
                   {config.analysis.template.shots.map((shot, index) => (
                     <li key={index}>
@@ -1019,6 +1019,27 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     </li>
                   ))}
                 </ol>
+                {config.analysis.template.dialogue?.length ? (
+                  <>
+                    <h5>人物台词</h5>
+                    <ol>
+                      {config.analysis.template.dialogue.map((line, index) => (
+                        <li key={index}>
+                          {line.startSeconds} 至 {line.endSeconds} 秒 ·{' '}
+                          {config.analysis?.template.roles.find(
+                            (role) => role.id === line.speakerId,
+                          )?.label ?? '说话人未确认'}
+                          ：{line.text}
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                ) : (
+                  <p>
+                    人物台词：
+                    {config.analysis.template.dialogue ? '未听到可辨认的台词' : '旧分析未提取台词'}
+                  </p>
+                )}
                 <p>声音：{config.analysis.template.audio || '未提供可靠的声音证据'}</p>
               </details>
             </div>
