@@ -1,0 +1,158 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["Fragment","jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+jest-dom@6.8.0/node_modules/@testing-library/jest-dom/dist/vitest.mjs");
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/packages/ui/src/index.ts", {"importedNames":["Button","Input"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+react@16.3_e1ac85d3dfa8b41ff24d80223f58547d/node_modules/@testing-library/react/dist/index.js", {"importedNames":["cleanup","render","screen","waitFor"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+user-event_1ca100c7362ccf0b1358603d616c282d/node_modules/@testing-library/user-event/dist/esm/index.js", {"importedNames":["default"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["useState"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/vitest@3.2.7_@types+node@22_89ee79179d9afea59db69119226e71e6/node_modules/vitest/dist/index.js", {"importedNames":["afterEach","describe","expect","it","vi"]});
+const __vite_ssr_import_7__ = await __vite_ssr_import__("/src/workspace/CompactSelect.tsx", {"importedNames":["CompactSelect"]});
+const __vite_ssr_import_8__ = await __vite_ssr_import__("/src/workspace/PromptSkillSettings.tsx", {"importedNames":["PromptSkillSettings"]});
+(0,__vite_ssr_import_6__.afterEach)((0,__vite_ssr_import_3__.cleanup));
+(0,__vite_ssr_import_6__.describe)("PromptSkillSettings", () => {
+  (0,__vite_ssr_import_6__.it)("悬停不抢走原焦点，点击固定，退出不触发优化操作", async () => {
+    const user = __vite_ssr_import_4__.default.setup();
+    const optimize = __vite_ssr_import_6__.vi.fn();
+    (0,__vite_ssr_import_3__.render)(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.Input), { "aria-label": "原提示词" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 20,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_8__.PromptSkillSettings), { selected: true, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.Button), { onClick: optimize, children: "优化提示词" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 22,
+          columnNumber: 11
+        }, this) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 21,
+          columnNumber: 9
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+        lineNumber: 19,
+        columnNumber: 7
+      }, this)
+    );
+    const input = __vite_ssr_import_3__.screen.getByRole("textbox", { name: "原提示词" });
+    await user.click(input);
+    const trigger = __vite_ssr_import_3__.screen.getByRole("button", { name: "Skill 配置" });
+    (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("data-selected", "true");
+    await user.hover(trigger);
+    await (0,__vite_ssr_import_3__.waitFor)(() => (0,__vite_ssr_import_6__.expect)(__vite_ssr_import_3__.screen.getByRole("group", { name: "Skill 配置" })).toBeVisible());
+    (0,__vite_ssr_import_6__.expect)(input).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await (0,__vite_ssr_import_3__.waitFor)(() => (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("aria-expanded", "false"));
+    (0,__vite_ssr_import_6__.expect)(input).toHaveFocus();
+    await user.unhover(trigger);
+    await user.hover(trigger);
+    await user.click(trigger);
+    await user.unhover(trigger);
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("aria-expanded", "true");
+    await user.click(trigger);
+    await (0,__vite_ssr_import_3__.waitFor)(() => (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("aria-expanded", "false"));
+    (0,__vite_ssr_import_6__.expect)(optimize).not.toHaveBeenCalled();
+  });
+  (0,__vite_ssr_import_6__.it)("嵌套 Select 不误关闭配置，关闭重开保留父层选择与预览", async () => {
+    const user = __vite_ssr_import_4__.default.setup();
+    const optimize = __vite_ssr_import_6__.vi.fn();
+    function Session() {
+      const [value, setValue] = (0,__vite_ssr_import_5__.useState)("a");
+      return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { role: "dialog", "aria-label": "节点编辑", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_8__.PromptSkillSettings), { selected: true, children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            (0,__vite_ssr_import_7__.CompactSelect),
+            {
+              label: "模型",
+              value,
+              options: [
+                { value: "a", label: "文字 A" },
+                { value: "b", label: "文字 B" }
+              ],
+              onChange: setValue
+            },
+            void 0,
+            false,
+            {
+              fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+              lineNumber: 56,
+              columnNumber: 13
+            },
+            this
+          ),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.Button), { onClick: optimize, children: "优化提示词" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+            lineNumber: 65,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 55,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.Input), { "aria-label": "优化预览", defaultValue: "已编辑的预览" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 67,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+        lineNumber: 54,
+        columnNumber: 9
+      }, this);
+    }
+    (0,__vite_ssr_import_3__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(Session, {}, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+      lineNumber: 71,
+      columnNumber: 12
+    }, this));
+    const trigger = __vite_ssr_import_3__.screen.getByRole("button", { name: "Skill 配置" });
+    await user.click(trigger);
+    await user.click(__vite_ssr_import_3__.screen.getByRole("combobox"));
+    const option = await __vite_ssr_import_3__.screen.findByRole("option", { name: "文字 B" });
+    (0,__vite_ssr_import_6__.expect)(option.closest('[role="dialog"]')).toHaveAccessibleName("Skill 设置浮层");
+    await user.click(option);
+    (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("aria-expanded", "true");
+    (0,__vite_ssr_import_6__.expect)(__vite_ssr_import_3__.screen.getByRole("combobox")).toHaveAccessibleName("模型：文字 B");
+    await user.click(__vite_ssr_import_3__.screen.getByRole("textbox", { name: "优化预览" }));
+    await (0,__vite_ssr_import_3__.waitFor)(() => (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("aria-expanded", "false"));
+    (0,__vite_ssr_import_6__.expect)(__vite_ssr_import_3__.screen.getByRole("textbox", { name: "优化预览" })).toHaveValue("已编辑的预览");
+    await user.click(trigger);
+    (0,__vite_ssr_import_6__.expect)(__vite_ssr_import_3__.screen.getByRole("combobox")).toHaveAccessibleName("模型：文字 B");
+    (0,__vite_ssr_import_6__.expect)(optimize).not.toHaveBeenCalled();
+  });
+  (0,__vite_ssr_import_6__.it)("编辑器阻止指针冒泡时，真实 Popover 仍识别外部点击", async () => {
+    const user = __vite_ssr_import_4__.default.setup();
+    (0,__vite_ssr_import_3__.render)(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { onPointerDown: (event) => event.stopPropagation(), children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_8__.PromptSkillSettings), { selected: false, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.Button), { children: "优化提示词" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 93,
+          columnNumber: 11
+        }, this) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 92,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { "data-testid": "blank" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+          lineNumber: 95,
+          columnNumber: 9
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/workspace/PromptSkillSettings.test.tsx",
+        lineNumber: 91,
+        columnNumber: 7
+      }, this)
+    );
+    const trigger = __vite_ssr_import_3__.screen.getByRole("button", { name: "Skill 配置" });
+    await user.click(trigger);
+    await (0,__vite_ssr_import_3__.waitFor)(() => (0,__vite_ssr_import_6__.expect)(__vite_ssr_import_3__.screen.getByRole("group", { name: "Skill 配置" })).toBeVisible());
+    await user.click(__vite_ssr_import_3__.screen.getByTestId("blank"));
+    await (0,__vite_ssr_import_3__.waitFor)(() => (0,__vite_ssr_import_6__.expect)(trigger).toHaveAttribute("aria-expanded", "false"));
+  });
+});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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QUFSO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBYSxLQURmO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFFQTtBQUFBLFFBQ0EsaURBQUMsU0FBSSxlQUFZLFdBQWpCO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBeUI7QUFBQSxXQUozQjtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBS0E7QUFBQSxJQUNGO0FBQ0EsVUFBTSxVQUFVLDZCQUFPLFVBQVUsVUFBVSxFQUFFLE1BQU0sV0FBVyxDQUFDO0FBQy9ELFVBQU0sS0FBSyxNQUFNLE9BQU87QUFDeEIsYUFBTSwrQkFBUSxTQUFNLDhCQUFPLDZCQUFPLFVBQVUsU0FBUyxFQUFFLE1BQU0sV0FBVyxDQUFDLENBQUMsRUFBRSxZQUFZLENBQUM7QUFDekYsVUFBTSxLQUFLLE1BQU0sNkJBQU8sWUFBWSxPQUFPLENBQUM7QUFDNUMsYUFBTSwrQkFBUSxTQUFNLDhCQUFPLE9BQU8sRUFBRSxnQkFBZ0IsaUJBQWlCLE9BQU8sQ0FBQztBQUFBLEVBQy9FLENBQUM7QUFDSCxDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJQcm9tcHRTa2lsbFNldHRpbmdzLnRlc3QudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCAnQHRlc3RpbmctbGlicmFyeS9qZXN0LWRvbS92aXRlc3QnO1xyXG5cclxuaW1wb3J0IHsgQnV0dG9uLCBJbnB1dCB9IGZyb20gJ0BtdWx0aW1vZGFsLWNhbnZhcy91aSc7XHJcbmltcG9ydCB7IGNsZWFudXAsIHJlbmRlciwgc2NyZWVuLCB3YWl0Rm9yIH0gZnJvbSAnQHRlc3RpbmctbGlicmFyeS9yZWFjdCc7XHJcbmltcG9ydCB1c2VyRXZlbnQgZnJvbSAnQHRlc3RpbmctbGlicmFyeS91c2VyLWV2ZW50JztcclxuaW1wb3J0IHsgdXNlU3RhdGUgfSBmcm9tICdyZWFjdCc7XHJcbmltcG9ydCB7IGFmdGVyRWFjaCwgZGVzY3JpYmUsIGV4cGVjdCwgaXQsIHZpIH0gZnJvbSAndml0ZXN0JztcclxuXHJcbmltcG9ydCB7IENvbXBhY3RTZWxlY3QgfSBmcm9tICcuL0NvbXBhY3RTZWxlY3QnO1xyXG5pbXBvcnQgeyBQcm9tcHRTa2lsbFNldHRpbmdzIH0gZnJvbSAnLi9Qcm9tcHRTa2lsbFNldHRpbmdzJztcclxuXHJcbmFmdGVyRWFjaChjbGVhbnVwKTtcclxuXHJcbmRlc2NyaWJlKCdQcm9tcHRTa2lsbFNldHRpbmdzJywgKCkgPT4ge1xyXG4gIGl0KCfmgqzlgZzkuI3miqLotbDljp/nhKbngrnvvIzngrnlh7vlm7rlrprvvIzpgIDlh7rkuI3op6blj5HkvJjljJbmk43kvZwnLCBhc3luYyAoKSA9PiB7XHJcbiAgICBjb25zdCB1c2VyID0gdXNlckV2ZW50LnNldHVwKCk7XHJcbiAgICBjb25zdCBvcHRpbWl6ZSA9IHZpLmZuKCk7XHJcbiAgICByZW5kZXIoXHJcbiAgICAgIDw+XHJcbiAgICAgICAgPElucHV0IGFyaWEtbGFiZWw9XCLljp/mj5DnpLror41cIiAvPlxyXG4gICAgICAgIDxQcm9tcHRTa2lsbFNldHRpbmdzIHNlbGVjdGVkPlxyXG4gICAgICAgICAgPEJ1dHRvbiBvbkNsaWNrPXtvcHRpbWl6ZX0+5LyY5YyW5o+Q56S66K+NPC9CdXR0b24+XHJcbiAgICAgICAgPC9Qcm9tcHRTa2lsbFNldHRpbmdzPlxyXG4gICAgICA8Lz4sXHJcbiAgICApO1xyXG4gICAgY29uc3QgaW5wdXQgPSBzY3JlZW4uZ2V0QnlSb2xlKCd0ZXh0Ym94JywgeyBuYW1lOiAn5Y6f5o+Q56S66K+NJyB9KTtcclxuICAgIGF3YWl0IHVzZXIuY2xpY2soaW5wdXQpO1xyXG4gICAgY29uc3QgdHJpZ2dlciA9IHNjcmVlbi5nZXRCeVJvbGUoJ2J1dHRvbicsIHsgbmFtZTogJ1NraWxsIOmFjee9ricgfSk7XHJcbiAgICBleHBlY3QodHJpZ2dlcikudG9IYXZlQXR0cmlidXRlKCdkYXRhLXNlbGVjdGVkJywgJ3RydWUnKTtcclxuICAgIGF3YWl0IHVzZXIuaG92ZXIodHJpZ2dlcik7XHJcbiAgICBhd2FpdCB3YWl0Rm9yKCgpID0+IGV4cGVjdChzY3JlZW4uZ2V0QnlSb2xlKCdncm91cCcsIHsgbmFtZTogJ1NraWxsIOmFjee9ricgfSkpLnRvQmVWaXNpYmxlKCkpO1xyXG4gICAgZXhwZWN0KGlucHV0KS50b0hhdmVGb2N1cygpO1xyXG4gICAgYXdhaXQgdXNlci5rZXlib2FyZCgne0VzY2FwZX0nKTtcclxuICAgIGF3YWl0IHdhaXRGb3IoKCkgPT4gZXhwZWN0KHRyaWdnZXIpLnRvSGF2ZUF0dHJpYnV0ZSgnYXJpYS1leHBhbmRlZCcsICdmYWxzZScpKTtcclxuICAgIGV4cGVjdChpbnB1dCkudG9IYXZlRm9jdXMoKTtcclxuICAgIGF3YWl0IHVzZXIudW5ob3Zlcih0cmlnZ2VyKTtcclxuICAgIGF3YWl0IHVzZXIuaG92ZXIodHJpZ2dlcik7XHJcbiAgICBhd2FpdCB1c2VyLmNsaWNrKHRyaWdnZXIpO1xyXG4gICAgYXdhaXQgdXNlci51bmhvdmVyKHRyaWdnZXIpO1xyXG4gICAgYXdhaXQgbmV3IFByb21pc2UoKHJlc29sdmUpID0+IHNldFRpbWVvdXQocmVzb2x2ZSwgMjIwKSk7XHJcbiAgICBleHBlY3QodHJpZ2dlcikudG9IYXZlQXR0cmlidXRlKCdhcmlhLWV4cGFuZGVkJywgJ3RydWUnKTtcclxuICAgIGF3YWl0IHVzZXIuY2xpY2sodHJpZ2dlcik7XHJcbiAgICBhd2FpdCB3YWl0Rm9yKCgpID0+IGV4cGVjdCh0cmlnZ2VyKS50b0hhdmVBdHRyaWJ1dGUoJ2FyaWEtZXhwYW5kZWQnLCAnZmFsc2UnKSk7XHJcbiAgICBleHBlY3Qob3B0aW1pemUpLm5vdC50b0hhdmVCZWVuQ2FsbGVkKCk7XHJcbiAgfSk7XHJcblxyXG4gIGl0KCfltYzlpZcgU2VsZWN0IOS4jeivr+WFs+mXremFjee9ru+8jOWFs+mXremHjeW8gOS/neeVmeeItuWxgumAieaLqeS4jumihOiniCcsIGFzeW5jICgpID0+IHtcclxuICAgIGNvbnN0IHVzZXIgPSB1c2VyRXZlbnQuc2V0dXAoKTtcclxuICAgIGNvbnN0IG9wdGltaXplID0gdmkuZm4oKTtcclxuICAgIC8qKiDmqKHmi5/lrp7pmYXkvJjljJbkvJror53vvJrpgInmi6nlkozpooTop4jnlLHmta7lsYLlpJbnmoTniLbnu4Tku7bmjIHmnInjgIIgKi9cclxuICAgIGZ1bmN0aW9uIFNlc3Npb24oKSB7XHJcbiAgICAgIGNvbnN0IFt2YWx1ZSwgc2V0VmFsdWVdID0gdXNlU3RhdGUoJ2EnKTtcclxuICAgICAgcmV0dXJuIChcclxuICAgICAgICA8ZGl2IHJvbGU9XCJkaWFsb2dcIiBhcmlhLWxhYmVsPVwi6IqC54K557yW6L6RXCI+XHJcbiAgICAgICAgICA8UHJvbXB0U2tpbGxTZXR0aW5ncyBzZWxlY3RlZD5cclxuICAgICAgICAgICAgPENvbXBhY3RTZWxlY3RcclxuICAgICAgICAgICAgICBsYWJlbD1cIuaooeWei1wiXHJcbiAgICAgICAgICAgICAgdmFsdWU9e3ZhbHVlfVxyXG4gICAgICAgICAgICAgIG9wdGlvbnM9e1tcclxuICAgICAgICAgICAgICAgIHsgdmFsdWU6ICdhJywgbGFiZWw6ICfmloflrZcgQScgfSxcclxuICAgICAgICAgICAgICAgIHsgdmFsdWU6ICdiJywgbGFiZWw6ICfmloflrZcgQicgfSxcclxuICAgICAgICAgICAgICBdfVxyXG4gICAgICAgICAgICAgIG9uQ2hhbmdlPXtzZXRWYWx1ZX1cclxuICAgICAgICAgICAgLz5cclxuICAgICAgICAgICAgPEJ1dHRvbiBvbkNsaWNrPXtvcHRpbWl6ZX0+5LyY5YyW5o+Q56S66K+NPC9CdXR0b24+XHJcbiAgICAgICAgICA8L1Byb21wdFNraWxsU2V0dGluZ3M+XHJcbiAgICAgICAgICA8SW5wdXQgYXJpYS1sYWJlbD1cIuS8mOWMlumihOiniFwiIGRlZmF1bHRWYWx1ZT1cIuW3sue8lui+keeahOmihOiniFwiIC8+XHJcbiAgICAgICAgPC9kaXY+XHJcbiAgICAgICk7XHJcbiAgICB9XHJcbiAgICByZW5kZXIoPFNlc3Npb24gLz4pO1xyXG4gICAgY29uc3QgdHJpZ2dlciA9IHNjcmVlbi5nZXRCeVJvbGUoJ2J1dHRvbicsIHsgbmFtZTogJ1NraWxsIOmFjee9ricgfSk7XHJcbiAgICBhd2FpdCB1c2VyLmNsaWNrKHRyaWdnZXIpO1xyXG4gICAgYXdhaXQgdXNlci5jbGljayhzY3JlZW4uZ2V0QnlSb2xlKCdjb21ib2JveCcpKTtcclxuICAgIGNvbnN0IG9wdGlvbiA9IGF3YWl0IHNjcmVlbi5maW5kQnlSb2xlKCdvcHRpb24nLCB7IG5hbWU6ICfmloflrZcgQicgfSk7XHJcbiAgICBleHBlY3Qob3B0aW9uLmNsb3Nlc3QoJ1tyb2xlPVwiZGlhbG9nXCJdJykpLnRvSGF2ZUFjY2Vzc2libGVOYW1lKCdTa2lsbCDorr7nva7mta7lsYInKTtcclxuICAgIGF3YWl0IHVzZXIuY2xpY2sob3B0aW9uKTtcclxuICAgIGV4cGVjdCh0cmlnZ2VyKS50b0hhdmVBdHRyaWJ1dGUoJ2FyaWEtZXhwYW5kZWQnLCAndHJ1ZScpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVJvbGUoJ2NvbWJvYm94JykpLnRvSGF2ZUFjY2Vzc2libGVOYW1lKCfmqKHlnovvvJrmloflrZcgQicpO1xyXG4gICAgYXdhaXQgdXNlci5jbGljayhzY3JlZW4uZ2V0QnlSb2xlKCd0ZXh0Ym94JywgeyBuYW1lOiAn5LyY5YyW6aKE6KeIJyB9KSk7XHJcbiAgICBhd2FpdCB3YWl0Rm9yKCgpID0+IGV4cGVjdCh0cmlnZ2VyKS50b0hhdmVBdHRyaWJ1dGUoJ2FyaWEtZXhwYW5kZWQnLCAnZmFsc2UnKSk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5Um9sZSgndGV4dGJveCcsIHsgbmFtZTogJ+S8mOWMlumihOiniCcgfSkpLnRvSGF2ZVZhbHVlKCflt7LnvJbovpHnmoTpooTop4gnKTtcclxuICAgIGF3YWl0IHVzZXIuY2xpY2sodHJpZ2dlcik7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5Um9sZSgnY29tYm9ib3gnKSkudG9IYXZlQWNjZXNzaWJsZU5hbWUoJ+aooeWei++8muaWh+WtlyBCJyk7XHJcbiAgICBleHBlY3Qob3B0aW1pemUpLm5vdC50b0hhdmVCZWVuQ2FsbGVkKCk7XHJcbiAgfSk7XHJcblxyXG4gIGl0KCfnvJbovpHlmajpmLvmraLmjIfpkojlhpLms6Hml7bvvIznnJ/lrp4gUG9wb3ZlciDku43or4bliKvlpJbpg6jngrnlh7snLCBhc3luYyAoKSA9PiB7XHJcbiAgICBjb25zdCB1c2VyID0gdXNlckV2ZW50LnNldHVwKCk7XHJcbiAgICByZW5kZXIoXHJcbiAgICAgIDxzZWN0aW9uIG9uUG9pbnRlckRvd249eyhldmVudCkgPT4gZXZlbnQuc3RvcFByb3BhZ2F0aW9uKCl9PlxyXG4gICAgICAgIDxQcm9tcHRTa2lsbFNldHRpbmdzIHNlbGVjdGVkPXtmYWxzZX0+XHJcbiAgICAgICAgICA8QnV0dG9uPuS8mOWMluaPkOekuuivjTwvQnV0dG9uPlxyXG4gICAgICAgIDwvUHJvbXB0U2tpbGxTZXR0aW5ncz5cclxuICAgICAgICA8ZGl2IGRhdGEtdGVzdGlkPVwiYmxhbmtcIiAvPlxyXG4gICAgICA8L3NlY3Rpb24+LFxyXG4gICAgKTtcclxuICAgIGNvbnN0IHRyaWdnZXIgPSBzY3JlZW4uZ2V0QnlSb2xlKCdidXR0b24nLCB7IG5hbWU6ICdTa2lsbCDphY3nva4nIH0pO1xyXG4gICAgYXdhaXQgdXNlci5jbGljayh0cmlnZ2VyKTtcclxuICAgIGF3YWl0IHdhaXRGb3IoKCkgPT4gZXhwZWN0KHNjcmVlbi5nZXRCeVJvbGUoJ2dyb3VwJywgeyBuYW1lOiAnU2tpbGwg6YWN572uJyB9KSkudG9CZVZpc2libGUoKSk7XHJcbiAgICBhd2FpdCB1c2VyLmNsaWNrKHNjcmVlbi5nZXRCeVRlc3RJZCgnYmxhbmsnKSk7XHJcbiAgICBhd2FpdCB3YWl0Rm9yKCgpID0+IGV4cGVjdCh0cmlnZ2VyKS50b0hhdmVBdHRyaWJ1dGUoJ2FyaWEtZXhwYW5kZWQnLCAnZmFsc2UnKSk7XHJcbiAgfSk7XHJcbn0pO1xyXG4iXSwiZmlsZSI6Ikc6L211bHRpbW9kYWwtY2FudmFzL2FwcHMvd2ViL3NyYy93b3Jrc3BhY2UvUHJvbXB0U2tpbGxTZXR0aW5ncy50ZXN0LnRzeCJ9

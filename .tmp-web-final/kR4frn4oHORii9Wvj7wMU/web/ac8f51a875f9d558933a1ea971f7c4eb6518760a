@@ -1,0 +1,58 @@
+Object.defineProperty(__vite_ssr_exports__, "HomeDemoImage", { enumerable: true, configurable: true, get(){ try { return HomeDemoImage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["ImageOff"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["useState"]});
+function HomeDemoImage({ alt, priority = false }) {
+  const [failed, setFailed] = (0,__vite_ssr_import_2__.useState)(false);
+  return failed ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    "span",
+    {
+      className: "mc-home-image-fallback",
+      role: alt ? "img" : void 0,
+      "aria-label": alt ? `${alt}，暂时无法加载` : void 0,
+      "aria-hidden": alt ? void 0 : true,
+      children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ImageOff), { size: 22, "aria-hidden": "true" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeDemoImage.tsx",
+          lineNumber: 22,
+          columnNumber: 7
+        }, this),
+        alt && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "演示画面暂不可用" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeDemoImage.tsx",
+          lineNumber: 23,
+          columnNumber: 15
+        }, this)
+      ]
+    },
+    void 0,
+    true,
+    {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeDemoImage.tsx",
+      lineNumber: 16,
+      columnNumber: 5
+    },
+    this
+  ) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    "img",
+    {
+      src: "/demo/field-study-poster.jpg",
+      width: "960",
+      height: "540",
+      alt,
+      loading: priority ? "eager" : "lazy",
+      fetchPriority: priority ? "high" : "auto",
+      onError: () => setFailed(true)
+    },
+    void 0,
+    false,
+    {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeDemoImage.tsx",
+      lineNumber: 26,
+      columnNumber: 5
+    },
+    this
+  );
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQXFCTTtBQXJCTjtBQUNBO0FBV08sU0FBUyxjQUFjLEVBQUUsS0FBSyxXQUFXLE1BQU0sR0FBdUI7QUFDM0UsUUFBTSxDQUFDLFFBQVEsU0FBUyxPQUFJLGdDQUFTLEtBQUs7QUFDMUMsU0FBTyxTQUNMO0FBQUEsSUFBQztBQUFBO0FBQUEsTUFDQyxXQUFVO0FBQUEsTUFDVixNQUFNLE1BQU0sUUFBUTtBQUFBLE1BQ3BCLGNBQVksTUFBTSxHQUFHLEdBQUcsWUFBWTtBQUFBLE1BQ3BDLGVBQWEsTUFBTSxTQUFZO0FBQUEsTUFFL0I7QUFBQSw0REFBQyxtQ0FBUyxNQUFNLElBQUksZUFBWSxVQUFoQztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBQXVDO0FBQUEsUUFDdEMsT0FBTyxpREFBQyxVQUFLLHdCQUFOO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBYztBQUFBO0FBQUE7QUFBQSxJQVB4QjtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsRUFRQSxJQUVBO0FBQUEsSUFBQztBQUFBO0FBQUEsTUFDQyxLQUFJO0FBQUEsTUFDSixPQUFNO0FBQUEsTUFDTixRQUFPO0FBQUEsTUFDUDtBQUFBLE1BQ0EsU0FBUyxXQUFXLFVBQVU7QUFBQSxNQUM5QixlQUFlLFdBQVcsU0FBUztBQUFBLE1BQ25DLFNBQVMsTUFBTSxVQUFVLElBQUk7QUFBQTtBQUFBLElBUC9CO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQSxFQVFBO0FBRUoiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIkhvbWVEZW1vSW1hZ2UudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IEltYWdlT2ZmIH0gZnJvbSAnbHVjaWRlLXJlYWN0JztcbmltcG9ydCB7IHVzZVN0YXRlIH0gZnJvbSAncmVhY3QnO1xuXG4vKiog5YWs5byA5ryU56S65Zu+54mH55qE5pi+56S66YCJ6aG577yb56m65pu/5Luj5paH5pys55So5LqO6LWE5rqQ6KGM5Lit55qE6KOF6aWw57yp55Wl5Zu+44CCICovXG50eXBlIEhvbWVEZW1vSW1hZ2VQcm9wcyA9IHtcbiAgLyoqIOWbvueJh+WGheWuueeahOWPr+iuv+mXruivtOaYju+8jOijhemlsOWbvuS8oOepuuWtl+espuS4suOAgiAqL1xuICBhbHQ6IHN0cmluZztcbiAgLyoqIOmmluWxj+S4u+Wbvueri+WNs+WKoOi9ve+8m+mdnummluWxj+e8qeeVpeWbvuW7tui/n+WKoOi9veOAgiAqL1xuICBwcmlvcml0eT86IGJvb2xlYW47XG59O1xuXG4vKiog5Zu65a6a5q+U5L6L55qE5pys5Zyw56S65L6L5Zu+54mH77yM5Yqg6L295aSx6LSl5ZCO5LuN5L+d55WZ54mI6Z2i5bC65a+45ZKM5Y+v6K6/6Zeu6K+05piO44CCICovXG5leHBvcnQgZnVuY3Rpb24gSG9tZURlbW9JbWFnZSh7IGFsdCwgcHJpb3JpdHkgPSBmYWxzZSB9OiBIb21lRGVtb0ltYWdlUHJvcHMpIHtcbiAgY29uc3QgW2ZhaWxlZCwgc2V0RmFpbGVkXSA9IHVzZVN0YXRlKGZhbHNlKTtcbiAgcmV0dXJuIGZhaWxlZCA/IChcbiAgICA8c3BhblxuICAgICAgY2xhc3NOYW1lPVwibWMtaG9tZS1pbWFnZS1mYWxsYmFja1wiXG4gICAgICByb2xlPXthbHQgPyAnaW1nJyA6IHVuZGVmaW5lZH1cbiAgICAgIGFyaWEtbGFiZWw9e2FsdCA/IGAke2FsdH3vvIzmmoLml7bml6Dms5XliqDovb1gIDogdW5kZWZpbmVkfVxuICAgICAgYXJpYS1oaWRkZW49e2FsdCA/IHVuZGVmaW5lZCA6IHRydWV9XG4gICAgPlxuICAgICAgPEltYWdlT2ZmIHNpemU9ezIyfSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPlxuICAgICAge2FsdCAmJiA8c3Bhbj7mvJTnpLrnlLvpnaLmmoLkuI3lj6/nlKg8L3NwYW4+fVxuICAgIDwvc3Bhbj5cbiAgKSA6IChcbiAgICA8aW1nXG4gICAgICBzcmM9XCIvZGVtby9maWVsZC1zdHVkeS1wb3N0ZXIuanBnXCJcbiAgICAgIHdpZHRoPVwiOTYwXCJcbiAgICAgIGhlaWdodD1cIjU0MFwiXG4gICAgICBhbHQ9e2FsdH1cbiAgICAgIGxvYWRpbmc9e3ByaW9yaXR5ID8gJ2VhZ2VyJyA6ICdsYXp5J31cbiAgICAgIGZldGNoUHJpb3JpdHk9e3ByaW9yaXR5ID8gJ2hpZ2gnIDogJ2F1dG8nfVxuICAgICAgb25FcnJvcj17KCkgPT4gc2V0RmFpbGVkKHRydWUpfVxuICAgIC8+XG4gICk7XG59XG4iXSwiZmlsZSI6Ii9zcmMvcGFnZXMvSG9tZURlbW9JbWFnZS50c3gifQ==

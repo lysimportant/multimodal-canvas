@@ -480,52 +480,64 @@ describe('Worker 中性执行授权', () => {
     expect(f.job.data.providerJob?.payload).toMatchObject({ deliveryState: 'archived' });
   });
 
-  it('历史取消视频只读恢复只轮询同一平台任务，不重新创建', async () => {
-    const providerJob: ProviderJob = {
-      ...createProviderJobRecord('123e4567-e89b-42d3-a456-426614174215', 'newapi', 'cancelled', 35),
-      platformJobId: 'accepted-platform-task',
-      payload: { contract: 'newapi-unified-v1', phase: 'submitted' },
-    };
-    const f = fixture(snapshot('video', true), providerJob);
-    f.job.data.retrieveOnly = true;
-    f.job.data.workflowState = {
-      nodes: [{ nodeId: 'target', status: 'cancelled', providerJob }],
-    };
-    const archive = vi.fn(f.options.resultArchiver!);
-    f.options.resultArchiver = archive;
-    const isCancellationRequested = vi.fn(async (_runId: string, retrieveOnly?: boolean) => {
-      return retrieveOnly !== true;
-    });
-    f.options.persistence!.isCancellationRequested = isCancellationRequested;
-    const execution: WorkerExecutionAuthorization = {
-      authorizeRun: vi.fn(async () => undefined),
-      authorizeNode: vi.fn(async () => undefined),
-      beginSend: vi.fn(async () => undefined),
-      finishSend: vi.fn(async () => undefined),
-    };
-    createRunWorker({ ...f.options, execution });
+  it.each(['cancelled', 'failed'] as const)(
+    '历史%s视频只读恢复只轮询同一平台任务，不重新创建',
+    async (terminalStatus) => {
+      const providerJob: ProviderJob = {
+        ...createProviderJobRecord(
+          '123e4567-e89b-42d3-a456-426614174215',
+          'newapi',
+          terminalStatus,
+          35,
+        ),
+        platformJobId: 'accepted-platform-task',
+        payload: {
+          contract: 'newapi-unified-v1',
+          phase: 'failed',
+          providerStatus: terminalStatus,
+        },
+      };
+      const f = fixture(snapshot('video', true), providerJob);
+      f.job.data.retrieveOnly = true;
+      f.job.data.workflowState = {
+        nodes: [{ nodeId: 'target', status: terminalStatus, providerJob }],
+      };
+      const archive = vi.fn(f.options.resultArchiver!);
+      f.options.resultArchiver = archive;
+      const isCancellationRequested = vi.fn(async (_runId: string, retrieveOnly?: boolean) => {
+        return retrieveOnly !== true;
+      });
+      f.options.persistence!.isCancellationRequested = isCancellationRequested;
+      const execution: WorkerExecutionAuthorization = {
+        authorizeRun: vi.fn(async () => undefined),
+        authorizeNode: vi.fn(async () => undefined),
+        beginSend: vi.fn(async () => undefined),
+        finishSend: vi.fn(async () => undefined),
+      };
+      createRunWorker({ ...f.options, execution });
 
-    await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'succeeded' });
+      await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'succeeded' });
 
-    expect(isCancellationRequested).toHaveBeenCalledWith(f.job.id, true);
-    expect(execution.beginSend).toHaveBeenCalledWith(
-      expect.objectContaining({ resumePlatformJobId: 'accepted-platform-task' }),
-    );
-    expect(f.execute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resumeOnly: true,
-        providerJob: expect.objectContaining({ platformJobId: 'accepted-platform-task' }),
-      }),
-    );
-    expect(f.creationCalls()).toBe(0);
-    expect(f.resumeCalls()).toBe(1);
-    expect(archive).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: f.job.id, userId: f.job.data.userId }),
-    );
-    await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'succeeded' });
-    expect(f.resumeCalls()).toBe(1);
-    expect(archive).toHaveBeenCalledOnce();
-  });
+      expect(isCancellationRequested).toHaveBeenCalledWith(f.job.id, true);
+      expect(execution.beginSend).toHaveBeenCalledWith(
+        expect.objectContaining({ resumePlatformJobId: 'accepted-platform-task' }),
+      );
+      expect(f.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resumeOnly: true,
+          providerJob: expect.objectContaining({ platformJobId: 'accepted-platform-task' }),
+        }),
+      );
+      expect(f.creationCalls()).toBe(0);
+      expect(f.resumeCalls()).toBe(1);
+      expect(archive).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: f.job.id, userId: f.job.data.userId }),
+      );
+      await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'succeeded' });
+      expect(f.resumeCalls()).toBe(1);
+      expect(archive).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([false, true])('新取消意图在只读标志 %s 时仍阻止轮询与创建', async (retrieveOnly) => {
     const f = fixture(snapshot('video', true));

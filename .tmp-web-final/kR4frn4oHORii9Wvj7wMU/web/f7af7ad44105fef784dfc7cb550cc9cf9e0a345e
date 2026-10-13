@@ -1,0 +1,31 @@
+Object.defineProperty(__vite_ssr_exports__, "Textarea", { enumerable: true, configurable: true, get(){ try { return Textarea } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/antd@6.6.5_luxon@3.7.2_reac_1ced994a6906ea24d22f0902b231a537/node_modules/antd/lib/index.js", {"importedNames":["Input"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["forwardRef","useImperativeHandle","useRef"]});
+const Textarea = (0,__vite_ssr_import_2__.forwardRef)(
+  ({ className, ...props }, ref) => {
+    const textareaRef = (0,__vite_ssr_import_2__.useRef)(null);
+    (0,__vite_ssr_import_2__.useImperativeHandle)(ref, () => textareaRef.current.resizableTextArea.textArea, []);
+    return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      __vite_ssr_import_1__.Input.TextArea,
+      {
+        ...props,
+        ref: textareaRef,
+        autoSize: false,
+        className: ["ui-textarea", className].filter(Boolean).join(" ")
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/packages/ui/src/textarea.tsx",
+        lineNumber: 14,
+        columnNumber: 7
+      },
+      this
+    );
+  }
+);
+Textarea.displayName = "Textarea";
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQWFNO0FBYk47QUFFQTtBQU1PLE1BQU0sY0FBVztBQUFBLEVBQ3RCLENBQUMsRUFBRSxXQUFXLEdBQUcsTUFBTSxHQUFHLFFBQVE7QUFDaEMsVUFBTSxpQkFBYyw4QkFBb0IsSUFBSTtBQUM1QyxrREFBb0IsS0FBSyxNQUFNLFlBQVksUUFBUyxrQkFBbUIsVUFBVSxDQUFDLENBQUM7QUFDbkYsV0FDRTtBQUFBLE1BQUMsNEJBQU07QUFBQSxNQUFOO0FBQUEsUUFDRSxHQUFHO0FBQUEsUUFDSixLQUFLO0FBQUEsUUFDTCxVQUFVO0FBQUEsUUFDVixXQUFXLENBQUMsZUFBZSxTQUFTLEVBQUUsT0FBTyxPQUFPLEVBQUUsS0FBSyxHQUFHO0FBQUE7QUFBQSxNQUpoRTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsSUFLQTtBQUFBLEVBRUo7QUFDRjtBQUNBLFNBQVMsY0FBYyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsidGV4dGFyZWEudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IElucHV0IH0gZnJvbSAnYW50ZCc7XHJcbmltcG9ydCB0eXBlIHsgVGV4dEFyZWFSZWYgfSBmcm9tICdhbnRkL2VzL2lucHV0L1RleHRBcmVhJztcclxuaW1wb3J0IHsgZm9yd2FyZFJlZiwgdXNlSW1wZXJhdGl2ZUhhbmRsZSwgdXNlUmVmLCB0eXBlIFRleHRhcmVhSFRNTEF0dHJpYnV0ZXMgfSBmcm9tICdyZWFjdCc7XHJcblxyXG4vKiog5L+d55WZ5Y6f55Sf5paH5pys5Z+f5LqL5Lu25ZKM6YCJ5Yy655qEIEFudCBEZXNpZ24g5paH5pys5Z+f5bGe5oCn44CCICovXHJcbmV4cG9ydCB0eXBlIFRleHRhcmVhUHJvcHMgPSBUZXh0YXJlYUhUTUxBdHRyaWJ1dGVzPEhUTUxUZXh0QXJlYUVsZW1lbnQ+O1xyXG5cclxuLyoqIOS4jeWQr+eUqCBhdXRvU2l6Ze+8jOmBv+WFjeaPkOekuuivjeaIluWbnuaYvuWGheWuueaTheiHquaUueWPmOeUu+W4g+iKgueCueeahOWwuuWvuOOAgiAqL1xyXG5leHBvcnQgY29uc3QgVGV4dGFyZWEgPSBmb3J3YXJkUmVmPEhUTUxUZXh0QXJlYUVsZW1lbnQsIFRleHRhcmVhUHJvcHM+KFxyXG4gICh7IGNsYXNzTmFtZSwgLi4ucHJvcHMgfSwgcmVmKSA9PiB7XHJcbiAgICBjb25zdCB0ZXh0YXJlYVJlZiA9IHVzZVJlZjxUZXh0QXJlYVJlZj4obnVsbCk7XHJcbiAgICB1c2VJbXBlcmF0aXZlSGFuZGxlKHJlZiwgKCkgPT4gdGV4dGFyZWFSZWYuY3VycmVudCEucmVzaXphYmxlVGV4dEFyZWEhLnRleHRBcmVhLCBbXSk7XHJcbiAgICByZXR1cm4gKFxyXG4gICAgICA8SW5wdXQuVGV4dEFyZWFcclxuICAgICAgICB7Li4ucHJvcHN9XHJcbiAgICAgICAgcmVmPXt0ZXh0YXJlYVJlZn1cclxuICAgICAgICBhdXRvU2l6ZT17ZmFsc2V9XHJcbiAgICAgICAgY2xhc3NOYW1lPXtbJ3VpLXRleHRhcmVhJywgY2xhc3NOYW1lXS5maWx0ZXIoQm9vbGVhbikuam9pbignICcpfVxyXG4gICAgICAvPlxyXG4gICAgKTtcclxuICB9LFxyXG4pO1xyXG5UZXh0YXJlYS5kaXNwbGF5TmFtZSA9ICdUZXh0YXJlYSc7XHJcbiJdLCJmaWxlIjoiRzovbXVsdGltb2RhbC1jYW52YXMvcGFja2FnZXMvdWkvc3JjL3RleHRhcmVhLnRzeCJ9

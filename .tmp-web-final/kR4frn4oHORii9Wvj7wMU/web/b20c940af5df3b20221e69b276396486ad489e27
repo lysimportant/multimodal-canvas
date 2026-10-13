@@ -1,0 +1,308 @@
+Object.defineProperty(__vite_ssr_exports__, "HomeRevealField", { enumerable: true, configurable: true, get(){ try { return HomeRevealField } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const revealConnections = [
+  "M-40 108H238L294 164H616L676 224H822",
+  "M62 608H354L414 548H656L720 484H842",
+  "M-32 348H54V478H204L272 546",
+  "M514 0V78H698V102",
+  "M698 166V224H838V292H930",
+  "M804 130H900V200H1150V248",
+  "M742 374H870V334H930",
+  "M876 402H916V470H930",
+  "M1170 518V556H990V608H850",
+  "M1170 518V576",
+  "M1228 608H1390V420H1488",
+  "M1114 0V94H1336V180H1480",
+  "M568 740V650H718V606"
+];
+const revealNodes = [
+  { x: 616, y: 102, width: 188, height: 64, label: "API CONTEXT", accent: "#a2c9b7" },
+  { x: 592, y: 342, width: 150, height: 64, label: "PROMPT SKILL", accent: "#d9ec99" },
+  { x: 742, y: 374, width: 134, height: 56, label: "REFERENCE", accent: "#e1927e" },
+  { x: 694, y: 576, width: 156, height: 60, label: "VERSION", accent: "#a2c9b7" }
+];
+function HomeRevealField() {
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-home-reveal-field", "aria-hidden": "true", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    "svg",
+    {
+      className: "mc-home-reveal-scene",
+      xmlns: "http://www.w3.org/2000/svg",
+      viewBox: "0 0 1440 740",
+      preserveAspectRatio: "xMidYMid slice",
+      width: "100%",
+      height: "100%",
+      focusable: "false",
+      children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { width: "1440", height: "740", fill: "#151b18" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 43,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { stroke: "#729c88", strokeWidth: "0.6", opacity: "0.16", fill: "none", children: [
+          [96, 216, 336, 456, 576, 696, 816, 936, 1056, 1176, 1296, 1416].map((x) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: `M${x} 0V740` }, `vertical-${x}`, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 46,
+            columnNumber: 13
+          }, this)),
+          [78, 170, 262, 354, 446, 538, 630, 722].map((y) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: `M0 ${y}H1440` }, `horizontal-${y}`, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 49,
+            columnNumber: 13
+          }, this))
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 44,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "g",
+          {
+            className: "mc-home-reveal-connections",
+            stroke: "#79af95",
+            strokeWidth: "1",
+            strokeLinejoin: "round",
+            opacity: "0.58",
+            fill: "none",
+            children: revealConnections.map((path) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: path }, path, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+              lineNumber: 61,
+              columnNumber: 13
+            }, this))
+          },
+          void 0,
+          false,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 52,
+            columnNumber: 9
+          },
+          this
+        ),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { stroke: "#557363", strokeWidth: "0.7", fill: "none", opacity: "0.32", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M22 692H306L352 646H504V570" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 65,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M318 18V52H556V144" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 66,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M1324 740V680H1126V652H976" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 67,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M1280 216H1416V312" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 68,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 64,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { className: "mc-home-reveal-nodes", children: revealNodes.map(({ x, y, width, height, label, accent }) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { transform: `translate(${x} ${y})`, children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { width, height, rx: "4", fill: "#1b2721", stroke: "#577965" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 73,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { x: "12", y: "14", width: "4", height: "4", fill: accent }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 74,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            "text",
+            {
+              x: "26",
+              y: "19",
+              fill: "#b5cfbe",
+              fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+              fontSize: "9",
+              letterSpacing: "0",
+              children: label
+            },
+            void 0,
+            false,
+            {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+              lineNumber: 75,
+              columnNumber: 15
+            },
+            this
+          ),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: `M12 33H${width - 12}`, stroke: "#3e584a", strokeWidth: "0.7" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 85,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            "path",
+            {
+              d: `M12 ${height - 14}H${width * 0.48}`,
+              stroke: accent,
+              strokeWidth: "1",
+              opacity: "0.6"
+            },
+            void 0,
+            false,
+            {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+              lineNumber: 86,
+              columnNumber: 15
+            },
+            this
+          ),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("circle", { cx: width / 2, cy: height, r: "2.5", fill: "#151b18", stroke: accent }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 92,
+            columnNumber: 15
+          }, this)
+        ] }, label, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 72,
+          columnNumber: 13
+        }, this)) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 70,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "image",
+          {
+            className: "mc-home-reveal-image",
+            href: "/demo/field-study-poster.jpg",
+            x: "930",
+            y: "248",
+            width: "480",
+            height: "270",
+            preserveAspectRatio: "xMidYMid meet",
+            opacity: "0.88"
+          },
+          void 0,
+          false,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 96,
+            columnNumber: 9
+          },
+          this
+        ),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { stroke: "#a0c4ae", strokeWidth: "1", fill: "none", opacity: "0.75", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M948 242H924V266M1392 242H1416V266M924 500V524H948M1392 524H1416V500" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 107,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M1032 278H1098V312M1032 278V334", opacity: "0.45" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 108,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: "M1298 422V478H1242", opacity: "0.45" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 109,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 106,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "image",
+          {
+            className: "mc-home-reveal-image mc-home-reveal-image-detail",
+            href: "/demo/field-study-poster.jpg",
+            x: "1110",
+            y: "576",
+            width: "118",
+            height: "66.375",
+            preserveAspectRatio: "xMidYMid meet",
+            opacity: "0.75"
+          },
+          void 0,
+          false,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 111,
+            columnNumber: 9
+          },
+          this
+        ),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { fill: "#d9ec99", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { x: "612", y: "220", width: "5", height: "5" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 122,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { x: "986", y: "552", width: "5", height: "5" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 123,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 121,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { fill: "#e1927e", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { x: "350", y: "604", width: "4", height: "4" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 126,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("rect", { x: "1332", y: "90", width: "4", height: "4" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 127,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 125,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("g", { stroke: "#a2c9b7", fill: "#151b18", strokeWidth: "1", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("circle", { cx: "838", cy: "224", r: "3" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 130,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("circle", { cx: "870", cy: "374", r: "3" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 131,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("circle", { cx: "1170", cy: "556", r: "3" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+            lineNumber: 132,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+          lineNumber: 129,
+          columnNumber: 9
+        }, this)
+      ]
+    },
+    void 0,
+    true,
+    {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+      lineNumber: 34,
+      columnNumber: 7
+    },
+    this
+  ) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeRevealField.tsx",
+    lineNumber: 33,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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VUFDM0MsaURBQUMsVUFBSyxHQUFFLE9BQU0sR0FBRSxPQUFNLE9BQU0sS0FBSSxRQUFPLE9BQXZDO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBQTJDO0FBQUEsYUFGN0M7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUdBO0FBQUEsUUFDQSxpREFBQyxPQUFFLE1BQUssV0FDTjtBQUFBLDJEQUFDLFVBQUssR0FBRSxPQUFNLEdBQUUsT0FBTSxPQUFNLEtBQUksUUFBTyxPQUF2QztBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUEyQztBQUFBLFVBQzNDLGlEQUFDLFVBQUssR0FBRSxRQUFPLEdBQUUsTUFBSyxPQUFNLEtBQUksUUFBTyxPQUF2QztBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUEyQztBQUFBLGFBRjdDO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFHQTtBQUFBLFFBQ0EsaURBQUMsT0FBRSxRQUFPLFdBQVUsTUFBSyxXQUFVLGFBQVksS0FDN0M7QUFBQSwyREFBQyxZQUFPLElBQUcsT0FBTSxJQUFHLE9BQU0sR0FBRSxPQUE1QjtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUFnQztBQUFBLFVBQ2hDLGlEQUFDLFlBQU8sSUFBRyxPQUFNLElBQUcsT0FBTSxHQUFFLE9BQTVCO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBQWdDO0FBQUEsVUFDaEMsaURBQUMsWUFBTyxJQUFHLFFBQU8sSUFBRyxPQUFNLEdBQUUsT0FBN0I7QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFBaUM7QUFBQSxhQUhuQztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBSUE7QUFBQTtBQUFBO0FBQUEsSUFuR0Y7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBb0dBLEtBckdGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FzR0E7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiSG9tZVJldmVhbEZpZWxkLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyIvKiog6ZqQ6JeP5bel5L2c5rWB5Lit55qE6Z2Z5oCB5YiG5pSv57q/6Lev77yM5Z2Q5qCH5Z+65LqOIDE0NDAgw5cgNzQwIOeahOmmluWxj+eUu+W4g+OAgiAqL1xuY29uc3QgcmV2ZWFsQ29ubmVjdGlvbnMgPSBbXG4gICdNLTQwIDEwOEgyMzhMMjk0IDE2NEg2MTZMNjc2IDIyNEg4MjInLFxuICAnTTYyIDYwOEgzNTRMNDE0IDU0OEg2NTZMNzIwIDQ4NEg4NDInLFxuICAnTS0zMiAzNDhINTRWNDc4SDIwNEwyNzIgNTQ2JyxcbiAgJ001MTQgMFY3OEg2OThWMTAyJyxcbiAgJ002OTggMTY2VjIyNEg4MzhWMjkySDkzMCcsXG4gICdNODA0IDEzMEg5MDBWMjAwSDExNTBWMjQ4JyxcbiAgJ003NDIgMzc0SDg3MFYzMzRIOTMwJyxcbiAgJ004NzYgNDAySDkxNlY0NzBIOTMwJyxcbiAgJ00xMTcwIDUxOFY1NTZIOTkwVjYwOEg4NTAnLFxuICAnTTExNzAgNTE4VjU3NicsXG4gICdNMTIyOCA2MDhIMTM5MFY0MjBIMTQ4OCcsXG4gICdNMTExNCAwVjk0SDEzMzZWMTgwSDE0ODAnLFxuICAnTTU2OCA3NDBWNjUwSDcxOFY2MDYnLFxuXTtcblxuLyoqIOS7heihqOeOsOaehOaAneS4juWqkuS9k+S5i+mXtOeahOe7k+aehOWFs+ezu++8jOS4jeS7o+ihqOWunumZheS7u+WKoeOAgeaooeWei+iDveWKm+aIlui/kOihjOeKtuaAgeOAgiAqL1xuY29uc3QgcmV2ZWFsTm9kZXMgPSBbXG4gIHsgeDogNjE2LCB5OiAxMDIsIHdpZHRoOiAxODgsIGhlaWdodDogNjQsIGxhYmVsOiAnQVBJIENPTlRFWFQnLCBhY2NlbnQ6ICcjYTJjOWI3JyB9LFxuICB7IHg6IDU5MiwgeTogMzQyLCB3aWR0aDogMTUwLCBoZWlnaHQ6IDY0LCBsYWJlbDogJ1BST01QVCBTS0lMTCcsIGFjY2VudDogJyNkOWVjOTknIH0sXG4gIHsgeDogNzQyLCB5OiAzNzQsIHdpZHRoOiAxMzQsIGhlaWdodDogNTYsIGxhYmVsOiAnUkVGRVJFTkNFJywgYWNjZW50OiAnI2UxOTI3ZScgfSxcbiAgeyB4OiA2OTQsIHk6IDU3Niwgd2lkdGg6IDE1NiwgaGVpZ2h0OiA2MCwgbGFiZWw6ICdWRVJTSU9OJywgYWNjZW50OiAnI2EyYzliNycgfSxcbl07XG5cbi8qKlxuICog6aaW6aG15ZyG5b2i5pi+5b2x5Yy65Z+f5Lit55qE57qv6KOF6aWw5bel5L2c5rWB5Zu+5bGC44CCXG4gKiDniLblsYLotJ/otKPlrprkvY3jgIHoo4HliarlkozmmL7npLrml7bmnLrvvJvmnKznu4Tku7bml6DnirbmgIHjgIHkuovku7bnm5HlkKzjgIHkuJrliqHor7fmsYLmiJbpvKDmoIflm77lvaLjgIJcbiAqIOWUr+S4gOS9jeWbvuWkjeeUqOacrOWcsOWFrOW8gOa8lOekuue0oOadkO+8jOaJgOacieaWh+Wtl+S4uumdmeaAgee7k+aehOagh+etvu+8jOS4jeihqOekuuWQjuWPsOaJp+ihjOe7k+aenOOAglxuICovXG5leHBvcnQgZnVuY3Rpb24gSG9tZVJldmVhbEZpZWxkKCkge1xuICByZXR1cm4gKFxuICAgIDxkaXYgY2xhc3NOYW1lPVwibWMtaG9tZS1yZXZlYWwtZmllbGRcIiBhcmlhLWhpZGRlbj1cInRydWVcIj5cbiAgICAgIDxzdmdcbiAgICAgICAgY2xhc3NOYW1lPVwibWMtaG9tZS1yZXZlYWwtc2NlbmVcIlxuICAgICAgICB4bWxucz1cImh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnXCJcbiAgICAgICAgdmlld0JveD1cIjAgMCAxNDQwIDc0MFwiXG4gICAgICAgIHByZXNlcnZlQXNwZWN0UmF0aW89XCJ4TWlkWU1pZCBzbGljZVwiXG4gICAgICAgIHdpZHRoPVwiMTAwJVwiXG4gICAgICAgIGhlaWdodD1cIjEwMCVcIlxuICAgICAgICBmb2N1c2FibGU9XCJmYWxzZVwiXG4gICAgICA+XG4gICAgICAgIDxyZWN0IHdpZHRoPVwiMTQ0MFwiIGhlaWdodD1cIjc0MFwiIGZpbGw9XCIjMTUxYjE4XCIgLz5cbiAgICAgICAgPGcgc3Ryb2tlPVwiIzcyOWM4OFwiIHN0cm9rZVdpZHRoPVwiMC42XCIgb3BhY2l0eT1cIjAuMTZcIiBmaWxsPVwibm9uZVwiPlxuICAgICAgICAgIHtbOTYsIDIxNiwgMzM2LCA0NTYsIDU3NiwgNjk2LCA4MTYsIDkzNiwgMTA1NiwgMTE3NiwgMTI5NiwgMTQxNl0ubWFwKCh4KSA9PiAoXG4gICAgICAgICAgICA8cGF0aCBrZXk9e2B2ZXJ0aWNhbC0ke3h9YH0gZD17YE0ke3h9IDBWNzQwYH0gLz5cbiAgICAgICAgICApKX1cbiAgICAgICAgICB7Wzc4LCAxNzAsIDI2MiwgMzU0LCA0NDYsIDUzOCwgNjMwLCA3MjJdLm1hcCgoeSkgPT4gKFxuICAgICAgICAgICAgPHBhdGgga2V5PXtgaG9yaXpvbnRhbC0ke3l9YH0gZD17YE0wICR7eX1IMTQ0MGB9IC8+XG4gICAgICAgICAgKSl9XG4gICAgICAgIDwvZz5cbiAgICAgICAgPGdcbiAgICAgICAgICBjbGFzc05hbWU9XCJtYy1ob21lLXJldmVhbC1jb25uZWN0aW9uc1wiXG4gICAgICAgICAgc3Ryb2tlPVwiIzc5YWY5NVwiXG4gICAgICAgICAgc3Ryb2tlV2lkdGg9XCIxXCJcbiAgICAgICAgICBzdHJva2VMaW5lam9pbj1cInJvdW5kXCJcbiAgICAgICAgICBvcGFjaXR5PVwiMC41OFwiXG4gICAgICAgICAgZmlsbD1cIm5vbmVcIlxuICAgICAgICA+XG4gICAgICAgICAge3JldmVhbENvbm5lY3Rpb25zLm1hcCgocGF0aCkgPT4gKFxuICAgICAgICAgICAgPHBhdGgga2V5PXtwYXRofSBkPXtwYXRofSAvPlxuICAgICAgICAgICkpfVxuICAgICAgICA8L2c+XG4gICAgICAgIDxnIHN0cm9rZT1cIiM1NTczNjNcIiBzdHJva2VXaWR0aD1cIjAuN1wiIGZpbGw9XCJub25lXCIgb3BhY2l0eT1cIjAuMzJcIj5cbiAgICAgICAgICA8cGF0aCBkPVwiTTIyIDY5MkgzMDZMMzUyIDY0Nkg1MDRWNTcwXCIgLz5cbiAgICAgICAgICA8cGF0aCBkPVwiTTMxOCAxOFY1Mkg1NTZWMTQ0XCIgLz5cbiAgICAgICAgICA8cGF0aCBkPVwiTTEzMjQgNzQwVjY4MEgxMTI2VjY1Mkg5NzZcIiAvPlxuICAgICAgICAgIDxwYXRoIGQ9XCJNMTI4MCAyMTZIMTQxNlYzMTJcIiAvPlxuICAgICAgICA8L2c+XG4gICAgICAgIDxnIGNsYXNzTmFtZT1cIm1jLWhvbWUtcmV2ZWFsLW5vZGVzXCI+XG4gICAgICAgICAge3JldmVhbE5vZGVzLm1hcCgoeyB4LCB5LCB3aWR0aCwgaGVpZ2h0LCBsYWJlbCwgYWNjZW50IH0pID0+IChcbiAgICAgICAgICAgIDxnIGtleT17bGFiZWx9IHRyYW5zZm9ybT17YHRyYW5zbGF0ZSgke3h9ICR7eX0pYH0+XG4gICAgICAgICAgICAgIDxyZWN0IHdpZHRoPXt3aWR0aH0gaGVpZ2h0PXtoZWlnaHR9IHJ4PVwiNFwiIGZpbGw9XCIjMWIyNzIxXCIgc3Ryb2tlPVwiIzU3Nzk2NVwiIC8+XG4gICAgICAgICAgICAgIDxyZWN0IHg9XCIxMlwiIHk9XCIxNFwiIHdpZHRoPVwiNFwiIGhlaWdodD1cIjRcIiBmaWxsPXthY2NlbnR9IC8+XG4gICAgICAgICAgICAgIDx0ZXh0XG4gICAgICAgICAgICAgICAgeD1cIjI2XCJcbiAgICAgICAgICAgICAgICB5PVwiMTlcIlxuICAgICAgICAgICAgICAgIGZpbGw9XCIjYjVjZmJlXCJcbiAgICAgICAgICAgICAgICBmb250RmFtaWx5PVwidWktbW9ub3NwYWNlLCBTRk1vbm8tUmVndWxhciwgQ29uc29sYXMsIG1vbm9zcGFjZVwiXG4gICAgICAgICAgICAgICAgZm9udFNpemU9XCI5XCJcbiAgICAgICAgICAgICAgICBsZXR0ZXJTcGFjaW5nPVwiMFwiXG4gICAgICAgICAgICAgID5cbiAgICAgICAgICAgICAgICB7bGFiZWx9XG4gICAgICAgICAgICAgIDwvdGV4dD5cbiAgICAgICAgICAgICAgPHBhdGggZD17YE0xMiAzM0gke3dpZHRoIC0gMTJ9YH0gc3Ryb2tlPVwiIzNlNTg0YVwiIHN0cm9rZVdpZHRoPVwiMC43XCIgLz5cbiAgICAgICAgICAgICAgPHBhdGhcbiAgICAgICAgICAgICAgICBkPXtgTTEyICR7aGVpZ2h0IC0gMTR9SCR7d2lkdGggKiAwLjQ4fWB9XG4gICAgICAgICAgICAgICAgc3Ryb2tlPXthY2NlbnR9XG4gICAgICAgICAgICAgICAgc3Ryb2tlV2lkdGg9XCIxXCJcbiAgICAgICAgICAgICAgICBvcGFjaXR5PVwiMC42XCJcbiAgICAgICAgICAgICAgLz5cbiAgICAgICAgICAgICAgPGNpcmNsZSBjeD17d2lkdGggLyAyfSBjeT17aGVpZ2h0fSByPVwiMi41XCIgZmlsbD1cIiMxNTFiMThcIiBzdHJva2U9e2FjY2VudH0gLz5cbiAgICAgICAgICAgIDwvZz5cbiAgICAgICAgICApKX1cbiAgICAgICAgPC9nPlxuICAgICAgICA8aW1hZ2VcbiAgICAgICAgICBjbGFzc05hbWU9XCJtYy1ob21lLXJldmVhbC1pbWFnZVwiXG4gICAgICAgICAgaHJlZj1cIi9kZW1vL2ZpZWxkLXN0dWR5LXBvc3Rlci5qcGdcIlxuICAgICAgICAgIHg9XCI5MzBcIlxuICAgICAgICAgIHk9XCIyNDhcIlxuICAgICAgICAgIHdpZHRoPVwiNDgwXCJcbiAgICAgICAgICBoZWlnaHQ9XCIyNzBcIlxuICAgICAgICAgIHByZXNlcnZlQXNwZWN0UmF0aW89XCJ4TWlkWU1pZCBtZWV0XCJcbiAgICAgICAgICBvcGFjaXR5PVwiMC44OFwiXG4gICAgICAgIC8+XG4gICAgICAgIDxnIHN0cm9rZT1cIiNhMGM0YWVcIiBzdHJva2VXaWR0aD1cIjFcIiBmaWxsPVwibm9uZVwiIG9wYWNpdHk9XCIwLjc1XCI+XG4gICAgICAgICAgPHBhdGggZD1cIk05NDggMjQySDkyNFYyNjZNMTM5MiAyNDJIMTQxNlYyNjZNOTI0IDUwMFY1MjRIOTQ4TTEzOTIgNTI0SDE0MTZWNTAwXCIgLz5cbiAgICAgICAgICA8cGF0aCBkPVwiTTEwMzIgMjc4SDEwOThWMzEyTTEwMzIgMjc4VjMzNFwiIG9wYWNpdHk9XCIwLjQ1XCIgLz5cbiAgICAgICAgICA8cGF0aCBkPVwiTTEyOTggNDIyVjQ3OEgxMjQyXCIgb3BhY2l0eT1cIjAuNDVcIiAvPlxuICAgICAgICA8L2c+XG4gICAgICAgIDxpbWFnZVxuICAgICAgICAgIGNsYXNzTmFtZT1cIm1jLWhvbWUtcmV2ZWFsLWltYWdlIG1jLWhvbWUtcmV2ZWFsLWltYWdlLWRldGFpbFwiXG4gICAgICAgICAgaHJlZj1cIi9kZW1vL2ZpZWxkLXN0dWR5LXBvc3Rlci5qcGdcIlxuICAgICAgICAgIHg9XCIxMTEwXCJcbiAgICAgICAgICB5PVwiNTc2XCJcbiAgICAgICAgICB3aWR0aD1cIjExOFwiXG4gICAgICAgICAgaGVpZ2h0PVwiNjYuMzc1XCJcbiAgICAgICAgICBwcmVzZXJ2ZUFzcGVjdFJhdGlvPVwieE1pZFlNaWQgbWVldFwiXG4gICAgICAgICAgb3BhY2l0eT1cIjAuNzVcIlxuICAgICAgICAvPlxuICAgICAgICA8ZyBmaWxsPVwiI2Q5ZWM5OVwiPlxuICAgICAgICAgIDxyZWN0IHg9XCI2MTJcIiB5PVwiMjIwXCIgd2lkdGg9XCI1XCIgaGVpZ2h0PVwiNVwiIC8+XG4gICAgICAgICAgPHJlY3QgeD1cIjk4NlwiIHk9XCI1NTJcIiB3aWR0aD1cIjVcIiBoZWlnaHQ9XCI1XCIgLz5cbiAgICAgICAgPC9nPlxuICAgICAgICA8ZyBmaWxsPVwiI2UxOTI3ZVwiPlxuICAgICAgICAgIDxyZWN0IHg9XCIzNTBcIiB5PVwiNjA0XCIgd2lkdGg9XCI0XCIgaGVpZ2h0PVwiNFwiIC8+XG4gICAgICAgICAgPHJlY3QgeD1cIjEzMzJcIiB5PVwiOTBcIiB3aWR0aD1cIjRcIiBoZWlnaHQ9XCI0XCIgLz5cbiAgICAgICAgPC9nPlxuICAgICAgICA8ZyBzdHJva2U9XCIjYTJjOWI3XCIgZmlsbD1cIiMxNTFiMThcIiBzdHJva2VXaWR0aD1cIjFcIj5cbiAgICAgICAgICA8Y2lyY2xlIGN4PVwiODM4XCIgY3k9XCIyMjRcIiByPVwiM1wiIC8+XG4gICAgICAgICAgPGNpcmNsZSBjeD1cIjg3MFwiIGN5PVwiMzc0XCIgcj1cIjNcIiAvPlxuICAgICAgICAgIDxjaXJjbGUgY3g9XCIxMTcwXCIgY3k9XCI1NTZcIiByPVwiM1wiIC8+XG4gICAgICAgIDwvZz5cbiAgICAgIDwvc3ZnPlxuICAgIDwvZGl2PlxuICApO1xufVxuIl0sImZpbGUiOiIvc3JjL3BhZ2VzL0hvbWVSZXZlYWxGaWVsZC50c3gifQ==

@@ -1,0 +1,122 @@
+Object.defineProperty(__vite_ssr_exports__, "CanvasEdgeEffectOverlay", { enumerable: true, configurable: true, get(){ try { return CanvasEdgeEffectOverlay } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["useEffect","useId","useRef"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/workspace/canvas-edge-appearance.tsx", {"importedNames":["edgeEffectOverlayClassName"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/workspace/CanvasEdgeEffectOverlay.css");
+function ShootingStarEdgeEffect({ path }) {
+  const gradientId = (0,__vite_ssr_import_1__.useId)();
+  const overlayRef = (0,__vite_ssr_import_1__.useRef)(null);
+  const pathRef = (0,__vite_ssr_import_1__.useRef)(null);
+  (0,__vite_ssr_import_1__.useEffect)(() => {
+    const frame = requestAnimationFrame(() => {
+      const length = pathRef.current?.getTotalLength?.();
+      if (length === void 0 || !Number.isFinite(length)) return;
+      const tailScale = Math.min(1, Math.max(0, length) * 0.22 / 32);
+      overlayRef.current?.style.setProperty("--canvas-edge-star-tail-scale", String(tailScale));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [path]);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    "g",
+    {
+      ref: overlayRef,
+      className: "canvas-edge-effect-shooting-star",
+      "data-testid": "edge-effect-overlay",
+      "aria-hidden": "true",
+      pointerEvents: "none",
+      children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("defs", { children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("linearGradient", { id: gradientId, x1: "0%", y1: "0%", x2: "100%", y2: "0%", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("stop", { offset: "0%", stopColor: "currentColor", stopOpacity: "0" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+            lineNumber: 40,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("stop", { offset: "100%", stopColor: "currentColor" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+            lineNumber: 41,
+            columnNumber: 11
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+          lineNumber: 39,
+          columnNumber: 9
+        }, this) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+          lineNumber: 38,
+          columnNumber: 7
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { ref: pathRef, d: path, pathLength: 1, className: "canvas-edge-shooting-star-fallback" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+          lineNumber: 44,
+          columnNumber: 7
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "g",
+          {
+            className: "canvas-edge-shooting-star-motion",
+            style: { offsetPath: `path(${JSON.stringify(path)})` },
+            children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+                "path",
+                {
+                  d: "M -32 0 Q -12 -0.6 0 -3 L 0 3 Q -12 0.6 -32 0 Z",
+                  className: "canvas-edge-shooting-star-trail",
+                  fill: `url(#${gradientId})`
+                },
+                void 0,
+                false,
+                {
+                  fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+                  lineNumber: 49,
+                  columnNumber: 9
+                },
+                this
+              ),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("circle", { cx: "0", cy: "0", r: "3", className: "canvas-edge-shooting-star-head" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+                lineNumber: 54,
+                columnNumber: 9
+              }, this)
+            ]
+          },
+          void 0,
+          true,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+            lineNumber: 45,
+            columnNumber: 7
+          },
+          this
+        )
+      ]
+    },
+    void 0,
+    true,
+    {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+      lineNumber: 31,
+      columnNumber: 5
+    },
+    this
+  );
+}
+function CanvasEdgeEffectOverlay({
+  path,
+  effect
+}) {
+  if (effect === "shooting-star") return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ShootingStarEdgeEffect, { path }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+    lineNumber: 73,
+    columnNumber: 42
+  }, this);
+  const className = (0,__vite_ssr_import_2__.edgeEffectOverlayClassName)(effect);
+  if (!className) return null;
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("path", { d: path, "aria-hidden": "true", "data-testid": "edge-effect-overlay", className }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/workspace/CanvasEdgeEffectOverlay.tsx",
+    lineNumber: 77,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQXVDVTtBQXZDVjtBQUVBO0FBRUE7QUFRQSxTQUFTLHVCQUF1QixFQUFFLEtBQUssR0FBcUI7QUFDMUQsUUFBTSxnQkFBYSw2QkFBTTtBQUN6QixRQUFNLGdCQUFhLDhCQUFvQixJQUFJO0FBQzNDLFFBQU0sYUFBVSw4QkFBdUIsSUFBSTtBQUUzQyxzQ0FBVSxNQUFNO0FBRWQsVUFBTSxRQUFRLHNCQUFzQixNQUFNO0FBQ3hDLFlBQU0sU0FBUyxRQUFRLFNBQVMsaUJBQWlCO0FBRWpELFVBQUksV0FBVyxVQUFhLENBQUMsT0FBTyxTQUFTLE1BQU0sRUFBRztBQUN0RCxZQUFNLFlBQVksS0FBSyxJQUFJLEdBQUksS0FBSyxJQUFJLEdBQUcsTUFBTSxJQUFJLE9BQVEsRUFBRTtBQUMvRCxpQkFBVyxTQUFTLE1BQU0sWUFBWSxpQ0FBaUMsT0FBTyxTQUFTLENBQUM7QUFBQSxJQUMxRixDQUFDO0FBQ0QsV0FBTyxNQUFNLHFCQUFxQixLQUFLO0FBQUEsRUFDekMsR0FBRyxDQUFDLElBQUksQ0FBQztBQUVULFNBQ0U7QUFBQSxJQUFDO0FBQUE7QUFBQSxNQUNDLEtBQUs7QUFBQSxNQUNMLFdBQVU7QUFBQSxNQUNWLGVBQVk7QUFBQSxNQUNaLGVBQVk7QUFBQSxNQUNaLGVBQWM7QUFBQSxNQUVkO0FBQUEseURBQUMsVUFDQywyREFBQyxvQkFBZSxJQUFJLFlBQVksSUFBRyxNQUFLLElBQUcsTUFBSyxJQUFHLFFBQU8sSUFBRyxNQUMzRDtBQUFBLDJEQUFDLFVBQUssUUFBTyxNQUFLLFdBQVUsZ0JBQWUsYUFBWSxPQUF2RDtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUEyRDtBQUFBLFVBQzNELGlEQUFDLFVBQUssUUFBTyxRQUFPLFdBQVUsa0JBQTlCO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBQTZDO0FBQUEsYUFGL0M7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUdBLEtBSkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUtBO0FBQUEsUUFDQSxpREFBQyxVQUFLLEtBQUssU0FBUyxHQUFHLE1BQU0sWUFBWSxHQUFHLFdBQVUsd0NBQXREO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBMkY7QUFBQSxRQUMzRjtBQUFBLFVBQUM7QUFBQTtBQUFBLFlBQ0MsV0FBVTtBQUFBLFlBQ1YsT0FBTyxFQUFFLFlBQVksUUFBUSxLQUFLLFVBQVUsSUFBSSxDQUFDLElBQUk7QUFBQSxZQUVyRDtBQUFBO0FBQUEsZ0JBQUM7QUFBQTtBQUFBLGtCQUNDLEdBQUU7QUFBQSxrQkFDRixXQUFVO0FBQUEsa0JBQ1YsTUFBTSxRQUFRLFVBQVU7QUFBQTtBQUFBLGdCQUgxQjtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsY0FJQTtBQUFBLGNBQ0EsaURBQUMsWUFBTyxJQUFHLEtBQUksSUFBRyxLQUFJLEdBQUUsS0FBSSxXQUFVLG9DQUF0QztBQUFBO0FBQUE7QUFBQTtBQUFBLHFCQUF1RTtBQUFBO0FBQUE7QUFBQSxVQVR6RTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsUUFVQTtBQUFBO0FBQUE7QUFBQSxJQXhCRjtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsRUF5QkE7QUFFSjtBQVFPLFNBQVMsd0JBQXdCO0FBQUEsRUFDdEM7QUFBQSxFQUNBO0FBQ0YsR0FHRztBQUNELE1BQUksV0FBVyxnQkFBaUIsUUFBTyxpREFBQywwQkFBdUIsUUFBeEI7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQUFvQztBQUMzRSxRQUFNLGVBQVksa0RBQTJCLE1BQU07QUFDbkQsTUFBSSxDQUFDLFVBQVcsUUFBTztBQUN2QixTQUNFLGlEQUFDLFVBQUssR0FBRyxNQUFNLGVBQVksUUFBTyxlQUFZLHVCQUFzQixhQUFwRTtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBQTBGO0FBRTlGIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJDYW52YXNFZGdlRWZmZWN0T3ZlcmxheS50c3giXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgdXNlRWZmZWN0LCB1c2VJZCwgdXNlUmVmIH0gZnJvbSAncmVhY3QnO1xyXG5cclxuaW1wb3J0IHsgZWRnZUVmZmVjdE92ZXJsYXlDbGFzc05hbWUsIHR5cGUgQ2FudmFzRWRnZUVmZmVjdCB9IGZyb20gJy4vY2FudmFzLWVkZ2UtYXBwZWFyYW5jZSc7XHJcblxyXG5pbXBvcnQgJy4vQ2FudmFzRWRnZUVmZmVjdE92ZXJsYXkuY3NzJztcclxuXHJcbi8qKlxyXG4gKiDkuIDmnaHov57nu63muJDnu4blhYnlsL7lkozkuIDkuKrkuq7lpLTlhbHnlKggQ1NTIOi/kOWKqOi3r+W+hO+8jOS4jeWghuWPoOeykuWtkOaIlumAkOW4p+abtOaWsCBSZWFjdOOAglxyXG4gKiDkuq7lpLTmsr/nnJ/lrp7ot6/lvoTku47mupDliLDnm67moIfnp7vliqjvvIznn63lsL7msr/lvZPliY3kvY3nva7nmoTlj43lkJHliIfnur/kvLjlsZXvvJvmipjop5LlpITpmo/liIfnur/ovazlkJHjgIJcclxuICogQHBhcmFtIHByb3BzLnBhdGgg5LuO5rqQ6IqC54K55Yiw55uu5qCH6IqC54K555qEIFNWRyDot6/lvoTjgIJcclxuICogQHJldHVybnMg5LiN5Y+C5LiO5ZG95Lit55qE5YWJ5p2f77yb5YeP5bCR5Yqo5oCB5pWI5p6c5pe25YGc5Zyo5Lit54K577yM5LiN5pSv5oyB6L+Q5Yqo6Lev5b6E5pe25pi+56S66Z2Z5oCB5Lqu54K544CCXHJcbiAqL1xyXG5mdW5jdGlvbiBTaG9vdGluZ1N0YXJFZGdlRWZmZWN0KHsgcGF0aCB9OiB7IHBhdGg6IHN0cmluZyB9KSB7XHJcbiAgY29uc3QgZ3JhZGllbnRJZCA9IHVzZUlkKCk7XHJcbiAgY29uc3Qgb3ZlcmxheVJlZiA9IHVzZVJlZjxTVkdHRWxlbWVudD4obnVsbCk7XHJcbiAgY29uc3QgcGF0aFJlZiA9IHVzZVJlZjxTVkdQYXRoRWxlbWVudD4obnVsbCk7XHJcblxyXG4gIHVzZUVmZmVjdCgoKSA9PiB7XHJcbiAgICAvKiog5LuF5Yeg5L2V5Y+Y5YyW5pe25rWL6ZW/77yM5ZCM5bin5pu05paw5ZCI5bm277yb57yp5pS+5LiO5Yqo55S76L+b5bqm5LiN6Kem5Y+R5rWL6YeP44CCICovXHJcbiAgICBjb25zdCBmcmFtZSA9IHJlcXVlc3RBbmltYXRpb25GcmFtZSgoKSA9PiB7XHJcbiAgICAgIGNvbnN0IGxlbmd0aCA9IHBhdGhSZWYuY3VycmVudD8uZ2V0VG90YWxMZW5ndGg/LigpO1xyXG4gICAgICAvLyDml6Dlh6DkvZXmjqXlj6Pml7bkv53nlZkgMTYg5Y2V5L2N55+t5bC+77yb5q2j5bi46Lev5b6E5pyA6ZW/IDMyIOWNleS9jeS4lOS4jei2hei/h+i3r+W+hOeahCAyMiXjgIJcclxuICAgICAgaWYgKGxlbmd0aCA9PT0gdW5kZWZpbmVkIHx8ICFOdW1iZXIuaXNGaW5pdGUobGVuZ3RoKSkgcmV0dXJuO1xyXG4gICAgICBjb25zdCB0YWlsU2NhbGUgPSBNYXRoLm1pbigxLCAoTWF0aC5tYXgoMCwgbGVuZ3RoKSAqIDAuMjIpIC8gMzIpO1xyXG4gICAgICBvdmVybGF5UmVmLmN1cnJlbnQ/LnN0eWxlLnNldFByb3BlcnR5KCctLWNhbnZhcy1lZGdlLXN0YXItdGFpbC1zY2FsZScsIFN0cmluZyh0YWlsU2NhbGUpKTtcclxuICAgIH0pO1xyXG4gICAgcmV0dXJuICgpID0+IGNhbmNlbEFuaW1hdGlvbkZyYW1lKGZyYW1lKTtcclxuICB9LCBbcGF0aF0pO1xyXG5cclxuICByZXR1cm4gKFxyXG4gICAgPGdcclxuICAgICAgcmVmPXtvdmVybGF5UmVmfVxyXG4gICAgICBjbGFzc05hbWU9XCJjYW52YXMtZWRnZS1lZmZlY3Qtc2hvb3Rpbmctc3RhclwiXHJcbiAgICAgIGRhdGEtdGVzdGlkPVwiZWRnZS1lZmZlY3Qtb3ZlcmxheVwiXHJcbiAgICAgIGFyaWEtaGlkZGVuPVwidHJ1ZVwiXHJcbiAgICAgIHBvaW50ZXJFdmVudHM9XCJub25lXCJcclxuICAgID5cclxuICAgICAgPGRlZnM+XHJcbiAgICAgICAgPGxpbmVhckdyYWRpZW50IGlkPXtncmFkaWVudElkfSB4MT1cIjAlXCIgeTE9XCIwJVwiIHgyPVwiMTAwJVwiIHkyPVwiMCVcIj5cclxuICAgICAgICAgIDxzdG9wIG9mZnNldD1cIjAlXCIgc3RvcENvbG9yPVwiY3VycmVudENvbG9yXCIgc3RvcE9wYWNpdHk9XCIwXCIgLz5cclxuICAgICAgICAgIDxzdG9wIG9mZnNldD1cIjEwMCVcIiBzdG9wQ29sb3I9XCJjdXJyZW50Q29sb3JcIiAvPlxyXG4gICAgICAgIDwvbGluZWFyR3JhZGllbnQ+XHJcbiAgICAgIDwvZGVmcz5cclxuICAgICAgPHBhdGggcmVmPXtwYXRoUmVmfSBkPXtwYXRofSBwYXRoTGVuZ3RoPXsxfSBjbGFzc05hbWU9XCJjYW52YXMtZWRnZS1zaG9vdGluZy1zdGFyLWZhbGxiYWNrXCIgLz5cclxuICAgICAgPGdcclxuICAgICAgICBjbGFzc05hbWU9XCJjYW52YXMtZWRnZS1zaG9vdGluZy1zdGFyLW1vdGlvblwiXHJcbiAgICAgICAgc3R5bGU9e3sgb2Zmc2V0UGF0aDogYHBhdGgoJHtKU09OLnN0cmluZ2lmeShwYXRoKX0pYCB9fVxyXG4gICAgICA+XHJcbiAgICAgICAgPHBhdGhcclxuICAgICAgICAgIGQ9XCJNIC0zMiAwIFEgLTEyIC0wLjYgMCAtMyBMIDAgMyBRIC0xMiAwLjYgLTMyIDAgWlwiXHJcbiAgICAgICAgICBjbGFzc05hbWU9XCJjYW52YXMtZWRnZS1zaG9vdGluZy1zdGFyLXRyYWlsXCJcclxuICAgICAgICAgIGZpbGw9e2B1cmwoIyR7Z3JhZGllbnRJZH0pYH1cclxuICAgICAgICAvPlxyXG4gICAgICAgIDxjaXJjbGUgY3g9XCIwXCIgY3k9XCIwXCIgcj1cIjNcIiBjbGFzc05hbWU9XCJjYW52YXMtZWRnZS1zaG9vdGluZy1zdGFyLWhlYWRcIiAvPlxyXG4gICAgICA8L2c+XHJcbiAgICA8L2c+XHJcbiAgKTtcclxufVxyXG5cclxuLyoqXHJcbiAqIOeUu+W4g+OAgeaLlue6v+WSjOWkluingumihOiniOWFseeUqOeahOeJueaViOWxgu+8m+S4jeaUueWPmOWfuuehgOi+ueeahOmAieaLqeOAgeeKtuaAgeminOiJsuOAgeagh+iusOS4juWRveS4reWMuuWfn+OAglxyXG4gKiBAcGFyYW0gcHJvcHMucGF0aCDkuI7ln7rnoYDovrnlrozlhajnm7jlkIzjgIHku47mupDliLDnm67moIfnmoQgU1ZHIOi3r+W+hOOAglxyXG4gKiBAcGFyYW0gcHJvcHMuZWZmZWN0IOeLrOeri+S6jui3r+W+hOW9ouaAgeeahOeJueaViO+8m+aXp+a1geWFieetieS/neeVmeWOn+adpeeahOi3r+W+hOS4juexu+WQjeOAglxyXG4gKiBAcmV0dXJucyDnibnmlYjlj6DliqDlsYLvvJtgbWFyY2hpbmdgIOeUseWfuuehgOi+uei0n+i0o++8jGBub25lYCDkuI3muLLmn5Plj6DliqDlsYLjgIJcclxuICovXHJcbmV4cG9ydCBmdW5jdGlvbiBDYW52YXNFZGdlRWZmZWN0T3ZlcmxheSh7XHJcbiAgcGF0aCxcclxuICBlZmZlY3QsXHJcbn06IHtcclxuICBwYXRoOiBzdHJpbmc7XHJcbiAgZWZmZWN0OiBDYW52YXNFZGdlRWZmZWN0O1xyXG59KSB7XHJcbiAgaWYgKGVmZmVjdCA9PT0gJ3Nob290aW5nLXN0YXInKSByZXR1cm4gPFNob290aW5nU3RhckVkZ2VFZmZlY3QgcGF0aD17cGF0aH0gLz47XHJcbiAgY29uc3QgY2xhc3NOYW1lID0gZWRnZUVmZmVjdE92ZXJsYXlDbGFzc05hbWUoZWZmZWN0KTtcclxuICBpZiAoIWNsYXNzTmFtZSkgcmV0dXJuIG51bGw7XHJcbiAgcmV0dXJuIChcclxuICAgIDxwYXRoIGQ9e3BhdGh9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIGRhdGEtdGVzdGlkPVwiZWRnZS1lZmZlY3Qtb3ZlcmxheVwiIGNsYXNzTmFtZT17Y2xhc3NOYW1lfSAvPlxyXG4gICk7XHJcbn1cclxuIl0sImZpbGUiOiIvc3JjL3dvcmtzcGFjZS9DYW52YXNFZGdlRWZmZWN0T3ZlcmxheS50c3gifQ==

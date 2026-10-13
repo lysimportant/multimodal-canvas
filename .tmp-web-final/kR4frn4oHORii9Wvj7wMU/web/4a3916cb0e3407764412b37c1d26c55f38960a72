@@ -1,0 +1,5 @@
+Object.defineProperty(__vite_ssr_exports__, "ManagementPage", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_0__.ManagementPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/src/management/ManagementPage.tsx", {"importedNames":["ManagementPage"]});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUNBIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJpbmRleC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKiog566h55CG5bel5L2c5Y+w55qE5bqU55So6ZuG5oiQ5YWl5Y+j44CCICovXG5leHBvcnQgeyBNYW5hZ2VtZW50UGFnZSwgdHlwZSBNYW5hZ2VtZW50UGFnZVByb3BzIH0gZnJvbSAnLi9NYW5hZ2VtZW50UGFnZSc7XG4iXSwiZmlsZSI6Ii9zcmMvbWFuYWdlbWVudC9pbmRleC50cyJ9

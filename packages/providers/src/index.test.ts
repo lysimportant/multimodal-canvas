@@ -4869,6 +4869,17 @@ describe('NewApiVideoProvider', () => {
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         ),
+      )
+      .mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: 'task_no_reason',
+              status: 'failed',
+              progress: 100,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
       );
     const provider = new NewApiVideoProvider({
       baseUrl: 'https://newapi.example.com/v1',
@@ -4876,7 +4887,7 @@ describe('NewApiVideoProvider', () => {
       videoContract: 'newapi-video-v1',
       fetchImpl,
       pollIntervalMs: 0,
-      maxPollAttempts: 2,
+      maxPollAttempts: 4,
     });
 
     await expect(
@@ -4888,6 +4899,70 @@ describe('NewApiVideoProvider', () => {
       message:
         'New API 视频任务失败（status=failed, progress=100, model=grok-imagine-video-1.5, task=task_no_reason）。供应商未返回失败原因。',
     });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(
+      fetchImpl.mock.calls
+        .slice(1)
+        .every(([url]) => url === 'https://newapi.example.com/v1/videos/task_no_reason'),
+    ).toBe(true);
+  });
+
+  it('waits for a later completed status after a failed-at-100% response', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'task_video_ready', status: 'queued' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'task_video_ready', status: 'failed', progress: 100 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ id: 'task_video_ready', status: 'completed', progress: 100 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'video/mp4', 'content-length': '3' },
+        }),
+      );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      videoContract: 'newapi-video-v1',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 2,
+    });
+
+    const onProviderJob = vi.fn();
+    const execution = await provider.execute({ snapshot: videoSnapshot(), onProviderJob });
+
+    expect(execution.providerJob).toMatchObject({
+      platformJobId: 'task_video_ready',
+      status: 'succeeded',
+    });
+    expect(execution.output).toMatchObject({
+      kind: 'base64',
+      mimeType: 'video/mp4',
+      base64: 'AQID',
+    });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(onProviderJob.mock.calls.some(([update]) => update.status === 'failed')).toBe(false);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://newapi.example.com/v1/videos/task_video_ready/content',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('bounds polling and reports a retryable timeout', async () => {

@@ -1,0 +1,59 @@
+Object.defineProperty(__vite_ssr_exports__, "SessionLoading", { enumerable: true, configurable: true, get(){ try { return SessionLoading } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/antd@6.6.5_luxon@3.7.2_reac_1ced994a6906ea24d22f0902b231a537/node_modules/antd/lib/index.js", {"importedNames":["Spin"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["useEffect","useState"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/startup/SessionLoading.css");
+const SLOW_SESSION_HINT_MS = 1e4;
+function SessionLoading() {
+  const [isSlow, setIsSlow] = (0,__vite_ssr_import_2__.useState)(false);
+  (0,__vite_ssr_import_2__.useEffect)(() => {
+    const timer = window.setTimeout(() => setIsSlow(true), SLOW_SESSION_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("main", { className: "session-loading", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "session-loading-content", role: "status", "aria-live": "polite", "aria-atomic": "true", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      "img",
+      {
+        className: "session-loading-mascot",
+        src: "/brand/lovetv-mascot.webp",
+        alt: "LoveTV 大肥鱼",
+        width: 128,
+        height: 128
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/startup/SessionLoading.tsx",
+        lineNumber: 21,
+        columnNumber: 9
+      },
+      this
+    ),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Spin), { className: "session-loading-spinner", size: "large", "aria-hidden": "true" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/startup/SessionLoading.tsx",
+      lineNumber: 28,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { className: "session-loading-title", children: "正在恢复登录状态" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/startup/SessionLoading.tsx",
+      lineNumber: 29,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "session-loading-hint", children: isSlow ? "登录状态恢复耗时较长，仍在等待服务器响应。请检查网络连接，暂时无需刷新。" : "正在校验会话，请稍候。" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/startup/SessionLoading.tsx",
+      lineNumber: 30,
+      columnNumber: 9
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/startup/SessionLoading.tsx",
+    lineNumber: 20,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/startup/SessionLoading.tsx",
+    lineNumber: 19,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQW9CUTtBQXBCUjtBQUNBO0FBRUE7QUFHQSxNQUFNLHVCQUF1QjtBQUd0QixTQUFTLGlCQUFpQjtBQUMvQixRQUFNLENBQUMsUUFBUSxTQUFTLE9BQUksZ0NBQVMsS0FBSztBQUUxQyxzQ0FBVSxNQUFNO0FBQ2QsVUFBTSxRQUFRLE9BQU8sV0FBVyxNQUFNLFVBQVUsSUFBSSxHQUFHLG9CQUFvQjtBQUMzRSxXQUFPLE1BQU0sT0FBTyxhQUFhLEtBQUs7QUFBQSxFQUN4QyxHQUFHLENBQUMsQ0FBQztBQUVMLFNBQ0UsaURBQUMsVUFBSyxXQUFVLG1CQUNkLDJEQUFDLFNBQUksV0FBVSwyQkFBMEIsTUFBSyxVQUFTLGFBQVUsVUFBUyxlQUFZLFFBQ3BGO0FBQUE7QUFBQSxNQUFDO0FBQUE7QUFBQSxRQUNDLFdBQVU7QUFBQSxRQUNWLEtBQUk7QUFBQSxRQUNKLEtBQUk7QUFBQSxRQUNKLE9BQU87QUFBQSxRQUNQLFFBQVE7QUFBQTtBQUFBLE1BTFY7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLElBTUE7QUFBQSxJQUNBLG9EQUFDLCtCQUFLLFdBQVUsMkJBQTBCLE1BQUssU0FBUSxlQUFZLFVBQW5FO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FBMEU7QUFBQSxJQUMxRSxpREFBQyxRQUFHLFdBQVUseUJBQXdCLHdCQUF0QztBQUFBO0FBQUE7QUFBQTtBQUFBLFdBQThDO0FBQUEsSUFDOUMsaURBQUMsT0FBRSxXQUFVLHdCQUNWLG1CQUNHLHlDQUNBLGlCQUhOO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FJQTtBQUFBLE9BZEY7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQWVBLEtBaEJGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FpQkE7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiU2Vzc2lvbkxvYWRpbmcudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IFNwaW4gfSBmcm9tICdhbnRkJztcclxuaW1wb3J0IHsgdXNlRWZmZWN0LCB1c2VTdGF0ZSB9IGZyb20gJ3JlYWN0JztcclxuXHJcbmltcG9ydCAnLi9TZXNzaW9uTG9hZGluZy5jc3MnO1xyXG5cclxuLyoqIOS7heWIh+aNouetieW+heivtOaYjueahOaXtumVv++8jOWNleS9jeavq+enku+8m+S4jeW9seWTjeiupOivgeivt+axgueahOi2heaXtumihOeul+OAgiAqL1xyXG5jb25zdCBTTE9XX1NFU1NJT05fSElOVF9NUyA9IDEwXzAwMDtcclxuXHJcbi8qKiDkvJror53mgaLlpI3mnJ/pl7TpmLvmjKHot6/nlLHlhoXlrrnvvJvljbjovb3ml7bmuIXnkIbmj5DnpLrorqHml7blmajvvIzkuI3or7vlhpnkvJror53miJblj5Hotbfor7fmsYLjgIIgKi9cclxuZXhwb3J0IGZ1bmN0aW9uIFNlc3Npb25Mb2FkaW5nKCkge1xyXG4gIGNvbnN0IFtpc1Nsb3csIHNldElzU2xvd10gPSB1c2VTdGF0ZShmYWxzZSk7XHJcblxyXG4gIHVzZUVmZmVjdCgoKSA9PiB7XHJcbiAgICBjb25zdCB0aW1lciA9IHdpbmRvdy5zZXRUaW1lb3V0KCgpID0+IHNldElzU2xvdyh0cnVlKSwgU0xPV19TRVNTSU9OX0hJTlRfTVMpO1xyXG4gICAgcmV0dXJuICgpID0+IHdpbmRvdy5jbGVhclRpbWVvdXQodGltZXIpO1xyXG4gIH0sIFtdKTtcclxuXHJcbiAgcmV0dXJuIChcclxuICAgIDxtYWluIGNsYXNzTmFtZT1cInNlc3Npb24tbG9hZGluZ1wiPlxyXG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cInNlc3Npb24tbG9hZGluZy1jb250ZW50XCIgcm9sZT1cInN0YXR1c1wiIGFyaWEtbGl2ZT1cInBvbGl0ZVwiIGFyaWEtYXRvbWljPVwidHJ1ZVwiPlxyXG4gICAgICAgIDxpbWdcclxuICAgICAgICAgIGNsYXNzTmFtZT1cInNlc3Npb24tbG9hZGluZy1tYXNjb3RcIlxyXG4gICAgICAgICAgc3JjPVwiL2JyYW5kL2xvdmV0di1tYXNjb3Qud2VicFwiXHJcbiAgICAgICAgICBhbHQ9XCJMb3ZlVFYg5aSn6IKl6bG8XCJcclxuICAgICAgICAgIHdpZHRoPXsxMjh9XHJcbiAgICAgICAgICBoZWlnaHQ9ezEyOH1cclxuICAgICAgICAvPlxyXG4gICAgICAgIDxTcGluIGNsYXNzTmFtZT1cInNlc3Npb24tbG9hZGluZy1zcGlubmVyXCIgc2l6ZT1cImxhcmdlXCIgYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cclxuICAgICAgICA8aDEgY2xhc3NOYW1lPVwic2Vzc2lvbi1sb2FkaW5nLXRpdGxlXCI+5q2j5Zyo5oGi5aSN55m75b2V54q25oCBPC9oMT5cclxuICAgICAgICA8cCBjbGFzc05hbWU9XCJzZXNzaW9uLWxvYWRpbmctaGludFwiPlxyXG4gICAgICAgICAge2lzU2xvd1xyXG4gICAgICAgICAgICA/ICfnmbvlvZXnirbmgIHmgaLlpI3ogJfml7bovoPplb/vvIzku43lnKjnrYnlvoXmnI3liqHlmajlk43lupTjgILor7fmo4Dmn6XnvZHnu5zov57mjqXvvIzmmoLml7bml6DpnIDliLfmlrDjgIInXHJcbiAgICAgICAgICAgIDogJ+ato+WcqOagoemqjOS8muivne+8jOivt+eojeWAmeOAgid9XHJcbiAgICAgICAgPC9wPlxyXG4gICAgICA8L2Rpdj5cclxuICAgIDwvbWFpbj5cclxuICApO1xyXG59XHJcbiJdLCJmaWxlIjoiL3NyYy9zdGFydHVwL1Nlc3Npb25Mb2FkaW5nLnRzeCJ9

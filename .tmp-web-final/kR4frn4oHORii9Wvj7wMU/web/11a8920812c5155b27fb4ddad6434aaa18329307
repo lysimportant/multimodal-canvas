@@ -1,0 +1,85 @@
+Object.defineProperty(__vite_ssr_exports__, "PageFrame", { enumerable: true, configurable: true, get(){ try { return PageFrame } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["ArrowLeft"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/navigation/index.ts", {"importedNames":["AppNavigation"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink","appPaths","readReturnProjectId","ProjectReturnProvider"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/pages/page-frame.css");
+function PageFrame({
+  route,
+  projectId,
+  projectName,
+  navigationActions,
+  mainClassName = "",
+  children,
+  onNavigate
+}) {
+  const returnProjectId = projectId ?? route.returnProjectId ?? (0,__vite_ssr_import_3__.readReturnProjectId)(window.location.search);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_3__.ProjectReturnProvider), { projectId: returnProjectId, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: `mc-page-shell${returnProjectId ? " has-return-project" : ""}`, children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("a", { className: "mc-skip-link", href: "#mc-page-main", children: "跳到主要内容" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+      lineNumber: 35,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_2__.AppNavigation),
+      {
+        route,
+        projectId: returnProjectId,
+        actions: navigationActions,
+        onNavigate
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+        lineNumber: 38,
+        columnNumber: 9
+      },
+      this
+    ),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("main", { id: "mc-page-main", className: `mc-page-main ${mainClassName}`.trim(), children }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+      lineNumber: 44,
+      columnNumber: 9
+    }, this),
+    returnProjectId && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_3__.AppLink),
+      {
+        className: "mc-return-project",
+        to: __vite_ssr_import_3__.appPaths.project(returnProjectId),
+        title: projectName ? `返回项目：${projectName}` : "返回项目",
+        children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ArrowLeft), { size: 16, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+            lineNumber: 53,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: projectName ? `返回项目：${projectName}` : "返回项目" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+            lineNumber: 54,
+            columnNumber: 13
+          }, this)
+        ]
+      },
+      void 0,
+      true,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+        lineNumber: 48,
+        columnNumber: 11
+      },
+      this
+    )
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+    lineNumber: 34,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/PageFrame.tsx",
+    lineNumber: 33,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQWtDUTtBQWpDUjtBQUVBO0FBRUE7QUFFQTtBQWFPLFNBQVMsVUFBVTtBQUFBLEVBQ3hCO0FBQUEsRUFDQTtBQUFBLEVBQ0E7QUFBQSxFQUNBO0FBQUEsRUFDQSxnQkFBZ0I7QUFBQSxFQUNoQjtBQUFBLEVBQ0E7QUFDRixHQUFtQjtBQUNqQixRQUFNLGtCQUNKLGFBQWEsTUFBTSxzQkFBbUIsMkNBQW9CLE9BQU8sU0FBUyxNQUFNO0FBQ2xGLFNBQ0Usb0RBQUMsZ0RBQXNCLFdBQVcsaUJBQ2hDLDJEQUFDLFNBQUksV0FBVyxnQkFBZ0Isa0JBQWtCLHdCQUF3QixFQUFFLElBQzFFO0FBQUEscURBQUMsT0FBRSxXQUFVLGdCQUFlLE1BQUssaUJBQWdCLHNCQUFqRDtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBRUE7QUFBQSxJQUNBO0FBQUEsU0FBQztBQUFBO0FBQUEsUUFDQztBQUFBLFFBQ0EsV0FBVztBQUFBLFFBQ1gsU0FBUztBQUFBLFFBQ1Q7QUFBQTtBQUFBLE1BSkY7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLElBS0E7QUFBQSxJQUNBLGlEQUFDLFVBQUssSUFBRyxnQkFBZSxXQUFXLGdCQUFnQixhQUFhLEdBQUcsS0FBSyxHQUNyRSxZQURIO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FFQTtBQUFBLElBQ0MsbUJBQ0M7QUFBQSxTQUFDO0FBQUE7QUFBQSxRQUNDLFdBQVU7QUFBQSxRQUNWLElBQUksK0JBQVMsUUFBUSxlQUFlO0FBQUEsUUFDcEMsT0FBTyxjQUFjLFFBQVEsV0FBVyxLQUFLO0FBQUEsUUFFN0M7QUFBQSw4REFBQyxvQ0FBVSxNQUFNLElBQUksZUFBWSxVQUFqQztBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUF3QztBQUFBLFVBQ3hDLGlEQUFDLFVBQU0sd0JBQWMsUUFBUSxXQUFXLEtBQUssVUFBN0M7QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFBb0Q7QUFBQTtBQUFBO0FBQUEsTUFOdEQ7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLElBT0E7QUFBQSxPQXJCSjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBdUJBLEtBeEJGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0F5QkE7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiUGFnZUZyYW1lLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgdHlwZSB7IE1vdXNlRXZlbnQsIFJlYWN0Tm9kZSB9IGZyb20gJ3JlYWN0JztcbmltcG9ydCB7IEFycm93TGVmdCB9IGZyb20gJ2x1Y2lkZS1yZWFjdCc7XG5cbmltcG9ydCB7IEFwcE5hdmlnYXRpb24gfSBmcm9tICcuLi9uYXZpZ2F0aW9uJztcbmltcG9ydCB0eXBlIHsgQXBwUm91dGUgfSBmcm9tICcuLi9yb3V0aW5nJztcbmltcG9ydCB7IEFwcExpbmssIGFwcFBhdGhzLCByZWFkUmV0dXJuUHJvamVjdElkLCBQcm9qZWN0UmV0dXJuUHJvdmlkZXIgfSBmcm9tICcuLi9yb3V0aW5nJztcblxuaW1wb3J0ICcuL3BhZ2UtZnJhbWUuY3NzJztcblxuZXhwb3J0IHR5cGUgUGFnZUZyYW1lUHJvcHMgPSB7XG4gIHJvdXRlOiBBcHBSb3V0ZTtcbiAgcHJvamVjdElkPzogc3RyaW5nIHwgbnVsbDtcbiAgLyoqIOadpea6kOmhueebruWQjeensOacquefpeaXtu+8jOi/lOWbnuWFpeWPo+S9v+eUqOmAmueUqOaWh+ahiOOAgiAqL1xuICBwcm9qZWN0TmFtZT86IHN0cmluZyB8IG51bGw7XG4gIG5hdmlnYXRpb25BY3Rpb25zPzogUmVhY3ROb2RlO1xuICBtYWluQ2xhc3NOYW1lPzogc3RyaW5nO1xuICBjaGlsZHJlbjogUmVhY3ROb2RlO1xuICBvbk5hdmlnYXRlPzogKGhyZWY6IHN0cmluZywgZXZlbnQ6IE1vdXNlRXZlbnQ8SFRNTEFuY2hvckVsZW1lbnQ+KSA9PiB2b2lkO1xufTtcblxuZXhwb3J0IGZ1bmN0aW9uIFBhZ2VGcmFtZSh7XG4gIHJvdXRlLFxuICBwcm9qZWN0SWQsXG4gIHByb2plY3ROYW1lLFxuICBuYXZpZ2F0aW9uQWN0aW9ucyxcbiAgbWFpbkNsYXNzTmFtZSA9ICcnLFxuICBjaGlsZHJlbixcbiAgb25OYXZpZ2F0ZSxcbn06IFBhZ2VGcmFtZVByb3BzKSB7XG4gIGNvbnN0IHJldHVyblByb2plY3RJZCA9XG4gICAgcHJvamVjdElkID8/IHJvdXRlLnJldHVyblByb2plY3RJZCA/PyByZWFkUmV0dXJuUHJvamVjdElkKHdpbmRvdy5sb2NhdGlvbi5zZWFyY2gpO1xuICByZXR1cm4gKFxuICAgIDxQcm9qZWN0UmV0dXJuUHJvdmlkZXIgcHJvamVjdElkPXtyZXR1cm5Qcm9qZWN0SWR9PlxuICAgICAgPGRpdiBjbGFzc05hbWU9e2BtYy1wYWdlLXNoZWxsJHtyZXR1cm5Qcm9qZWN0SWQgPyAnIGhhcy1yZXR1cm4tcHJvamVjdCcgOiAnJ31gfT5cbiAgICAgICAgPGEgY2xhc3NOYW1lPVwibWMtc2tpcC1saW5rXCIgaHJlZj1cIiNtYy1wYWdlLW1haW5cIj5cbiAgICAgICAgICDot7PliLDkuLvopoHlhoXlrrlcbiAgICAgICAgPC9hPlxuICAgICAgICA8QXBwTmF2aWdhdGlvblxuICAgICAgICAgIHJvdXRlPXtyb3V0ZX1cbiAgICAgICAgICBwcm9qZWN0SWQ9e3JldHVyblByb2plY3RJZH1cbiAgICAgICAgICBhY3Rpb25zPXtuYXZpZ2F0aW9uQWN0aW9uc31cbiAgICAgICAgICBvbk5hdmlnYXRlPXtvbk5hdmlnYXRlfVxuICAgICAgICAvPlxuICAgICAgICA8bWFpbiBpZD1cIm1jLXBhZ2UtbWFpblwiIGNsYXNzTmFtZT17YG1jLXBhZ2UtbWFpbiAke21haW5DbGFzc05hbWV9YC50cmltKCl9PlxuICAgICAgICAgIHtjaGlsZHJlbn1cbiAgICAgICAgPC9tYWluPlxuICAgICAgICB7cmV0dXJuUHJvamVjdElkICYmIChcbiAgICAgICAgICA8QXBwTGlua1xuICAgICAgICAgICAgY2xhc3NOYW1lPVwibWMtcmV0dXJuLXByb2plY3RcIlxuICAgICAgICAgICAgdG89e2FwcFBhdGhzLnByb2plY3QocmV0dXJuUHJvamVjdElkKX1cbiAgICAgICAgICAgIHRpdGxlPXtwcm9qZWN0TmFtZSA/IGDov5Tlm57pobnnm67vvJoke3Byb2plY3ROYW1lfWAgOiAn6L+U5Zue6aG555uuJ31cbiAgICAgICAgICA+XG4gICAgICAgICAgICA8QXJyb3dMZWZ0IHNpemU9ezE2fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPlxuICAgICAgICAgICAgPHNwYW4+e3Byb2plY3ROYW1lID8gYOi/lOWbnumhueebru+8miR7cHJvamVjdE5hbWV9YCA6ICfov5Tlm57pobnnm64nfTwvc3Bhbj5cbiAgICAgICAgICA8L0FwcExpbms+XG4gICAgICAgICl9XG4gICAgICA8L2Rpdj5cbiAgICA8L1Byb2plY3RSZXR1cm5Qcm92aWRlcj5cbiAgKTtcbn1cbiJdLCJmaWxlIjoiL3NyYy9wYWdlcy9QYWdlRnJhbWUudHN4In0=

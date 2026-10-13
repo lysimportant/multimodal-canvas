@@ -303,9 +303,14 @@ export function createProviderJobRecord(
   };
 }
 
-/** Whether a failed/cancelled predecessor still has an unknown live task. */
+/**
+ * Whether a provider task can be queried again without creating a new task.
+ * Terminal upstream status is accepted only for explicit read-only recovery;
+ * automatic retries must keep the fail-closed behavior.
+ */
 export function canResumeProviderJob(
   providerJob: ProviderJob | undefined,
+  options: { allowTerminalStatus?: boolean } = {},
 ): providerJob is ProviderJob {
   if (!providerJob?.platformJobId) return false;
   if (providerJob.status !== 'failed' && providerJob.status !== 'cancelled') return true;
@@ -321,6 +326,7 @@ export function canResumeProviderJob(
         ? payload.providerStatus.toLowerCase()
         : undefined;
   return (
+    options.allowTerminalStatus === true ||
     !providerStatus ||
     !['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(providerStatus)
   );
@@ -1180,7 +1186,8 @@ export function createRunWorker(options: {
 
           const resumableProviderJob = providerCandidates.find(
             (candidate) =>
-              candidate.provider === initialData.provider && canResumeProviderJob(candidate),
+              candidate.provider === initialData.provider &&
+              canResumeProviderJob(candidate, { allowTerminalStatus: retrieveOnlyObserved }),
           );
           const rejectedCreation = !resumableProviderJob
             ? providerCandidates.find(
@@ -1275,7 +1282,7 @@ export function createRunWorker(options: {
           if (
             initialData.provider === 'newapi' &&
             node.data.mediaType === 'video' &&
-            canResumeProviderJob(providerJob) &&
+            canResumeProviderJob(providerJob, { allowTerminalStatus: true }) &&
             isNewApiVideoContract(frozenContract) &&
             (!retainedContract || !boundContract || retainedContract === boundContract) &&
             !unrecoverableDeliveryNodes.has(node.id)
@@ -1614,7 +1621,9 @@ export function createRunWorker(options: {
             const frozenLegacyContract = existingNodeProviderJob?.payload?.contract;
             if (
               node.data.mediaType !== 'video' ||
-              !canResumeProviderJob(existingNodeProviderJob) ||
+              !canResumeProviderJob(existingNodeProviderJob, {
+                allowTerminalStatus: retrieveOnlyObserved,
+              }) ||
               typeof frozenLegacyContract !== 'string' ||
               !frozenLegacyContract.trim()
             ) {
@@ -1644,7 +1653,10 @@ export function createRunWorker(options: {
           // 已提交的视频任务只按已验证的平台 ID 继续查询；原素材水合与可访问性
           // 复核仅服务创建 POST，恢复时重复执行会让已付费任务因素材变化而无法收尾。
           const resumeSubmittedVideo =
-            node.data.mediaType === 'video' && canResumeProviderJob(existingNodeProviderJob);
+            node.data.mediaType === 'video' &&
+            canResumeProviderJob(existingNodeProviderJob, {
+              allowTerminalStatus: retrieveOnlyObserved,
+            });
           const requestAssetResolver = resumeSubmittedVideo ? undefined : assetResolver;
           const versionedNodeSnapshot = assetResolver
             ? withWorkflowAssetVersions(nodeSnapshot, currentWorkflowState)
@@ -1665,7 +1677,10 @@ export function createRunWorker(options: {
               ? providerJob
               : { ...providerJob, id: requestProviderJobId };
           activeRequestPrompts =
-            stagedResult || canResumeProviderJob(existingNodeProviderJob)
+            stagedResult ||
+            canResumeProviderJob(existingNodeProviderJob, {
+              allowTerminalStatus: retrieveOnlyObserved,
+            })
               ? storedRequestPromptIdentities(existingNodeProviderJob, node.id)
               : [];
           /** 在最终请求准备完成后领取发送身份；本地参数拒绝不得留下未知发送记录。 */

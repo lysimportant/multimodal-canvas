@@ -1,0 +1,243 @@
+Object.defineProperty(__vite_ssr_exports__, "ContactPage", { enumerable: true, configurable: true, get(){ try { return ContactPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["ArrowRight","AudioLines","FileImage","Film","Mail","Network"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink","appPaths"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/pages/PageFrame.tsx", {"importedNames":["PageFrame"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/pages/contact-page.css");
+const contactRoute = { id: "contact", pathname: "/contact" };
+const capabilities = [
+  {
+    index: "01",
+    title: "API 模型与多模态画布",
+    description: "连接已配置的 API 模型，在同一画布组织 AI 图片、AI 视频及文字、音频节点。",
+    icon: __vite_ssr_import_1__.Network
+  },
+  {
+    index: "02",
+    title: "提示词 Skill 与参考资料",
+    description: "把提示词 Skill、参考资料和资源引用带入生成流程，并保留明确的操作上下文。",
+    icon: __vite_ssr_import_1__.FileImage
+  },
+  {
+    index: "03",
+    title: "短视频复刻与素材版本",
+    description: "按现有流程分析整条短视频、绑定参考素材，并追踪素材版本、运行状态和项目归属。",
+    icon: __vite_ssr_import_1__.Film
+  }
+];
+function ContactPage({ onNavigate }) {
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_3__.PageFrame), { route: contactRoute, onNavigate, mainClassName: "mc-contact-page", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-page-container", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "mc-contact-heading", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "CONTACT & SUPPORT" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+        lineNumber: 42,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "联系我们" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+        lineNumber: 43,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "LoveTV 是连接 API 模型的 AI 图片、AI 视频多模态画布，面向需要组织创作流程的个人与团队。 大肥鱼（鲸鱼娘）是 LoveTV 的品牌形象，用于网站图标与分享图片。" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+        lineNumber: 44,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+      lineNumber: 41,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "mc-contact-layout", "aria-labelledby": "mc-contact-capabilities-title", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-contact-introduction", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "PRODUCT CAPABILITIES" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 52,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h2", { id: "mc-contact-capabilities-title", children: "把模型、提示词和参考素材放进同一条可追踪流程" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 53,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "LoveTV 已提供提示词 Skill、参考资料、短视频复刻和素材版本等能力，让生成、回看与归档保留明确上下文。" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 54,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-contact-capabilities", children: capabilities.map((capability) => {
+          const Icon = capability.icon;
+          return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("article", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: capability.index }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 64,
+              columnNumber: 21
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(Icon, { size: 19, "aria-hidden": "true" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 65,
+              columnNumber: 21
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h3", { children: capability.title }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+                lineNumber: 67,
+                columnNumber: 23
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: capability.description }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+                lineNumber: 68,
+                columnNumber: 23
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 66,
+              columnNumber: 21
+            }, this)
+          ] }, capability.index, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 63,
+            columnNumber: 19
+          }, this);
+        }) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 59,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+        lineNumber: 51,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("aside", { className: "mc-contact-panel", "aria-labelledby": "mc-contact-channel-title", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "mc-contact-panel-index", children: "SUPPORT / 01" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 77,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h2", { id: "mc-contact-channel-title", children: "产品咨询与问题反馈" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 78,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "如需反馈使用问题、了解画布能力或讨论已配置模型的使用，请通过邮件联系。" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 79,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("a", { className: "mc-contact-email", href: "mailto:lysimportant@Outlook.com", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Mail), { size: 18, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 81,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("small", { children: "EMAIL" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 83,
+              columnNumber: 17
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: "lysimportant@Outlook.com" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 84,
+              columnNumber: 17
+            }, this)
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 82,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 80,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-contact-media", "aria-label": "支持的媒体类型", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.FileImage), { size: 14, "aria-hidden": "true" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 89,
+              columnNumber: 17
+            }, this),
+            " 图片"
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 88,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.AudioLines), { size: 14, "aria-hidden": "true" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 92,
+              columnNumber: 17
+            }, this),
+            " 音频"
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 91,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Film), { size: 14, "aria-hidden": "true" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+              lineNumber: 95,
+              columnNumber: 17
+            }, this),
+            " 视频"
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 94,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+          lineNumber: 87,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          (0,__vite_ssr_import_2__.AppLink),
+          {
+            className: "mc-contact-workspace-link",
+            to: __vite_ssr_import_2__.appPaths.workspace,
+            onClick: (event) => onNavigate?.(__vite_ssr_import_2__.appPaths.workspace, event),
+            children: [
+              "进入工作台",
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ArrowRight), { size: 16, "aria-hidden": "true" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+                lineNumber: 104,
+                columnNumber: 15
+              }, this)
+            ]
+          },
+          void 0,
+          true,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+            lineNumber: 98,
+            columnNumber: 13
+          },
+          this
+        )
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+        lineNumber: 76,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+      lineNumber: 50,
+      columnNumber: 9
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+    lineNumber: 40,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/ContactPage.tsx",
+    lineNumber: 39,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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QUE7QUFBQSxRQU9BO0FBQUEsV0E3QkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQThCQTtBQUFBLFNBeERGO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0F5REE7QUFBQSxPQW5FRjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBb0VBLEtBckVGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FzRUE7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiQ29udGFjdFBhZ2UudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IEFycm93UmlnaHQsIEF1ZGlvTGluZXMsIEZpbGVJbWFnZSwgRmlsbSwgTWFpbCwgTmV0d29yayB9IGZyb20gJ2x1Y2lkZS1yZWFjdCc7XG5pbXBvcnQgdHlwZSB7IE1vdXNlRXZlbnQgfSBmcm9tICdyZWFjdCc7XG5cbmltcG9ydCB7IEFwcExpbmssIGFwcFBhdGhzLCB0eXBlIEFwcFJvdXRlIH0gZnJvbSAnLi4vcm91dGluZyc7XG5pbXBvcnQgeyBQYWdlRnJhbWUgfSBmcm9tICcuL1BhZ2VGcmFtZSc7XG5cbmltcG9ydCAnLi9jb250YWN0LXBhZ2UuY3NzJztcblxuY29uc3QgY29udGFjdFJvdXRlOiBBcHBSb3V0ZSA9IHsgaWQ6ICdjb250YWN0JywgcGF0aG5hbWU6ICcvY29udGFjdCcgfTtcblxuZXhwb3J0IHR5cGUgQ29udGFjdFBhZ2VQcm9wcyA9IHtcbiAgb25OYXZpZ2F0ZT86IChocmVmOiBzdHJpbmcsIGV2ZW50OiBNb3VzZUV2ZW50PEhUTUxBbmNob3JFbGVtZW50PikgPT4gdm9pZDtcbn07XG5cbmNvbnN0IGNhcGFiaWxpdGllcyA9IFtcbiAge1xuICAgIGluZGV4OiAnMDEnLFxuICAgIHRpdGxlOiAnQVBJIOaooeWei+S4juWkmuaooeaAgeeUu+W4gycsXG4gICAgZGVzY3JpcHRpb246ICfov57mjqXlt7LphY3nva7nmoQgQVBJIOaooeWei++8jOWcqOWQjOS4gOeUu+W4g+e7hOe7hyBBSSDlm77niYfjgIFBSSDop4bpopHlj4rmloflrZfjgIHpn7PpopHoioLngrnjgIInLFxuICAgIGljb246IE5ldHdvcmssXG4gIH0sXG4gIHtcbiAgICBpbmRleDogJzAyJyxcbiAgICB0aXRsZTogJ+aPkOekuuivjSBTa2lsbCDkuI7lj4LogIPotYTmlpknLFxuICAgIGRlc2NyaXB0aW9uOiAn5oqK5o+Q56S66K+NIFNraWxs44CB5Y+C6ICD6LWE5paZ5ZKM6LWE5rqQ5byV55So5bim5YWl55Sf5oiQ5rWB56iL77yM5bm25L+d55WZ5piO56Gu55qE5pON5L2c5LiK5LiL5paH44CCJyxcbiAgICBpY29uOiBGaWxlSW1hZ2UsXG4gIH0sXG4gIHtcbiAgICBpbmRleDogJzAzJyxcbiAgICB0aXRsZTogJ+efreinhumikeWkjeWIu+S4jue0oOadkOeJiOacrCcsXG4gICAgZGVzY3JpcHRpb246ICfmjInnjrDmnInmtYHnqIvliIbmnpDmlbTmnaHnn63op4bpopHjgIHnu5Hlrprlj4LogIPntKDmnZDvvIzlubbov73ouKrntKDmnZDniYjmnKzjgIHov5DooYznirbmgIHlkozpobnnm67lvZLlsZ7jgIInLFxuICAgIGljb246IEZpbG0sXG4gIH0sXG5dIGFzIGNvbnN0O1xuXG4vKiog6IGU57O76aG15Y+q6YCP5Lyg56uZ5YaF5a+86Iiq5Zue6LCD77yM5LiN5pS55Y+Y546w5pyJ6Lev55Sx5oiW6K6/6Zeu5p2D6ZmQ44CCICovXG5leHBvcnQgZnVuY3Rpb24gQ29udGFjdFBhZ2UoeyBvbk5hdmlnYXRlIH06IENvbnRhY3RQYWdlUHJvcHMpIHtcbiAgcmV0dXJuIChcbiAgICA8UGFnZUZyYW1lIHJvdXRlPXtjb250YWN0Um91dGV9IG9uTmF2aWdhdGU9e29uTmF2aWdhdGV9IG1haW5DbGFzc05hbWU9XCJtYy1jb250YWN0LXBhZ2VcIj5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWMtcGFnZS1jb250YWluZXJcIj5cbiAgICAgICAgPGhlYWRlciBjbGFzc05hbWU9XCJtYy1jb250YWN0LWhlYWRpbmdcIj5cbiAgICAgICAgICA8cD5DT05UQUNUICZhbXA7IFNVUFBPUlQ8L3A+XG4gICAgICAgICAgPGgxPuiBlOezu+aIkeS7rDwvaDE+XG4gICAgICAgICAgPHNwYW4+XG4gICAgICAgICAgICBMb3ZlVFYg5piv6L+e5o6lIEFQSSDmqKHlnovnmoQgQUkg5Zu+54mH44CBQUkg6KeG6aKR5aSa5qih5oCB55S75biD77yM6Z2i5ZCR6ZyA6KaB57uE57uH5Yib5L2c5rWB56iL55qE5Liq5Lq65LiO5Zui6Zif44CCXG4gICAgICAgICAgICDlpKfogqXpsbzvvIjpsrjpsbzlqJjvvInmmK8gTG92ZVRWIOeahOWTgeeJjOW9ouixoe+8jOeUqOS6jue9keermeWbvuagh+S4juWIhuS6q+WbvueJh+OAglxuICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgPC9oZWFkZXI+XG5cbiAgICAgICAgPHNlY3Rpb24gY2xhc3NOYW1lPVwibWMtY29udGFjdC1sYXlvdXRcIiBhcmlhLWxhYmVsbGVkYnk9XCJtYy1jb250YWN0LWNhcGFiaWxpdGllcy10aXRsZVwiPlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWMtY29udGFjdC1pbnRyb2R1Y3Rpb25cIj5cbiAgICAgICAgICAgIDxwPlBST0RVQ1QgQ0FQQUJJTElUSUVTPC9wPlxuICAgICAgICAgICAgPGgyIGlkPVwibWMtY29udGFjdC1jYXBhYmlsaXRpZXMtdGl0bGVcIj7miormqKHlnovjgIHmj5DnpLror43lkozlj4LogIPntKDmnZDmlL7ov5vlkIzkuIDmnaHlj6/ov73ouKrmtYHnqIs8L2gyPlxuICAgICAgICAgICAgPHNwYW4+XG4gICAgICAgICAgICAgIExvdmVUViDlt7Lmj5Dkvpvmj5DnpLror41cbiAgICAgICAgICAgICAgU2tpbGzjgIHlj4LogIPotYTmlpnjgIHnn63op4bpopHlpI3liLvlkozntKDmnZDniYjmnKznrYnog73lipvvvIzorqnnlJ/miJDjgIHlm57nnIvkuI7lvZLmoaPkv53nlZnmmI7noa7kuIrkuIvmlofjgIJcbiAgICAgICAgICAgIDwvc3Bhbj5cblxuICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJtYy1jb250YWN0LWNhcGFiaWxpdGllc1wiPlxuICAgICAgICAgICAgICB7Y2FwYWJpbGl0aWVzLm1hcCgoY2FwYWJpbGl0eSkgPT4ge1xuICAgICAgICAgICAgICAgIGNvbnN0IEljb24gPSBjYXBhYmlsaXR5Lmljb247XG4gICAgICAgICAgICAgICAgcmV0dXJuIChcbiAgICAgICAgICAgICAgICAgIDxhcnRpY2xlIGtleT17Y2FwYWJpbGl0eS5pbmRleH0+XG4gICAgICAgICAgICAgICAgICAgIDxzcGFuPntjYXBhYmlsaXR5LmluZGV4fTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgPEljb24gc2l6ZT17MTl9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XG4gICAgICAgICAgICAgICAgICAgIDxkaXY+XG4gICAgICAgICAgICAgICAgICAgICAgPGgzPntjYXBhYmlsaXR5LnRpdGxlfTwvaDM+XG4gICAgICAgICAgICAgICAgICAgICAgPHA+e2NhcGFiaWxpdHkuZGVzY3JpcHRpb259PC9wPlxuICAgICAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgICAgIDwvYXJ0aWNsZT5cbiAgICAgICAgICAgICAgICApO1xuICAgICAgICAgICAgICB9KX1cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDwvZGl2PlxuXG4gICAgICAgICAgPGFzaWRlIGNsYXNzTmFtZT1cIm1jLWNvbnRhY3QtcGFuZWxcIiBhcmlhLWxhYmVsbGVkYnk9XCJtYy1jb250YWN0LWNoYW5uZWwtdGl0bGVcIj5cbiAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cIm1jLWNvbnRhY3QtcGFuZWwtaW5kZXhcIj5TVVBQT1JUIC8gMDE8L3NwYW4+XG4gICAgICAgICAgICA8aDIgaWQ9XCJtYy1jb250YWN0LWNoYW5uZWwtdGl0bGVcIj7kuqflk4Hlkqjor6LkuI7pl67popjlj43ppog8L2gyPlxuICAgICAgICAgICAgPHA+5aaC6ZyA5Y+N6aaI5L2/55So6Zeu6aKY44CB5LqG6Kej55S75biD6IO95Yqb5oiW6K6o6K665bey6YWN572u5qih5Z6L55qE5L2/55So77yM6K+36YCa6L+H6YKu5Lu26IGU57O744CCPC9wPlxuICAgICAgICAgICAgPGEgY2xhc3NOYW1lPVwibWMtY29udGFjdC1lbWFpbFwiIGhyZWY9XCJtYWlsdG86bHlzaW1wb3J0YW50QE91dGxvb2suY29tXCI+XG4gICAgICAgICAgICAgIDxNYWlsIHNpemU9ezE4fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPlxuICAgICAgICAgICAgICA8c3Bhbj5cbiAgICAgICAgICAgICAgICA8c21hbGw+RU1BSUw8L3NtYWxsPlxuICAgICAgICAgICAgICAgIDxzdHJvbmc+bHlzaW1wb3J0YW50QE91dGxvb2suY29tPC9zdHJvbmc+XG4gICAgICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICAgIDwvYT5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWMtY29udGFjdC1tZWRpYVwiIGFyaWEtbGFiZWw9XCLmlK/mjIHnmoTlqpLkvZPnsbvlnotcIj5cbiAgICAgICAgICAgICAgPHNwYW4+XG4gICAgICAgICAgICAgICAgPEZpbGVJbWFnZSBzaXplPXsxNH0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz4g5Zu+54mHXG4gICAgICAgICAgICAgIDwvc3Bhbj5cbiAgICAgICAgICAgICAgPHNwYW4+XG4gICAgICAgICAgICAgICAgPEF1ZGlvTGluZXMgc2l6ZT17MTR9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+IOmfs+mikVxuICAgICAgICAgICAgICA8L3NwYW4+XG4gICAgICAgICAgICAgIDxzcGFuPlxuICAgICAgICAgICAgICAgIDxGaWxtIHNpemU9ezE0fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPiDop4bpopFcbiAgICAgICAgICAgICAgPC9zcGFuPlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICA8QXBwTGlua1xuICAgICAgICAgICAgICBjbGFzc05hbWU9XCJtYy1jb250YWN0LXdvcmtzcGFjZS1saW5rXCJcbiAgICAgICAgICAgICAgdG89e2FwcFBhdGhzLndvcmtzcGFjZX1cbiAgICAgICAgICAgICAgb25DbGljaz17KGV2ZW50KSA9PiBvbk5hdmlnYXRlPy4oYXBwUGF0aHMud29ya3NwYWNlLCBldmVudCl9XG4gICAgICAgICAgICA+XG4gICAgICAgICAgICAgIOi/m+WFpeW3peS9nOWPsFxuICAgICAgICAgICAgICA8QXJyb3dSaWdodCBzaXplPXsxNn0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cbiAgICAgICAgICAgIDwvQXBwTGluaz5cbiAgICAgICAgICA8L2FzaWRlPlxuICAgICAgICA8L3NlY3Rpb24+XG4gICAgICA8L2Rpdj5cbiAgICA8L1BhZ2VGcmFtZT5cbiAgKTtcbn1cbiJdLCJmaWxlIjoiL3NyYy9wYWdlcy9Db250YWN0UGFnZS50c3gifQ==

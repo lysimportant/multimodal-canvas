@@ -874,6 +874,7 @@ const defaultResponseContentLimit = 50 * 1024 * 1024;
 const defaultVideoContentLimit = 50 * 1024 * 1024;
 const newApiVideoJobsPath = '/videos';
 const newApiVideoCreatePath = `${newApiVideoJobsPath}/generations`;
+const maxUnexplainedVideoFailureRechecks = 3;
 
 /**
  * 按冻结契约执行官方统一视频或历史网关任务，不混入 Sora multipart 字段。
@@ -1213,32 +1214,35 @@ export class NewApiVideoProvider {
         ['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(creationStatus)
       ) {
         const terminal = unifiedCreation ?? parseVideoPollResult(creationPayload, [this.apiKey]);
-        const providerPayload = videoJobPayloadSummary(
-          contract,
-          'failed',
-          snapshot.modelAlias,
-          terminal.providerStatus,
-          terminal.progress,
-          undefined,
-          requestIds,
-        );
-        throw new NewApiProviderError(
-          videoTerminalFailureMessage(terminal, platformJobId, snapshot.modelAlias),
-          {
-            code:
-              terminal.status === 'cancelled'
-                ? 'VIDEO_GENERATION_CANCELLED'
-                : 'VIDEO_GENERATION_FAILED',
-            ...requestIds,
-            platformJobId,
-            providerPayload,
-            retryable: false,
-          },
-        );
+        if (!needsVideoFailureConfirmation(terminal)) {
+          const providerPayload = videoJobPayloadSummary(
+            contract,
+            'failed',
+            snapshot.modelAlias,
+            terminal.providerStatus,
+            terminal.progress,
+            undefined,
+            requestIds,
+          );
+          throw new NewApiProviderError(
+            videoTerminalFailureMessage(terminal, platformJobId, snapshot.modelAlias),
+            {
+              code:
+                terminal.status === 'cancelled'
+                  ? 'VIDEO_GENERATION_CANCELLED'
+                  : 'VIDEO_GENERATION_FAILED',
+              ...requestIds,
+              platformJobId,
+              providerPayload,
+              retryable: false,
+            },
+          );
+        }
       }
     }
 
     let lastPoll: VideoPollResult | undefined;
+    let unexplainedFailureRechecks = 0;
     for (
       let attempt = 1;
       this.maxPollAttempts === undefined || attempt <= this.maxPollAttempts;
@@ -1246,6 +1250,7 @@ export class NewApiVideoProvider {
     ) {
       const waitMs = videoPollDelay(this.pollIntervalMs, attempt);
       if (waitMs > 0) await delay(waitMs, signal, platformJobId);
+      let recheckFailure = false;
       try {
         const statusResponse = await this.requestJson(
           `${this.baseUrl}${jobsPath}/${encodeURIComponent(platformJobId)}`,
@@ -1278,6 +1283,13 @@ export class NewApiVideoProvider {
           ? parseUnifiedVideoPollResult(statusResponse.payload, [this.apiKey])
           : parseVideoPollResult(statusResponse.payload, [this.apiKey]);
         throwIfProviderSignalAborted(signal, platformJobId);
+        // 部分网关会短暂回报 failed + 100% 且没有原因。只读复核同一任务，
+        // 在有限次数内等待明确完成状态，不能仅凭进度认定成功或重新创建。
+        recheckFailure =
+          needsVideoFailureConfirmation(lastPoll) &&
+          unexplainedFailureRechecks < maxUnexplainedVideoFailureRechecks &&
+          (this.maxPollAttempts === undefined || attempt < this.maxPollAttempts);
+        if (recheckFailure) unexplainedFailureRechecks += 1;
         const statusPayload = videoJobPayloadSummary(
           contract,
           lastPoll.status === 'succeeded' ? 'completed' : 'polling',
@@ -1291,15 +1303,16 @@ export class NewApiVideoProvider {
           await onProviderJob?.({
             provider: 'newapi',
             platformJobId,
-            status:
-              lastPoll.status === 'failed'
+            status: recheckFailure
+              ? 'running'
+              : lastPoll.status === 'failed'
                 ? 'failed'
                 : lastPoll.status === 'cancelled'
                   ? 'cancelled'
                   : lastPoll.status === 'pending'
                     ? 'submitted'
                     : 'running',
-            progress: lastPoll.status === 'succeeded' ? 99 : lastPoll.progress,
+            progress: lastPoll.status === 'succeeded' || recheckFailure ? 99 : lastPoll.progress,
             payload: statusPayload,
           });
         } catch {
@@ -1338,6 +1351,8 @@ export class NewApiVideoProvider {
           [this.apiKey],
         );
       }
+
+      if (recheckFailure) continue;
 
       if (lastPoll.status === 'failed' || lastPoll.status === 'cancelled') {
         throw new NewApiProviderError(
@@ -2500,6 +2515,10 @@ function videoTerminalFailureMessage(
   return details.length > 0
     ? `New API 视频任务${kind}（${details.join(', ')}）。供应商未返回失败原因。`
     : `New API 视频任务${kind}`;
+}
+
+function needsVideoFailureConfirmation(poll: VideoPollResult): boolean {
+  return poll.status === 'failed' && poll.progress === 100 && !poll.error;
 }
 
 function parseVideoPollResult(

@@ -76,6 +76,16 @@ bash scripts/docker.sh stop
 
 外部数据库加 `-Neon` / `--neon`，公网入口加 `-Server` / `--server`。旧 `-LocalNewApi` 和本机自签 HTTPS 配套入口已退出，不启动内置 New API 或 Mock，不再依赖 `.local-tests/newapi-account/local-docker`。
 
+从 Windows 本地打包并上传到 `root@47.242.207.224:/opt/multimodal-canvas`，可双击仓库根目录的 `deploy-server.bat`。脚本在本机构建 Linux/amd64 镜像、打包应用与依赖镜像、校验 SHA-256，然后通过 OpenSSH 上传，在服务器执行 `docker compose up -d --no-build --pull never --wait`。服务器使用其已有的 `.env.compose`；本地 `.env.compose` 只供本机构建前校验，不会上传或覆盖服务器文件。使用密码登录时，OpenSSH 会在上传和远端启动时各提示一次；也可事先配置 SSH 密钥。现有容器用于自动判定数据库与公网网关模式；首次部署或无法判定时，明确指定模式：
+
+```bat
+deploy-server.bat -Database Local -Gateway On
+rem 或：deploy-server.bat -Database Neon -Gateway Off
+deploy-server.bat -PackageOnly
+```
+
+`-PackageOnly` 只在 `.local-deploy` 生成压缩包，不连接服务器。使用内置 PostgreSQL 且已有运行中的数据库容器时，远端脚本会在更新前将 `pg_dump` 备份到 `.deploy-backups/<发布编号>/canvas.pgdump`；先前的 Compose 文件也存放在该目录。部署会运行已有的 `prisma migrate deploy`，保留服务器环境文件和 Docker 数据卷；切换数据库模式需单独迁移数据，脚本会拒绝对现有服务直接切换。
+
 ### 可选 Neon
 
 不使用 Neon 时无需填写 `DATABASE_URL`，运行默认 PostgreSQL 即可。

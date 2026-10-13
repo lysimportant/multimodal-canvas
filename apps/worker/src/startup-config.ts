@@ -138,6 +138,7 @@ export function validateWorkerStartupConfiguration(
   ]) {
     validatePositiveSafeInteger(environment, variable, issues);
   }
+  validateByteLimitEnvironment(environment, 'RESULT_ASSET_S3_TIMEOUT_MS', 2_147_483_647, issues);
 
   return issues;
 }

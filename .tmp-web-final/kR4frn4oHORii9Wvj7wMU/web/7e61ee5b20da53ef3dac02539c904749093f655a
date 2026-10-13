@@ -1,0 +1,210 @@
+Object.defineProperty(__vite_ssr_exports__, "AuthenticationPage", { enumerable: true, configurable: true, get(){ try { return AuthenticationPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/packages/ui/src/index.ts", {"importedNames":["Button"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["ArrowLeft","ArrowRight","LoaderCircle","ShieldCheck"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["useMemo","useState"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/auth-client.ts", {"importedNames":["startNewApiLogin"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink","appPaths","navigateApp"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/src/routing/auth-navigation.ts", {"importedNames":["readAuthReturnPath"]});
+const __vite_ssr_import_7__ = await __vite_ssr_import__("/src/workspace/contracts.ts", {"importedNames":["API_BASE_URL","PUBLIC_API_CATALOG_URL"]});
+const __vite_ssr_import_8__ = await __vite_ssr_import__("/src/authentication/authentication.css");
+function AuthenticationPage({ authUser }) {
+  const [leaving, setLeaving] = (0,__vite_ssr_import_3__.useState)(false);
+  const next = (0,__vite_ssr_import_3__.useMemo)(() => (0,__vite_ssr_import_6__.readAuthReturnPath)(window.location.search), []);
+  const failure = new URLSearchParams(window.location.search).get("error");
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: `auth-entry-page${leaving ? " is-leaving" : ""}`, children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "auth-entry-header", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_5__.AppLink), { to: "/", className: "auth-entry-brand", "aria-label": "LoveTV 主页", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        "img",
+        {
+          className: "auth-entry-brand-mark",
+          src: "/brand/lovetv-mascot.webp",
+          alt: "",
+          width: 34,
+          height: 34,
+          "aria-hidden": "true"
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 27,
+          columnNumber: 11
+        },
+        this
+      ),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: "LoveTV" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 35,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+      lineNumber: 26,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+      lineNumber: 25,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("main", { className: "auth-entry-main", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "auth-entry-content", "aria-labelledby": "auth-entry-title", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_1__.Button),
+        {
+          type: "button",
+          className: "auth-entry-back",
+          "aria-label": "返回上一级",
+          title: "返回上一级",
+          onClick: () => {
+            if (window.history.length > 1) window.history.back();
+            else (0,__vite_ssr_import_5__.navigateApp)(__vite_ssr_import_5__.appPaths.workspace);
+          },
+          children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.ArrowLeft), { size: 18, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+            lineNumber: 50,
+            columnNumber: 13
+          }, this)
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 40,
+          columnNumber: 11
+        },
+        this
+      ),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "auth-entry-heading", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "auth-entry-emblem", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.ShieldCheck), { size: 24, "aria-hidden": "true" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 54,
+          columnNumber: 15
+        }, this) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 53,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { id: "auth-entry-title", children: "使用 New API 登录" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 56,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 52,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "auth-entry-description", children: "使用 New API 账号登录后，LoveTV 会同步已授权的分组与模型到画布。" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 58,
+        columnNumber: 11
+      }, this),
+      failure && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "notice notice-error", role: "alert", children: failure === "login_cancelled" ? "已取消登录，你可以随时重新登录。" : "登录未完成，请重试或检查 New API 账号状态。" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 62,
+        columnNumber: 13
+      }, this),
+      authUser ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_1__.Button),
+        {
+          type: "button",
+          className: "mg-button is-primary",
+          onClick: () => (0,__vite_ssr_import_5__.navigateApp)(next, { replace: true, transition: false }),
+          children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.ArrowRight), { size: 17 }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+              lineNumber: 74,
+              columnNumber: 15
+            }, this),
+            "继续进入工作台"
+          ]
+        },
+        void 0,
+        true,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 69,
+          columnNumber: 13
+        },
+        this
+      ) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_1__.Button),
+        {
+          type: "button",
+          className: "mg-button is-primary",
+          disabled: leaving,
+          onClick: () => {
+            setLeaving(true);
+            (0,__vite_ssr_import_4__.startNewApiLogin)((0,__vite_ssr_import_7__.API_BASE_URL), next);
+          },
+          children: [
+            leaving ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.LoaderCircle), { size: 17, className: "mg-spin" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+              lineNumber: 87,
+              columnNumber: 26
+            }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.ArrowRight), { size: 17 }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+              lineNumber: 87,
+              columnNumber: 75
+            }, this),
+            leaving ? "正在前往 New API" : "使用 New API 登录"
+          ]
+        },
+        void 0,
+        true,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 78,
+          columnNumber: 13
+        },
+        this
+      ),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "auth-entry-form-ad", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        "a",
+        {
+          className: "auth-api-ad",
+          href: __vite_ssr_import_7__.PUBLIC_API_CATALOG_URL,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          children: "打开 New API"
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+          lineNumber: 92,
+          columnNumber: 13
+        },
+        this
+      ) }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 91,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("footer", { className: "auth-entry-footer", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "账号权限和费用由 New API 统一管理。" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 102,
+        columnNumber: 13
+      }, this) }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+        lineNumber: 101,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+      lineNumber: 39,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+      lineNumber: 38,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/authentication/AuthenticationPage.tsx",
+    lineNumber: 24,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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VTtBQUFBLFVBQ1YsVUFBVTtBQUFBLFVBQ1YsU0FBUyxNQUFNO0FBQ2IsdUJBQVcsSUFBSTtBQUNmLDBEQUFpQixxQ0FBYyxJQUFJO0FBQUEsVUFDckM7QUFBQSxVQUVDO0FBQUEsc0JBQVUsb0RBQUMsdUNBQWEsTUFBTSxJQUFJLFdBQVUsYUFBbEM7QUFBQTtBQUFBO0FBQUE7QUFBQSxtQkFBNEMsSUFBSyxvREFBQyxxQ0FBVyxNQUFNLE1BQWxCO0FBQUE7QUFBQTtBQUFBO0FBQUEsbUJBQXNCO0FBQUEsWUFDakYsVUFBVSxpQkFBaUI7QUFBQTtBQUFBO0FBQUEsUUFWOUI7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLE1BV0E7QUFBQSxNQUVGLGlEQUFDLFNBQUksV0FBVSxzQkFDYjtBQUFBLFFBQUM7QUFBQTtBQUFBLFVBQ0MsV0FBVTtBQUFBLFVBQ1YsTUFBTTtBQUFBLFVBQ04sUUFBTztBQUFBLFVBQ1AsS0FBSTtBQUFBLFVBQ0w7QUFBQTtBQUFBLFFBTEQ7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLE1BT0EsS0FSRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBU0E7QUFBQSxNQUNBLGlEQUFDLFlBQU8sV0FBVSxxQkFDaEIsMkRBQUMsVUFBSyxzQ0FBTjtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBQTRCLEtBRDlCO0FBQUE7QUFBQTtBQUFBO0FBQUEsYUFFQTtBQUFBLFNBaEVGO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FpRUEsS0FsRUY7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQW1FQTtBQUFBLE9BakZGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FrRkE7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiQXV0aGVudGljYXRpb25QYWdlLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBCdXR0b24gfSBmcm9tICdAbXVsdGltb2RhbC1jYW52YXMvdWknO1xyXG5pbXBvcnQgeyBBcnJvd0xlZnQsIEFycm93UmlnaHQsIExvYWRlckNpcmNsZSwgU2hpZWxkQ2hlY2sgfSBmcm9tICdsdWNpZGUtcmVhY3QnO1xyXG5pbXBvcnQgeyB1c2VNZW1vLCB1c2VTdGF0ZSB9IGZyb20gJ3JlYWN0JztcclxuXHJcbmltcG9ydCB0eXBlIHsgQXV0aFVzZXIgfSBmcm9tICcuLi9hdXRoLWNsaWVudCc7XHJcbmltcG9ydCB7IHN0YXJ0TmV3QXBpTG9naW4gfSBmcm9tICcuLi9hdXRoLWNsaWVudCc7XHJcbmltcG9ydCB7IEFwcExpbmssIGFwcFBhdGhzLCBuYXZpZ2F0ZUFwcCB9IGZyb20gJy4uL3JvdXRpbmcnO1xyXG5pbXBvcnQgeyByZWFkQXV0aFJldHVyblBhdGggfSBmcm9tICcuLi9yb3V0aW5nL2F1dGgtbmF2aWdhdGlvbic7XHJcbmltcG9ydCB7IEFQSV9CQVNFX1VSTCwgUFVCTElDX0FQSV9DQVRBTE9HX1VSTCB9IGZyb20gJy4uL3dvcmtzcGFjZS9jb250cmFjdHMnO1xyXG5pbXBvcnQgJy4vYXV0aGVudGljYXRpb24uY3NzJztcclxuXHJcbi8qKiBOZXcgQVBJIOWUr+S4gOeZu+W9lemhteaJgOmcgOeahOW9k+WJjeS8muivneOAgiAqL1xyXG5leHBvcnQgdHlwZSBBdXRoZW50aWNhdGlvblBhZ2VQcm9wcyA9IHtcclxuICBhdXRoVXNlcjogQXV0aFVzZXIgfCBudWxsO1xyXG59O1xyXG5cclxuLyoqIOa4suafk+WUr+S4gOeahCBOZXcgQVBJIOeZu+W9leWFpeWPo+W5tuS/neeVmeWuieWFqOeahOermeWGhei/lOWbnuebruagh+OAgiAqL1xyXG5leHBvcnQgZnVuY3Rpb24gQXV0aGVudGljYXRpb25QYWdlKHsgYXV0aFVzZXIgfTogQXV0aGVudGljYXRpb25QYWdlUHJvcHMpIHtcclxuICBjb25zdCBbbGVhdmluZywgc2V0TGVhdmluZ10gPSB1c2VTdGF0ZShmYWxzZSk7XHJcbiAgY29uc3QgbmV4dCA9IHVzZU1lbW8oKCkgPT4gcmVhZEF1dGhSZXR1cm5QYXRoKHdpbmRvdy5sb2NhdGlvbi5zZWFyY2gpLCBbXSk7XHJcbiAgY29uc3QgZmFpbHVyZSA9IG5ldyBVUkxTZWFyY2hQYXJhbXMod2luZG93LmxvY2F0aW9uLnNlYXJjaCkuZ2V0KCdlcnJvcicpO1xyXG5cclxuICByZXR1cm4gKFxyXG4gICAgPGRpdiBjbGFzc05hbWU9e2BhdXRoLWVudHJ5LXBhZ2Uke2xlYXZpbmcgPyAnIGlzLWxlYXZpbmcnIDogJyd9YH0+XHJcbiAgICAgIDxoZWFkZXIgY2xhc3NOYW1lPVwiYXV0aC1lbnRyeS1oZWFkZXJcIj5cclxuICAgICAgICA8QXBwTGluayB0bz1cIi9cIiBjbGFzc05hbWU9XCJhdXRoLWVudHJ5LWJyYW5kXCIgYXJpYS1sYWJlbD1cIkxvdmVUViDkuLvpobVcIj5cclxuICAgICAgICAgIDxpbWdcclxuICAgICAgICAgICAgY2xhc3NOYW1lPVwiYXV0aC1lbnRyeS1icmFuZC1tYXJrXCJcclxuICAgICAgICAgICAgc3JjPVwiL2JyYW5kL2xvdmV0di1tYXNjb3Qud2VicFwiXHJcbiAgICAgICAgICAgIGFsdD1cIlwiXHJcbiAgICAgICAgICAgIHdpZHRoPXszNH1cclxuICAgICAgICAgICAgaGVpZ2h0PXszNH1cclxuICAgICAgICAgICAgYXJpYS1oaWRkZW49XCJ0cnVlXCJcclxuICAgICAgICAgIC8+XHJcbiAgICAgICAgICA8c3Ryb25nPkxvdmVUVjwvc3Ryb25nPlxyXG4gICAgICAgIDwvQXBwTGluaz5cclxuICAgICAgPC9oZWFkZXI+XHJcbiAgICAgIDxtYWluIGNsYXNzTmFtZT1cImF1dGgtZW50cnktbWFpblwiPlxyXG4gICAgICAgIDxzZWN0aW9uIGNsYXNzTmFtZT1cImF1dGgtZW50cnktY29udGVudFwiIGFyaWEtbGFiZWxsZWRieT1cImF1dGgtZW50cnktdGl0bGVcIj5cclxuICAgICAgICAgIDxCdXR0b25cclxuICAgICAgICAgICAgdHlwZT1cImJ1dHRvblwiXHJcbiAgICAgICAgICAgIGNsYXNzTmFtZT1cImF1dGgtZW50cnktYmFja1wiXHJcbiAgICAgICAgICAgIGFyaWEtbGFiZWw9XCLov5Tlm57kuIrkuIDnuqdcIlxyXG4gICAgICAgICAgICB0aXRsZT1cIui/lOWbnuS4iuS4gOe6p1wiXHJcbiAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHtcclxuICAgICAgICAgICAgICBpZiAod2luZG93Lmhpc3RvcnkubGVuZ3RoID4gMSkgd2luZG93Lmhpc3RvcnkuYmFjaygpO1xyXG4gICAgICAgICAgICAgIGVsc2UgbmF2aWdhdGVBcHAoYXBwUGF0aHMud29ya3NwYWNlKTtcclxuICAgICAgICAgICAgfX1cclxuICAgICAgICAgID5cclxuICAgICAgICAgICAgPEFycm93TGVmdCBzaXplPXsxOH0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cclxuICAgICAgICAgIDwvQnV0dG9uPlxyXG4gICAgICAgICAgPGhlYWRlciBjbGFzc05hbWU9XCJhdXRoLWVudHJ5LWhlYWRpbmdcIj5cclxuICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwiYXV0aC1lbnRyeS1lbWJsZW1cIj5cclxuICAgICAgICAgICAgICA8U2hpZWxkQ2hlY2sgc2l6ZT17MjR9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XHJcbiAgICAgICAgICAgIDwvc3Bhbj5cclxuICAgICAgICAgICAgPGgxIGlkPVwiYXV0aC1lbnRyeS10aXRsZVwiPuS9v+eUqCBOZXcgQVBJIOeZu+W9lTwvaDE+XHJcbiAgICAgICAgICA8L2hlYWRlcj5cclxuICAgICAgICAgIDxwIGNsYXNzTmFtZT1cImF1dGgtZW50cnktZGVzY3JpcHRpb25cIj5cclxuICAgICAgICAgICAg5L2/55SoIE5ldyBBUEkg6LSm5Y+355m75b2V5ZCO77yMTG92ZVRWIOS8muWQjOatpeW3suaOiOadg+eahOWIhue7hOS4juaooeWei+WIsOeUu+W4g+OAglxyXG4gICAgICAgICAgPC9wPlxyXG4gICAgICAgICAge2ZhaWx1cmUgJiYgKFxyXG4gICAgICAgICAgICA8cCBjbGFzc05hbWU9XCJub3RpY2Ugbm90aWNlLWVycm9yXCIgcm9sZT1cImFsZXJ0XCI+XHJcbiAgICAgICAgICAgICAge2ZhaWx1cmUgPT09ICdsb2dpbl9jYW5jZWxsZWQnXHJcbiAgICAgICAgICAgICAgICA/ICflt7Llj5bmtojnmbvlvZXvvIzkvaDlj6/ku6Xpmo/ml7bph43mlrDnmbvlvZXjgIInXHJcbiAgICAgICAgICAgICAgICA6ICfnmbvlvZXmnKrlrozmiJDvvIzor7fph43or5XmiJbmo4Dmn6UgTmV3IEFQSSDotKblj7fnirbmgIHjgIInfVxyXG4gICAgICAgICAgICA8L3A+XHJcbiAgICAgICAgICApfVxyXG4gICAgICAgICAge2F1dGhVc2VyID8gKFxyXG4gICAgICAgICAgICA8QnV0dG9uXHJcbiAgICAgICAgICAgICAgdHlwZT1cImJ1dHRvblwiXHJcbiAgICAgICAgICAgICAgY2xhc3NOYW1lPVwibWctYnV0dG9uIGlzLXByaW1hcnlcIlxyXG4gICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IG5hdmlnYXRlQXBwKG5leHQsIHsgcmVwbGFjZTogdHJ1ZSwgdHJhbnNpdGlvbjogZmFsc2UgfSl9XHJcbiAgICAgICAgICAgID5cclxuICAgICAgICAgICAgICA8QXJyb3dSaWdodCBzaXplPXsxN30gLz5cclxuICAgICAgICAgICAgICDnu6fnu63ov5vlhaXlt6XkvZzlj7BcclxuICAgICAgICAgICAgPC9CdXR0b24+XHJcbiAgICAgICAgICApIDogKFxyXG4gICAgICAgICAgICA8QnV0dG9uXHJcbiAgICAgICAgICAgICAgdHlwZT1cImJ1dHRvblwiXHJcbiAgICAgICAgICAgICAgY2xhc3NOYW1lPVwibWctYnV0dG9uIGlzLXByaW1hcnlcIlxyXG4gICAgICAgICAgICAgIGRpc2FibGVkPXtsZWF2aW5nfVxyXG4gICAgICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHtcclxuICAgICAgICAgICAgICAgIHNldExlYXZpbmcodHJ1ZSk7XHJcbiAgICAgICAgICAgICAgICBzdGFydE5ld0FwaUxvZ2luKEFQSV9CQVNFX1VSTCwgbmV4dCk7XHJcbiAgICAgICAgICAgICAgfX1cclxuICAgICAgICAgICAgPlxyXG4gICAgICAgICAgICAgIHtsZWF2aW5nID8gPExvYWRlckNpcmNsZSBzaXplPXsxN30gY2xhc3NOYW1lPVwibWctc3BpblwiIC8+IDogPEFycm93UmlnaHQgc2l6ZT17MTd9IC8+fVxyXG4gICAgICAgICAgICAgIHtsZWF2aW5nID8gJ+ato+WcqOWJjeW+gCBOZXcgQVBJJyA6ICfkvb/nlKggTmV3IEFQSSDnmbvlvZUnfVxyXG4gICAgICAgICAgICA8L0J1dHRvbj5cclxuICAgICAgICAgICl9XHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImF1dGgtZW50cnktZm9ybS1hZFwiPlxyXG4gICAgICAgICAgICA8YVxyXG4gICAgICAgICAgICAgIGNsYXNzTmFtZT1cImF1dGgtYXBpLWFkXCJcclxuICAgICAgICAgICAgICBocmVmPXtQVUJMSUNfQVBJX0NBVEFMT0dfVVJMfVxyXG4gICAgICAgICAgICAgIHRhcmdldD1cIl9ibGFua1wiXHJcbiAgICAgICAgICAgICAgcmVsPVwibm9vcGVuZXIgbm9yZWZlcnJlclwiXHJcbiAgICAgICAgICAgID5cclxuICAgICAgICAgICAgICDmiZPlvIAgTmV3IEFQSVxyXG4gICAgICAgICAgICA8L2E+XHJcbiAgICAgICAgICA8L2Rpdj5cclxuICAgICAgICAgIDxmb290ZXIgY2xhc3NOYW1lPVwiYXV0aC1lbnRyeS1mb290ZXJcIj5cclxuICAgICAgICAgICAgPHNwYW4+6LSm5Y+35p2D6ZmQ5ZKM6LS555So55SxIE5ldyBBUEkg57uf5LiA566h55CG44CCPC9zcGFuPlxyXG4gICAgICAgICAgPC9mb290ZXI+XHJcbiAgICAgICAgPC9zZWN0aW9uPlxyXG4gICAgICA8L21haW4+XHJcbiAgICA8L2Rpdj5cclxuICApO1xyXG59XHJcbiJdLCJmaWxlIjoiL3NyYy9hdXRoZW50aWNhdGlvbi9BdXRoZW50aWNhdGlvblBhZ2UudHN4In0=

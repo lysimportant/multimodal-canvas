@@ -1,0 +1,231 @@
+Object.defineProperty(__vite_ssr_exports__, "HomeHeroCopy", { enumerable: true, configurable: true, get(){ try { return HomeHeroCopy } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["ArrowDown","ArrowRight","FileImage","Film","GitBranch","Layers3"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink","appPaths"]});
+function HomeHeroCopy({ continueProject, onNavigate, reveal = false }) {
+  const continueHref = continueProject ? __vite_ssr_import_2__.appPaths.project(continueProject.id) : null;
+  const Heading = reveal ? "div" : "h1";
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-home-hero-copy mc-home-hero-overlay", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "mc-home-kicker", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("img", { src: "/brand/lovetv-icon-192.png", alt: "", "aria-hidden": "true" }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 22,
+        columnNumber: 9
+      }, this),
+      "CREATE WITH CONTEXT."
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+      lineNumber: 21,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(Heading, { id: reveal ? void 0 : "mc-home-title", className: "mc-home-title", children: [
+      "LoveTV",
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "mc-home-title-period", "aria-hidden": "true", children: "." }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 27,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+      lineNumber: 25,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "mc-home-lead", children: [
+      "连接已授权的 API，在同一张画布组织提示词与参考资料。",
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("br", {}, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 33,
+        columnNumber: 9
+      }, this),
+      "生成图片和视频，复刻整条短视频，并用 Skill 与版本记录继续迭代。"
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+      lineNumber: 31,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-home-hero-actions", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_2__.AppLink),
+        {
+          className: "mc-home-primary-action",
+          to: __vite_ssr_import_2__.appPaths.workspace,
+          onClick: (event) => onNavigate?.(__vite_ssr_import_2__.appPaths.workspace, event),
+          children: [
+            "进入工作台 ",
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ArrowRight), { size: 17, "aria-hidden": "true" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+              lineNumber: 42,
+              columnNumber: 17
+            }, this)
+          ]
+        },
+        void 0,
+        true,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 37,
+          columnNumber: 9
+        },
+        this
+      ),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("a", { className: "mc-home-text-action", href: "#home-demo-media", children: [
+        "查看演示 ",
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ArrowDown), { size: 16, "aria-hidden": "true" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 45,
+          columnNumber: 16
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 44,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+      lineNumber: 36,
+      columnNumber: 7
+    }, this),
+    continueProject && continueHref && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_2__.AppLink),
+      {
+        className: "mc-home-continue-action",
+        to: continueHref,
+        onClick: (event) => onNavigate?.(continueHref, event),
+        children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.GitBranch), { size: 15, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 54,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: [
+            "继续「",
+            continueProject.name,
+            "」"
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 55,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ArrowRight), { size: 15, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 56,
+            columnNumber: 11
+          }, this)
+        ]
+      },
+      void 0,
+      true,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 49,
+        columnNumber: 9
+      },
+      this
+    ),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dl", { className: "mc-home-hero-facts", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.GitBranch), { size: 14, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 62,
+            columnNumber: 13
+          }, this),
+          " API"
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 61,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: "连接" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 64,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 60,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.FileImage), { size: 14, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 68,
+            columnNumber: 13
+          }, this),
+          " 图像"
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 67,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: "生成" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 70,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 66,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Film), { size: 14, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 74,
+            columnNumber: 13
+          }, this),
+          " 视频"
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 73,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: "生成" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 76,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 72,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dt", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Layers3), { size: 14, "aria-hidden": "true" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+            lineNumber: 80,
+            columnNumber: 13
+          }, this),
+          " 版本"
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 79,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("dd", { children: "回看" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+          lineNumber: 82,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+        lineNumber: 78,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+      lineNumber: 59,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/HomeHeroCopy.tsx",
+    lineNumber: 20,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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QTtBQUFBLE1BQ0EsaURBQUMsU0FDQztBQUFBLHlEQUFDLFFBQ0M7QUFBQSw4REFBQyxvQ0FBVSxNQUFNLElBQUksZUFBWSxVQUFqQztBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUF3QztBQUFBLFVBQUU7QUFBQSxhQUQ1QztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBRUE7QUFBQSxRQUNBLGlEQUFDLFFBQUcsa0JBQUo7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUFNO0FBQUEsV0FKUjtBQUFBO0FBQUE7QUFBQTtBQUFBLGFBS0E7QUFBQSxNQUNBLGlEQUFDLFNBQ0M7QUFBQSx5REFBQyxRQUNDO0FBQUEsOERBQUMsK0JBQUssTUFBTSxJQUFJLGVBQVksVUFBNUI7QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFBbUM7QUFBQSxVQUFFO0FBQUEsYUFEdkM7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQUVBO0FBQUEsUUFDQSxpREFBQyxRQUFHLGtCQUFKO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBTTtBQUFBLFdBSlI7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQUtBO0FBQUEsTUFDQSxpREFBQyxTQUNDO0FBQUEseURBQUMsUUFDQztBQUFBLDhEQUFDLGtDQUFRLE1BQU0sSUFBSSxlQUFZLFVBQS9CO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBQXNDO0FBQUEsVUFBRTtBQUFBLGFBRDFDO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFFQTtBQUFBLFFBQ0EsaURBQUMsUUFBRyxrQkFBSjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBQU07QUFBQSxXQUpSO0FBQUE7QUFBQTtBQUFBO0FBQUEsYUFLQTtBQUFBLFNBeEJGO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0F5QkE7QUFBQSxPQWhFRjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBaUVBO0FBRUoiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIkhvbWVIZXJvQ29weS50c3giXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgQXJyb3dEb3duLCBBcnJvd1JpZ2h0LCBGaWxlSW1hZ2UsIEZpbG0sIEdpdEJyYW5jaCwgTGF5ZXJzMyB9IGZyb20gJ2x1Y2lkZS1yZWFjdCc7XG5pbXBvcnQgdHlwZSB7IE1vdXNlRXZlbnQgfSBmcm9tICdyZWFjdCc7XG5pbXBvcnQgeyBBcHBMaW5rLCBhcHBQYXRocyB9IGZyb20gJy4uL3JvdXRpbmcnO1xuXG4vKiog6aaW5bGP5YWx5Lqr5paH5qGI77yb5pi+5b2x5Ymv5pys5LuF55So5LqO5LiO5Y6f5paH5a2X57K+56Gu5a+56b2Q77yM5LiN5aKe5Yqg5Y+v5Lqk5LqS5oiW6K+75bGP5YWl5Y+j44CCICovXG5leHBvcnQgdHlwZSBIb21lSGVyb0NvcHlQcm9wcyA9IHtcbiAgLyoqIOW9k+WJjei0puaIt+acrOadpeWwseWPr+ingeeahOacgOi/kemhueebru+8jOWPquWkjeeUqOeOsOacieWvvOiIquebruagh+OAgiAqL1xuICBjb250aW51ZVByb2plY3Q/OiB7IGlkOiBzdHJpbmc7IG5hbWU6IHN0cmluZyB9IHwgbnVsbDtcbiAgLyoqIOaZrumAmuaWh+ahiOWxgueahOermeWGheWvvOiIquWbnuiwg++8jOmakOiXj+WJr+acrOS4jeaPkOS+m+S6pOS6kuOAgiAqL1xuICBvbk5hdmlnYXRlPzogKGhyZWY6IHN0cmluZywgZXZlbnQ6IE1vdXNlRXZlbnQ8SFRNTEFuY2hvckVsZW1lbnQ+KSA9PiB2b2lkO1xuICAvKiog5pi+5b2x5Ymv5pys5LiN5Yib5bu66YeN5aSN55qEIGgxIOaIluagh+mimCBJRO+8jOWkluWxguW/hemhu+iuvue9riBpbmVydCDlkowgYXJpYS1oaWRkZW7jgIIgKi9cbiAgcmV2ZWFsPzogYm9vbGVhbjtcbn07XG5cbi8qKiDlnKjmma7pgJrpppblsY/lkozlnIblvaLpmpDol4/lsYLlpI3nlKjlkIzkuIDluIPlsYDvvIzpgb/lhY3np7vliqjlnIblnIjml7bmloflrZfot7PliqjmiJbpga7kvY/ljp/lhaXlj6PjgIIgKi9cbmV4cG9ydCBmdW5jdGlvbiBIb21lSGVyb0NvcHkoeyBjb250aW51ZVByb2plY3QsIG9uTmF2aWdhdGUsIHJldmVhbCA9IGZhbHNlIH06IEhvbWVIZXJvQ29weVByb3BzKSB7XG4gIGNvbnN0IGNvbnRpbnVlSHJlZiA9IGNvbnRpbnVlUHJvamVjdCA/IGFwcFBhdGhzLnByb2plY3QoY29udGludWVQcm9qZWN0LmlkKSA6IG51bGw7XG4gIGNvbnN0IEhlYWRpbmcgPSByZXZlYWwgPyAnZGl2JyA6ICdoMSc7XG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJtYy1ob21lLWhlcm8tY29weSBtYy1ob21lLWhlcm8tb3ZlcmxheVwiPlxuICAgICAgPHAgY2xhc3NOYW1lPVwibWMtaG9tZS1raWNrZXJcIj5cbiAgICAgICAgPGltZyBzcmM9XCIvYnJhbmQvbG92ZXR2LWljb24tMTkyLnBuZ1wiIGFsdD1cIlwiIGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XG4gICAgICAgIENSRUFURSBXSVRIIENPTlRFWFQuXG4gICAgICA8L3A+XG4gICAgICA8SGVhZGluZyBpZD17cmV2ZWFsID8gdW5kZWZpbmVkIDogJ21jLWhvbWUtdGl0bGUnfSBjbGFzc05hbWU9XCJtYy1ob21lLXRpdGxlXCI+XG4gICAgICAgIExvdmVUVlxuICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJtYy1ob21lLXRpdGxlLXBlcmlvZFwiIGFyaWEtaGlkZGVuPVwidHJ1ZVwiPlxuICAgICAgICAgIC5cbiAgICAgICAgPC9zcGFuPlxuICAgICAgPC9IZWFkaW5nPlxuICAgICAgPHAgY2xhc3NOYW1lPVwibWMtaG9tZS1sZWFkXCI+XG4gICAgICAgIOi/nuaOpeW3suaOiOadg+eahCBBUEnvvIzlnKjlkIzkuIDlvKDnlLvluIPnu4Tnu4fmj5DnpLror43kuI7lj4LogIPotYTmlpnjgIJcbiAgICAgICAgPGJyIC8+XG4gICAgICAgIOeUn+aIkOWbvueJh+WSjOinhumike+8jOWkjeWIu+aVtOadoeefreinhumike+8jOW5tueUqCBTa2lsbCDkuI7niYjmnKzorrDlvZXnu6fnu63ov63ku6PjgIJcbiAgICAgIDwvcD5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWMtaG9tZS1oZXJvLWFjdGlvbnNcIj5cbiAgICAgICAgPEFwcExpbmtcbiAgICAgICAgICBjbGFzc05hbWU9XCJtYy1ob21lLXByaW1hcnktYWN0aW9uXCJcbiAgICAgICAgICB0bz17YXBwUGF0aHMud29ya3NwYWNlfVxuICAgICAgICAgIG9uQ2xpY2s9eyhldmVudCkgPT4gb25OYXZpZ2F0ZT8uKGFwcFBhdGhzLndvcmtzcGFjZSwgZXZlbnQpfVxuICAgICAgICA+XG4gICAgICAgICAg6L+b5YWl5bel5L2c5Y+wIDxBcnJvd1JpZ2h0IHNpemU9ezE3fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPlxuICAgICAgICA8L0FwcExpbms+XG4gICAgICAgIDxhIGNsYXNzTmFtZT1cIm1jLWhvbWUtdGV4dC1hY3Rpb25cIiBocmVmPVwiI2hvbWUtZGVtby1tZWRpYVwiPlxuICAgICAgICAgIOafpeeci+a8lOekuiA8QXJyb3dEb3duIHNpemU9ezE2fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPlxuICAgICAgICA8L2E+XG4gICAgICA8L2Rpdj5cbiAgICAgIHtjb250aW51ZVByb2plY3QgJiYgY29udGludWVIcmVmICYmIChcbiAgICAgICAgPEFwcExpbmtcbiAgICAgICAgICBjbGFzc05hbWU9XCJtYy1ob21lLWNvbnRpbnVlLWFjdGlvblwiXG4gICAgICAgICAgdG89e2NvbnRpbnVlSHJlZn1cbiAgICAgICAgICBvbkNsaWNrPXsoZXZlbnQpID0+IG9uTmF2aWdhdGU/Lihjb250aW51ZUhyZWYsIGV2ZW50KX1cbiAgICAgICAgPlxuICAgICAgICAgIDxHaXRCcmFuY2ggc2l6ZT17MTV9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XG4gICAgICAgICAgPHNwYW4+57un57ut44CMe2NvbnRpbnVlUHJvamVjdC5uYW1lfeOAjTwvc3Bhbj5cbiAgICAgICAgICA8QXJyb3dSaWdodCBzaXplPXsxNX0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cbiAgICAgICAgPC9BcHBMaW5rPlxuICAgICAgKX1cbiAgICAgIDxkbCBjbGFzc05hbWU9XCJtYy1ob21lLWhlcm8tZmFjdHNcIj5cbiAgICAgICAgPGRpdj5cbiAgICAgICAgICA8ZHQ+XG4gICAgICAgICAgICA8R2l0QnJhbmNoIHNpemU9ezE0fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPiBBUElcbiAgICAgICAgICA8L2R0PlxuICAgICAgICAgIDxkZD7ov57mjqU8L2RkPlxuICAgICAgICA8L2Rpdj5cbiAgICAgICAgPGRpdj5cbiAgICAgICAgICA8ZHQ+XG4gICAgICAgICAgICA8RmlsZUltYWdlIHNpemU9ezE0fSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPiDlm77lg49cbiAgICAgICAgICA8L2R0PlxuICAgICAgICAgIDxkZD7nlJ/miJA8L2RkPlxuICAgICAgICA8L2Rpdj5cbiAgICAgICAgPGRpdj5cbiAgICAgICAgICA8ZHQ+XG4gICAgICAgICAgICA8RmlsbSBzaXplPXsxNH0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz4g6KeG6aKRXG4gICAgICAgICAgPC9kdD5cbiAgICAgICAgICA8ZGQ+55Sf5oiQPC9kZD5cbiAgICAgICAgPC9kaXY+XG4gICAgICAgIDxkaXY+XG4gICAgICAgICAgPGR0PlxuICAgICAgICAgICAgPExheWVyczMgc2l6ZT17MTR9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+IOeJiOacrFxuICAgICAgICAgIDwvZHQ+XG4gICAgICAgICAgPGRkPuWbnuecizwvZGQ+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9kbD5cbiAgICA8L2Rpdj5cbiAgKTtcbn1cbiJdLCJmaWxlIjoiL3NyYy9wYWdlcy9Ib21lSGVyb0NvcHkudHN4In0=

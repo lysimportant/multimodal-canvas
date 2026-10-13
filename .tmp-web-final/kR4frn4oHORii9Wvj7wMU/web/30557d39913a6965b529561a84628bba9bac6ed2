@@ -1,0 +1,551 @@
+Object.defineProperty(__vite_ssr_exports__, "OverviewPage", { enumerable: true, configurable: true, get(){ try { return OverviewPage } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "AuditPage", { enumerable: true, configurable: true, get(){ try { return AuditPage } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "SystemPage", { enumerable: true, configurable: true, get(){ try { return SystemPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["Fragment","jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/packages/ui/src/index.ts", {"importedNames":["Button"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@tanstack+react-query@5.102.4_react@19.2.8/node_modules/@tanstack/react-query/build/modern/index.js", {"importedNames":["useQuery"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/antd@6.6.5_luxon@3.7.2_reac_1ced994a6906ea24d22f0902b231a537/node_modules/antd/lib/index.js", {"importedNames":["Table"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["Activity","ArrowRight","Database","RefreshCw","Server","ShieldCheck"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["useState"]});
+const __vite_ssr_import_6__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink"]});
+const __vite_ssr_import_7__ = await __vite_ssr_import__("/src/management/client.ts", {"importedNames":["managementRequest","queryString"]});
+const __vite_ssr_import_8__ = await __vite_ssr_import__("/src/management/primitives.tsx", {"importedNames":["formatBytes","formatDate","Pagination","QueryState","StatusBadge"]});
+function OverviewPage({ userId }) {
+  const query = (0,__vite_ssr_import_2__.useQuery)({
+    queryKey: ["management", userId, "overview"],
+    queryFn: ({ signal }) => (0,__vite_ssr_import_7__.managementRequest)("/admin/overview", { signal })
+  });
+  const data = query.data;
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "mg-heading", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "ADMINISTRATION" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 29,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "管理概览" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 30,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 28,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_1__.Button),
+        {
+          className: "mg-icon",
+          type: "button",
+          title: "刷新概览",
+          "aria-label": "刷新概览",
+          onClick: () => void query.refetch(),
+          disabled: query.isFetching,
+          children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.RefreshCw), { size: 18, className: query.isFetching ? "mg-spin" : "" }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 40,
+            columnNumber: 11
+          }, this)
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 32,
+          columnNumber: 9
+        },
+        this
+      )
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+      lineNumber: 27,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_8__.QueryState),
+      {
+        loading: query.isLoading,
+        error: query.error,
+        onRetry: () => void query.refetch(),
+        children: data && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mg-stat-row", children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/resources", children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.Database), { size: 20 }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 52,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "资源总数" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 53,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: data.resources.total }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 54,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("small", { children: (0,__vite_ssr_import_8__.formatBytes)(data.resources.storageBytes) }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 55,
+                columnNumber: 17
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 51,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/runs", children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.Activity), { size: 20 }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 58,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "运行任务" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 59,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: data.runs.total }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 60,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("small", { children: [
+                data.runs.active,
+                " 项进行中"
+              ] }, void 0, true, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 61,
+                columnNumber: 17
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 57,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/audit", children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.ShieldCheck), { size: 20 }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 64,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "待处理" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 65,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: data.resources.unassigned + data.runs.failed }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 66,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("small", { children: "资源归属与失败任务" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 67,
+                columnNumber: 17
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 63,
+              columnNumber: 15
+            }, this)
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 50,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "mg-section", children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h2", { children: "管理入口" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 71,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mg-shortcuts", children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/resources", children: [
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.Database), { size: 20 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 74,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "用户资源" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 75,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.ArrowRight), { size: 17 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 76,
+                  columnNumber: 19
+                }, this)
+              ] }, void 0, true, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 73,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/runs", children: [
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.Activity), { size: 20 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 79,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "全站任务" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 80,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.ArrowRight), { size: 17 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 81,
+                  columnNumber: 19
+                }, this)
+              ] }, void 0, true, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 78,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/audit", children: [
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.ShieldCheck), { size: 20 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 84,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "操作记录" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 85,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.ArrowRight), { size: 17 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 86,
+                  columnNumber: 19
+                }, this)
+              ] }, void 0, true, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 83,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_6__.AppLink), { to: "/admin/system", children: [
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.Server), { size: 20 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 89,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "系统状态" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 90,
+                  columnNumber: 19
+                }, this),
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.ArrowRight), { size: 17 }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 91,
+                  columnNumber: 19
+                }, this)
+              ] }, void 0, true, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 88,
+                columnNumber: 17
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 72,
+              columnNumber: 15
+            }, this)
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 70,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 49,
+          columnNumber: 11
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 43,
+        columnNumber: 7
+      },
+      this
+    )
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+    lineNumber: 26,
+    columnNumber: 5
+  }, this);
+};
+function AuditPage({ userId }) {
+  const [page, setPage] = (0,__vite_ssr_import_5__.useState)(1);
+  const query = (0,__vite_ssr_import_2__.useQuery)({
+    queryKey: ["management", userId, "audit", page],
+    queryFn: ({ signal }) => (0,__vite_ssr_import_7__.managementRequest)(`/admin/audit${(0,__vite_ssr_import_7__.queryString)({ page, pageSize: 30 })}`, {
+      signal
+    })
+  });
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "mg-heading", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "AUDIT" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 132,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "操作记录" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 133,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 131,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_1__.Button),
+        {
+          type: "button",
+          className: "mg-icon",
+          "aria-label": "刷新操作记录",
+          title: "刷新操作记录",
+          disabled: query.isFetching,
+          onClick: () => void query.refetch(),
+          children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.RefreshCw), { size: 17 }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 143,
+            columnNumber: 11
+          }, this)
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 135,
+          columnNumber: 9
+        },
+        this
+      )
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+      lineNumber: 130,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_8__.QueryState),
+      {
+        loading: query.isLoading,
+        error: query.error,
+        onRetry: () => void query.refetch(),
+        empty: query.data?.events.length === 0 ? "暂无操作记录" : void 0,
+        children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          (0,__vite_ssr_import_3__.Table),
+          {
+            className: "mg-table mg-audit-table",
+            rowKey: "id",
+            dataSource: query.data?.events ?? [],
+            pagination: false,
+            size: "middle",
+            scroll: { x: 760 },
+            columns: [
+              { title: "时间", key: "createdAt", render: (_, event) => (0,__vite_ssr_import_8__.formatDate)(event.createdAt) },
+              { title: "操作", key: "action", render: (_, event) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("code", { children: event.action }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                lineNumber: 161,
+                columnNumber: 65
+              }, this) },
+              {
+                title: "操作者",
+                key: "actorId",
+                render: (_, event) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "mg-truncate", title: event.actorId, children: event.actorId || "系统" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 166,
+                  columnNumber: 17
+                }, this)
+              },
+              {
+                title: "对象",
+                key: "targetId",
+                render: (_, event) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "mg-truncate", title: event.targetId, children: event.targetId || "系统" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+                  lineNumber: 175,
+                  columnNumber: 17
+                }, this)
+              },
+              {
+                title: "摘要",
+                key: "summary",
+                render: (_, event) => typeof event.summary === "string" ? event.summary : JSON.stringify(event.summary)
+              }
+            ]
+          },
+          void 0,
+          false,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 152,
+            columnNumber: 9
+          },
+          this
+        )
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 146,
+        columnNumber: 7
+      },
+      this
+    ),
+    query.data && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_8__.Pagination),
+      {
+        page,
+        pageSize: 30,
+        total: query.data.total,
+        onChange: setPage,
+        busy: query.isFetching
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 190,
+        columnNumber: 9
+      },
+      this
+    )
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+    lineNumber: 129,
+    columnNumber: 5
+  }, this);
+};
+function healthLabel(value) {
+  if (value === "ok" || value === "available") return "正常";
+  if (value === "unknown") return "未检测";
+  return "异常";
+}
+function SystemPage({ userId }) {
+  const query = (0,__vite_ssr_import_2__.useQuery)({
+    queryKey: ["management", userId, "system"],
+    queryFn: ({ signal }) => (0,__vite_ssr_import_7__.managementRequest)("/admin/system", { signal }),
+    refetchInterval: 3e4
+  });
+  const data = query.data;
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "mg-heading", children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "SYSTEM" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 228,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "系统状态" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 229,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 227,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_1__.Button),
+        {
+          className: "mg-button",
+          type: "button",
+          disabled: query.isFetching,
+          onClick: () => void query.refetch(),
+          children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.RefreshCw), { size: 16, className: query.isFetching ? "mg-spin" : "" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 237,
+              columnNumber: 11
+            }, this),
+            "刷新状态"
+          ]
+        },
+        void 0,
+        true,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 231,
+          columnNumber: 9
+        },
+        this
+      )
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+      lineNumber: 226,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_8__.QueryState),
+      {
+        loading: query.isLoading,
+        error: query.error,
+        onRetry: () => void query.refetch(),
+        children: data && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mg-health-grid", children: [
+          { name: "API 服务", value: data.api.status, icon: __vite_ssr_import_4__.Server },
+          { name: "资源索引", value: data.storage.status, icon: __vite_ssr_import_4__.Database },
+          { name: "任务队列", value: data.queue.status, icon: __vite_ssr_import_4__.Activity }
+        ].map(({ name, value, icon: Icon }) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(Icon, { size: 21 }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 254,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: name }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+            lineNumber: 255,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            (0,__vite_ssr_import_8__.StatusBadge),
+            {
+              value: value === "ok" || value === "available" ? "active" : value === "unknown" ? "pending" : "failed",
+              label: healthLabel(value)
+            },
+            void 0,
+            false,
+            {
+              fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+              lineNumber: 256,
+              columnNumber: 17
+            },
+            this
+          )
+        ] }, name, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 253,
+          columnNumber: 15
+        }, this)) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+          lineNumber: 247,
+          columnNumber: 11
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+        lineNumber: 241,
+        columnNumber: 7
+      },
+      this
+    )
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/management/AdminPages.tsx",
+    lineNumber: 225,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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QU0sNkJBQU87QUFBQSxVQUN2RCxFQUFFLE1BQU0sUUFBUSxPQUFPLEtBQUssUUFBUSxRQUFRLE1BQU0sK0JBQVM7QUFBQSxVQUMzRCxFQUFFLE1BQU0sUUFBUSxPQUFPLEtBQUssTUFBTSxRQUFRLE1BQU0sK0JBQVM7QUFBQSxRQUMzRCxFQUFFLElBQUksQ0FBQyxFQUFFLE1BQU0sT0FBTyxNQUFNLEtBQUssTUFDL0IsaURBQUMsU0FDQztBQUFBLDJEQUFDLFFBQUssTUFBTSxNQUFaO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBQWdCO0FBQUEsVUFDaEIsaURBQUMsWUFBUSxrQkFBVDtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUFjO0FBQUEsVUFDZDtBQUFBLGVBQUM7QUFBQTtBQUFBLGNBQ0MsT0FDRSxVQUFVLFFBQVEsVUFBVSxjQUN4QixXQUNBLFVBQVUsWUFDUixZQUNBO0FBQUEsY0FFUixPQUFPLFlBQVksS0FBSztBQUFBO0FBQUEsWUFSMUI7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLFVBU0E7QUFBQSxhQVpRLE1BQVY7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQWFBLENBQ0QsS0FwQkg7QUFBQTtBQUFBO0FBQUE7QUFBQSxlQXFCQTtBQUFBO0FBQUEsTUEzQko7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLElBNkJBO0FBQUEsT0E3Q0Y7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQThDQTtBQUVKIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJBZG1pblBhZ2VzLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyIvKiog566h55CG5ZGY5qaC6KeI44CB5a6h6K6h5LiO57O757uf54q25oCB6aG16Z2i44CCICovXHJcbmltcG9ydCB7IEJ1dHRvbiB9IGZyb20gJ0BtdWx0aW1vZGFsLWNhbnZhcy91aSc7XHJcbmltcG9ydCB7IHVzZVF1ZXJ5IH0gZnJvbSAnQHRhbnN0YWNrL3JlYWN0LXF1ZXJ5JztcclxuaW1wb3J0IHsgVGFibGUgfSBmcm9tICdhbnRkJztcclxuaW1wb3J0IHsgQWN0aXZpdHksIEFycm93UmlnaHQsIERhdGFiYXNlLCBSZWZyZXNoQ3csIFNlcnZlciwgU2hpZWxkQ2hlY2sgfSBmcm9tICdsdWNpZGUtcmVhY3QnO1xyXG5pbXBvcnQgeyB1c2VTdGF0ZSB9IGZyb20gJ3JlYWN0JztcclxuXHJcbmltcG9ydCB7IEFwcExpbmsgfSBmcm9tICcuLi9yb3V0aW5nJztcclxuaW1wb3J0IHsgbWFuYWdlbWVudFJlcXVlc3QsIHF1ZXJ5U3RyaW5nIH0gZnJvbSAnLi9jbGllbnQnO1xyXG5pbXBvcnQgeyBmb3JtYXRCeXRlcywgZm9ybWF0RGF0ZSwgUGFnaW5hdGlvbiwgUXVlcnlTdGF0ZSwgU3RhdHVzQmFkZ2UgfSBmcm9tICcuL3ByaW1pdGl2ZXMnO1xyXG5cclxuLyoqIOWQjuWPsOamguiniOWPqua2iOi0uei1hOa6kOWSjOS7u+WKoee7n+iuoe+8jOS4jeS+nei1luaXp+i0puWPt+aIlumCruS7tuacjeWKoeOAgiAqL1xyXG50eXBlIE92ZXJ2aWV3ID0ge1xyXG4gIHJlc291cmNlczogeyB0b3RhbDogbnVtYmVyOyBzdG9yYWdlQnl0ZXM6IG51bWJlcjsgdW5hc3NpZ25lZDogbnVtYmVyIH07XHJcbiAgcnVuczogeyB0b3RhbDogbnVtYmVyOyBmYWlsZWQ6IG51bWJlcjsgYWN0aXZlOiBudW1iZXIgfTtcclxufTtcclxuXHJcbi8qKiDlsZXnpLrotYTmupDjgIHku7vliqHlkozov5Dnu7TlhaXlj6PvvJvmnYPpmZDku43nlLHmnI3liqHnq6/pgJDor7fmsYLmoKHpqozjgIIgKi9cclxuZXhwb3J0IGZ1bmN0aW9uIE92ZXJ2aWV3UGFnZSh7IHVzZXJJZCB9OiB7IHVzZXJJZDogc3RyaW5nIH0pIHtcclxuICBjb25zdCBxdWVyeSA9IHVzZVF1ZXJ5KHtcclxuICAgIHF1ZXJ5S2V5OiBbJ21hbmFnZW1lbnQnLCB1c2VySWQsICdvdmVydmlldyddLFxyXG4gICAgcXVlcnlGbjogKHsgc2lnbmFsIH0pID0+IG1hbmFnZW1lbnRSZXF1ZXN0PE92ZXJ2aWV3PignL2FkbWluL292ZXJ2aWV3JywgeyBzaWduYWwgfSksXHJcbiAgfSk7XHJcbiAgY29uc3QgZGF0YSA9IHF1ZXJ5LmRhdGE7XHJcbiAgcmV0dXJuIChcclxuICAgIDw+XHJcbiAgICAgIDxoZWFkZXIgY2xhc3NOYW1lPVwibWctaGVhZGluZ1wiPlxyXG4gICAgICAgIDxkaXY+XHJcbiAgICAgICAgICA8cD5BRE1JTklTVFJBVElPTjwvcD5cclxuICAgICAgICAgIDxoMT7nrqHnkIbmpoLop4g8L2gxPlxyXG4gICAgICAgIDwvZGl2PlxyXG4gICAgICAgIDxCdXR0b25cclxuICAgICAgICAgIGNsYXNzTmFtZT1cIm1nLWljb25cIlxyXG4gICAgICAgICAgdHlwZT1cImJ1dHRvblwiXHJcbiAgICAgICAgICB0aXRsZT1cIuWIt+aWsOamguiniFwiXHJcbiAgICAgICAgICBhcmlhLWxhYmVsPVwi5Yi35paw5qaC6KeIXCJcclxuICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHZvaWQgcXVlcnkucmVmZXRjaCgpfVxyXG4gICAgICAgICAgZGlzYWJsZWQ9e3F1ZXJ5LmlzRmV0Y2hpbmd9XHJcbiAgICAgICAgPlxyXG4gICAgICAgICAgPFJlZnJlc2hDdyBzaXplPXsxOH0gY2xhc3NOYW1lPXtxdWVyeS5pc0ZldGNoaW5nID8gJ21nLXNwaW4nIDogJyd9IC8+XHJcbiAgICAgICAgPC9CdXR0b24+XHJcbiAgICAgIDwvaGVhZGVyPlxyXG4gICAgICA8UXVlcnlTdGF0ZVxyXG4gICAgICAgIGxvYWRpbmc9e3F1ZXJ5LmlzTG9hZGluZ31cclxuICAgICAgICBlcnJvcj17cXVlcnkuZXJyb3J9XHJcbiAgICAgICAgb25SZXRyeT17KCkgPT4gdm9pZCBxdWVyeS5yZWZldGNoKCl9XHJcbiAgICAgID5cclxuICAgICAgICB7ZGF0YSAmJiAoXHJcbiAgICAgICAgICA8PlxyXG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1nLXN0YXQtcm93XCI+XHJcbiAgICAgICAgICAgICAgPEFwcExpbmsgdG89XCIvYWRtaW4vcmVzb3VyY2VzXCI+XHJcbiAgICAgICAgICAgICAgICA8RGF0YWJhc2Ugc2l6ZT17MjB9IC8+XHJcbiAgICAgICAgICAgICAgICA8c3Bhbj7otYTmupDmgLvmlbA8L3NwYW4+XHJcbiAgICAgICAgICAgICAgICA8c3Ryb25nPntkYXRhLnJlc291cmNlcy50b3RhbH08L3N0cm9uZz5cclxuICAgICAgICAgICAgICAgIDxzbWFsbD57Zm9ybWF0Qnl0ZXMoZGF0YS5yZXNvdXJjZXMuc3RvcmFnZUJ5dGVzKX08L3NtYWxsPlxyXG4gICAgICAgICAgICAgIDwvQXBwTGluaz5cclxuICAgICAgICAgICAgICA8QXBwTGluayB0bz1cIi9hZG1pbi9ydW5zXCI+XHJcbiAgICAgICAgICAgICAgICA8QWN0aXZpdHkgc2l6ZT17MjB9IC8+XHJcbiAgICAgICAgICAgICAgICA8c3Bhbj7ov5DooYzku7vliqE8L3NwYW4+XHJcbiAgICAgICAgICAgICAgICA8c3Ryb25nPntkYXRhLnJ1bnMudG90YWx9PC9zdHJvbmc+XHJcbiAgICAgICAgICAgICAgICA8c21hbGw+e2RhdGEucnVucy5hY3RpdmV9IOmhuei/m+ihjOS4rTwvc21hbGw+XHJcbiAgICAgICAgICAgICAgPC9BcHBMaW5rPlxyXG4gICAgICAgICAgICAgIDxBcHBMaW5rIHRvPVwiL2FkbWluL2F1ZGl0XCI+XHJcbiAgICAgICAgICAgICAgICA8U2hpZWxkQ2hlY2sgc2l6ZT17MjB9IC8+XHJcbiAgICAgICAgICAgICAgICA8c3Bhbj7lvoXlpITnkIY8L3NwYW4+XHJcbiAgICAgICAgICAgICAgICA8c3Ryb25nPntkYXRhLnJlc291cmNlcy51bmFzc2lnbmVkICsgZGF0YS5ydW5zLmZhaWxlZH08L3N0cm9uZz5cclxuICAgICAgICAgICAgICAgIDxzbWFsbD7otYTmupDlvZLlsZ7kuI7lpLHotKXku7vliqE8L3NtYWxsPlxyXG4gICAgICAgICAgICAgIDwvQXBwTGluaz5cclxuICAgICAgICAgICAgPC9kaXY+XHJcbiAgICAgICAgICAgIDxzZWN0aW9uIGNsYXNzTmFtZT1cIm1nLXNlY3Rpb25cIj5cclxuICAgICAgICAgICAgICA8aDI+566h55CG5YWl5Y+jPC9oMj5cclxuICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1nLXNob3J0Y3V0c1wiPlxyXG4gICAgICAgICAgICAgICAgPEFwcExpbmsgdG89XCIvYWRtaW4vcmVzb3VyY2VzXCI+XHJcbiAgICAgICAgICAgICAgICAgIDxEYXRhYmFzZSBzaXplPXsyMH0gLz5cclxuICAgICAgICAgICAgICAgICAgPHNwYW4+55So5oi36LWE5rqQPC9zcGFuPlxyXG4gICAgICAgICAgICAgICAgICA8QXJyb3dSaWdodCBzaXplPXsxN30gLz5cclxuICAgICAgICAgICAgICAgIDwvQXBwTGluaz5cclxuICAgICAgICAgICAgICAgIDxBcHBMaW5rIHRvPVwiL2FkbWluL3J1bnNcIj5cclxuICAgICAgICAgICAgICAgICAgPEFjdGl2aXR5IHNpemU9ezIwfSAvPlxyXG4gICAgICAgICAgICAgICAgICA8c3Bhbj7lhajnq5nku7vliqE8L3NwYW4+XHJcbiAgICAgICAgICAgICAgICAgIDxBcnJvd1JpZ2h0IHNpemU9ezE3fSAvPlxyXG4gICAgICAgICAgICAgICAgPC9BcHBMaW5rPlxyXG4gICAgICAgICAgICAgICAgPEFwcExpbmsgdG89XCIvYWRtaW4vYXVkaXRcIj5cclxuICAgICAgICAgICAgICAgICAgPFNoaWVsZENoZWNrIHNpemU9ezIwfSAvPlxyXG4gICAgICAgICAgICAgICAgICA8c3Bhbj7mk43kvZzorrDlvZU8L3NwYW4+XHJcbiAgICAgICAgICAgICAgICAgIDxBcnJvd1JpZ2h0IHNpemU9ezE3fSAvPlxyXG4gICAgICAgICAgICAgICAgPC9BcHBMaW5rPlxyXG4gICAgICAgICAgICAgICAgPEFwcExpbmsgdG89XCIvYWRtaW4vc3lzdGVtXCI+XHJcbiAgICAgICAgICAgICAgICAgIDxTZXJ2ZXIgc2l6ZT17MjB9IC8+XHJcbiAgICAgICAgICAgICAgICAgIDxzcGFuPuezu+e7n+eKtuaAgTwvc3Bhbj5cclxuICAgICAgICAgICAgICAgICAgPEFycm93UmlnaHQgc2l6ZT17MTd9IC8+XHJcbiAgICAgICAgICAgICAgICA8L0FwcExpbms+XHJcbiAgICAgICAgICAgICAgPC9kaXY+XHJcbiAgICAgICAgICAgIDwvc2VjdGlvbj5cclxuICAgICAgICAgIDwvPlxyXG4gICAgICAgICl9XHJcbiAgICAgIDwvUXVlcnlTdGF0ZT5cclxuICAgIDwvPlxyXG4gICk7XHJcbn1cclxuXHJcbi8qKiDlrqHorqHmlbDmja7lj6rmmL7npLrmnI3liqHnq6/ohLHmlY/mkZjopoHjgIIgKi9cclxudHlwZSBBdWRpdFJlc3VsdCA9IHtcclxuICBldmVudHM6IHtcclxuICAgIGlkOiBzdHJpbmc7XHJcbiAgICBhY3RvcklkPzogc3RyaW5nO1xyXG4gICAgYWN0aW9uOiBzdHJpbmc7XHJcbiAgICB0YXJnZXRJZD86IHN0cmluZztcclxuICAgIG93bmVySWQ/OiBzdHJpbmc7XHJcbiAgICBzdW1tYXJ5OiBzdHJpbmc7XHJcbiAgICBjcmVhdGVkQXQ6IHN0cmluZztcclxuICB9W107XHJcbiAgdG90YWw6IG51bWJlcjtcclxuICBwYWdlOiBudW1iZXI7XHJcbiAgcGFnZVNpemU6IG51bWJlcjtcclxufTtcclxuXHJcbi8qKiDnrqHnkIblrqHorqHliIbpobXlsZXnpLrvvJvorrDlvZXkuI3lj6/lnKjnlYzpnaLkuK3nvJbovpHmiJbliKDpmaTjgIIgKi9cclxuZXhwb3J0IGZ1bmN0aW9uIEF1ZGl0UGFnZSh7IHVzZXJJZCB9OiB7IHVzZXJJZDogc3RyaW5nIH0pIHtcclxuICBjb25zdCBbcGFnZSwgc2V0UGFnZV0gPSB1c2VTdGF0ZSgxKTtcclxuICBjb25zdCBxdWVyeSA9IHVzZVF1ZXJ5KHtcclxuICAgIHF1ZXJ5S2V5OiBbJ21hbmFnZW1lbnQnLCB1c2VySWQsICdhdWRpdCcsIHBhZ2VdLFxyXG4gICAgcXVlcnlGbjogKHsgc2lnbmFsIH0pID0+XHJcbiAgICAgIG1hbmFnZW1lbnRSZXF1ZXN0PEF1ZGl0UmVzdWx0PihgL2FkbWluL2F1ZGl0JHtxdWVyeVN0cmluZyh7IHBhZ2UsIHBhZ2VTaXplOiAzMCB9KX1gLCB7XHJcbiAgICAgICAgc2lnbmFsLFxyXG4gICAgICB9KSxcclxuICB9KTtcclxuICByZXR1cm4gKFxyXG4gICAgPD5cclxuICAgICAgPGhlYWRlciBjbGFzc05hbWU9XCJtZy1oZWFkaW5nXCI+XHJcbiAgICAgICAgPGRpdj5cclxuICAgICAgICAgIDxwPkFVRElUPC9wPlxyXG4gICAgICAgICAgPGgxPuaTjeS9nOiusOW9lTwvaDE+XHJcbiAgICAgICAgPC9kaXY+XHJcbiAgICAgICAgPEJ1dHRvblxyXG4gICAgICAgICAgdHlwZT1cImJ1dHRvblwiXHJcbiAgICAgICAgICBjbGFzc05hbWU9XCJtZy1pY29uXCJcclxuICAgICAgICAgIGFyaWEtbGFiZWw9XCLliLfmlrDmk43kvZzorrDlvZVcIlxyXG4gICAgICAgICAgdGl0bGU9XCLliLfmlrDmk43kvZzorrDlvZVcIlxyXG4gICAgICAgICAgZGlzYWJsZWQ9e3F1ZXJ5LmlzRmV0Y2hpbmd9XHJcbiAgICAgICAgICBvbkNsaWNrPXsoKSA9PiB2b2lkIHF1ZXJ5LnJlZmV0Y2goKX1cclxuICAgICAgICA+XHJcbiAgICAgICAgICA8UmVmcmVzaEN3IHNpemU9ezE3fSAvPlxyXG4gICAgICAgIDwvQnV0dG9uPlxyXG4gICAgICA8L2hlYWRlcj5cclxuICAgICAgPFF1ZXJ5U3RhdGVcclxuICAgICAgICBsb2FkaW5nPXtxdWVyeS5pc0xvYWRpbmd9XHJcbiAgICAgICAgZXJyb3I9e3F1ZXJ5LmVycm9yfVxyXG4gICAgICAgIG9uUmV0cnk9eygpID0+IHZvaWQgcXVlcnkucmVmZXRjaCgpfVxyXG4gICAgICAgIGVtcHR5PXtxdWVyeS5kYXRhPy5ldmVudHMubGVuZ3RoID09PSAwID8gJ+aaguaXoOaTjeS9nOiusOW9lScgOiB1bmRlZmluZWR9XHJcbiAgICAgID5cclxuICAgICAgICA8VGFibGU8QXVkaXRSZXN1bHRbJ2V2ZW50cyddW251bWJlcl0+XHJcbiAgICAgICAgICBjbGFzc05hbWU9XCJtZy10YWJsZSBtZy1hdWRpdC10YWJsZVwiXHJcbiAgICAgICAgICByb3dLZXk9XCJpZFwiXHJcbiAgICAgICAgICBkYXRhU291cmNlPXtxdWVyeS5kYXRhPy5ldmVudHMgPz8gW119XHJcbiAgICAgICAgICBwYWdpbmF0aW9uPXtmYWxzZX1cclxuICAgICAgICAgIHNpemU9XCJtaWRkbGVcIlxyXG4gICAgICAgICAgc2Nyb2xsPXt7IHg6IDc2MCB9fVxyXG4gICAgICAgICAgY29sdW1ucz17W1xyXG4gICAgICAgICAgICB7IHRpdGxlOiAn5pe26Ze0Jywga2V5OiAnY3JlYXRlZEF0JywgcmVuZGVyOiAoXywgZXZlbnQpID0+IGZvcm1hdERhdGUoZXZlbnQuY3JlYXRlZEF0KSB9LFxyXG4gICAgICAgICAgICB7IHRpdGxlOiAn5pON5L2cJywga2V5OiAnYWN0aW9uJywgcmVuZGVyOiAoXywgZXZlbnQpID0+IDxjb2RlPntldmVudC5hY3Rpb259PC9jb2RlPiB9LFxyXG4gICAgICAgICAgICB7XHJcbiAgICAgICAgICAgICAgdGl0bGU6ICfmk43kvZzogIUnLFxyXG4gICAgICAgICAgICAgIGtleTogJ2FjdG9ySWQnLFxyXG4gICAgICAgICAgICAgIHJlbmRlcjogKF8sIGV2ZW50KSA9PiAoXHJcbiAgICAgICAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJtZy10cnVuY2F0ZVwiIHRpdGxlPXtldmVudC5hY3RvcklkfT5cclxuICAgICAgICAgICAgICAgICAge2V2ZW50LmFjdG9ySWQgfHwgJ+ezu+e7nyd9XHJcbiAgICAgICAgICAgICAgICA8L3NwYW4+XHJcbiAgICAgICAgICAgICAgKSxcclxuICAgICAgICAgICAgfSxcclxuICAgICAgICAgICAge1xyXG4gICAgICAgICAgICAgIHRpdGxlOiAn5a+56LGhJyxcclxuICAgICAgICAgICAgICBrZXk6ICd0YXJnZXRJZCcsXHJcbiAgICAgICAgICAgICAgcmVuZGVyOiAoXywgZXZlbnQpID0+IChcclxuICAgICAgICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cIm1nLXRydW5jYXRlXCIgdGl0bGU9e2V2ZW50LnRhcmdldElkfT5cclxuICAgICAgICAgICAgICAgICAge2V2ZW50LnRhcmdldElkIHx8ICfns7vnu58nfVxyXG4gICAgICAgICAgICAgICAgPC9zcGFuPlxyXG4gICAgICAgICAgICAgICksXHJcbiAgICAgICAgICAgIH0sXHJcbiAgICAgICAgICAgIHtcclxuICAgICAgICAgICAgICB0aXRsZTogJ+aRmOimgScsXHJcbiAgICAgICAgICAgICAga2V5OiAnc3VtbWFyeScsXHJcbiAgICAgICAgICAgICAgcmVuZGVyOiAoXywgZXZlbnQpID0+XHJcbiAgICAgICAgICAgICAgICB0eXBlb2YgZXZlbnQuc3VtbWFyeSA9PT0gJ3N0cmluZycgPyBldmVudC5zdW1tYXJ5IDogSlNPTi5zdHJpbmdpZnkoZXZlbnQuc3VtbWFyeSksXHJcbiAgICAgICAgICAgIH0sXHJcbiAgICAgICAgICBdfVxyXG4gICAgICAgIC8+XHJcbiAgICAgIDwvUXVlcnlTdGF0ZT5cclxuICAgICAge3F1ZXJ5LmRhdGEgJiYgKFxyXG4gICAgICAgIDxQYWdpbmF0aW9uXHJcbiAgICAgICAgICBwYWdlPXtwYWdlfVxyXG4gICAgICAgICAgcGFnZVNpemU9ezMwfVxyXG4gICAgICAgICAgdG90YWw9e3F1ZXJ5LmRhdGEudG90YWx9XHJcbiAgICAgICAgICBvbkNoYW5nZT17c2V0UGFnZX1cclxuICAgICAgICAgIGJ1c3k9e3F1ZXJ5LmlzRmV0Y2hpbmd9XHJcbiAgICAgICAgLz5cclxuICAgICAgKX1cclxuICAgIDwvPlxyXG4gICk7XHJcbn1cclxuXHJcbi8qKiDns7vnu5/nirbmgIHlj6rljIXlkKvlvZPliY3ku43ov5DooYznmoQgQVBJ44CB6LWE5rqQ5a2Y5YKo5ZKM5Lu75Yqh6Zif5YiX44CCICovXHJcbnR5cGUgU3lzdGVtU3RhdHVzID0ge1xyXG4gIGFwaTogeyBzdGF0dXM6IHN0cmluZyB9O1xyXG4gIHN0b3JhZ2U6IHsgc3RhdHVzOiBzdHJpbmcgfTtcclxuICBxdWV1ZTogeyBzdGF0dXM6IHN0cmluZyB9O1xyXG59O1xyXG5cclxuLyoqIOWwhuacjeWKoeerr+WBpeW6t+WAvOi9rOaNouS4uueos+WumueahOS4reaWh+eKtuaAgeOAgiAqL1xyXG5mdW5jdGlvbiBoZWFsdGhMYWJlbCh2YWx1ZTogc3RyaW5nKTogc3RyaW5nIHtcclxuICBpZiAodmFsdWUgPT09ICdvaycgfHwgdmFsdWUgPT09ICdhdmFpbGFibGUnKSByZXR1cm4gJ+ato+W4uCc7XHJcbiAgaWYgKHZhbHVlID09PSAndW5rbm93bicpIHJldHVybiAn5pyq5qOA5rWLJztcclxuICByZXR1cm4gJ+W8guW4uCc7XHJcbn1cclxuXHJcbi8qKiDlsZXnpLrnnJ/lrp7ns7vnu5/nirbmgIHvvJvliLfmlrDkuI3kvJrop6blj5Hku7vliqHmiafooYzmiJblpJbpg6jor7fmsYLjgIIgKi9cclxuZXhwb3J0IGZ1bmN0aW9uIFN5c3RlbVBhZ2UoeyB1c2VySWQgfTogeyB1c2VySWQ6IHN0cmluZyB9KSB7XHJcbiAgY29uc3QgcXVlcnkgPSB1c2VRdWVyeSh7XHJcbiAgICBxdWVyeUtleTogWydtYW5hZ2VtZW50JywgdXNlcklkLCAnc3lzdGVtJ10sXHJcbiAgICBxdWVyeUZuOiAoeyBzaWduYWwgfSkgPT4gbWFuYWdlbWVudFJlcXVlc3Q8U3lzdGVtU3RhdHVzPignL2FkbWluL3N5c3RlbScsIHsgc2lnbmFsIH0pLFxyXG4gICAgcmVmZXRjaEludGVydmFsOiAzMF8wMDAsXHJcbiAgfSk7XHJcbiAgY29uc3QgZGF0YSA9IHF1ZXJ5LmRhdGE7XHJcbiAgcmV0dXJuIChcclxuICAgIDw+XHJcbiAgICAgIDxoZWFkZXIgY2xhc3NOYW1lPVwibWctaGVhZGluZ1wiPlxyXG4gICAgICAgIDxkaXY+XHJcbiAgICAgICAgICA8cD5TWVNURU08L3A+XHJcbiAgICAgICAgICA8aDE+57O757uf54q25oCBPC9oMT5cclxuICAgICAgICA8L2Rpdj5cclxuICAgICAgICA8QnV0dG9uXHJcbiAgICAgICAgICBjbGFzc05hbWU9XCJtZy1idXR0b25cIlxyXG4gICAgICAgICAgdHlwZT1cImJ1dHRvblwiXHJcbiAgICAgICAgICBkaXNhYmxlZD17cXVlcnkuaXNGZXRjaGluZ31cclxuICAgICAgICAgIG9uQ2xpY2s9eygpID0+IHZvaWQgcXVlcnkucmVmZXRjaCgpfVxyXG4gICAgICAgID5cclxuICAgICAgICAgIDxSZWZyZXNoQ3cgc2l6ZT17MTZ9IGNsYXNzTmFtZT17cXVlcnkuaXNGZXRjaGluZyA/ICdtZy1zcGluJyA6ICcnfSAvPlxyXG4gICAgICAgICAg5Yi35paw54q25oCBXHJcbiAgICAgICAgPC9CdXR0b24+XHJcbiAgICAgIDwvaGVhZGVyPlxyXG4gICAgICA8UXVlcnlTdGF0ZVxyXG4gICAgICAgIGxvYWRpbmc9e3F1ZXJ5LmlzTG9hZGluZ31cclxuICAgICAgICBlcnJvcj17cXVlcnkuZXJyb3J9XHJcbiAgICAgICAgb25SZXRyeT17KCkgPT4gdm9pZCBxdWVyeS5yZWZldGNoKCl9XHJcbiAgICAgID5cclxuICAgICAgICB7ZGF0YSAmJiAoXHJcbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1nLWhlYWx0aC1ncmlkXCI+XHJcbiAgICAgICAgICAgIHtbXHJcbiAgICAgICAgICAgICAgeyBuYW1lOiAnQVBJIOacjeWKoScsIHZhbHVlOiBkYXRhLmFwaS5zdGF0dXMsIGljb246IFNlcnZlciB9LFxyXG4gICAgICAgICAgICAgIHsgbmFtZTogJ+i1hOa6kOe0ouW8lScsIHZhbHVlOiBkYXRhLnN0b3JhZ2Uuc3RhdHVzLCBpY29uOiBEYXRhYmFzZSB9LFxyXG4gICAgICAgICAgICAgIHsgbmFtZTogJ+S7u+WKoemYn+WIlycsIHZhbHVlOiBkYXRhLnF1ZXVlLnN0YXR1cywgaWNvbjogQWN0aXZpdHkgfSxcclxuICAgICAgICAgICAgXS5tYXAoKHsgbmFtZSwgdmFsdWUsIGljb246IEljb24gfSkgPT4gKFxyXG4gICAgICAgICAgICAgIDxkaXYga2V5PXtuYW1lfT5cclxuICAgICAgICAgICAgICAgIDxJY29uIHNpemU9ezIxfSAvPlxyXG4gICAgICAgICAgICAgICAgPHN0cm9uZz57bmFtZX08L3N0cm9uZz5cclxuICAgICAgICAgICAgICAgIDxTdGF0dXNCYWRnZVxyXG4gICAgICAgICAgICAgICAgICB2YWx1ZT17XHJcbiAgICAgICAgICAgICAgICAgICAgdmFsdWUgPT09ICdvaycgfHwgdmFsdWUgPT09ICdhdmFpbGFibGUnXHJcbiAgICAgICAgICAgICAgICAgICAgICA/ICdhY3RpdmUnXHJcbiAgICAgICAgICAgICAgICAgICAgICA6IHZhbHVlID09PSAndW5rbm93bidcclxuICAgICAgICAgICAgICAgICAgICAgICAgPyAncGVuZGluZydcclxuICAgICAgICAgICAgICAgICAgICAgICAgOiAnZmFpbGVkJ1xyXG4gICAgICAgICAgICAgICAgICB9XHJcbiAgICAgICAgICAgICAgICAgIGxhYmVsPXtoZWFsdGhMYWJlbCh2YWx1ZSl9XHJcbiAgICAgICAgICAgICAgICAvPlxyXG4gICAgICAgICAgICAgIDwvZGl2PlxyXG4gICAgICAgICAgICApKX1cclxuICAgICAgICAgIDwvZGl2PlxyXG4gICAgICAgICl9XHJcbiAgICAgIDwvUXVlcnlTdGF0ZT5cclxuICAgIDwvPlxyXG4gICk7XHJcbn1cclxuIl0sImZpbGUiOiIvc3JjL21hbmFnZW1lbnQvQWRtaW5QYWdlcy50c3gifQ==

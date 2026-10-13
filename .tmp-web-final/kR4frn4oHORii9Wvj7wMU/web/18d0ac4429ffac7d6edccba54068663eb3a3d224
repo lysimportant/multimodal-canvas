@@ -1,0 +1,32 @@
+Object.defineProperty(__vite_ssr_exports__, "appPaths", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_0__.appPaths } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "getNavigationSection", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_0__.getNavigationSection } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "parseAppRoute", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_0__.parseAppRoute } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "readReturnProjectId", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_0__.readReturnProjectId } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "AppLink", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.AppLink } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "AppRouter", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.AppRouter } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "ProjectReturnProvider", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.ProjectReturnProvider } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "navigateApp", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.navigateApp } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "shouldInterceptAppLink", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.shouldInterceptAppLink } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "useAppNavigate", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.useAppNavigate } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "useAppRoute", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_1__.useAppRoute } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "buildAuthPagePath", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_2__.buildAuthPagePath } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "readAuthReturnPath", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_2__.readAuthReturnPath } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/src/routing/routes.ts", {"importedNames":["appPaths","getNavigationSection","parseAppRoute","readReturnProjectId"]});
+
+
+
+
+
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/src/routing/router.tsx", {"importedNames":["AppLink","AppRouter","ProjectReturnProvider","navigateApp","shouldInterceptAppLink","useAppNavigate","useAppRoute"]});
+
+
+
+
+
+
+
+
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/routing/auth-navigation.ts", {"importedNames":["buildAuthPagePath","readAuthReturnPath"]});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7OztBQUFBOzs7Ozs7QUFRQTs7Ozs7Ozs7O0FBV0EiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImluZGV4LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImV4cG9ydCB7XG4gIGFwcFBhdGhzLFxuICBnZXROYXZpZ2F0aW9uU2VjdGlvbixcbiAgcGFyc2VBcHBSb3V0ZSxcbiAgcmVhZFJldHVyblByb2plY3RJZCxcbiAgdHlwZSBBcHBOYXZpZ2F0aW9uU2VjdGlvbixcbiAgdHlwZSBBcHBSb3V0ZSxcbn0gZnJvbSAnLi9yb3V0ZXMnO1xuZXhwb3J0IHtcbiAgQXBwTGluayxcbiAgQXBwUm91dGVyLFxuICBQcm9qZWN0UmV0dXJuUHJvdmlkZXIsXG4gIG5hdmlnYXRlQXBwLFxuICBzaG91bGRJbnRlcmNlcHRBcHBMaW5rLFxuICB1c2VBcHBOYXZpZ2F0ZSxcbiAgdXNlQXBwUm91dGUsXG4gIHR5cGUgQXBwTGlua1Byb3BzLFxuICB0eXBlIE5hdmlnYXRlT3B0aW9ucyxcbn0gZnJvbSAnLi9yb3V0ZXInO1xuZXhwb3J0IHsgYnVpbGRBdXRoUGFnZVBhdGgsIHJlYWRBdXRoUmV0dXJuUGF0aCB9IGZyb20gJy4vYXV0aC1uYXZpZ2F0aW9uJztcbiJdLCJmaWxlIjoiL3NyYy9yb3V0aW5nL2luZGV4LnRzIn0=

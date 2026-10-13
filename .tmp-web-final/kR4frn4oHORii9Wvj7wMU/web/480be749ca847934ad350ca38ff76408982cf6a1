@@ -1,0 +1,261 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["Fragment","jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+jest-dom@6.8.0/node_modules/@testing-library/jest-dom/dist/vitest.mjs");
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+react@16.3_e1ac85d3dfa8b41ff24d80223f58547d/node_modules/@testing-library/react/dist/index.js", {"importedNames":["act","cleanup","render","screen"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/vitest@3.2.7_@types+node@22_89ee79179d9afea59db69119226e71e6/node_modules/vitest/dist/index.js", {"importedNames":["afterEach","beforeEach","describe","expect","it","vi"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/workspace/NodeDurationBadge.tsx", {"importedNames":["NodeDurationBadge","NODE_DURATION_TICK_MS","useSharedNodeClock"]});
+const startedAt = "2026-09-25T10:00:00.000Z";
+function ClockedBadge({ timing, running = false }) {
+  const now = (0,__vite_ssr_import_4__.useSharedNodeClock)(running);
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.NodeDurationBadge), { timing, now, running }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+    lineNumber: 14,
+    columnNumber: 10
+  }, this);
+}
+(0,__vite_ssr_import_3__.beforeEach)(() => {
+  __vite_ssr_import_3__.vi.useFakeTimers();
+  __vite_ssr_import_3__.vi.setSystemTime(new Date(startedAt));
+});
+(0,__vite_ssr_import_3__.afterEach)(() => {
+  (0,__vite_ssr_import_2__.cleanup)();
+  __vite_ssr_import_3__.vi.useRealTimers();
+});
+(0,__vite_ssr_import_3__.describe)("NodeDurationBadge 整秒计时", () => {
+  (0,__vite_ssr_import_3__.it)("运行中从 0 秒开始，每满一秒依次显示 1 秒、2 秒", () => {
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt }, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 29,
+      columnNumber: 12
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("0秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(999));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("0秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("1秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(999));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("1秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("2秒")).toHaveClass("is-running");
+  });
+  (0,__vite_ssr_import_3__.it)("开始时间与首次展示均不在整秒边界时，不显示小数或提前进位", () => {
+    __vite_ssr_import_3__.vi.setSystemTime(/* @__PURE__ */ new Date("2026-09-25T10:00:00.950Z"));
+    (0,__vite_ssr_import_2__.render)(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt: "2026-09-25T10:00:00.350Z" }, running: true }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+        lineNumber: 45,
+        columnNumber: 7
+      }, this)
+    );
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("0秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("1秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("2秒")).toBeInTheDocument();
+  });
+  (0,__vite_ssr_import_3__.it)("跨过 60 秒后仍逐秒递增，不切换为分钟或提前进位", () => {
+    __vite_ssr_import_3__.vi.setSystemTime(/* @__PURE__ */ new Date("2026-09-25T10:00:59.900Z"));
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt }, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 57,
+      columnNumber: 12
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("59秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("60秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("61秒")).toBeInTheDocument();
+  });
+  __vite_ssr_import_3__.it.each([
+    ["succeeded", "耗时"],
+    ["failed", "失败耗时"],
+    ["cancelled", "取消耗时"]
+  ])("%s 终态向下取整并冻结，释放最后一个计时订阅", (outcome, title) => {
+    const { rerender } = (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt }, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 71,
+      columnNumber: 33
+    }, this));
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(2999));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("2秒")).toBeInTheDocument();
+    rerender(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        ClockedBadge,
+        {
+          timing: { nodeId: "node-1", startedAt, finishedAt: (/* @__PURE__ */ new Date()).toISOString(), outcome }
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+          lineNumber: 76,
+          columnNumber: 7
+        },
+        this
+      )
+    );
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle(`${title} 2秒`)).not.toHaveClass("is-running");
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("2秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(document.querySelector(".node-duration-spinner")).not.toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_3__.vi.getTimerCount()).toBe(0);
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(6e4));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle(`${title} 2秒`)).toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("2秒")).toBeInTheDocument();
+  });
+  (0,__vite_ssr_import_3__.it)("旧结果的终态耗时不随仍在执行的新任务时钟增长", () => {
+    (0,__vite_ssr_import_2__.render)(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        ClockedBadge,
+        {
+          timing: {
+            nodeId: "node-1",
+            startedAt,
+            finishedAt: "2026-09-25T10:00:12.400Z",
+            outcome: "succeeded"
+          },
+          running: true
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+          lineNumber: 92,
+          columnNumber: 7
+        },
+        this
+      )
+    );
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle("耗时 12秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(6e4));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle("耗时 12秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(document.querySelector(".node-duration-spinner")).not.toBeInTheDocument();
+  });
+  __vite_ssr_import_3__.it.each(["failed", "cancelled"])("%s 缺少终态时间时不冒充继续计时", (outcome) => {
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt, outcome } }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 109,
+      columnNumber: 12
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("未记录")).toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_3__.vi.getTimerCount()).toBe(0);
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(6e4));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("未记录")).toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(document.querySelector(".node-duration-spinner")).not.toBeInTheDocument();
+  });
+  (0,__vite_ssr_import_3__.it)("排队但未开始时不显示推测耗时，真正开始后才从 0 秒递增", () => {
+    const timing = { nodeId: "node-1", queuedAt: "2026-09-25T09:59:50.000Z" };
+    const { rerender } = (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 119,
+      columnNumber: 33
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("未记录")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(2e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("未记录")).toBeInTheDocument();
+    rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { ...timing, startedAt: (/* @__PURE__ */ new Date()).toISOString() }, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 124,
+      columnNumber: 14
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("0秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("1秒")).toBeInTheDocument();
+  });
+  __vite_ssr_import_3__.it.each([
+    {
+      title: "服务端时间顺序异常，耗时不可用",
+      timing: { nodeId: "node-1", startedAt, finishedAt: "2026-09-25T09:59:59.000Z" }
+    },
+    {
+      title: "服务端时间戳晚于当前时间，耗时不可用",
+      timing: { nodeId: "node-1", startedAt: "2026-09-25T10:00:10.000Z" }
+    }
+  ])("$title，不将异常取整为 0 秒", ({ timing, title }) => {
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 140,
+      columnNumber: 12
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle(title)).toHaveTextContent("耗时不可用");
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle(title)).toHaveTextContent("耗时不可用");
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.queryByText("0秒")).not.toBeInTheDocument();
+  });
+  (0,__vite_ssr_import_3__.it)("无法解析的时间戳仍显示未记录", () => {
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt: "invalid" }, running: true }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+      lineNumber: 148,
+      columnNumber: 12
+    }, this));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("未记录")).toBeInTheDocument();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("未记录")).toBeInTheDocument();
+  });
+  (0,__vite_ssr_import_3__.it)("多个节点共用一个每秒定时器，单个完成不影响其他节点，全部卸载后停止", () => {
+    const setInterval = __vite_ssr_import_3__.vi.spyOn(window, "setInterval");
+    const clearInterval = __vite_ssr_import_3__.vi.spyOn(window, "clearInterval");
+    const { rerender, unmount } = (0,__vite_ssr_import_2__.render)(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-1", startedAt }, running: true }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+          lineNumber: 159,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-2", startedAt }, running: true }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+          lineNumber: 160,
+          columnNumber: 9
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+        lineNumber: 158,
+        columnNumber: 7
+      }, this)
+    );
+    (0,__vite_ssr_import_3__.expect)((0,__vite_ssr_import_4__.NODE_DURATION_TICK_MS)).toBe(1e3);
+    (0,__vite_ssr_import_3__.expect)(setInterval).toHaveBeenCalledTimes(1);
+    (0,__vite_ssr_import_3__.expect)(setInterval).toHaveBeenCalledWith(__vite_ssr_import_3__.expect.any(Function), 1e3);
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_3__.vi.getTimerCount()).toBe(1);
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getAllByText("0秒")).toHaveLength(2);
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getAllByText("1秒")).toHaveLength(2);
+    rerender(
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          ClockedBadge,
+          {
+            timing: { nodeId: "node-1", startedAt, finishedAt: (/* @__PURE__ */ new Date()).toISOString() }
+          },
+          void 0,
+          false,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+            lineNumber: 173,
+            columnNumber: 9
+          },
+          this
+        ),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ClockedBadge, { timing: { nodeId: "node-2", startedAt }, running: true }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+          lineNumber: 176,
+          columnNumber: 9
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/workspace/NodeDurationBadge.test.tsx",
+        lineNumber: 172,
+        columnNumber: 7
+      }, this)
+    );
+    (0,__vite_ssr_import_3__.expect)(clearInterval).not.toHaveBeenCalled();
+    (0,__vite_ssr_import_2__.act)(() => __vite_ssr_import_3__.vi.advanceTimersByTime(1e3));
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByTitle("耗时 1秒")).toBeInTheDocument();
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_2__.screen.getByText("2秒")).toHaveClass("is-running");
+    (0,__vite_ssr_import_3__.expect)(setInterval).toHaveBeenCalledTimes(1);
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_3__.vi.getTimerCount()).toBe(1);
+    unmount();
+    (0,__vite_ssr_import_3__.expect)(clearInterval).toHaveBeenCalledTimes(1);
+    (0,__vite_ssr_import_3__.expect)(__vite_ssr_import_3__.vi.getTimerCount()).toBe(0);
+  });
+});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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QUEsWUFDQyxRQUFRLEVBQUUsUUFBUSxVQUFVLFdBQVcsYUFBWSxvQkFBSSxLQUFLLEdBQUUsWUFBWSxFQUFFO0FBQUE7QUFBQSxVQUQ5RTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsUUFFQTtBQUFBLFFBQ0EsaURBQUMsZ0JBQWEsUUFBUSxFQUFFLFFBQVEsVUFBVSxVQUFVLEdBQUcsU0FBTyxRQUE5RDtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBQStEO0FBQUEsV0FKakU7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQUtBO0FBQUEsSUFDRjtBQUNBLHFDQUFPLGFBQWEsRUFBRSxJQUFJLGlCQUFpQjtBQUMzQyxrQ0FBSSxNQUFNLHlCQUFHLG9CQUFvQixHQUFLLENBQUM7QUFDdkMscUNBQU8sNkJBQU8sV0FBVyxPQUFPLENBQUMsRUFBRSxrQkFBa0I7QUFDckQscUNBQU8sNkJBQU8sVUFBVSxJQUFJLENBQUMsRUFBRSxZQUFZLFlBQVk7QUFDdkQscUNBQU8sV0FBVyxFQUFFLHNCQUFzQixDQUFDO0FBQzNDLHFDQUFPLHlCQUFHLGNBQWMsQ0FBQyxFQUFFLEtBQUssQ0FBQztBQUVqQyxZQUFRO0FBQ1IscUNBQU8sYUFBYSxFQUFFLHNCQUFzQixDQUFDO0FBQzdDLHFDQUFPLHlCQUFHLGNBQWMsQ0FBQyxFQUFFLEtBQUssQ0FBQztBQUFBLEVBQ25DLENBQUM7QUFDSCxDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJOb2RlRHVyYXRpb25CYWRnZS50ZXN0LnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgdHlwZSB7IE5vZGVUaW1pbmcgfSBmcm9tICdAbXVsdGltb2RhbC1jYW52YXMvZG9tYWluJztcclxuaW1wb3J0ICdAdGVzdGluZy1saWJyYXJ5L2plc3QtZG9tL3ZpdGVzdCc7XHJcbmltcG9ydCB7IGFjdCwgY2xlYW51cCwgcmVuZGVyLCBzY3JlZW4gfSBmcm9tICdAdGVzdGluZy1saWJyYXJ5L3JlYWN0JztcclxuaW1wb3J0IHsgYWZ0ZXJFYWNoLCBiZWZvcmVFYWNoLCBkZXNjcmliZSwgZXhwZWN0LCBpdCwgdmkgfSBmcm9tICd2aXRlc3QnO1xyXG5cclxuaW1wb3J0IHsgTm9kZUR1cmF0aW9uQmFkZ2UsIE5PREVfRFVSQVRJT05fVElDS19NUywgdXNlU2hhcmVkTm9kZUNsb2NrIH0gZnJvbSAnLi9Ob2RlRHVyYXRpb25CYWRnZSc7XHJcblxyXG4vKiog5YGH5pe26ZKf55qE5omn6KGM6LW354K577yb5rWL6K+V5Y+q5o6o6L+b5pys5Zyw5pe26ZKf77yM5LiN6K+35rGC5pyN5Yqh56uv44CCICovXHJcbmNvbnN0IHN0YXJ0ZWRBdCA9ICcyMDI2LTA5LTI1VDEwOjAwOjAwLjAwMFonO1xyXG5cclxuLyoqIOaooeaLn+iKgueCueaMiei/kOihjOeKtuaAgeiuoumYheWFseS6q+aXtumSn++8jOW5tuaKiuacjeWKoeerr+WPguiAg+aXtumXtOS6pOe7meWxleekuue7hOS7tuOAgiAqL1xyXG5mdW5jdGlvbiBDbG9ja2VkQmFkZ2UoeyB0aW1pbmcsIHJ1bm5pbmcgPSBmYWxzZSB9OiB7IHRpbWluZzogTm9kZVRpbWluZzsgcnVubmluZz86IGJvb2xlYW4gfSkge1xyXG4gIGNvbnN0IG5vdyA9IHVzZVNoYXJlZE5vZGVDbG9jayhydW5uaW5nKTtcclxuICByZXR1cm4gPE5vZGVEdXJhdGlvbkJhZGdlIHRpbWluZz17dGltaW5nfSBub3c9e25vd30gcnVubmluZz17cnVubmluZ30gLz47XHJcbn1cclxuXHJcbmJlZm9yZUVhY2goKCkgPT4ge1xyXG4gIHZpLnVzZUZha2VUaW1lcnMoKTtcclxuICB2aS5zZXRTeXN0ZW1UaW1lKG5ldyBEYXRlKHN0YXJ0ZWRBdCkpO1xyXG59KTtcclxuXHJcbmFmdGVyRWFjaCgoKSA9PiB7XHJcbiAgY2xlYW51cCgpO1xyXG4gIHZpLnVzZVJlYWxUaW1lcnMoKTtcclxufSk7XHJcblxyXG5kZXNjcmliZSgnTm9kZUR1cmF0aW9uQmFkZ2Ug5pW056eS6K6h5pe2JywgKCkgPT4ge1xyXG4gIGl0KCfov5DooYzkuK3ku44gMCDnp5LlvIDlp4vvvIzmr4/mu6HkuIDnp5Lkvp3mrKHmmL7npLogMSDnp5LjgIEyIOenkicsICgpID0+IHtcclxuICAgIHJlbmRlcig8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQgfX0gcnVubmluZyAvPik7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMOenkicpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG5cclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDk5OSkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzDnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDEpKTtcclxuICAgIGV4cGVjdChzY3JlZW4uZ2V0QnlUZXh0KCcx56eSJykpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSg5OTkpKTtcclxuICAgIGV4cGVjdChzY3JlZW4uZ2V0QnlUZXh0KCcx56eSJykpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSgxKSk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMuenkicpKS50b0hhdmVDbGFzcygnaXMtcnVubmluZycpO1xyXG4gIH0pO1xyXG5cclxuICBpdCgn5byA5aeL5pe26Ze05LiO6aaW5qyh5bGV56S65Z2H5LiN5Zyo5pW056eS6L6555WM5pe277yM5LiN5pi+56S65bCP5pWw5oiW5o+Q5YmN6L+b5L2NJywgKCkgPT4ge1xyXG4gICAgdmkuc2V0U3lzdGVtVGltZShuZXcgRGF0ZSgnMjAyNi0wOS0yNVQxMDowMDowMC45NTBaJykpO1xyXG4gICAgcmVuZGVyKFxyXG4gICAgICA8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQ6ICcyMDI2LTA5LTI1VDEwOjAwOjAwLjM1MFonIH19IHJ1bm5pbmcgLz4sXHJcbiAgICApO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzDnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuXHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSgxXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzHnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDFfMDAwKSk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMuenkicpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gIH0pO1xyXG5cclxuICBpdCgn6Leo6L+HIDYwIOenkuWQjuS7jemAkOenkumAkuWinu+8jOS4jeWIh+aNouS4uuWIhumSn+aIluaPkOWJjei/m+S9jScsICgpID0+IHtcclxuICAgIHZpLnNldFN5c3RlbVRpbWUobmV3IERhdGUoJzIwMjYtMDktMjVUMTA6MDA6NTkuOTAwWicpKTtcclxuICAgIHJlbmRlcig8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQgfX0gcnVubmluZyAvPik7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnNTnnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuXHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSgxXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzYw56eSJykpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSgxXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzYx56eSJykpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgfSk7XHJcblxyXG4gIGl0LmVhY2goW1xyXG4gICAgWydzdWNjZWVkZWQnLCAn6ICX5pe2J10sXHJcbiAgICBbJ2ZhaWxlZCcsICflpLHotKXogJfml7YnXSxcclxuICAgIFsnY2FuY2VsbGVkJywgJ+WPlua2iOiAl+aXtiddLFxyXG4gIF0gYXMgY29uc3QpKCclcyDnu4jmgIHlkJHkuIvlj5bmlbTlubblhrvnu5PvvIzph4rmlL7mnIDlkI7kuIDkuKrorqHml7borqLpmIUnLCAob3V0Y29tZSwgdGl0bGUpID0+IHtcclxuICAgIGNvbnN0IHsgcmVyZW5kZXIgfSA9IHJlbmRlcig8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQgfX0gcnVubmluZyAvPik7XHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSgyXzk5OSkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzLnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuXHJcbiAgICByZXJlbmRlcihcclxuICAgICAgPENsb2NrZWRCYWRnZVxyXG4gICAgICAgIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQsIGZpbmlzaGVkQXQ6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKSwgb3V0Y29tZSB9fVxyXG4gICAgICAvPixcclxuICAgICk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGl0bGUoYCR7dGl0bGV9IDLnp5JgKSkubm90LnRvSGF2ZUNsYXNzKCdpcy1ydW5uaW5nJyk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMuenkicpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gICAgZXhwZWN0KGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoJy5ub2RlLWR1cmF0aW9uLXNwaW5uZXInKSkubm90LnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgICBleHBlY3QodmkuZ2V0VGltZXJDb3VudCgpKS50b0JlKDApO1xyXG5cclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDYwXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRpdGxlKGAke3RpdGxlfSAy56eSYCkpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMuenkicpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gIH0pO1xyXG5cclxuICBpdCgn5pen57uT5p6c55qE57uI5oCB6ICX5pe25LiN6ZqP5LuN5Zyo5omn6KGM55qE5paw5Lu75Yqh5pe26ZKf5aKe6ZW/JywgKCkgPT4ge1xyXG4gICAgcmVuZGVyKFxyXG4gICAgICA8Q2xvY2tlZEJhZGdlXHJcbiAgICAgICAgdGltaW5nPXt7XHJcbiAgICAgICAgICBub2RlSWQ6ICdub2RlLTEnLFxyXG4gICAgICAgICAgc3RhcnRlZEF0LFxyXG4gICAgICAgICAgZmluaXNoZWRBdDogJzIwMjYtMDktMjVUMTA6MDA6MTIuNDAwWicsXHJcbiAgICAgICAgICBvdXRjb21lOiAnc3VjY2VlZGVkJyxcclxuICAgICAgICB9fVxyXG4gICAgICAgIHJ1bm5pbmdcclxuICAgICAgLz4sXHJcbiAgICApO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRpdGxlKCfogJfml7YgMTLnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDYwXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRpdGxlKCfogJfml7YgMTLnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICAgIGV4cGVjdChkb2N1bWVudC5xdWVyeVNlbGVjdG9yKCcubm9kZS1kdXJhdGlvbi1zcGlubmVyJykpLm5vdC50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gIH0pO1xyXG5cclxuICBpdC5lYWNoKFsnZmFpbGVkJywgJ2NhbmNlbGxlZCddIGFzIGNvbnN0KSgnJXMg57y65bCR57uI5oCB5pe26Ze05pe25LiN5YaS5YWF57un57ut6K6h5pe2JywgKG91dGNvbWUpID0+IHtcclxuICAgIHJlbmRlcig8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQsIG91dGNvbWUgfX0gLz4pO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ+acquiusOW9lScpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gICAgZXhwZWN0KHZpLmdldFRpbWVyQ291bnQoKSkudG9CZSgwKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDYwXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ+acquiusOW9lScpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gICAgZXhwZWN0KGRvY3VtZW50LnF1ZXJ5U2VsZWN0b3IoJy5ub2RlLWR1cmF0aW9uLXNwaW5uZXInKSkubm90LnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgfSk7XHJcblxyXG4gIGl0KCfmjpLpmJ/kvYbmnKrlvIDlp4vml7bkuI3mmL7npLrmjqjmtYvogJfml7bvvIznnJ/mraPlvIDlp4vlkI7miY3ku44gMCDnp5LpgJLlop4nLCAoKSA9PiB7XHJcbiAgICBjb25zdCB0aW1pbmcgPSB7IG5vZGVJZDogJ25vZGUtMScsIHF1ZXVlZEF0OiAnMjAyNi0wOS0yNVQwOTo1OTo1MC4wMDBaJyB9O1xyXG4gICAgY29uc3QgeyByZXJlbmRlciB9ID0gcmVuZGVyKDxDbG9ja2VkQmFkZ2UgdGltaW5nPXt0aW1pbmd9IHJ1bm5pbmcgLz4pO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJ+acquiusOW9lScpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gICAgYWN0KCgpID0+IHZpLmFkdmFuY2VUaW1lcnNCeVRpbWUoMl8wMDApKTtcclxuICAgIGV4cGVjdChzY3JlZW4uZ2V0QnlUZXh0KCfmnKrorrDlvZUnKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuXHJcbiAgICByZXJlbmRlcig8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyAuLi50aW1pbmcsIHN0YXJ0ZWRBdDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpIH19IHJ1bm5pbmcgLz4pO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRleHQoJzDnp5InKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDFfMDAwKSk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMeenkicpKS50b0JlSW5UaGVEb2N1bWVudCgpO1xyXG4gIH0pO1xyXG5cclxuICBpdC5lYWNoKFtcclxuICAgIHtcclxuICAgICAgdGl0bGU6ICfmnI3liqHnq6/ml7bpl7Tpobrluo/lvILluLjvvIzogJfml7bkuI3lj6/nlKgnLFxyXG4gICAgICB0aW1pbmc6IHsgbm9kZUlkOiAnbm9kZS0xJywgc3RhcnRlZEF0LCBmaW5pc2hlZEF0OiAnMjAyNi0wOS0yNVQwOTo1OTo1OS4wMDBaJyB9LFxyXG4gICAgfSxcclxuICAgIHtcclxuICAgICAgdGl0bGU6ICfmnI3liqHnq6/ml7bpl7TmiLPmmZrkuo7lvZPliY3ml7bpl7TvvIzogJfml7bkuI3lj6/nlKgnLFxyXG4gICAgICB0aW1pbmc6IHsgbm9kZUlkOiAnbm9kZS0xJywgc3RhcnRlZEF0OiAnMjAyNi0wOS0yNVQxMDowMDoxMC4wMDBaJyB9LFxyXG4gICAgfSxcclxuICBdKSgnJHRpdGxl77yM5LiN5bCG5byC5bi45Y+W5pW05Li6IDAg56eSJywgKHsgdGltaW5nLCB0aXRsZSB9KSA9PiB7XHJcbiAgICByZW5kZXIoPENsb2NrZWRCYWRnZSB0aW1pbmc9e3RpbWluZ30gcnVubmluZyAvPik7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGl0bGUodGl0bGUpKS50b0hhdmVUZXh0Q29udGVudCgn6ICX5pe25LiN5Y+v55SoJyk7XHJcbiAgICBhY3QoKCkgPT4gdmkuYWR2YW5jZVRpbWVyc0J5VGltZSgxXzAwMCkpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRCeVRpdGxlKHRpdGxlKSkudG9IYXZlVGV4dENvbnRlbnQoJ+iAl+aXtuS4jeWPr+eUqCcpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5xdWVyeUJ5VGV4dCgnMOenkicpKS5ub3QudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICB9KTtcclxuXHJcbiAgaXQoJ+aXoOazleino+aekOeahOaXtumXtOaIs+S7jeaYvuekuuacquiusOW9lScsICgpID0+IHtcclxuICAgIHJlbmRlcig8Q2xvY2tlZEJhZGdlIHRpbWluZz17eyBub2RlSWQ6ICdub2RlLTEnLCBzdGFydGVkQXQ6ICdpbnZhbGlkJyB9fSBydW5uaW5nIC8+KTtcclxuICAgIGV4cGVjdChzY3JlZW4uZ2V0QnlUZXh0KCfmnKrorrDlvZUnKSkudG9CZUluVGhlRG9jdW1lbnQoKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDFfMDAwKSk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgn5pyq6K6w5b2VJykpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgfSk7XHJcblxyXG4gIGl0KCflpJrkuKroioLngrnlhbHnlKjkuIDkuKrmr4/np5Llrprml7blmajvvIzljZXkuKrlrozmiJDkuI3lvbHlk43lhbbku5boioLngrnvvIzlhajpg6jljbjovb3lkI7lgZzmraInLCAoKSA9PiB7XHJcbiAgICBjb25zdCBzZXRJbnRlcnZhbCA9IHZpLnNweU9uKHdpbmRvdywgJ3NldEludGVydmFsJyk7XHJcbiAgICBjb25zdCBjbGVhckludGVydmFsID0gdmkuc3B5T24od2luZG93LCAnY2xlYXJJbnRlcnZhbCcpO1xyXG4gICAgY29uc3QgeyByZXJlbmRlciwgdW5tb3VudCB9ID0gcmVuZGVyKFxyXG4gICAgICA8PlxyXG4gICAgICAgIDxDbG9ja2VkQmFkZ2UgdGltaW5nPXt7IG5vZGVJZDogJ25vZGUtMScsIHN0YXJ0ZWRBdCB9fSBydW5uaW5nIC8+XHJcbiAgICAgICAgPENsb2NrZWRCYWRnZSB0aW1pbmc9e3sgbm9kZUlkOiAnbm9kZS0yJywgc3RhcnRlZEF0IH19IHJ1bm5pbmcgLz5cclxuICAgICAgPC8+LFxyXG4gICAgKTtcclxuICAgIGV4cGVjdChOT0RFX0RVUkFUSU9OX1RJQ0tfTVMpLnRvQmUoMV8wMDApO1xyXG4gICAgZXhwZWN0KHNldEludGVydmFsKS50b0hhdmVCZWVuQ2FsbGVkVGltZXMoMSk7XHJcbiAgICBleHBlY3Qoc2V0SW50ZXJ2YWwpLnRvSGF2ZUJlZW5DYWxsZWRXaXRoKGV4cGVjdC5hbnkoRnVuY3Rpb24pLCAxXzAwMCk7XHJcbiAgICBleHBlY3QodmkuZ2V0VGltZXJDb3VudCgpKS50b0JlKDEpO1xyXG4gICAgZXhwZWN0KHNjcmVlbi5nZXRBbGxCeVRleHQoJzDnp5InKSkudG9IYXZlTGVuZ3RoKDIpO1xyXG4gICAgYWN0KCgpID0+IHZpLmFkdmFuY2VUaW1lcnNCeVRpbWUoMV8wMDApKTtcclxuICAgIGV4cGVjdChzY3JlZW4uZ2V0QWxsQnlUZXh0KCcx56eSJykpLnRvSGF2ZUxlbmd0aCgyKTtcclxuXHJcbiAgICByZXJlbmRlcihcclxuICAgICAgPD5cclxuICAgICAgICA8Q2xvY2tlZEJhZGdlXHJcbiAgICAgICAgICB0aW1pbmc9e3sgbm9kZUlkOiAnbm9kZS0xJywgc3RhcnRlZEF0LCBmaW5pc2hlZEF0OiBuZXcgRGF0ZSgpLnRvSVNPU3RyaW5nKCkgfX1cclxuICAgICAgICAvPlxyXG4gICAgICAgIDxDbG9ja2VkQmFkZ2UgdGltaW5nPXt7IG5vZGVJZDogJ25vZGUtMicsIHN0YXJ0ZWRBdCB9fSBydW5uaW5nIC8+XHJcbiAgICAgIDwvPixcclxuICAgICk7XHJcbiAgICBleHBlY3QoY2xlYXJJbnRlcnZhbCkubm90LnRvSGF2ZUJlZW5DYWxsZWQoKTtcclxuICAgIGFjdCgoKSA9PiB2aS5hZHZhbmNlVGltZXJzQnlUaW1lKDFfMDAwKSk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGl0bGUoJ+iAl+aXtiAx56eSJykpLnRvQmVJblRoZURvY3VtZW50KCk7XHJcbiAgICBleHBlY3Qoc2NyZWVuLmdldEJ5VGV4dCgnMuenkicpKS50b0hhdmVDbGFzcygnaXMtcnVubmluZycpO1xyXG4gICAgZXhwZWN0KHNldEludGVydmFsKS50b0hhdmVCZWVuQ2FsbGVkVGltZXMoMSk7XHJcbiAgICBleHBlY3QodmkuZ2V0VGltZXJDb3VudCgpKS50b0JlKDEpO1xyXG5cclxuICAgIHVubW91bnQoKTtcclxuICAgIGV4cGVjdChjbGVhckludGVydmFsKS50b0hhdmVCZWVuQ2FsbGVkVGltZXMoMSk7XHJcbiAgICBleHBlY3QodmkuZ2V0VGltZXJDb3VudCgpKS50b0JlKDApO1xyXG4gIH0pO1xyXG59KTtcclxuIl0sImZpbGUiOiJHOi9tdWx0aW1vZGFsLWNhbnZhcy9hcHBzL3dlYi9zcmMvd29ya3NwYWNlL05vZGVEdXJhdGlvbkJhZGdlLnRlc3QudHN4In0=

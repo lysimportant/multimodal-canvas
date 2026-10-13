@@ -1,0 +1,31 @@
+Object.defineProperty(__vite_ssr_exports__, "Input", { enumerable: true, configurable: true, get(){ try { return Input } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/antd@6.6.5_luxon@3.7.2_reac_1ced994a6906ea24d22f0902b231a537/node_modules/antd/lib/index.js", {"importedNames":["Input"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["forwardRef","useImperativeHandle","useRef"]});
+const Input = (0,__vite_ssr_import_2__.forwardRef)(
+  ({ size, className, ...props }, ref) => {
+    const inputRef = (0,__vite_ssr_import_2__.useRef)(null);
+    (0,__vite_ssr_import_2__.useImperativeHandle)(ref, () => inputRef.current.input, []);
+    return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+      (0,__vite_ssr_import_1__.Input),
+      {
+        ...props,
+        ref: inputRef,
+        htmlSize: size,
+        className: ["ui-input", className].filter(Boolean).join(" ")
+      },
+      void 0,
+      false,
+      {
+        fileName: "G:/multimodal-canvas/packages/ui/src/input.tsx",
+        lineNumber: 13,
+        columnNumber: 7
+      },
+      this
+    );
+  }
+);
+Input.displayName = "Input";
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQVlNO0FBWk47QUFDQTtBQU1PLE1BQU0sV0FBUTtBQUFBLEVBQ25CLENBQUMsRUFBRSxNQUFNLFdBQVcsR0FBRyxNQUFNLEdBQUcsUUFBUTtBQUN0QyxVQUFNLGNBQVcsOEJBQWlCLElBQUk7QUFDdEMsa0RBQW9CLEtBQUssTUFBTSxTQUFTLFFBQVMsT0FBUSxDQUFDLENBQUM7QUFDM0QsV0FDRTtBQUFBLFNBQUM7QUFBQTtBQUFBLFFBQ0UsR0FBRztBQUFBLFFBQ0osS0FBSztBQUFBLFFBQ0wsVUFBVTtBQUFBLFFBQ1YsV0FBVyxDQUFDLFlBQVksU0FBUyxFQUFFLE9BQU8sT0FBTyxFQUFFLEtBQUssR0FBRztBQUFBO0FBQUEsTUFKN0Q7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLElBS0E7QUFBQSxFQUVKO0FBQ0Y7QUFDQSxNQUFNLGNBQWMiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImlucHV0LnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBJbnB1dCBhcyBBbnRJbnB1dCwgdHlwZSBJbnB1dFJlZiB9IGZyb20gJ2FudGQnO1xyXG5pbXBvcnQgeyBmb3J3YXJkUmVmLCB1c2VJbXBlcmF0aXZlSGFuZGxlLCB1c2VSZWYsIHR5cGUgSW5wdXRIVE1MQXR0cmlidXRlcyB9IGZyb20gJ3JlYWN0JztcclxuXHJcbi8qKiDlhbzlrrnljp/nlJ/ovpPlhaXlsZ7mgKfjgIFJTUUg5LqL5Lu25LiOIEhUTUxJbnB1dEVsZW1lbnQg5byV55So55qE57uE5Lu25bqT6L6T5YWl5qGG44CCICovXHJcbmV4cG9ydCB0eXBlIElucHV0UHJvcHMgPSBJbnB1dEhUTUxBdHRyaWJ1dGVzPEhUTUxJbnB1dEVsZW1lbnQ+O1xyXG5cclxuLyoqIOWwhiBBbnQgRGVzaWduIOeahOe7hOS7tuW8leeUqOaYoOWwhOWIsOWunumZhSBpbnB1dO+8jOS/neaMgeeOsOacieeEpueCueOAgemAieWMuuS4juihqOWNleS7o+eggeOAgiAqL1xyXG5leHBvcnQgY29uc3QgSW5wdXQgPSBmb3J3YXJkUmVmPEhUTUxJbnB1dEVsZW1lbnQsIElucHV0UHJvcHM+KFxyXG4gICh7IHNpemUsIGNsYXNzTmFtZSwgLi4ucHJvcHMgfSwgcmVmKSA9PiB7XHJcbiAgICBjb25zdCBpbnB1dFJlZiA9IHVzZVJlZjxJbnB1dFJlZj4obnVsbCk7XHJcbiAgICB1c2VJbXBlcmF0aXZlSGFuZGxlKHJlZiwgKCkgPT4gaW5wdXRSZWYuY3VycmVudCEuaW5wdXQhLCBbXSk7XHJcbiAgICByZXR1cm4gKFxyXG4gICAgICA8QW50SW5wdXRcclxuICAgICAgICB7Li4ucHJvcHN9XHJcbiAgICAgICAgcmVmPXtpbnB1dFJlZn1cclxuICAgICAgICBodG1sU2l6ZT17c2l6ZX1cclxuICAgICAgICBjbGFzc05hbWU9e1sndWktaW5wdXQnLCBjbGFzc05hbWVdLmZpbHRlcihCb29sZWFuKS5qb2luKCcgJyl9XHJcbiAgICAgIC8+XHJcbiAgICApO1xyXG4gIH0sXHJcbik7XHJcbklucHV0LmRpc3BsYXlOYW1lID0gJ0lucHV0JztcclxuIl0sImZpbGUiOiJHOi9tdWx0aW1vZGFsLWNhbnZhcy9wYWNrYWdlcy91aS9zcmMvaW5wdXQudHN4In0=

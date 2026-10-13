@@ -1,0 +1,32 @@
+Object.defineProperty(__vite_ssr_exports__, "Button", { enumerable: true, configurable: true, get(){ try { return Button } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/antd@6.6.5_luxon@3.7.2_reac_1ced994a6906ea24d22f0902b231a537/node_modules/antd/lib/index.js", {"importedNames":["Button"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js", {"importedNames":["forwardRef"]});
+const Button = (0,__vite_ssr_import_2__.forwardRef)(
+  ({ variant, size, type = "button", className, color, style, ...props }, ref) => /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    (0,__vite_ssr_import_1__.Button),
+    {
+      ...props,
+      ref,
+      htmlType: type,
+      autoInsertSpace: false,
+      style: { color, ...style },
+      type: variant === "default" ? "primary" : variant === "ghost" ? "text" : "default",
+      danger: variant === "destructive",
+      size: size === "sm" ? "small" : "middle",
+      className: ["ui-button", size === "icon" ? "ui-button-icon" : "", className].filter(Boolean).join(" ")
+    },
+    void 0,
+    false,
+    {
+      fileName: "G:/multimodal-canvas/packages/ui/src/button.tsx",
+      lineNumber: 13,
+      columnNumber: 5
+    },
+    this
+  )
+);
+Button.displayName = "Button";
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQVlJO0FBWko7QUFDQTtBQVNPLE1BQU0sWUFBUztBQUFBLEVBQ3BCLENBQUMsRUFBRSxTQUFTLE1BQU0sT0FBTyxVQUFVLFdBQVcsT0FBTyxPQUFPLEdBQUcsTUFBTSxHQUFHLFFBQ3RFO0FBQUEsT0FBQztBQUFBO0FBQUEsTUFDRSxHQUFHO0FBQUEsTUFDSjtBQUFBLE1BQ0EsVUFBVTtBQUFBLE1BQ1YsaUJBQWlCO0FBQUEsTUFDakIsT0FBTyxFQUFFLE9BQU8sR0FBRyxNQUFNO0FBQUEsTUFDekIsTUFBTSxZQUFZLFlBQVksWUFBWSxZQUFZLFVBQVUsU0FBUztBQUFBLE1BQ3pFLFFBQVEsWUFBWTtBQUFBLE1BQ3BCLE1BQU0sU0FBUyxPQUFPLFVBQVU7QUFBQSxNQUNoQyxXQUFXLENBQUMsYUFBYSxTQUFTLFNBQVMsbUJBQW1CLElBQUksU0FBUyxFQUN4RSxPQUFPLE9BQU8sRUFDZCxLQUFLLEdBQUc7QUFBQTtBQUFBLElBWGI7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBWUE7QUFFSjtBQUNBLE9BQU8sY0FBYyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiYnV0dG9uLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBCdXR0b24gYXMgQW50QnV0dG9uIH0gZnJvbSAnYW50ZCc7XHJcbmltcG9ydCB7IGZvcndhcmRSZWYsIHR5cGUgQnV0dG9uSFRNTEF0dHJpYnV0ZXMgfSBmcm9tICdyZWFjdCc7XHJcblxyXG4vKiog5oyJ6ZKu5L+d55WZ6aG555uu55qE5Y6f55Sf6KGo5Y2V5LqL5Lu25LiOIHZhcmlhbnQg6K+t5LmJ77yM5riy5p+T5ZKM54q25oCB5Lqk55SxIEFudCBEZXNpZ27jgIIgKi9cclxuZXhwb3J0IHR5cGUgQnV0dG9uUHJvcHMgPSBCdXR0b25IVE1MQXR0cmlidXRlczxIVE1MQnV0dG9uRWxlbWVudD4gJiB7XHJcbiAgdmFyaWFudD86ICdkZWZhdWx0JyB8ICdzZWNvbmRhcnknIHwgJ291dGxpbmUnIHwgJ2dob3N0JyB8ICdkZXN0cnVjdGl2ZSc7XHJcbiAgc2l6ZT86ICdkZWZhdWx0JyB8ICdzbScgfCAnaWNvbic7XHJcbn07XHJcblxyXG4vKiog57uf5LiA5oyJ6ZKu5YWl5Y+j77ybdHlwZSDku43ooajnpLrljp/nlJ/ooajljZXooYzkuLrvvIzkuI3kuI4gQW50IERlc2lnbiDnmoTlpJbop4IgdHlwZSDmt7fnlKjjgIIgKi9cclxuZXhwb3J0IGNvbnN0IEJ1dHRvbiA9IGZvcndhcmRSZWY8SFRNTEJ1dHRvbkVsZW1lbnQsIEJ1dHRvblByb3BzPihcclxuICAoeyB2YXJpYW50LCBzaXplLCB0eXBlID0gJ2J1dHRvbicsIGNsYXNzTmFtZSwgY29sb3IsIHN0eWxlLCAuLi5wcm9wcyB9LCByZWYpID0+IChcclxuICAgIDxBbnRCdXR0b25cclxuICAgICAgey4uLnByb3BzfVxyXG4gICAgICByZWY9e3JlZn1cclxuICAgICAgaHRtbFR5cGU9e3R5cGV9XHJcbiAgICAgIGF1dG9JbnNlcnRTcGFjZT17ZmFsc2V9XHJcbiAgICAgIHN0eWxlPXt7IGNvbG9yLCAuLi5zdHlsZSB9fVxyXG4gICAgICB0eXBlPXt2YXJpYW50ID09PSAnZGVmYXVsdCcgPyAncHJpbWFyeScgOiB2YXJpYW50ID09PSAnZ2hvc3QnID8gJ3RleHQnIDogJ2RlZmF1bHQnfVxyXG4gICAgICBkYW5nZXI9e3ZhcmlhbnQgPT09ICdkZXN0cnVjdGl2ZSd9XHJcbiAgICAgIHNpemU9e3NpemUgPT09ICdzbScgPyAnc21hbGwnIDogJ21pZGRsZSd9XHJcbiAgICAgIGNsYXNzTmFtZT17Wyd1aS1idXR0b24nLCBzaXplID09PSAnaWNvbicgPyAndWktYnV0dG9uLWljb24nIDogJycsIGNsYXNzTmFtZV1cclxuICAgICAgICAuZmlsdGVyKEJvb2xlYW4pXHJcbiAgICAgICAgLmpvaW4oJyAnKX1cclxuICAgIC8+XHJcbiAgKSxcclxuKTtcclxuQnV0dG9uLmRpc3BsYXlOYW1lID0gJ0J1dHRvbic7XHJcbiJdLCJmaWxlIjoiRzovbXVsdGltb2RhbC1jYW52YXMvcGFja2FnZXMvdWkvc3JjL2J1dHRvbi50c3gifQ==

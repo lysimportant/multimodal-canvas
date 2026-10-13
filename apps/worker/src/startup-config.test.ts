@@ -280,6 +280,7 @@ describe('Worker production startup configuration', () => {
     const issues = validateWorkerStartupConfiguration({
       ...productionEnvironment,
       NEW_API_TIMEOUT_MS: '120000',
+      RESULT_ASSET_S3_TIMEOUT_MS: '300000',
       NEW_API_MAX_RESPONSE_BYTES: '52428800',
       NEW_API_VIDEO_POLL_INTERVAL_MS: '2000',
       NEW_API_VIDEO_MAX_CONTENT_BYTES: '52428800',
@@ -299,6 +300,21 @@ describe('Worker production startup configuration', () => {
       expect(issues).toContainEqual({
         variable: 'NEW_API_TIMEOUT_MS',
         message: 'must be a positive safe integer',
+      });
+    },
+  );
+
+  it.each(['0', '-1', '1.5', '2147483648', 'not-a-number', '  '])(
+    'rejects invalid S3 archive timeout %s in production',
+    (value) => {
+      expect(
+        validateWorkerStartupConfiguration({
+          ...productionEnvironment,
+          RESULT_ASSET_S3_TIMEOUT_MS: value,
+        }),
+      ).toContainEqual({
+        variable: 'RESULT_ASSET_S3_TIMEOUT_MS',
+        message: 'must be a positive safe integer no greater than 2147483647',
       });
     },
   );

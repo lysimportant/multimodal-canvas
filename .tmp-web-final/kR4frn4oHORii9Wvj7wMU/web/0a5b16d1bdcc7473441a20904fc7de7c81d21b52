@@ -1,0 +1,113 @@
+Object.defineProperty(__vite_ssr_exports__, "ProjectCanvasPage", { enumerable: true, configurable: true, get(){ try { return ProjectCanvasPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["Fragment","jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/packages/ui/src/index.ts", {"importedNames":["Button"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["AlertTriangle","FolderX","LoaderCircle","RotateCcw"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink","appPaths"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/pages/PageFrame.tsx", {"importedNames":["PageFrame"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/src/pages/project-canvas-page.css");
+function ProjectCanvasPage({
+  projectId,
+  status,
+  children,
+  error,
+  onRetry,
+  onNavigate
+}) {
+  if (status === "ready") return children;
+  const route = {
+    id: "project",
+    pathname: __vite_ssr_import_3__.appPaths.project(projectId),
+    projectId
+  };
+  const isMissing = status === "not-found";
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_4__.PageFrame), { route, projectId, onNavigate, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "mc-project-route-state", "aria-live": "polite", children: status === "loading" ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.LoaderCircle), { className: "spin", size: 26, "aria-hidden": "true" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 41,
+      columnNumber: 13
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "正在加载项目画布" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 42,
+      columnNumber: 13
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: "正在恢复节点、连线、资源和运行状态…" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 43,
+      columnNumber: 13
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+    lineNumber: 40,
+    columnNumber: 11
+  }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_0__.Fragment), { children: [
+    isMissing ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.FolderX), { size: 30, "aria-hidden": "true" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 48,
+      columnNumber: 15
+    }, this) : /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.AlertTriangle), { size: 30, "aria-hidden": "true" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 50,
+      columnNumber: 15
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: isMissing ? "项目不存在" : "项目加载失败" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 52,
+      columnNumber: 13
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: isMissing ? `无法访问项目 ${projectId}。` : error ?? "请稍后重试。" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 53,
+      columnNumber: 13
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+      status === "error" && onRetry && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Button), { type: "button", onClick: onRetry, children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.RotateCcw), { size: 15, "aria-hidden": "true" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+          lineNumber: 57,
+          columnNumber: 19
+        }, this),
+        "重新加载"
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+        lineNumber: 56,
+        columnNumber: 17
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_3__.AppLink),
+        {
+          to: __vite_ssr_import_3__.appPaths.workspace,
+          onClick: (event) => onNavigate?.(__vite_ssr_import_3__.appPaths.workspace, event),
+          children: "返回工作台"
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+          lineNumber: 61,
+          columnNumber: 15
+        },
+        this
+      )
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+      lineNumber: 54,
+      columnNumber: 13
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+    lineNumber: 46,
+    columnNumber: 11
+  }, this) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+    lineNumber: 38,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/ProjectCanvasPage.tsx",
+    lineNumber: 37,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQXVDVTtBQXZDVjtBQUNBO0FBR0E7QUFDQTtBQUVBO0FBV08sU0FBUyxrQkFBa0I7QUFBQSxFQUNoQztBQUFBLEVBQ0E7QUFBQSxFQUNBO0FBQUEsRUFDQTtBQUFBLEVBQ0E7QUFBQSxFQUNBO0FBQ0YsR0FBMkI7QUFDekIsTUFBSSxXQUFXLFFBQVMsUUFBTztBQUUvQixRQUFNLFFBQWtCO0FBQUEsSUFDdEIsSUFBSTtBQUFBLElBQ0osVUFBVSwrQkFBUyxRQUFRLFNBQVM7QUFBQSxJQUNwQztBQUFBLEVBQ0Y7QUFDQSxRQUFNLFlBQVksV0FBVztBQUU3QixTQUNFLG9EQUFDLG9DQUFVLE9BQWMsV0FBc0IsWUFDN0MsMkRBQUMsYUFBUSxXQUFVLDBCQUF5QixhQUFVLFVBQ25ELHFCQUFXLFlBQ1YsdUZBQ0U7QUFBQSx3REFBQyx1Q0FBYSxXQUFVLFFBQU8sTUFBTSxJQUFJLGVBQVksVUFBckQ7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUE0RDtBQUFBLElBQzVELGlEQUFDLFFBQUcsd0JBQUo7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUFZO0FBQUEsSUFDWixpREFBQyxPQUFFLGtDQUFIO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FBcUI7QUFBQSxPQUh2QjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBSUEsSUFFQSx1RkFDRztBQUFBLGdCQUNDLG9EQUFDLGtDQUFRLE1BQU0sSUFBSSxlQUFZLFVBQS9CO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FBc0MsSUFFdEMsb0RBQUMsd0NBQWMsTUFBTSxJQUFJLGVBQVksVUFBckM7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUE0QztBQUFBLElBRTlDLGlEQUFDLFFBQUksc0JBQVksVUFBVSxZQUEzQjtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBQW9DO0FBQUEsSUFDcEMsaURBQUMsT0FBRyxzQkFBWSxVQUFVLFNBQVMsTUFBTyxTQUFTLFlBQW5EO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FBNkQ7QUFBQSxJQUM3RCxpREFBQyxTQUNFO0FBQUEsaUJBQVcsV0FBVyxXQUNyQixvREFBQyxpQ0FBTyxNQUFLLFVBQVMsU0FBUyxTQUM3QjtBQUFBLDREQUFDLG9DQUFVLE1BQU0sSUFBSSxlQUFZLFVBQWpDO0FBQUE7QUFBQTtBQUFBO0FBQUEsZUFBd0M7QUFBQSxRQUFFO0FBQUEsV0FENUM7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQUdBO0FBQUEsTUFFRjtBQUFBLFdBQUM7QUFBQTtBQUFBLFVBQ0MsSUFBSSwrQkFBUztBQUFBLFVBQ2IsU0FBUyxDQUFDLFVBQVUsYUFBYSwrQkFBUyxXQUFXLEtBQUs7QUFBQSxVQUMzRDtBQUFBO0FBQUEsUUFIRDtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUEsTUFLQTtBQUFBLFNBWkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQWFBO0FBQUEsT0FyQkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQXNCQSxLQTlCSjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBZ0NBLEtBakNGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FrQ0E7QUFFSiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiUHJvamVjdENhbnZhc1BhZ2UudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IEJ1dHRvbiB9IGZyb20gJ0BtdWx0aW1vZGFsLWNhbnZhcy91aSc7XHJcbmltcG9ydCB7IEFsZXJ0VHJpYW5nbGUsIEZvbGRlclgsIExvYWRlckNpcmNsZSwgUm90YXRlQ2N3IH0gZnJvbSAnbHVjaWRlLXJlYWN0JztcclxuaW1wb3J0IHR5cGUgeyBNb3VzZUV2ZW50LCBSZWFjdE5vZGUgfSBmcm9tICdyZWFjdCc7XHJcblxyXG5pbXBvcnQgeyBBcHBMaW5rLCBhcHBQYXRocywgdHlwZSBBcHBSb3V0ZSB9IGZyb20gJy4uL3JvdXRpbmcnO1xyXG5pbXBvcnQgeyBQYWdlRnJhbWUgfSBmcm9tICcuL1BhZ2VGcmFtZSc7XHJcblxyXG5pbXBvcnQgJy4vcHJvamVjdC1jYW52YXMtcGFnZS5jc3MnO1xyXG5cclxuZXhwb3J0IHR5cGUgUHJvamVjdENhbnZhc1BhZ2VQcm9wcyA9IHtcclxuICBwcm9qZWN0SWQ6IHN0cmluZztcclxuICBzdGF0dXM6ICdsb2FkaW5nJyB8ICdyZWFkeScgfCAnbm90LWZvdW5kJyB8ICdlcnJvcic7XHJcbiAgY2hpbGRyZW4/OiBSZWFjdE5vZGU7XHJcbiAgZXJyb3I/OiBzdHJpbmcgfCBudWxsO1xyXG4gIG9uUmV0cnk/OiAoKSA9PiB2b2lkO1xyXG4gIG9uTmF2aWdhdGU/OiAoaHJlZjogc3RyaW5nLCBldmVudDogTW91c2VFdmVudDxIVE1MQW5jaG9yRWxlbWVudD4pID0+IHZvaWQ7XHJcbn07XHJcblxyXG5leHBvcnQgZnVuY3Rpb24gUHJvamVjdENhbnZhc1BhZ2Uoe1xyXG4gIHByb2plY3RJZCxcclxuICBzdGF0dXMsXHJcbiAgY2hpbGRyZW4sXHJcbiAgZXJyb3IsXHJcbiAgb25SZXRyeSxcclxuICBvbk5hdmlnYXRlLFxyXG59OiBQcm9qZWN0Q2FudmFzUGFnZVByb3BzKSB7XHJcbiAgaWYgKHN0YXR1cyA9PT0gJ3JlYWR5JykgcmV0dXJuIGNoaWxkcmVuO1xyXG5cclxuICBjb25zdCByb3V0ZTogQXBwUm91dGUgPSB7XHJcbiAgICBpZDogJ3Byb2plY3QnLFxyXG4gICAgcGF0aG5hbWU6IGFwcFBhdGhzLnByb2plY3QocHJvamVjdElkKSxcclxuICAgIHByb2plY3RJZCxcclxuICB9O1xyXG4gIGNvbnN0IGlzTWlzc2luZyA9IHN0YXR1cyA9PT0gJ25vdC1mb3VuZCc7XHJcblxyXG4gIHJldHVybiAoXHJcbiAgICA8UGFnZUZyYW1lIHJvdXRlPXtyb3V0ZX0gcHJvamVjdElkPXtwcm9qZWN0SWR9IG9uTmF2aWdhdGU9e29uTmF2aWdhdGV9PlxyXG4gICAgICA8c2VjdGlvbiBjbGFzc05hbWU9XCJtYy1wcm9qZWN0LXJvdXRlLXN0YXRlXCIgYXJpYS1saXZlPVwicG9saXRlXCI+XHJcbiAgICAgICAge3N0YXR1cyA9PT0gJ2xvYWRpbmcnID8gKFxyXG4gICAgICAgICAgPD5cclxuICAgICAgICAgICAgPExvYWRlckNpcmNsZSBjbGFzc05hbWU9XCJzcGluXCIgc2l6ZT17MjZ9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XHJcbiAgICAgICAgICAgIDxoMT7mraPlnKjliqDovb3pobnnm67nlLvluIM8L2gxPlxyXG4gICAgICAgICAgICA8cD7mraPlnKjmgaLlpI3oioLngrnjgIHov57nur/jgIHotYTmupDlkozov5DooYznirbmgIHigKY8L3A+XHJcbiAgICAgICAgICA8Lz5cclxuICAgICAgICApIDogKFxyXG4gICAgICAgICAgPD5cclxuICAgICAgICAgICAge2lzTWlzc2luZyA/IChcclxuICAgICAgICAgICAgICA8Rm9sZGVyWCBzaXplPXszMH0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cclxuICAgICAgICAgICAgKSA6IChcclxuICAgICAgICAgICAgICA8QWxlcnRUcmlhbmdsZSBzaXplPXszMH0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cclxuICAgICAgICAgICAgKX1cclxuICAgICAgICAgICAgPGgxPntpc01pc3NpbmcgPyAn6aG555uu5LiN5a2Y5ZyoJyA6ICfpobnnm67liqDovb3lpLHotKUnfTwvaDE+XHJcbiAgICAgICAgICAgIDxwPntpc01pc3NpbmcgPyBg5peg5rOV6K6/6Zeu6aG555uuICR7cHJvamVjdElkfeOAgmAgOiAoZXJyb3IgPz8gJ+ivt+eojeWQjumHjeivleOAgicpfTwvcD5cclxuICAgICAgICAgICAgPGRpdj5cclxuICAgICAgICAgICAgICB7c3RhdHVzID09PSAnZXJyb3InICYmIG9uUmV0cnkgJiYgKFxyXG4gICAgICAgICAgICAgICAgPEJ1dHRvbiB0eXBlPVwiYnV0dG9uXCIgb25DbGljaz17b25SZXRyeX0+XHJcbiAgICAgICAgICAgICAgICAgIDxSb3RhdGVDY3cgc2l6ZT17MTV9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XHJcbiAgICAgICAgICAgICAgICAgIOmHjeaWsOWKoOi9vVxyXG4gICAgICAgICAgICAgICAgPC9CdXR0b24+XHJcbiAgICAgICAgICAgICAgKX1cclxuICAgICAgICAgICAgICA8QXBwTGlua1xyXG4gICAgICAgICAgICAgICAgdG89e2FwcFBhdGhzLndvcmtzcGFjZX1cclxuICAgICAgICAgICAgICAgIG9uQ2xpY2s9eyhldmVudCkgPT4gb25OYXZpZ2F0ZT8uKGFwcFBhdGhzLndvcmtzcGFjZSwgZXZlbnQpfVxyXG4gICAgICAgICAgICAgID5cclxuICAgICAgICAgICAgICAgIOi/lOWbnuW3peS9nOWPsFxyXG4gICAgICAgICAgICAgIDwvQXBwTGluaz5cclxuICAgICAgICAgICAgPC9kaXY+XHJcbiAgICAgICAgICA8Lz5cclxuICAgICAgICApfVxyXG4gICAgICA8L3NlY3Rpb24+XHJcbiAgICA8L1BhZ2VGcmFtZT5cclxuICApO1xyXG59XHJcbiJdLCJmaWxlIjoiL3NyYy9wYWdlcy9Qcm9qZWN0Q2FudmFzUGFnZS50c3gifQ==

@@ -1,0 +1,87 @@
+Object.defineProperty(__vite_ssr_exports__, "NotFoundPage", { enumerable: true, configurable: true, get(){ try { return NotFoundPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["ArrowLeft","FileQuestion"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/src/routing/index.ts", {"importedNames":["AppLink","appPaths"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/pages/PageFrame.tsx", {"importedNames":["PageFrame"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/pages/not-found-page.css");
+function NotFoundPage({
+  pathname,
+  onNavigate
+}) {
+  const route = { id: "not-found", pathname };
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_3__.PageFrame), { route, onNavigate, children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("section", { className: "mc-not-found-page", children: [
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "mc-not-found-code", children: "404" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+      lineNumber: 20,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.FileQuestion), { size: 31, "aria-hidden": "true" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+      lineNumber: 21,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "页面不存在" }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+      lineNumber: 22,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { children: [
+      "没有找到路径 ",
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("code", { children: pathname }, void 0, false, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+        lineNumber: 24,
+        columnNumber: 18
+      }, this),
+      "，它可能已移动或输入有误。"
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+      lineNumber: 23,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { children: [
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.AppLink), { to: __vite_ssr_import_2__.appPaths.home, onClick: (event) => onNavigate?.(__vite_ssr_import_2__.appPaths.home, event), children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.ArrowLeft), { size: 15, "aria-hidden": "true" }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+          lineNumber: 28,
+          columnNumber: 13
+        }, this),
+        "返回主页"
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+        lineNumber: 27,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+        (0,__vite_ssr_import_2__.AppLink),
+        {
+          to: __vite_ssr_import_2__.appPaths.workspace,
+          onClick: (event) => onNavigate?.(__vite_ssr_import_2__.appPaths.workspace, event),
+          children: "前往工作台"
+        },
+        void 0,
+        false,
+        {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+          lineNumber: 31,
+          columnNumber: 11
+        },
+        this
+      )
+    ] }, void 0, true, {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+      lineNumber: 26,
+      columnNumber: 9
+    }, this)
+  ] }, void 0, true, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+    lineNumber: 19,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/pages/NotFoundPage.tsx",
+    lineNumber: 18,
+    columnNumber: 5
+  }, this);
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQW1CUTtBQW5CUjtBQUdBO0FBQ0E7QUFFQTtBQUVPLFNBQVMsYUFBYTtBQUFBLEVBQzNCO0FBQUEsRUFDQTtBQUNGLEdBR0c7QUFDRCxRQUFNLFFBQWtCLEVBQUUsSUFBSSxhQUFhLFNBQVM7QUFDcEQsU0FDRSxvREFBQyxvQ0FBVSxPQUFjLFlBQ3ZCLDJEQUFDLGFBQVEsV0FBVSxxQkFDakI7QUFBQSxxREFBQyxVQUFLLFdBQVUscUJBQW9CLG1CQUFwQztBQUFBO0FBQUE7QUFBQTtBQUFBLFdBQXVDO0FBQUEsSUFDdkMsb0RBQUMsdUNBQWEsTUFBTSxJQUFJLGVBQVksVUFBcEM7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUEyQztBQUFBLElBQzNDLGlEQUFDLFFBQUcscUJBQUo7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQUFTO0FBQUEsSUFDVCxpREFBQyxPQUFFO0FBQUE7QUFBQSxNQUNNLGlEQUFDLFVBQU0sc0JBQVA7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQUFnQjtBQUFBLE1BQU87QUFBQSxTQURoQztBQUFBO0FBQUE7QUFBQTtBQUFBLFdBRUE7QUFBQSxJQUNBLGlEQUFDLFNBQ0M7QUFBQSwwREFBQyxrQ0FBUSxJQUFJLCtCQUFTLE1BQU0sU0FBUyxDQUFDLFVBQVUsYUFBYSwrQkFBUyxNQUFNLEtBQUssR0FDL0U7QUFBQSw0REFBQyxvQ0FBVSxNQUFNLElBQUksZUFBWSxVQUFqQztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBQXdDO0FBQUEsUUFBRTtBQUFBLFdBRDVDO0FBQUE7QUFBQTtBQUFBO0FBQUEsYUFHQTtBQUFBLE1BQ0E7QUFBQSxXQUFDO0FBQUE7QUFBQSxVQUNDLElBQUksK0JBQVM7QUFBQSxVQUNiLFNBQVMsQ0FBQyxVQUFVLGFBQWEsK0JBQVMsV0FBVyxLQUFLO0FBQUEsVUFDM0Q7QUFBQTtBQUFBLFFBSEQ7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLE1BS0E7QUFBQSxTQVZGO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0FXQTtBQUFBLE9BbEJGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FtQkEsS0FwQkY7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQXFCQTtBQUVKIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJOb3RGb3VuZFBhZ2UudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IEFycm93TGVmdCwgRmlsZVF1ZXN0aW9uIH0gZnJvbSAnbHVjaWRlLXJlYWN0JztcbmltcG9ydCB0eXBlIHsgTW91c2VFdmVudCB9IGZyb20gJ3JlYWN0JztcblxuaW1wb3J0IHsgQXBwTGluaywgYXBwUGF0aHMsIHR5cGUgQXBwUm91dGUgfSBmcm9tICcuLi9yb3V0aW5nJztcbmltcG9ydCB7IFBhZ2VGcmFtZSB9IGZyb20gJy4vUGFnZUZyYW1lJztcblxuaW1wb3J0ICcuL25vdC1mb3VuZC1wYWdlLmNzcyc7XG5cbmV4cG9ydCBmdW5jdGlvbiBOb3RGb3VuZFBhZ2Uoe1xuICBwYXRobmFtZSxcbiAgb25OYXZpZ2F0ZSxcbn06IHtcbiAgcGF0aG5hbWU6IHN0cmluZztcbiAgb25OYXZpZ2F0ZT86IChocmVmOiBzdHJpbmcsIGV2ZW50OiBNb3VzZUV2ZW50PEhUTUxBbmNob3JFbGVtZW50PikgPT4gdm9pZDtcbn0pIHtcbiAgY29uc3Qgcm91dGU6IEFwcFJvdXRlID0geyBpZDogJ25vdC1mb3VuZCcsIHBhdGhuYW1lIH07XG4gIHJldHVybiAoXG4gICAgPFBhZ2VGcmFtZSByb3V0ZT17cm91dGV9IG9uTmF2aWdhdGU9e29uTmF2aWdhdGV9PlxuICAgICAgPHNlY3Rpb24gY2xhc3NOYW1lPVwibWMtbm90LWZvdW5kLXBhZ2VcIj5cbiAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwibWMtbm90LWZvdW5kLWNvZGVcIj40MDQ8L3NwYW4+XG4gICAgICAgIDxGaWxlUXVlc3Rpb24gc2l6ZT17MzF9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XG4gICAgICAgIDxoMT7pobXpnaLkuI3lrZjlnKg8L2gxPlxuICAgICAgICA8cD5cbiAgICAgICAgICDmsqHmnInmib7liLDot6/lvoQgPGNvZGU+e3BhdGhuYW1lfTwvY29kZT7vvIzlroPlj6/og73lt7Lnp7vliqjmiJbovpPlhaXmnInor6/jgIJcbiAgICAgICAgPC9wPlxuICAgICAgICA8ZGl2PlxuICAgICAgICAgIDxBcHBMaW5rIHRvPXthcHBQYXRocy5ob21lfSBvbkNsaWNrPXsoZXZlbnQpID0+IG9uTmF2aWdhdGU/LihhcHBQYXRocy5ob21lLCBldmVudCl9PlxuICAgICAgICAgICAgPEFycm93TGVmdCBzaXplPXsxNX0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cbiAgICAgICAgICAgIOi/lOWbnuS4u+mhtVxuICAgICAgICAgIDwvQXBwTGluaz5cbiAgICAgICAgICA8QXBwTGlua1xuICAgICAgICAgICAgdG89e2FwcFBhdGhzLndvcmtzcGFjZX1cbiAgICAgICAgICAgIG9uQ2xpY2s9eyhldmVudCkgPT4gb25OYXZpZ2F0ZT8uKGFwcFBhdGhzLndvcmtzcGFjZSwgZXZlbnQpfVxuICAgICAgICAgID5cbiAgICAgICAgICAgIOWJjeW+gOW3peS9nOWPsFxuICAgICAgICAgIDwvQXBwTGluaz5cbiAgICAgICAgPC9kaXY+XG4gICAgICA8L3NlY3Rpb24+XG4gICAgPC9QYWdlRnJhbWU+XG4gICk7XG59XG4iXSwiZmlsZSI6Ii9zcmMvcGFnZXMvTm90Rm91bmRQYWdlLnRzeCJ9

@@ -113,8 +113,43 @@ describe('PrismaResultAssetArchiver', () => {
         method === 'put'
           ? storage.put('media-test/object', Buffer.from('media'))
           : storage.delete('media-test/object'),
-      ).rejects.toMatchObject({ name: 'AbortError' });
+      ).rejects.toMatchObject({
+        name: 'ResultStorageTimeoutError',
+        message: `对象存储${method === 'put' ? '上传' : '删除'}超时（100 毫秒）`,
+      });
     } finally {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    }
+  });
+
+  it('allows a five-minute video upload while keeping cleanup requests short', async () => {
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const storage = new WorkerS3BlobStore('media-test', {
+      endpoint: `http://127.0.0.1:${address.port}`,
+      forcePathStyle: true,
+      accessKeyId: 'synthetic-test-user',
+      secretAccessKey: 'synthetic-test-secret',
+    });
+    try {
+      await storage.put('media-test/video', Buffer.from('video'), 'video/mp4');
+      await storage.delete('media-test/video');
+      expect(timeoutSpy.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([
+        300_000, 30_000,
+      ]);
+    } finally {
+      timeoutSpy.mockRestore();
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
       server.closeAllConnections();
       await closed;

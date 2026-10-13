@@ -1,0 +1,178 @@
+Object.defineProperty(__vite_ssr_exports__, "SettingsPage", { enumerable: true, configurable: true, get(){ try { return SettingsPage } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/packages/ui/src/index.ts", {"importedNames":["Button"]});
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/lucide-react@1.33.0_react@19.2.8/node_modules/lucide-react/dist/cjs/lucide-react.js", {"importedNames":["AlertTriangle","ArrowUpRight","RotateCcw","Settings2"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/src/pages/PageFrame.tsx", {"importedNames":["PageFrame"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/src/pages/settings-page.css");
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/src/workspace/contracts.ts", {"importedNames":["PUBLIC_API_CATALOG_URL"]});
+function SettingsPage({
+  children,
+  projectId,
+  projectName,
+  isLoading = false,
+  error,
+  onRetry,
+  onNavigate
+}) {
+  const route = {
+    id: "settings",
+    pathname: "/settings",
+    ...projectId ? { projectId } : {}
+  };
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+    (0,__vite_ssr_import_3__.PageFrame),
+    {
+      route,
+      projectId,
+      projectName,
+      onNavigate,
+      mainClassName: "mc-settings-page",
+      children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-page-container", children: [
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("header", { className: "mc-settings-heading", children: [
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-settings-heading-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.Settings2), { size: 21 }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+            lineNumber: 54,
+            columnNumber: 13
+          }, this) }, void 0, false, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+            lineNumber: 53,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-settings-heading-copy", children: [
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("h1", { children: "New API 与模型设置" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+              lineNumber: 57,
+              columnNumber: 13
+            }, this),
+            /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("p", { className: "mc-settings-context", "aria-label": "设置范围", children: projectId ? `当前项目：${projectName ?? projectId}` : "当前账号" }, void 0, false, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+              lineNumber: 58,
+              columnNumber: 13
+            }, this)
+          ] }, void 0, true, {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+            lineNumber: 56,
+            columnNumber: 11
+          }, this),
+          /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+            "a",
+            {
+              className: "mc-settings-api-ad",
+              href: __vite_ssr_import_5__.PUBLIC_API_CATALOG_URL,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              children: [
+                "打开 New API",
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.ArrowUpRight), { size: 15, "aria-hidden": "true" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                  lineNumber: 69,
+                  columnNumber: 13
+                }, this)
+              ]
+            },
+            void 0,
+            true,
+            {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+              lineNumber: 62,
+              columnNumber: 11
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+          lineNumber: 52,
+          columnNumber: 9
+        }, this),
+        /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-settings-layout", children: /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(
+          "section",
+          {
+            className: "mc-settings-content",
+            "aria-label": "New API 设置内容",
+            "aria-busy": isLoading,
+            children: isLoading ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-settings-state", role: "status", "aria-live": "polite", children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { className: "mc-settings-loading-bar" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 81,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: "正在加载设置" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 82,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: "正在读取分组状态和模型目录…" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 83,
+                columnNumber: 17
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+              lineNumber: 80,
+              columnNumber: 15
+            }, this) : error ? /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("div", { className: "mc-settings-state is-error", role: "alert", children: [
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.AlertTriangle), { size: 22, "aria-hidden": "true" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 87,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("strong", { children: "设置加载失败" }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 88,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("span", { children: error }, void 0, false, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 89,
+                columnNumber: 17
+              }, this),
+              onRetry && /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_1__.Button), { type: "button", onClick: onRetry, children: [
+                /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)((0,__vite_ssr_import_2__.RotateCcw), { size: 14, "aria-hidden": "true" }, void 0, false, {
+                  fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                  lineNumber: 92,
+                  columnNumber: 21
+                }, this),
+                "重新加载"
+              ] }, void 0, true, {
+                fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+                lineNumber: 91,
+                columnNumber: 19
+              }, this)
+            ] }, void 0, true, {
+              fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+              lineNumber: 86,
+              columnNumber: 15
+            }, this) : children
+          },
+          void 0,
+          false,
+          {
+            fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+            lineNumber: 74,
+            columnNumber: 11
+          },
+          this
+        ) }, void 0, false, {
+          fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+          lineNumber: 73,
+          columnNumber: 9
+        }, this)
+      ] }, void 0, true, {
+        fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+        lineNumber: 51,
+        columnNumber: 7
+      }, this)
+    },
+    void 0,
+    false,
+    {
+      fileName: "G:/multimodal-canvas/apps/web/src/pages/SettingsPage.tsx",
+      lineNumber: 44,
+      columnNumber: 5
+    },
+    this
+  );
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQXFEWTtBQXJEWjtBQUNBO0FBSUE7QUFFQTtBQUNBO0FBbUJPLFNBQVMsYUFBYTtBQUFBLEVBQzNCO0FBQUEsRUFDQTtBQUFBLEVBQ0E7QUFBQSxFQUNBLFlBQVk7QUFBQSxFQUNaO0FBQUEsRUFDQTtBQUFBLEVBQ0E7QUFDRixHQUFzQjtBQUNwQixRQUFNLFFBQWtCO0FBQUEsSUFDdEIsSUFBSTtBQUFBLElBQ0osVUFBVTtBQUFBLElBQ1YsR0FBSSxZQUFZLEVBQUUsVUFBVSxJQUFJLENBQUM7QUFBQSxFQUNuQztBQUVBLFNBQ0U7QUFBQSxPQUFDO0FBQUE7QUFBQSxNQUNDO0FBQUEsTUFDQTtBQUFBLE1BQ0E7QUFBQSxNQUNBO0FBQUEsTUFDQSxlQUFjO0FBQUEsTUFFZCwyREFBQyxTQUFJLFdBQVUscUJBQ2I7QUFBQSx5REFBQyxZQUFPLFdBQVUsdUJBQ2hCO0FBQUEsMkRBQUMsU0FBSSxXQUFVLDRCQUEyQixlQUFZLFFBQ3BELDhEQUFDLG9DQUFVLE1BQU0sTUFBakI7QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFBcUIsS0FEdkI7QUFBQTtBQUFBO0FBQUE7QUFBQSxpQkFFQTtBQUFBLFVBQ0EsaURBQUMsU0FBSSxXQUFVLDRCQUNiO0FBQUEsNkRBQUMsUUFBRyw2QkFBSjtBQUFBO0FBQUE7QUFBQTtBQUFBLG1CQUFpQjtBQUFBLFlBQ2pCLGlEQUFDLE9BQUUsV0FBVSx1QkFBc0IsY0FBVyxRQUMzQyxzQkFBWSxRQUFRLGVBQWUsU0FBUyxLQUFLLFVBRHBEO0FBQUE7QUFBQTtBQUFBO0FBQUEsbUJBRUE7QUFBQSxlQUpGO0FBQUE7QUFBQTtBQUFBO0FBQUEsaUJBS0E7QUFBQSxVQUNBO0FBQUEsWUFBQztBQUFBO0FBQUEsY0FDQyxXQUFVO0FBQUEsY0FDVixNQUFNO0FBQUEsY0FDTixRQUFPO0FBQUEsY0FDUCxLQUFJO0FBQUEsY0FDTDtBQUFBO0FBQUEsZ0JBRUMsb0RBQUMsdUNBQWEsTUFBTSxJQUFJLGVBQVksVUFBcEM7QUFBQTtBQUFBO0FBQUE7QUFBQSx1QkFBMkM7QUFBQTtBQUFBO0FBQUEsWUFQN0M7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLFVBUUE7QUFBQSxhQWxCRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBbUJBO0FBQUEsUUFFQSxpREFBQyxTQUFJLFdBQVUsc0JBQ2I7QUFBQSxVQUFDO0FBQUE7QUFBQSxZQUNDLFdBQVU7QUFBQSxZQUNWLGNBQVc7QUFBQSxZQUNYLGFBQVc7QUFBQSxZQUVWLHNCQUNDLGlEQUFDLFNBQUksV0FBVSxxQkFBb0IsTUFBSyxVQUFTLGFBQVUsVUFDekQ7QUFBQSwrREFBQyxVQUFLLFdBQVUsNkJBQWhCO0FBQUE7QUFBQTtBQUFBO0FBQUEscUJBQTBDO0FBQUEsY0FDMUMsaURBQUMsWUFBTyxzQkFBUjtBQUFBO0FBQUE7QUFBQTtBQUFBLHFCQUFjO0FBQUEsY0FDZCxpREFBQyxVQUFLLDhCQUFOO0FBQUE7QUFBQTtBQUFBO0FBQUEscUJBQW9CO0FBQUEsaUJBSHRCO0FBQUE7QUFBQTtBQUFBO0FBQUEsbUJBSUEsSUFDRSxRQUNGLGlEQUFDLFNBQUksV0FBVSw4QkFBNkIsTUFBSyxTQUMvQztBQUFBLGtFQUFDLHdDQUFjLE1BQU0sSUFBSSxlQUFZLFVBQXJDO0FBQUE7QUFBQTtBQUFBO0FBQUEscUJBQTRDO0FBQUEsY0FDNUMsaURBQUMsWUFBTyxzQkFBUjtBQUFBO0FBQUE7QUFBQTtBQUFBLHFCQUFjO0FBQUEsY0FDZCxpREFBQyxVQUFNLG1CQUFQO0FBQUE7QUFBQTtBQUFBO0FBQUEscUJBQWE7QUFBQSxjQUNaLFdBQ0Msb0RBQUMsaUNBQU8sTUFBSyxVQUFTLFNBQVMsU0FDN0I7QUFBQSxvRUFBQyxvQ0FBVSxNQUFNLElBQUksZUFBWSxVQUFqQztBQUFBO0FBQUE7QUFBQTtBQUFBLHVCQUF3QztBQUFBLGdCQUFFO0FBQUEsbUJBRDVDO0FBQUE7QUFBQTtBQUFBO0FBQUEscUJBR0E7QUFBQSxpQkFSSjtBQUFBO0FBQUE7QUFBQTtBQUFBLG1CQVVBLElBRUE7QUFBQTtBQUFBLFVBeEJKO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQSxRQTBCQSxLQTNCRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBNEJBO0FBQUEsV0FsREY7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQW1EQTtBQUFBO0FBQUEsSUExREY7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLEVBMkRBO0FBRUoiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIlNldHRpbmdzUGFnZS50c3giXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgQnV0dG9uIH0gZnJvbSAnQG11bHRpbW9kYWwtY2FudmFzL3VpJztcclxuaW1wb3J0IHsgQWxlcnRUcmlhbmdsZSwgQXJyb3dVcFJpZ2h0LCBSb3RhdGVDY3csIFNldHRpbmdzMiB9IGZyb20gJ2x1Y2lkZS1yZWFjdCc7XHJcbmltcG9ydCB0eXBlIHsgTW91c2VFdmVudCwgUmVhY3ROb2RlIH0gZnJvbSAncmVhY3QnO1xyXG5cclxuaW1wb3J0IHsgdHlwZSBBcHBSb3V0ZSB9IGZyb20gJy4uL3JvdXRpbmcnO1xyXG5pbXBvcnQgeyBQYWdlRnJhbWUgfSBmcm9tICcuL1BhZ2VGcmFtZSc7XHJcblxyXG5pbXBvcnQgJy4vc2V0dGluZ3MtcGFnZS5jc3MnO1xyXG5pbXBvcnQgeyBQVUJMSUNfQVBJX0NBVEFMT0dfVVJMIH0gZnJvbSAnLi4vd29ya3NwYWNlL2NvbnRyYWN0cyc7XHJcblxyXG4vKiog6K6+572u6aG15aSW5qGG55qE6aG555uu5LiK5LiL5paH44CB5Yqg6L2954q25oCB5ZKM6YeN6K+V5YWl5Y+j44CCICovXHJcbmV4cG9ydCB0eXBlIFNldHRpbmdzUGFnZVByb3BzID0ge1xyXG4gIGNoaWxkcmVuPzogUmVhY3ROb2RlO1xyXG4gIHByb2plY3RJZD86IHN0cmluZyB8IG51bGw7XHJcbiAgcHJvamVjdE5hbWU/OiBzdHJpbmcgfCBudWxsO1xyXG4gIGlzTG9hZGluZz86IGJvb2xlYW47XHJcbiAgZXJyb3I/OiBzdHJpbmcgfCBudWxsO1xyXG4gIG9uUmV0cnk/OiAoKSA9PiB2b2lkO1xyXG4gIG9uTmF2aWdhdGU/OiAoaHJlZjogc3RyaW5nLCBldmVudDogTW91c2VFdmVudDxIVE1MQW5jaG9yRWxlbWVudD4pID0+IHZvaWQ7XHJcbn07XHJcblxyXG4vKipcclxuICog54us56uL6K6+572u6aG155qE5aSW5qGG77ya6LSf6LSj6Lev55Sx6aqo5p6244CB6aG555uu5Yqg6L295LiO6ZSZ6K+v54q25oCB44CCXHJcbiAqXHJcbiAqIOmdouadv+WGheWuueeUsSBgU2V0dGluZ3NQYW5lbGAg5LulIGBwcmVzZW50YXRpb249XCJwYWdlXCJgIOazqOWFpe+8jOS4juWvueivneahhuWFseeUqOWQjOS4gOS4quWGheWuuee7hOS7tu+8jFxyXG4gKiDlm6DmraTkuKTlpITnmoTliIbnu4TnirbmgIHjgIHmqKHlnovpu5jorqTlgLzlkoznlLvluIPlgY/lpb3kuI3kvJrliIblj4njgIJcclxuICovXHJcbmV4cG9ydCBmdW5jdGlvbiBTZXR0aW5nc1BhZ2Uoe1xyXG4gIGNoaWxkcmVuLFxyXG4gIHByb2plY3RJZCxcclxuICBwcm9qZWN0TmFtZSxcclxuICBpc0xvYWRpbmcgPSBmYWxzZSxcclxuICBlcnJvcixcclxuICBvblJldHJ5LFxyXG4gIG9uTmF2aWdhdGUsXHJcbn06IFNldHRpbmdzUGFnZVByb3BzKSB7XHJcbiAgY29uc3Qgcm91dGU6IEFwcFJvdXRlID0ge1xyXG4gICAgaWQ6ICdzZXR0aW5ncycsXHJcbiAgICBwYXRobmFtZTogJy9zZXR0aW5ncycsXHJcbiAgICAuLi4ocHJvamVjdElkID8geyBwcm9qZWN0SWQgfSA6IHt9KSxcclxuICB9O1xyXG5cclxuICByZXR1cm4gKFxyXG4gICAgPFBhZ2VGcmFtZVxyXG4gICAgICByb3V0ZT17cm91dGV9XHJcbiAgICAgIHByb2plY3RJZD17cHJvamVjdElkfVxyXG4gICAgICBwcm9qZWN0TmFtZT17cHJvamVjdE5hbWV9XHJcbiAgICAgIG9uTmF2aWdhdGU9e29uTmF2aWdhdGV9XHJcbiAgICAgIG1haW5DbGFzc05hbWU9XCJtYy1zZXR0aW5ncy1wYWdlXCJcclxuICAgID5cclxuICAgICAgPGRpdiBjbGFzc05hbWU9XCJtYy1wYWdlLWNvbnRhaW5lclwiPlxyXG4gICAgICAgIDxoZWFkZXIgY2xhc3NOYW1lPVwibWMtc2V0dGluZ3MtaGVhZGluZ1wiPlxyXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJtYy1zZXR0aW5ncy1oZWFkaW5nLWljb25cIiBhcmlhLWhpZGRlbj1cInRydWVcIj5cclxuICAgICAgICAgICAgPFNldHRpbmdzMiBzaXplPXsyMX0gLz5cclxuICAgICAgICAgIDwvZGl2PlxyXG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJtYy1zZXR0aW5ncy1oZWFkaW5nLWNvcHlcIj5cclxuICAgICAgICAgICAgPGgxPk5ldyBBUEkg5LiO5qih5Z6L6K6+572uPC9oMT5cclxuICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwibWMtc2V0dGluZ3MtY29udGV4dFwiIGFyaWEtbGFiZWw9XCLorr7nva7ojIPlm7RcIj5cclxuICAgICAgICAgICAgICB7cHJvamVjdElkID8gYOW9k+WJjemhueebru+8miR7cHJvamVjdE5hbWUgPz8gcHJvamVjdElkfWAgOiAn5b2T5YmN6LSm5Y+3J31cclxuICAgICAgICAgICAgPC9wPlxyXG4gICAgICAgICAgPC9kaXY+XHJcbiAgICAgICAgICA8YVxyXG4gICAgICAgICAgICBjbGFzc05hbWU9XCJtYy1zZXR0aW5ncy1hcGktYWRcIlxyXG4gICAgICAgICAgICBocmVmPXtQVUJMSUNfQVBJX0NBVEFMT0dfVVJMfVxyXG4gICAgICAgICAgICB0YXJnZXQ9XCJfYmxhbmtcIlxyXG4gICAgICAgICAgICByZWw9XCJub29wZW5lciBub3JlZmVycmVyXCJcclxuICAgICAgICAgID5cclxuICAgICAgICAgICAg5omT5byAIE5ldyBBUElcclxuICAgICAgICAgICAgPEFycm93VXBSaWdodCBzaXplPXsxNX0gYXJpYS1oaWRkZW49XCJ0cnVlXCIgLz5cclxuICAgICAgICAgIDwvYT5cclxuICAgICAgICA8L2hlYWRlcj5cclxuXHJcbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJtYy1zZXR0aW5ncy1sYXlvdXRcIj5cclxuICAgICAgICAgIDxzZWN0aW9uXHJcbiAgICAgICAgICAgIGNsYXNzTmFtZT1cIm1jLXNldHRpbmdzLWNvbnRlbnRcIlxyXG4gICAgICAgICAgICBhcmlhLWxhYmVsPVwiTmV3IEFQSSDorr7nva7lhoXlrrlcIlxyXG4gICAgICAgICAgICBhcmlhLWJ1c3k9e2lzTG9hZGluZ31cclxuICAgICAgICAgID5cclxuICAgICAgICAgICAge2lzTG9hZGluZyA/IChcclxuICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1jLXNldHRpbmdzLXN0YXRlXCIgcm9sZT1cInN0YXR1c1wiIGFyaWEtbGl2ZT1cInBvbGl0ZVwiPlxyXG4gICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwibWMtc2V0dGluZ3MtbG9hZGluZy1iYXJcIiAvPlxyXG4gICAgICAgICAgICAgICAgPHN0cm9uZz7mraPlnKjliqDovb3orr7nva48L3N0cm9uZz5cclxuICAgICAgICAgICAgICAgIDxzcGFuPuato+WcqOivu+WPluWIhue7hOeKtuaAgeWSjOaooeWei+ebruW9leKApjwvc3Bhbj5cclxuICAgICAgICAgICAgICA8L2Rpdj5cclxuICAgICAgICAgICAgKSA6IGVycm9yID8gKFxyXG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWMtc2V0dGluZ3Mtc3RhdGUgaXMtZXJyb3JcIiByb2xlPVwiYWxlcnRcIj5cclxuICAgICAgICAgICAgICAgIDxBbGVydFRyaWFuZ2xlIHNpemU9ezIyfSBhcmlhLWhpZGRlbj1cInRydWVcIiAvPlxyXG4gICAgICAgICAgICAgICAgPHN0cm9uZz7orr7nva7liqDovb3lpLHotKU8L3N0cm9uZz5cclxuICAgICAgICAgICAgICAgIDxzcGFuPntlcnJvcn08L3NwYW4+XHJcbiAgICAgICAgICAgICAgICB7b25SZXRyeSAmJiAoXHJcbiAgICAgICAgICAgICAgICAgIDxCdXR0b24gdHlwZT1cImJ1dHRvblwiIG9uQ2xpY2s9e29uUmV0cnl9PlxyXG4gICAgICAgICAgICAgICAgICAgIDxSb3RhdGVDY3cgc2l6ZT17MTR9IGFyaWEtaGlkZGVuPVwidHJ1ZVwiIC8+XHJcbiAgICAgICAgICAgICAgICAgICAg6YeN5paw5Yqg6L29XHJcbiAgICAgICAgICAgICAgICAgIDwvQnV0dG9uPlxyXG4gICAgICAgICAgICAgICAgKX1cclxuICAgICAgICAgICAgICA8L2Rpdj5cclxuICAgICAgICAgICAgKSA6IChcclxuICAgICAgICAgICAgICBjaGlsZHJlblxyXG4gICAgICAgICAgICApfVxyXG4gICAgICAgICAgPC9zZWN0aW9uPlxyXG4gICAgICAgIDwvZGl2PlxyXG4gICAgICA8L2Rpdj5cclxuICAgIDwvUGFnZUZyYW1lPlxyXG4gICk7XHJcbn1cclxuIl0sImZpbGUiOiIvc3JjL3BhZ2VzL1NldHRpbmdzUGFnZS50c3gifQ==

@@ -18,6 +18,7 @@ prisma/migrations/
 uploads/
 .data/
 .local-tests/
+.local-deploy/
 *.log
 
 # IDE and OS files

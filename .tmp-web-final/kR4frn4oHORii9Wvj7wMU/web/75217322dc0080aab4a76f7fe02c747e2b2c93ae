@@ -1,0 +1,5 @@
+Object.defineProperty(__vite_ssr_exports__, "AppNavigation", { enumerable: true, configurable: true, get(){ try { return __vite_ssr_import_0__.AppNavigation } catch {} }});
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/src/navigation/AppNavigation.tsx", {"importedNames":["AppNavigation"]});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFBIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJpbmRleC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJleHBvcnQgeyBBcHBOYXZpZ2F0aW9uLCB0eXBlIEFwcE5hdmlnYXRpb25Qcm9wcyB9IGZyb20gJy4vQXBwTmF2aWdhdGlvbic7XG4iXSwiZmlsZSI6Ii9zcmMvbmF2aWdhdGlvbi9pbmRleC50cyJ9

@@ -1,0 +1,96 @@
+Object.defineProperty(__vite_ssr_exports__, "SITE_ORIGIN", { enumerable: true, configurable: true, get(){ try { return SITE_ORIGIN } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "SITE_NAME", { enumerable: true, configurable: true, get(){ try { return SITE_NAME } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "SITE_IMAGE_ALT", { enumerable: true, configurable: true, get(){ try { return SITE_IMAGE_ALT } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "SITE_DESCRIPTION", { enumerable: true, configurable: true, get(){ try { return SITE_DESCRIPTION } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "CONTACT_DESCRIPTION", { enumerable: true, configurable: true, get(){ try { return CONTACT_DESCRIPTION } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "SHARE_DESCRIPTION", { enumerable: true, configurable: true, get(){ try { return SHARE_DESCRIPTION } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "sitePageMetadata", { enumerable: true, configurable: true, get(){ try { return sitePageMetadata } catch {} }});
+Object.defineProperty(__vite_ssr_exports__, "siteStructuredData", { enumerable: true, configurable: true, get(){ try { return siteStructuredData } catch {} }});
+const SITE_ORIGIN = "https://love.lolicon.beer";
+const SITE_NAME = "LoveTV";
+const SITE_IMAGE_ALT = "LoveTV 大肥鱼（鲸鱼娘）· AI 图片与视频创作画布";
+const SITE_DESCRIPTION = "LoveTV 是连接 API 模型的多模态创作画布，以大肥鱼（鲸鱼娘）为品牌形象，支持 AI 生成图片、AI 生成视频、文字与音频创作，提供参考资料、提示词 Skill、短视频复刻和素材版本管理。";
+const CONTACT_DESCRIPTION = "了解 LoveTV 与品牌形象大肥鱼（鲸鱼娘），探索 AI 图片生成、AI 视频生成和 API 模型接入工作流，以及参考资料、提示词优化、素材管理与使用支持。";
+const SHARE_DESCRIPTION = "通过 LoveTV 查看共享的创作资源。大肥鱼（鲸鱼娘）陪你探索 AI 图片与视频；具体内容仅在打开分享页后按访问权限加载。";
+function sitePageMetadata(pathname) {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  if (path === "/")
+    return {
+      title: SITE_NAME,
+      description: SITE_DESCRIPTION,
+      indexable: true,
+      canonical: `${SITE_ORIGIN}/`
+    };
+  if (path === "/contact")
+    return {
+      title: "关于 LoveTV · AI 图片与视频创作、API 模型接入",
+      description: CONTACT_DESCRIPTION,
+      indexable: true,
+      canonical: `${SITE_ORIGIN}/contact`
+    };
+  const title = path === "/workspace" ? "工作台" : path === "/settings" ? "设置" : path === "/share" ? "共享资源" : path.startsWith("/projects/") ? "创作画布" : path.startsWith("/auth/") ? "账号登录" : path.startsWith("/admin") || ["/resources", "/runs"].includes(path) ? "管理工作区" : "页面未找到";
+  return {
+    title: `${title} · ${SITE_NAME}`,
+    description: path === "/share" ? SHARE_DESCRIPTION : SITE_DESCRIPTION,
+    indexable: false,
+    openGraphUrl: path === "/share" ? `${SITE_ORIGIN}/share` : void 0
+  };
+};
+function siteStructuredData(pathname) {
+  const metadata = sitePageMetadata(pathname);
+  if (!metadata.indexable) return [];
+  const brandIcon = {
+    "@type": "ImageObject",
+    url: `${SITE_ORIGIN}/brand/lovetv-icon-512.png`,
+    contentUrl: `${SITE_ORIGIN}/brand/lovetv-icon-512.png`,
+    name: "LoveTV 大肥鱼（鲸鱼娘）品牌图标",
+    caption: SITE_IMAGE_ALT,
+    width: 512,
+    height: 512
+  };
+  if (metadata.canonical === `${SITE_ORIGIN}/contact`)
+    return [
+      {
+        "@context": "https://schema.org",
+        "@type": "ContactPage",
+        name: metadata.title,
+        description: metadata.description,
+        url: metadata.canonical,
+        image: brandIcon,
+        isPartOf: { "@type": "WebSite", name: SITE_NAME, url: `${SITE_ORIGIN}/` }
+      }
+    ];
+  return [
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: SITE_NAME,
+      url: `${SITE_ORIGIN}/`,
+      inLanguage: "zh-CN",
+      description: SITE_DESCRIPTION,
+      image: brandIcon
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      name: SITE_NAME,
+      applicationCategory: "MultimediaApplication",
+      operatingSystem: "Web browser",
+      url: `${SITE_ORIGIN}/`,
+      image: brandIcon,
+      description: SITE_DESCRIPTION,
+      featureList: [
+        "API 模型连接",
+        "AI 生成图片",
+        "AI 生成视频",
+        "文字与音频创作",
+        "参考资料与提示词 Skill",
+        "短视频复刻",
+        "素材版本管理"
+      ]
+    }
+  ];
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7QUFDTyxNQUFNLGNBQWM7QUFHcEIsTUFBTSxZQUFZO0FBR2xCLE1BQU0saUJBQWlCO0FBR3ZCLE1BQU0sbUJBQ1g7QUFHSyxNQUFNLHNCQUNYO0FBR0ssTUFBTSxvQkFDWDtBQWlCSyxTQUFTLGlCQUFpQixVQUFvQztBQUNuRSxRQUFNLE9BQU8sU0FBUyxRQUFRLFFBQVEsRUFBRSxLQUFLO0FBQzdDLE1BQUksU0FBUztBQUNYLFdBQU87QUFBQSxNQUNMLE9BQU87QUFBQSxNQUNQLGFBQWE7QUFBQSxNQUNiLFdBQVc7QUFBQSxNQUNYLFdBQVcsR0FBRyxXQUFXO0FBQUEsSUFDM0I7QUFDRixNQUFJLFNBQVM7QUFDWCxXQUFPO0FBQUEsTUFDTCxPQUFPO0FBQUEsTUFDUCxhQUFhO0FBQUEsTUFDYixXQUFXO0FBQUEsTUFDWCxXQUFXLEdBQUcsV0FBVztBQUFBLElBQzNCO0FBQ0YsUUFBTSxRQUNKLFNBQVMsZUFDTCxRQUNBLFNBQVMsY0FDUCxPQUNBLFNBQVMsV0FDUCxTQUNBLEtBQUssV0FBVyxZQUFZLElBQzFCLFNBQ0EsS0FBSyxXQUFXLFFBQVEsSUFDdEIsU0FDQSxLQUFLLFdBQVcsUUFBUSxLQUFLLENBQUMsY0FBYyxPQUFPLEVBQUUsU0FBUyxJQUFJLElBQ2hFLFVBQ0E7QUFDaEIsU0FBTztBQUFBLElBQ0wsT0FBTyxHQUFHLEtBQUssTUFBTSxTQUFTO0FBQUEsSUFDOUIsYUFBYSxTQUFTLFdBQVcsb0JBQW9CO0FBQUEsSUFDckQsV0FBVztBQUFBLElBQ1gsY0FBYyxTQUFTLFdBQVcsR0FBRyxXQUFXLFdBQVc7QUFBQSxFQUM3RDtBQUNGO0FBT08sU0FBUyxtQkFBbUIsVUFBNkM7QUFDOUUsUUFBTSxXQUFXLGlCQUFpQixRQUFRO0FBQzFDLE1BQUksQ0FBQyxTQUFTLFVBQVcsUUFBTyxDQUFDO0FBQ2pDLFFBQU0sWUFBWTtBQUFBLElBQ2hCLFNBQVM7QUFBQSxJQUNULEtBQUssR0FBRyxXQUFXO0FBQUEsSUFDbkIsWUFBWSxHQUFHLFdBQVc7QUFBQSxJQUMxQixNQUFNO0FBQUEsSUFDTixTQUFTO0FBQUEsSUFDVCxPQUFPO0FBQUEsSUFDUCxRQUFRO0FBQUEsRUFDVjtBQUNBLE1BQUksU0FBUyxjQUFjLEdBQUcsV0FBVztBQUN2QyxXQUFPO0FBQUEsTUFDTDtBQUFBLFFBQ0UsWUFBWTtBQUFBLFFBQ1osU0FBUztBQUFBLFFBQ1QsTUFBTSxTQUFTO0FBQUEsUUFDZixhQUFhLFNBQVM7QUFBQSxRQUN0QixLQUFLLFNBQVM7QUFBQSxRQUNkLE9BQU87QUFBQSxRQUNQLFVBQVUsRUFBRSxTQUFTLFdBQVcsTUFBTSxXQUFXLEtBQUssR0FBRyxXQUFXLElBQUk7QUFBQSxNQUMxRTtBQUFBLElBQ0Y7QUFDRixTQUFPO0FBQUEsSUFDTDtBQUFBLE1BQ0UsWUFBWTtBQUFBLE1BQ1osU0FBUztBQUFBLE1BQ1QsTUFBTTtBQUFBLE1BQ04sS0FBSyxHQUFHLFdBQVc7QUFBQSxNQUNuQixZQUFZO0FBQUEsTUFDWixhQUFhO0FBQUEsTUFDYixPQUFPO0FBQUEsSUFDVDtBQUFBLElBQ0E7QUFBQSxNQUNFLFlBQVk7QUFBQSxNQUNaLFNBQVM7QUFBQSxNQUNULE1BQU07QUFBQSxNQUNOLHFCQUFxQjtBQUFBLE1BQ3JCLGlCQUFpQjtBQUFBLE1BQ2pCLEtBQUssR0FBRyxXQUFXO0FBQUEsTUFDbkIsT0FBTztBQUFBLE1BQ1AsYUFBYTtBQUFBLE1BQ2IsYUFBYTtBQUFBLFFBQ1g7QUFBQSxRQUNBO0FBQUEsUUFDQTtBQUFBLFFBQ0E7QUFBQSxRQUNBO0FBQUEsUUFDQTtBQUFBLFFBQ0E7QUFBQSxNQUNGO0FBQUEsSUFDRjtBQUFBLEVBQ0Y7QUFDRiIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsic2l0ZS1jb250ZW50LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKiDnlKjmiLfnoa7orqTnmoTllK/kuIDlhazlvIDlnLDlnYDvvJvkuI3ku47otKblj7fmlbDmja7jgIHmn6Xor6Llj4LmlbDmiJblvZPliY3mtYvor5XlnLDlnYDmjqjlr7wgU0VPIOmTvuaOpeOAgiAqL1xuZXhwb3J0IGNvbnN0IFNJVEVfT1JJR0lOID0gJ2h0dHBzOi8vbG92ZS5sb2xpY29uLmJlZXInO1xuXG4vKiog572R56uZ5YWs5byA5ZOB54mM77yM5LiO5YyF5ZCN5ZKM5Y6G5Y+y5rWP6KeI5Zmo5a2Y5YKo6ZSu5peg5YWz44CCICovXG5leHBvcnQgY29uc3QgU0lURV9OQU1FID0gJ0xvdmVUVic7XG5cbi8qKiDpnZnmgIHpppblk43lupTkuI7mtY/op4jlmajot6/nlLHlhbHnlKjnmoTlk4HniYzlm77niYfor7TmmI7vvIzkv53nlZnnlKjmiLfkvb/nlKjnmoTlpKfogqXpsbznp7DlkbzjgIIgKi9cbmV4cG9ydCBjb25zdCBTSVRFX0lNQUdFX0FMVCA9ICdMb3ZlVFYg5aSn6IKl6bG877yI6bK46bG85aiY77yJwrcgQUkg5Zu+54mH5LiO6KeG6aKR5Yib5L2c55S75biDJztcblxuLyoqIOmmlumhteaQnOe0ouaRmOimge+8jOWPquaPj+i/sOW3sue7j+WtmOWcqOeahOeUu+W4g+S4juaooeWei+i/nuaOpeiDveWKm+OAgiAqL1xuZXhwb3J0IGNvbnN0IFNJVEVfREVTQ1JJUFRJT04gPVxuICAnTG92ZVRWIOaYr+i/nuaOpSBBUEkg5qih5Z6L55qE5aSa5qih5oCB5Yib5L2c55S75biD77yM5Lul5aSn6IKl6bG877yI6bK46bG85aiY77yJ5Li65ZOB54mM5b2i6LGh77yM5pSv5oyBIEFJIOeUn+aIkOWbvueJh+OAgUFJIOeUn+aIkOinhumikeOAgeaWh+Wtl+S4jumfs+mikeWIm+S9nO+8jOaPkOS+m+WPguiAg+i1hOaWmeOAgeaPkOekuuivjSBTa2lsbOOAgeefreinhumikeWkjeWIu+WSjOe0oOadkOeJiOacrOeuoeeQhuOAgic7XG5cbi8qKiDku4vnu43kuI7mlK/mjIHpobXmkZjopoHvvJvkuI3lsIbmqKHlnovmjqXlhaXmj4/ov7DmiJDmnKznq5nmj5Dkvpvml6DpmZDmiJblhY3otLkgQVBJ44CCICovXG5leHBvcnQgY29uc3QgQ09OVEFDVF9ERVNDUklQVElPTiA9XG4gICfkuobop6MgTG92ZVRWIOS4juWTgeeJjOW9ouixoeWkp+iCpemxvO+8iOmyuOmxvOWomO+8ie+8jOaOoue0oiBBSSDlm77niYfnlJ/miJDjgIFBSSDop4bpopHnlJ/miJDlkowgQVBJIOaooeWei+aOpeWFpeW3peS9nOa1ge+8jOS7peWPiuWPguiAg+i1hOaWmeOAgeaPkOekuuivjeS8mOWMluOAgee0oOadkOeuoeeQhuS4juS9v+eUqOaUr+aMgeOAgic7XG5cbi8qKiDliIbkuqvlhaXlj6Pku4Xmj5DkvpvpgJrnlKjor7TmmI7vvJvotYTmupDlhoXlrrnlv4XpobvpgJrov4fpobXpnaLmiZPlvIDlkI7mjInliIbkuqvmjojmnYPojrflj5bjgIIgKi9cbmV4cG9ydCBjb25zdCBTSEFSRV9ERVNDUklQVElPTiA9XG4gICfpgJrov4cgTG92ZVRWIOafpeeci+WFseS6q+eahOWIm+S9nOi1hOa6kOOAguWkp+iCpemxvO+8iOmyuOmxvOWomO+8iemZquS9oOaOoue0oiBBSSDlm77niYfkuI7op4bpopHvvJvlhbfkvZPlhoXlrrnku4XlnKjmiZPlvIDliIbkuqvpobXlkI7mjInorr/pl67mnYPpmZDliqDovb3jgIInO1xuXG4vKiog5ZCM5pe25o+Q5L6b57uZ6Z2Z5oCB6aG16Z2i5ZKM5rWP6KeI5Zmo6Lev55Sx55qE5YWD5pWw5o2u77yM5LiN5YyF5ZCr55So5oi36LWE5rqQ5a2X5q6144CCICovXG5leHBvcnQgdHlwZSBTaXRlUGFnZU1ldGFkYXRhID0ge1xuICB0aXRsZTogc3RyaW5nO1xuICBkZXNjcmlwdGlvbjogc3RyaW5nO1xuICBpbmRleGFibGU6IGJvb2xlYW47XG4gIGNhbm9uaWNhbD86IHN0cmluZztcbiAgLyoqIOmAmueUqOWNoeeJh+eahOWbuuWumuWcsOWdgO+8m+S4juaUtuW9lSBjYW5vbmljYWwg5YiG56a777yM5LiN5ZCr5p+l6K+i5Liy44CB5Luk54mM5oiW6LWE5rqQ5qCH6K+G44CCICovXG4gIG9wZW5HcmFwaFVybD86IHN0cmluZztcbn07XG5cbi8qKlxuICog5oyJ5YWs5byA6Lev5b6E6YCJ5oup5qCH6aKY5LiO5pS25b2V562W55Wl77yb5YW25L2Z6Lev5b6E5LiA5b6L56aB5q2i5pS25b2V77yM5LiN5pC65bim5p+l6K+i5Liy5oiW5YiG5Lqr5Luk54mM44CCXG4gKiBAcGFyYW0gcGF0aG5hbWUg6Lev55Sx6Lev5b6E77yM5Y+v5YyF5ZCr5pyr5bC+5pac5p2g77yM6LCD55So5pa55peg6ZyA5o+Q5L6b55m75b2V5L+h5oGv44CCXG4gKiBAcmV0dXJucyDlm7rlrprlk4HniYzmlofmoYjkuI7lhazlvIAgY2Fub25pY2Fs77yb5YiG5Lqr6aG15Y+q5o+Q5L6b6YCa55SoIE9HIOWcsOWdgO+8jOWFtuS9meengeaciei3r+W+hOS4jeaPkOS+m+WcsOWdgOOAglxuICovXG5leHBvcnQgZnVuY3Rpb24gc2l0ZVBhZ2VNZXRhZGF0YShwYXRobmFtZTogc3RyaW5nKTogU2l0ZVBhZ2VNZXRhZGF0YSB7XG4gIGNvbnN0IHBhdGggPSBwYXRobmFtZS5yZXBsYWNlKC9cXC8rJC8sICcnKSB8fCAnLyc7XG4gIGlmIChwYXRoID09PSAnLycpXG4gICAgcmV0dXJuIHtcbiAgICAgIHRpdGxlOiBTSVRFX05BTUUsXG4gICAgICBkZXNjcmlwdGlvbjogU0lURV9ERVNDUklQVElPTixcbiAgICAgIGluZGV4YWJsZTogdHJ1ZSxcbiAgICAgIGNhbm9uaWNhbDogYCR7U0lURV9PUklHSU59L2AsXG4gICAgfTtcbiAgaWYgKHBhdGggPT09ICcvY29udGFjdCcpXG4gICAgcmV0dXJuIHtcbiAgICAgIHRpdGxlOiAn5YWz5LqOIExvdmVUViDCtyBBSSDlm77niYfkuI7op4bpopHliJvkvZzjgIFBUEkg5qih5Z6L5o6l5YWlJyxcbiAgICAgIGRlc2NyaXB0aW9uOiBDT05UQUNUX0RFU0NSSVBUSU9OLFxuICAgICAgaW5kZXhhYmxlOiB0cnVlLFxuICAgICAgY2Fub25pY2FsOiBgJHtTSVRFX09SSUdJTn0vY29udGFjdGAsXG4gICAgfTtcbiAgY29uc3QgdGl0bGUgPVxuICAgIHBhdGggPT09ICcvd29ya3NwYWNlJ1xuICAgICAgPyAn5bel5L2c5Y+wJ1xuICAgICAgOiBwYXRoID09PSAnL3NldHRpbmdzJ1xuICAgICAgICA/ICforr7nva4nXG4gICAgICAgIDogcGF0aCA9PT0gJy9zaGFyZSdcbiAgICAgICAgICA/ICflhbHkuqvotYTmupAnXG4gICAgICAgICAgOiBwYXRoLnN0YXJ0c1dpdGgoJy9wcm9qZWN0cy8nKVxuICAgICAgICAgICAgPyAn5Yib5L2c55S75biDJ1xuICAgICAgICAgICAgOiBwYXRoLnN0YXJ0c1dpdGgoJy9hdXRoLycpXG4gICAgICAgICAgICAgID8gJ+i0puWPt+eZu+W9lSdcbiAgICAgICAgICAgICAgOiBwYXRoLnN0YXJ0c1dpdGgoJy9hZG1pbicpIHx8IFsnL3Jlc291cmNlcycsICcvcnVucyddLmluY2x1ZGVzKHBhdGgpXG4gICAgICAgICAgICAgICAgPyAn566h55CG5bel5L2c5Yy6J1xuICAgICAgICAgICAgICAgIDogJ+mhtemdouacquaJvuWIsCc7XG4gIHJldHVybiB7XG4gICAgdGl0bGU6IGAke3RpdGxlfSDCtyAke1NJVEVfTkFNRX1gLFxuICAgIGRlc2NyaXB0aW9uOiBwYXRoID09PSAnL3NoYXJlJyA/IFNIQVJFX0RFU0NSSVBUSU9OIDogU0lURV9ERVNDUklQVElPTixcbiAgICBpbmRleGFibGU6IGZhbHNlLFxuICAgIG9wZW5HcmFwaFVybDogcGF0aCA9PT0gJy9zaGFyZScgPyBgJHtTSVRFX09SSUdJTn0vc2hhcmVgIDogdW5kZWZpbmVkLFxuICB9O1xufVxuXG4vKipcbiAqIOaehOmAoOS7hemZkOWFrOW8gOmhtemdoueahOecn+WunuS6p+WTgee7k+aehOWMluaVsOaNru+8jOaXoOiZmuaehOivhOWIhuOAgeS7t+agvOaIluWuouaIt+ahiOS+i+OAglxuICogQHBhcmFtIHBhdGhuYW1lIOW9k+WJjei3r+W+hO+8m+engeacieaIluacquefpei3r+W+hOi/lOWbnuepuuWIl+ihqOOAglxuICogQHJldHVybnMgc2NoZW1hLm9yZyDnmoTnvZHnq5njgIHliJvkvZzova/ku7bmiJbogZTns7vpobXpnaLor7TmmI7vvIzkuI3lkKvnlKjmiLfmiJbotYTmupDmlbDmja7jgIJcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHNpdGVTdHJ1Y3R1cmVkRGF0YShwYXRobmFtZTogc3RyaW5nKTogUmVjb3JkPHN0cmluZywgdW5rbm93bj5bXSB7XG4gIGNvbnN0IG1ldGFkYXRhID0gc2l0ZVBhZ2VNZXRhZGF0YShwYXRobmFtZSk7XG4gIGlmICghbWV0YWRhdGEuaW5kZXhhYmxlKSByZXR1cm4gW107XG4gIGNvbnN0IGJyYW5kSWNvbiA9IHtcbiAgICAnQHR5cGUnOiAnSW1hZ2VPYmplY3QnLFxuICAgIHVybDogYCR7U0lURV9PUklHSU59L2JyYW5kL2xvdmV0di1pY29uLTUxMi5wbmdgLFxuICAgIGNvbnRlbnRVcmw6IGAke1NJVEVfT1JJR0lOfS9icmFuZC9sb3ZldHYtaWNvbi01MTIucG5nYCxcbiAgICBuYW1lOiAnTG92ZVRWIOWkp+iCpemxvO+8iOmyuOmxvOWomO+8ieWTgeeJjOWbvuaghycsXG4gICAgY2FwdGlvbjogU0lURV9JTUFHRV9BTFQsXG4gICAgd2lkdGg6IDUxMixcbiAgICBoZWlnaHQ6IDUxMixcbiAgfTtcbiAgaWYgKG1ldGFkYXRhLmNhbm9uaWNhbCA9PT0gYCR7U0lURV9PUklHSU59L2NvbnRhY3RgKVxuICAgIHJldHVybiBbXG4gICAgICB7XG4gICAgICAgICdAY29udGV4dCc6ICdodHRwczovL3NjaGVtYS5vcmcnLFxuICAgICAgICAnQHR5cGUnOiAnQ29udGFjdFBhZ2UnLFxuICAgICAgICBuYW1lOiBtZXRhZGF0YS50aXRsZSxcbiAgICAgICAgZGVzY3JpcHRpb246IG1ldGFkYXRhLmRlc2NyaXB0aW9uLFxuICAgICAgICB1cmw6IG1ldGFkYXRhLmNhbm9uaWNhbCxcbiAgICAgICAgaW1hZ2U6IGJyYW5kSWNvbixcbiAgICAgICAgaXNQYXJ0T2Y6IHsgJ0B0eXBlJzogJ1dlYlNpdGUnLCBuYW1lOiBTSVRFX05BTUUsIHVybDogYCR7U0lURV9PUklHSU59L2AgfSxcbiAgICAgIH0sXG4gICAgXTtcbiAgcmV0dXJuIFtcbiAgICB7XG4gICAgICAnQGNvbnRleHQnOiAnaHR0cHM6Ly9zY2hlbWEub3JnJyxcbiAgICAgICdAdHlwZSc6ICdXZWJTaXRlJyxcbiAgICAgIG5hbWU6IFNJVEVfTkFNRSxcbiAgICAgIHVybDogYCR7U0lURV9PUklHSU59L2AsXG4gICAgICBpbkxhbmd1YWdlOiAnemgtQ04nLFxuICAgICAgZGVzY3JpcHRpb246IFNJVEVfREVTQ1JJUFRJT04sXG4gICAgICBpbWFnZTogYnJhbmRJY29uLFxuICAgIH0sXG4gICAge1xuICAgICAgJ0Bjb250ZXh0JzogJ2h0dHBzOi8vc2NoZW1hLm9yZycsXG4gICAgICAnQHR5cGUnOiAnU29mdHdhcmVBcHBsaWNhdGlvbicsXG4gICAgICBuYW1lOiBTSVRFX05BTUUsXG4gICAgICBhcHBsaWNhdGlvbkNhdGVnb3J5OiAnTXVsdGltZWRpYUFwcGxpY2F0aW9uJyxcbiAgICAgIG9wZXJhdGluZ1N5c3RlbTogJ1dlYiBicm93c2VyJyxcbiAgICAgIHVybDogYCR7U0lURV9PUklHSU59L2AsXG4gICAgICBpbWFnZTogYnJhbmRJY29uLFxuICAgICAgZGVzY3JpcHRpb246IFNJVEVfREVTQ1JJUFRJT04sXG4gICAgICBmZWF0dXJlTGlzdDogW1xuICAgICAgICAnQVBJIOaooeWei+i/nuaOpScsXG4gICAgICAgICdBSSDnlJ/miJDlm77niYcnLFxuICAgICAgICAnQUkg55Sf5oiQ6KeG6aKRJyxcbiAgICAgICAgJ+aWh+Wtl+S4jumfs+mikeWIm+S9nCcsXG4gICAgICAgICflj4LogIPotYTmlpnkuI7mj5DnpLror40gU2tpbGwnLFxuICAgICAgICAn55+t6KeG6aKR5aSN5Yi7JyxcbiAgICAgICAgJ+e0oOadkOeJiOacrOeuoeeQhicsXG4gICAgICBdLFxuICAgIH0sXG4gIF07XG59XG4iXSwiZmlsZSI6Ii9zcmMvc2VvL3NpdGUtY29udGVudC50cyJ9

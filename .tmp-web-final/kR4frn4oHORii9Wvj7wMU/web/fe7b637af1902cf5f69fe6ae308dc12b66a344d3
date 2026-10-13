@@ -1,0 +1,154 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/react@19.2.8/node_modules/react/jsx-dev-runtime.js", {"importedNames":["jsxDEV"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+jest-dom@6.8.0/node_modules/@testing-library/jest-dom/dist/vitest.mjs");
+const __vite_ssr_import_2__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+react@16.3_e1ac85d3dfa8b41ff24d80223f58547d/node_modules/@testing-library/react/dist/index.js", {"importedNames":["cleanup","fireEvent","render","screen"]});
+const __vite_ssr_import_3__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/@testing-library+user-event_1ca100c7362ccf0b1358603d616c282d/node_modules/@testing-library/user-event/dist/esm/index.js", {"importedNames":["default"]});
+const __vite_ssr_import_4__ = await __vite_ssr_import__("/@fs/G:/multimodal-canvas/node_modules/.pnpm/vitest@3.2.7_@types+node@22_89ee79179d9afea59db69119226e71e6/node_modules/vitest/dist/index.js", {"importedNames":["afterEach","describe","expect","it","vi"]});
+const __vite_ssr_import_5__ = await __vite_ssr_import__("/src/ime.ts", {"importedNames":["isImeKeyboardEvent","useImeDraft"]});
+function ImeInput({
+  value,
+  onCommit,
+  onBlur,
+  resetKey
+}) {
+  const { bind } = (0,__vite_ssr_import_5__.useImeDraft)({ value, onCommit, onBlur, resetKey });
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("input", { "aria-label": "IME input", ...bind }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+    lineNumber: 21,
+    columnNumber: 10
+  }, this);
+}
+function ImeTextarea({ value, onCommit }) {
+  const { bind } = (0,__vite_ssr_import_5__.useImeDraft)({ value, onCommit });
+  return /* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)("textarea", { "aria-label": "IME textarea", ...bind }, void 0, false, {
+    fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+    lineNumber: 26,
+    columnNumber: 10
+  }, this);
+}
+(0,__vite_ssr_import_4__.describe)("IME helpers", () => {
+  (0,__vite_ssr_import_4__.afterEach)((0,__vite_ssr_import_2__.cleanup));
+  (0,__vite_ssr_import_4__.it)("keeps an input draft through stale external renders and commits composition once", () => {
+    const onCommit = __vite_ssr_import_4__.vi.fn();
+    const view = (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "English", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 34,
+      columnNumber: 25
+    }, this));
+    const input = __vite_ssr_import_2__.screen.getByRole("textbox", { name: "IME input" });
+    __vite_ssr_import_2__.fireEvent.compositionStart(input);
+    __vite_ssr_import_2__.fireEvent.change(input, { target: { value: "zhong" } });
+    __vite_ssr_import_2__.fireEvent.compositionUpdate(input, { target: { value: "中文" } });
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("中文");
+    (0,__vite_ssr_import_4__.expect)(onCommit).not.toHaveBeenCalled();
+    view.rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "older external value", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 43,
+      columnNumber: 19
+    }, this));
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("中文");
+    __vite_ssr_import_2__.fireEvent.compositionEnd(input, { target: { value: "中文" } });
+    __vite_ssr_import_2__.fireEvent.change(input, { target: { value: "中文" } });
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("中文");
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenCalledTimes(1);
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenCalledWith("中文");
+  });
+  (0,__vite_ssr_import_4__.it)("keeps an ordinary draft while older external values arrive out of order", () => {
+    const onCommit = __vite_ssr_import_4__.vi.fn();
+    const view = (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "initial", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 56,
+      columnNumber: 25
+    }, this));
+    const input = __vite_ssr_import_2__.screen.getByRole("textbox", { name: "IME input" });
+    __vite_ssr_import_2__.fireEvent.change(input, { target: { value: "draft one" } });
+    __vite_ssr_import_2__.fireEvent.change(input, { target: { value: "draft two" } });
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("draft two");
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenLastCalledWith("draft two");
+    view.rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "draft two", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 64,
+      columnNumber: 19
+    }, this));
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("draft two");
+    view.rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "draft one", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 66,
+      columnNumber: 19
+    }, this));
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("draft two");
+    view.rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "initial", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 68,
+      columnNumber: 19
+    }, this));
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("draft two");
+    view.rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "authoritative external value", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 70,
+      columnNumber: 19
+    }, this));
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("authoritative external value");
+  });
+  (0,__vite_ssr_import_4__.it)("accepts an authoritative owner reset after a local draft", () => {
+    const onCommit = __vite_ssr_import_4__.vi.fn();
+    const view = (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "initial", resetKey: 0, onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 76,
+      columnNumber: 25
+    }, this));
+    const input = __vite_ssr_import_2__.screen.getByRole("textbox", { name: "IME input" });
+    __vite_ssr_import_2__.fireEvent.change(input, { target: { value: "dirty draft" } });
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("dirty draft");
+    view.rerender(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "", resetKey: 1, onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 82,
+      columnNumber: 19
+    }, this));
+    (0,__vite_ssr_import_4__.expect)(input).toHaveValue("");
+  });
+  (0,__vite_ssr_import_4__.it)("commits an unfinished composition on blur without duplicating the final value", () => {
+    const onCommit = __vite_ssr_import_4__.vi.fn();
+    const onBlur = __vite_ssr_import_4__.vi.fn();
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeInput, { value: "", onCommit, onBlur }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 89,
+      columnNumber: 12
+    }, this));
+    const input = __vite_ssr_import_2__.screen.getByRole("textbox", { name: "IME input" });
+    __vite_ssr_import_2__.fireEvent.compositionStart(input);
+    __vite_ssr_import_2__.fireEvent.change(input, { target: { value: "拼音" } });
+    __vite_ssr_import_2__.fireEvent.blur(input);
+    __vite_ssr_import_2__.fireEvent.compositionEnd(input, { target: { value: "拼音" } });
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenCalledTimes(1);
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenCalledWith("拼音");
+    (0,__vite_ssr_import_4__.expect)(onBlur).toHaveBeenCalledWith("拼音");
+  });
+  (0,__vite_ssr_import_4__.it)("keeps ordinary textarea typing, symbols, paste, and deletion immediate", async () => {
+    const user = __vite_ssr_import_3__.default.setup();
+    const onCommit = __vite_ssr_import_4__.vi.fn();
+    (0,__vite_ssr_import_2__.render)(/* @__PURE__ */ (0,__vite_ssr_import_0__.jsxDEV)(ImeTextarea, { value: "", onCommit }, void 0, false, {
+      fileName: "G:/multimodal-canvas/apps/web/src/ime.test.tsx",
+      lineNumber: 105,
+      columnNumber: 12
+    }, this));
+    const textarea = __vite_ssr_import_2__.screen.getByRole("textbox", { name: "IME textarea" });
+    await user.type(textarea, "Hello 123!?");
+    await user.paste(" pasted");
+    await user.keyboard("{Backspace}");
+    (0,__vite_ssr_import_4__.expect)(textarea).toHaveValue("Hello 123!? paste");
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenLastCalledWith("Hello 123!? paste");
+    await user.clear(textarea);
+    (0,__vite_ssr_import_4__.expect)(textarea).toHaveValue("");
+    (0,__vite_ssr_import_4__.expect)(onCommit).toHaveBeenLastCalledWith("");
+  });
+  (0,__vite_ssr_import_4__.it)("recognizes native, synthetic, and legacy IME keyboard markers", () => {
+    (0,__vite_ssr_import_4__.expect)((0,__vite_ssr_import_5__.isImeKeyboardEvent)({ isComposing: true })).toBe(true);
+    (0,__vite_ssr_import_4__.expect)((0,__vite_ssr_import_5__.isImeKeyboardEvent)({ keyCode: 229 })).toBe(true);
+    (0,__vite_ssr_import_4__.expect)((0,__vite_ssr_import_5__.isImeKeyboardEvent)({ nativeEvent: { isComposing: true } })).toBe(true);
+    (0,__vite_ssr_import_4__.expect)((0,__vite_ssr_import_5__.isImeKeyboardEvent)({ nativeEvent: { keyCode: 229 } })).toBe(true);
+    (0,__vite_ssr_import_4__.expect)((0,__vite_ssr_import_5__.isImeKeyboardEvent)({ keyCode: 13 })).toBe(false);
+  });
+});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,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QUUsU0FBUyxJQUFJLEVBQUUsQ0FBQyxDQUFDLEVBQUUsS0FBSyxJQUFJO0FBQ3ZFLHdDQUFPLDBDQUFtQixFQUFFLFNBQVMsR0FBRyxDQUFDLENBQUMsRUFBRSxLQUFLLEtBQUs7QUFBQSxFQUN4RCxDQUFDO0FBQ0gsQ0FBQyIsIm5hbWVzIjpbXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiaW1lLnRlc3QudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCAnQHRlc3RpbmctbGlicmFyeS9qZXN0LWRvbS92aXRlc3QnO1xuXG5pbXBvcnQgeyBjbGVhbnVwLCBmaXJlRXZlbnQsIHJlbmRlciwgc2NyZWVuIH0gZnJvbSAnQHRlc3RpbmctbGlicmFyeS9yZWFjdCc7XG5pbXBvcnQgdXNlckV2ZW50IGZyb20gJ0B0ZXN0aW5nLWxpYnJhcnkvdXNlci1ldmVudCc7XG5pbXBvcnQgeyBhZnRlckVhY2gsIGRlc2NyaWJlLCBleHBlY3QsIGl0LCB2aSB9IGZyb20gJ3ZpdGVzdCc7XG5cbmltcG9ydCB7IGlzSW1lS2V5Ym9hcmRFdmVudCwgdXNlSW1lRHJhZnQgfSBmcm9tICcuL2ltZSc7XG5cbmZ1bmN0aW9uIEltZUlucHV0KHtcbiAgdmFsdWUsXG4gIG9uQ29tbWl0LFxuICBvbkJsdXIsXG4gIHJlc2V0S2V5LFxufToge1xuICB2YWx1ZTogc3RyaW5nO1xuICBvbkNvbW1pdDogKHZhbHVlOiBzdHJpbmcpID0+IHZvaWQ7XG4gIG9uQmx1cj86ICh2YWx1ZTogc3RyaW5nKSA9PiB2b2lkO1xuICByZXNldEtleT86IHN0cmluZyB8IG51bWJlcjtcbn0pIHtcbiAgY29uc3QgeyBiaW5kIH0gPSB1c2VJbWVEcmFmdDxIVE1MSW5wdXRFbGVtZW50Pih7IHZhbHVlLCBvbkNvbW1pdCwgb25CbHVyLCByZXNldEtleSB9KTtcbiAgcmV0dXJuIDxpbnB1dCBhcmlhLWxhYmVsPVwiSU1FIGlucHV0XCIgey4uLmJpbmR9IC8+O1xufVxuXG5mdW5jdGlvbiBJbWVUZXh0YXJlYSh7IHZhbHVlLCBvbkNvbW1pdCB9OiB7IHZhbHVlOiBzdHJpbmc7IG9uQ29tbWl0OiAodmFsdWU6IHN0cmluZykgPT4gdm9pZCB9KSB7XG4gIGNvbnN0IHsgYmluZCB9ID0gdXNlSW1lRHJhZnQ8SFRNTFRleHRBcmVhRWxlbWVudD4oeyB2YWx1ZSwgb25Db21taXQgfSk7XG4gIHJldHVybiA8dGV4dGFyZWEgYXJpYS1sYWJlbD1cIklNRSB0ZXh0YXJlYVwiIHsuLi5iaW5kfSAvPjtcbn1cblxuZGVzY3JpYmUoJ0lNRSBoZWxwZXJzJywgKCkgPT4ge1xuICBhZnRlckVhY2goY2xlYW51cCk7XG5cbiAgaXQoJ2tlZXBzIGFuIGlucHV0IGRyYWZ0IHRocm91Z2ggc3RhbGUgZXh0ZXJuYWwgcmVuZGVycyBhbmQgY29tbWl0cyBjb21wb3NpdGlvbiBvbmNlJywgKCkgPT4ge1xuICAgIGNvbnN0IG9uQ29tbWl0ID0gdmkuZm4oKTtcbiAgICBjb25zdCB2aWV3ID0gcmVuZGVyKDxJbWVJbnB1dCB2YWx1ZT1cIkVuZ2xpc2hcIiBvbkNvbW1pdD17b25Db21taXR9IC8+KTtcbiAgICBjb25zdCBpbnB1dCA9IHNjcmVlbi5nZXRCeVJvbGUoJ3RleHRib3gnLCB7IG5hbWU6ICdJTUUgaW5wdXQnIH0pO1xuXG4gICAgZmlyZUV2ZW50LmNvbXBvc2l0aW9uU3RhcnQoaW5wdXQpO1xuICAgIGZpcmVFdmVudC5jaGFuZ2UoaW5wdXQsIHsgdGFyZ2V0OiB7IHZhbHVlOiAnemhvbmcnIH0gfSk7XG4gICAgZmlyZUV2ZW50LmNvbXBvc2l0aW9uVXBkYXRlKGlucHV0LCB7IHRhcmdldDogeyB2YWx1ZTogJ+S4reaWhycgfSB9KTtcbiAgICBleHBlY3QoaW5wdXQpLnRvSGF2ZVZhbHVlKCfkuK3mlocnKTtcbiAgICBleHBlY3Qob25Db21taXQpLm5vdC50b0hhdmVCZWVuQ2FsbGVkKCk7XG5cbiAgICB2aWV3LnJlcmVuZGVyKDxJbWVJbnB1dCB2YWx1ZT1cIm9sZGVyIGV4dGVybmFsIHZhbHVlXCIgb25Db21taXQ9e29uQ29tbWl0fSAvPik7XG4gICAgZXhwZWN0KGlucHV0KS50b0hhdmVWYWx1ZSgn5Lit5paHJyk7XG5cbiAgICBmaXJlRXZlbnQuY29tcG9zaXRpb25FbmQoaW5wdXQsIHsgdGFyZ2V0OiB7IHZhbHVlOiAn5Lit5paHJyB9IH0pO1xuICAgIGZpcmVFdmVudC5jaGFuZ2UoaW5wdXQsIHsgdGFyZ2V0OiB7IHZhbHVlOiAn5Lit5paHJyB9IH0pO1xuXG4gICAgZXhwZWN0KGlucHV0KS50b0hhdmVWYWx1ZSgn5Lit5paHJyk7XG4gICAgZXhwZWN0KG9uQ29tbWl0KS50b0hhdmVCZWVuQ2FsbGVkVGltZXMoMSk7XG4gICAgZXhwZWN0KG9uQ29tbWl0KS50b0hhdmVCZWVuQ2FsbGVkV2l0aCgn5Lit5paHJyk7XG4gIH0pO1xuXG4gIGl0KCdrZWVwcyBhbiBvcmRpbmFyeSBkcmFmdCB3aGlsZSBvbGRlciBleHRlcm5hbCB2YWx1ZXMgYXJyaXZlIG91dCBvZiBvcmRlcicsICgpID0+IHtcbiAgICBjb25zdCBvbkNvbW1pdCA9IHZpLmZuKCk7XG4gICAgY29uc3QgdmlldyA9IHJlbmRlcig8SW1lSW5wdXQgdmFsdWU9XCJpbml0aWFsXCIgb25Db21taXQ9e29uQ29tbWl0fSAvPik7XG4gICAgY29uc3QgaW5wdXQgPSBzY3JlZW4uZ2V0QnlSb2xlKCd0ZXh0Ym94JywgeyBuYW1lOiAnSU1FIGlucHV0JyB9KTtcblxuICAgIGZpcmVFdmVudC5jaGFuZ2UoaW5wdXQsIHsgdGFyZ2V0OiB7IHZhbHVlOiAnZHJhZnQgb25lJyB9IH0pO1xuICAgIGZpcmVFdmVudC5jaGFuZ2UoaW5wdXQsIHsgdGFyZ2V0OiB7IHZhbHVlOiAnZHJhZnQgdHdvJyB9IH0pO1xuICAgIGV4cGVjdChpbnB1dCkudG9IYXZlVmFsdWUoJ2RyYWZ0IHR3bycpO1xuICAgIGV4cGVjdChvbkNvbW1pdCkudG9IYXZlQmVlbkxhc3RDYWxsZWRXaXRoKCdkcmFmdCB0d28nKTtcblxuICAgIHZpZXcucmVyZW5kZXIoPEltZUlucHV0IHZhbHVlPVwiZHJhZnQgdHdvXCIgb25Db21taXQ9e29uQ29tbWl0fSAvPik7XG4gICAgZXhwZWN0KGlucHV0KS50b0hhdmVWYWx1ZSgnZHJhZnQgdHdvJyk7XG4gICAgdmlldy5yZXJlbmRlcig8SW1lSW5wdXQgdmFsdWU9XCJkcmFmdCBvbmVcIiBvbkNvbW1pdD17b25Db21taXR9IC8+KTtcbiAgICBleHBlY3QoaW5wdXQpLnRvSGF2ZVZhbHVlKCdkcmFmdCB0d28nKTtcbiAgICB2aWV3LnJlcmVuZGVyKDxJbWVJbnB1dCB2YWx1ZT1cImluaXRpYWxcIiBvbkNvbW1pdD17b25Db21taXR9IC8+KTtcbiAgICBleHBlY3QoaW5wdXQpLnRvSGF2ZVZhbHVlKCdkcmFmdCB0d28nKTtcbiAgICB2aWV3LnJlcmVuZGVyKDxJbWVJbnB1dCB2YWx1ZT1cImF1dGhvcml0YXRpdmUgZXh0ZXJuYWwgdmFsdWVcIiBvbkNvbW1pdD17b25Db21taXR9IC8+KTtcbiAgICBleHBlY3QoaW5wdXQpLnRvSGF2ZVZhbHVlKCdhdXRob3JpdGF0aXZlIGV4dGVybmFsIHZhbHVlJyk7XG4gIH0pO1xuXG4gIGl0KCdhY2NlcHRzIGFuIGF1dGhvcml0YXRpdmUgb3duZXIgcmVzZXQgYWZ0ZXIgYSBsb2NhbCBkcmFmdCcsICgpID0+IHtcbiAgICBjb25zdCBvbkNvbW1pdCA9IHZpLmZuKCk7XG4gICAgY29uc3QgdmlldyA9IHJlbmRlcig8SW1lSW5wdXQgdmFsdWU9XCJpbml0aWFsXCIgcmVzZXRLZXk9ezB9IG9uQ29tbWl0PXtvbkNvbW1pdH0gLz4pO1xuICAgIGNvbnN0IGlucHV0ID0gc2NyZWVuLmdldEJ5Um9sZSgndGV4dGJveCcsIHsgbmFtZTogJ0lNRSBpbnB1dCcgfSk7XG5cbiAgICBmaXJlRXZlbnQuY2hhbmdlKGlucHV0LCB7IHRhcmdldDogeyB2YWx1ZTogJ2RpcnR5IGRyYWZ0JyB9IH0pO1xuICAgIGV4cGVjdChpbnB1dCkudG9IYXZlVmFsdWUoJ2RpcnR5IGRyYWZ0Jyk7XG5cbiAgICB2aWV3LnJlcmVuZGVyKDxJbWVJbnB1dCB2YWx1ZT1cIlwiIHJlc2V0S2V5PXsxfSBvbkNvbW1pdD17b25Db21taXR9IC8+KTtcbiAgICBleHBlY3QoaW5wdXQpLnRvSGF2ZVZhbHVlKCcnKTtcbiAgfSk7XG5cbiAgaXQoJ2NvbW1pdHMgYW4gdW5maW5pc2hlZCBjb21wb3NpdGlvbiBvbiBibHVyIHdpdGhvdXQgZHVwbGljYXRpbmcgdGhlIGZpbmFsIHZhbHVlJywgKCkgPT4ge1xuICAgIGNvbnN0IG9uQ29tbWl0ID0gdmkuZm4oKTtcbiAgICBjb25zdCBvbkJsdXIgPSB2aS5mbigpO1xuICAgIHJlbmRlcig8SW1lSW5wdXQgdmFsdWU9XCJcIiBvbkNvbW1pdD17b25Db21taXR9IG9uQmx1cj17b25CbHVyfSAvPik7XG4gICAgY29uc3QgaW5wdXQgPSBzY3JlZW4uZ2V0QnlSb2xlKCd0ZXh0Ym94JywgeyBuYW1lOiAnSU1FIGlucHV0JyB9KTtcblxuICAgIGZpcmVFdmVudC5jb21wb3NpdGlvblN0YXJ0KGlucHV0KTtcbiAgICBmaXJlRXZlbnQuY2hhbmdlKGlucHV0LCB7IHRhcmdldDogeyB2YWx1ZTogJ+aLvOmfsycgfSB9KTtcbiAgICBmaXJlRXZlbnQuYmx1cihpbnB1dCk7XG4gICAgZmlyZUV2ZW50LmNvbXBvc2l0aW9uRW5kKGlucHV0LCB7IHRhcmdldDogeyB2YWx1ZTogJ+aLvOmfsycgfSB9KTtcblxuICAgIGV4cGVjdChvbkNvbW1pdCkudG9IYXZlQmVlbkNhbGxlZFRpbWVzKDEpO1xuICAgIGV4cGVjdChvbkNvbW1pdCkudG9IYXZlQmVlbkNhbGxlZFdpdGgoJ+aLvOmfsycpO1xuICAgIGV4cGVjdChvbkJsdXIpLnRvSGF2ZUJlZW5DYWxsZWRXaXRoKCfmi7zpn7MnKTtcbiAgfSk7XG5cbiAgaXQoJ2tlZXBzIG9yZGluYXJ5IHRleHRhcmVhIHR5cGluZywgc3ltYm9scywgcGFzdGUsIGFuZCBkZWxldGlvbiBpbW1lZGlhdGUnLCBhc3luYyAoKSA9PiB7XG4gICAgY29uc3QgdXNlciA9IHVzZXJFdmVudC5zZXR1cCgpO1xuICAgIGNvbnN0IG9uQ29tbWl0ID0gdmkuZm4oKTtcbiAgICByZW5kZXIoPEltZVRleHRhcmVhIHZhbHVlPVwiXCIgb25Db21taXQ9e29uQ29tbWl0fSAvPik7XG4gICAgY29uc3QgdGV4dGFyZWEgPSBzY3JlZW4uZ2V0QnlSb2xlKCd0ZXh0Ym94JywgeyBuYW1lOiAnSU1FIHRleHRhcmVhJyB9KTtcblxuICAgIGF3YWl0IHVzZXIudHlwZSh0ZXh0YXJlYSwgJ0hlbGxvIDEyMyE/Jyk7XG4gICAgYXdhaXQgdXNlci5wYXN0ZSgnIHBhc3RlZCcpO1xuICAgIGF3YWl0IHVzZXIua2V5Ym9hcmQoJ3tCYWNrc3BhY2V9Jyk7XG5cbiAgICBleHBlY3QodGV4dGFyZWEpLnRvSGF2ZVZhbHVlKCdIZWxsbyAxMjMhPyBwYXN0ZScpO1xuICAgIGV4cGVjdChvbkNvbW1pdCkudG9IYXZlQmVlbkxhc3RDYWxsZWRXaXRoKCdIZWxsbyAxMjMhPyBwYXN0ZScpO1xuXG4gICAgYXdhaXQgdXNlci5jbGVhcih0ZXh0YXJlYSk7XG4gICAgZXhwZWN0KHRleHRhcmVhKS50b0hhdmVWYWx1ZSgnJyk7XG4gICAgZXhwZWN0KG9uQ29tbWl0KS50b0hhdmVCZWVuTGFzdENhbGxlZFdpdGgoJycpO1xuICB9KTtcblxuICBpdCgncmVjb2duaXplcyBuYXRpdmUsIHN5bnRoZXRpYywgYW5kIGxlZ2FjeSBJTUUga2V5Ym9hcmQgbWFya2VycycsICgpID0+IHtcbiAgICBleHBlY3QoaXNJbWVLZXlib2FyZEV2ZW50KHsgaXNDb21wb3Npbmc6IHRydWUgfSkpLnRvQmUodHJ1ZSk7XG4gICAgZXhwZWN0KGlzSW1lS2V5Ym9hcmRFdmVudCh7IGtleUNvZGU6IDIyOSB9KSkudG9CZSh0cnVlKTtcbiAgICBleHBlY3QoaXNJbWVLZXlib2FyZEV2ZW50KHsgbmF0aXZlRXZlbnQ6IHsgaXNDb21wb3Npbmc6IHRydWUgfSB9KSkudG9CZSh0cnVlKTtcbiAgICBleHBlY3QoaXNJbWVLZXlib2FyZEV2ZW50KHsgbmF0aXZlRXZlbnQ6IHsga2V5Q29kZTogMjI5IH0gfSkpLnRvQmUodHJ1ZSk7XG4gICAgZXhwZWN0KGlzSW1lS2V5Ym9hcmRFdmVudCh7IGtleUNvZGU6IDEzIH0pKS50b0JlKGZhbHNlKTtcbiAgfSk7XG59KTtcbiJdLCJmaWxlIjoiRzovbXVsdGltb2RhbC1jYW52YXMvYXBwcy93ZWIvc3JjL2ltZS50ZXN0LnRzeCJ9

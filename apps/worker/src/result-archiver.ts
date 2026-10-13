@@ -28,6 +28,8 @@ import type { ResultAssetArchiveInput, ProviderOutput } from './result-output';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
+const DEFAULT_S3_TIMEOUT_MS = 300_000;
+const DEFAULT_S3_DELETE_TIMEOUT_MS = 30_000;
 const DEFAULT_FFPROBE_TIMEOUT_MS = 10_000;
 const execFile = promisify(execFileCallback);
 
@@ -237,8 +239,9 @@ export class WorkerFileBlobStore implements ResultBlobStore {
 /** S3-compatible storage adapter (works with R2 in development). */
 export class WorkerS3BlobStore implements ResultBlobStore {
   private readonly client: S3Client;
-  /** 单次 S3 请求（含 SDK 重试）的毫秒上限，默认 30 秒。 */
+  /** 单次 S3 请求（含 SDK 重试）的毫秒上限；大视频上传需要独立于 Provider 请求的预算。 */
   private readonly timeoutMs: number;
+  private readonly deleteTimeoutMs: number;
 
   constructor(
     private readonly bucket: string,
@@ -249,10 +252,15 @@ export class WorkerS3BlobStore implements ResultBlobStore {
       secretAccessKey?: string;
       forcePathStyle?: boolean;
       timeoutMs?: number;
+      deleteTimeoutMs?: number;
     } = {},
   ) {
     if (!bucket.trim()) throw new Error('S3 bucket is required');
-    this.timeoutMs = positiveLimit(options.timeoutMs ?? 30_000, 'S3 timeout');
+    this.timeoutMs = positiveLimit(options.timeoutMs ?? DEFAULT_S3_TIMEOUT_MS, 'S3 timeout');
+    this.deleteTimeoutMs = positiveLimit(
+      options.deleteTimeoutMs ?? options.timeoutMs ?? DEFAULT_S3_DELETE_TIMEOUT_MS,
+      'S3 delete timeout',
+    );
     this.client = new S3Client({
       region: options.region ?? 'us-east-1',
       ...(options.endpoint ? { endpoint: options.endpoint } : {}),
@@ -269,22 +277,48 @@ export class WorkerS3BlobStore implements ResultBlobStore {
   }
 
   async put(key: string, content: Buffer, contentType?: string): Promise<void> {
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: content,
-        ...(contentType ? { ContentType: contentType } : {}),
-      }),
-      { abortSignal: AbortSignal.timeout(this.timeoutMs) },
-    );
+    const signal = AbortSignal.timeout(this.timeoutMs);
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: content,
+          ...(contentType ? { ContentType: contentType } : {}),
+        }),
+        { abortSignal: signal },
+      );
+    } catch (error) {
+      if (signal.aborted) throw storageTimeoutError('上传', this.timeoutMs);
+      if (error instanceof Error && error.name === 'AbortError') throw storageAbortError('上传');
+      throw error;
+    }
   }
 
   async delete(key: string): Promise<void> {
-    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }), {
-      abortSignal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const signal = AbortSignal.timeout(this.deleteTimeoutMs);
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }), {
+        abortSignal: signal,
+      });
+    } catch (error) {
+      if (signal.aborted) throw storageTimeoutError('删除', this.deleteTimeoutMs);
+      if (error instanceof Error && error.name === 'AbortError') throw storageAbortError('删除');
+      throw error;
+    }
   }
+}
+
+function storageTimeoutError(action: string, timeoutMs: number): Error {
+  const error = new Error(`对象存储${action}超时（${timeoutMs} 毫秒）`);
+  error.name = 'ResultStorageTimeoutError';
+  return error;
+}
+
+function storageAbortError(action: string): Error {
+  const error = new Error(`对象存储${action}请求被中断`);
+  error.name = 'ResultStorageAbortError';
+  return error;
 }
 
 export type PrismaResultAssetArchiverOptions = {
@@ -821,6 +855,8 @@ export function createResultAssetArchiverFromEnvironment(): {
         accessKeyId: process.env.S3_ACCESS_KEY,
         secretAccessKey: process.env.S3_SECRET_KEY,
         forcePathStyle: Boolean(process.env.S3_ENDPOINT),
+        timeoutMs: Number(process.env.RESULT_ASSET_S3_TIMEOUT_MS ?? DEFAULT_S3_TIMEOUT_MS),
+        deleteTimeoutMs: DEFAULT_S3_DELETE_TIMEOUT_MS,
       })
     : new WorkerFileBlobStore(process.env.ASSET_STORAGE_ROOT ?? '.data/assets');
   const archiver = new PrismaResultAssetArchiver(prisma, {
