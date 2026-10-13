@@ -28,6 +28,10 @@
   overscroll-behavior: contain;
 }
 
+.video-recreation-resources-column {
+  container-type: inline-size;
+}
+
 .video-recreation-analysis-column > *,
 .video-recreation-resources-column > * {
   flex-shrink: 0;
@@ -38,6 +42,14 @@
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+
+/* 场景与对象均为单项横排；多项由中栏独立滚动。 */
+.video-recreation-scenes {
+  grid-template-columns: minmax(66px, 0.65fr) minmax(88px, 0.9fr) minmax(0, 1.45fr);
+  align-items: center;
+  max-height: 130px;
+  overflow: hidden;
 }
 
 .video-recreation-source-preview {
@@ -132,6 +144,35 @@
   border-bottom: 1px solid var(--mc-border, #d3dce0);
 }
 
+.video-recreation-source-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.video-recreation-source-heading .video-recreation-title {
+  flex: 0 0 auto;
+}
+
+.video-recreation-source-heading .video-recreation-source-meta {
+  flex: 1 1 auto;
+}
+
+.video-recreation-scenes > h4,
+.video-recreation-scenes > .video-recreation-preview,
+.video-recreation-scenes > .video-recreation-hint {
+  min-width: 0;
+}
+
+.video-recreation-scenes > .video-recreation-preview {
+  max-height: 130px;
+}
+
+.video-recreation-scenes > .video-recreation-hint {
+  grid-column: 3;
+}
+
 .video-recreation-binding > small,
 .video-recreation-hint {
   color: var(--mc-text-muted, #687386);
@@ -151,8 +192,8 @@
   min-width: 0;
 }
 
-.video-recreation-model-actions > label {
-  flex: 1;
+.video-recreation-model-select {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -166,7 +207,7 @@
 }
 
 .video-recreation-bindings {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -224,10 +265,15 @@
 /* 对象卡与原视频截图保持有界，不能改变画布节点的外框尺寸。 */
 .video-recreation-object {
   display: grid;
-  gap: 8px;
+  grid-template-columns: minmax(66px, 0.65fr) minmax(88px, 0.9fr) minmax(0, 1.45fr);
+  align-items: center;
+  gap: 10px;
   min-width: 0;
   align-content: start;
   padding: 8px;
+  height: 130px;
+  max-height: 130px;
+  overflow: hidden;
   border: 1px solid var(--mc-border, #d3dce0);
   border-radius: 6px;
   background: var(--mc-surface-soft, #f7f8fa);
@@ -235,6 +281,24 @@
 
 .video-recreation-object > h4 {
   cursor: help;
+  min-width: 0;
+}
+
+.video-recreation-object > .video-recreation-preview,
+.video-recreation-object-resource {
+  min-width: 0;
+}
+
+.video-recreation-object-resource {
+  display: grid;
+  gap: 6px;
+  max-height: 114px;
+  overflow: auto;
+}
+
+.video-recreation-object-resource .video-recreation-binding {
+  padding: 0;
+  border-bottom: 0;
 }
 
 .video-recreation-preview .ant-image {
@@ -252,7 +316,8 @@
 .video-recreation-preview-image {
   display: block;
   width: 100%;
-  height: 112px;
+  height: 106px;
+  max-height: 106px;
   object-fit: contain;
   border-radius: 4px;
   background: var(--mc-surface, #fff);
@@ -268,9 +333,9 @@
   border-radius: 4px;
 }
 
-.video-recreation-preview-caption,
-.video-recreation-replacement > span {
+.video-recreation-preview-caption {
   font-size: 11px;
+  line-height: 14px;
   color: var(--mc-text-muted, #687386);
 }
 
@@ -278,21 +343,28 @@
   justify-self: start;
 }
 
-.video-recreation-replacement {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
+.video-recreation-state {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
 }
 
-.video-recreation-replacement-image {
-  height: 112px;
-  max-height: 112px;
+@media (max-width: 760px) {
+  .video-recreation-source-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+.video-recreation-object .video-recreation-preview-image {
+  height: 96px;
+  max-height: 96px;
+}
+
+.video-recreation-object-resource .video-recreation-binding .node-quick-editor-field > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  contain: layout paint;
-}
-
-.video-recreation-replacement-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  clip-path: inset(50%);
 }

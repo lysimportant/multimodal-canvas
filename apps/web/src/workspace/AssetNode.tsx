@@ -410,8 +410,27 @@ export function AssetNode({
           tags: [],
         } satisfies Asset)
       : undefined;
+  const recreationSource = data.videoRecreation?.source;
+  const recreationSourcePreviewAsset =
+    isVideoRecreation && recreationSource && !resultPreviewAsset
+      ? ({
+          id: recreationSource.assetId,
+          name: recreationSource.name,
+          mediaType: 'video',
+          mimeType: videoMimeTypeFromFilename(recreationSource.name),
+          sizeBytes: 0,
+          latestVersion: recreationSource.assetVersion,
+          status: 'ready',
+          contentUrl: getResultAssetContentUrl(
+            recreationSource.assetId,
+            recreationSource.assetVersion,
+          ),
+          tags: [],
+        } satisfies Asset)
+      : undefined;
   const rawPreviewAsset =
     resultPreviewAsset ??
+    recreationSourcePreviewAsset ??
     (data.assetId && data.contentUrl
       ? ({
           id: data.assetId,
@@ -693,7 +712,7 @@ export function AssetNode({
       stopRequested={runControl.stopRequested || effectiveRunStatus === 'cancel_requested'}
       onStop={stopNode ? () => stopNode(id) : undefined}
       emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
-      emptyHint={isVideoRecreation ? '点击节点，按流程开始复刻' : undefined}
+      emptyHint={isVideoRecreation ? '再次点击节点，打开复刻编辑器' : undefined}
       icon={<Icon size={24} strokeWidth={1.7} aria-hidden="true" />}
     />
   );
@@ -1422,7 +1441,7 @@ function NodeStateContent({
       >
         <LoaderCircle className="spin" size={22} aria-hidden="true" />
         <span>
-          {isRecovering ? '获取原任务资源中…' : status ? runStatusLabel(status) : '运行中'}
+          {isRecovering ? '获取原任务资源中…' : status ? nodeRunStatusLabel(status) : '请求中'}
         </span>
         {typeof progress === 'number' ? (
           <span className="flow-node-progress" aria-label={`运行进度 ${progress}%`}>
@@ -1542,7 +1561,7 @@ function nodeStatusTooltip(status?: RunStatus, artifactState?: AssetPreviewLoadS
   if (artifactState === 'missing') return '产物不可用';
   if (artifactState === 'loading') return '产物加载中';
   if (!status) return '未运行';
-  return runStatusLabel(status);
+  return nodeRunStatusLabel(status);
 }
 
 function RunStatusIcon({
@@ -1559,11 +1578,16 @@ function RunStatusIcon({
   }
   if (status === 'succeeded') return <Check size={16} aria-label="运行成功" />;
   if (status === 'failed' || status === 'cancelled') return <X size={16} aria-label="运行失败" />;
-  if (status === 'queued' || status === 'preparing' || status === 'cancel_requested') {
+  if (status === 'cancel_requested') {
     return <Clock3 size={16} aria-label="等待运行" />;
   }
-  if (status === 'running' || status === 'processing') {
-    return <LoaderCircle className="spin" size={16} aria-label="运行中" />;
+  if (
+    status === 'queued' ||
+    status === 'preparing' ||
+    status === 'running' ||
+    status === 'processing'
+  ) {
+    return <LoaderCircle className="spin" size={16} aria-label="请求中" />;
   }
   return <Circle size={14} aria-label="未运行" />;
 }
@@ -1573,7 +1597,8 @@ function getNodePresentationState(
   previewAsset?: Asset,
   runStatus: RunStatus | undefined = data.runStatus,
 ): NodePresentationState {
-  if (previewAsset?.contentUrl && (data.manualOutput || data.resultAsset)) return 'preview';
+  if (previewAsset?.contentUrl && (data.manualOutput || data.resultAsset || data.videoRecreation))
+    return 'preview';
   if (
     runStatus === 'queued' ||
     runStatus === 'preparing' ||
@@ -1589,6 +1614,17 @@ function getNodePresentationState(
   if (previewAsset?.contentUrl) return 'preview';
   if (data.mode === 'source') return 'missing';
   return 'empty';
+}
+
+/** 来源配置只保存资源名和冻结版本；按已知后缀标识预览类型，未知格式不冒充 MP4。 */
+function videoMimeTypeFromFilename(name: string): string {
+  const extension = name.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  if (extension === 'webm') return 'video/webm';
+  if (extension === 'mov') return 'video/quicktime';
+  if (extension === 'm4v') return 'video/x-m4v';
+  if (extension === 'avi') return 'video/x-msvideo';
+  if (extension === 'mp4') return 'video/mp4';
+  return 'video/unknown';
 }
 
 /**
@@ -1619,6 +1655,13 @@ export function runStatusLabel(status: RunStatus) {
     cancelled: '已取消',
   };
   return labels[status];
+}
+
+/** 节点请求期间统一显示稳定文案，任务详情仍保留真实执行阶段。 */
+function nodeRunStatusLabel(status: RunStatus): string {
+  return ['queued', 'preparing', 'running', 'processing'].includes(status)
+    ? '请求中'
+    : runStatusLabel(status);
 }
 
 /**

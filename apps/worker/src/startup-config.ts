@@ -134,7 +134,6 @@ export function validateWorkerStartupConfiguration(
     'NEW_API_TIMEOUT_MS',
     'NEW_API_MAX_RESPONSE_BYTES',
     'NEW_API_VIDEO_POLL_INTERVAL_MS',
-    'NEW_API_VIDEO_MAX_POLL_ATTEMPTS',
     'NEW_API_VIDEO_MAX_CONTENT_BYTES',
   ]) {
     validatePositiveSafeInteger(environment, variable, issues);

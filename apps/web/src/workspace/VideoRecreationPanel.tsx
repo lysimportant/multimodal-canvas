@@ -419,6 +419,9 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
       config.analysis &&
       !config.analysis.template.products?.some((product) => product.id === binding.productId),
   );
+  const canAdoptCandidate =
+    !request && !recovery && candidate && candidate.runId !== config.analysis?.runId;
+  const canRetryQuery = error && !submitting && !recovery;
   /** 重新查询只读记录，始终沿用原 runId，不重放 POST。 */
   function queryAgain(): void {
     setError(undefined);
@@ -668,7 +671,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     target?: BindingTarget,
   ) {
     const present = reference && imageAssets.some((asset) => asset.id === reference.assetId);
-    const asset = reference && imageAssets.find((entry) => entry.id === reference.assetId);
     const duplicates =
       target?.kind === 'role'
         ? config.bindings.filter((entry) => entry.roleId === target.id)
@@ -730,27 +732,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
         >
           @ 搜索替换资源
         </Button>
-        {reference ? (
-          <small>
-            已冻结：{reference.name} · v{reference.assetVersion}
-          </small>
-        ) : null}
-        {reference && asset ? (
-          <div className="video-recreation-replacement">
-            <span>替换图片</span>
-            <AssetPreview
-              asset={{
-                ...asset,
-                name: reference.name,
-                latestVersion: reference.assetVersion,
-                contentUrl: resultAssetContentUrl(reference.assetId, reference.assetVersion),
-              }}
-              className="video-recreation-replacement-image"
-              mode="content"
-              interactive
-            />
-          </div>
-        ) : null}
         {duplicates.length > 1 ? (
           <div role="alert">
             <p>
@@ -817,10 +798,32 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
     <section className="video-recreation-panel nodrag nowheel" aria-label="短视频复刻">
       <section className="video-recreation-analysis-column" aria-label="原视频与分析">
         <header className="video-recreation-source">
-          <h3 className="video-recreation-title">
-            <Clapperboard size={20} aria-hidden="true" />
-            分析视频
-          </h3>
+          <div className="video-recreation-source-heading">
+            <h3 className="video-recreation-title">
+              <Clapperboard size={20} aria-hidden="true" />
+              分析视频
+            </h3>
+            <div className="video-recreation-source-meta" aria-label="来源信息">
+              <span>
+                来源：
+                {hasVersion(config.source.assetVersion)
+                  ? `v${config.source.assetVersion}`
+                  : '版本未知'}
+              </span>
+              <span>
+                时长：
+                {invalidDuration
+                  ? '无效'
+                  : (config.source.durationSeconds ?? config.analysis?.template.durationSeconds) ===
+                      undefined
+                    ? '待分析'
+                    : `${config.source.durationSeconds ?? config.analysis?.template.durationSeconds} 秒`}
+              </span>
+              <Tooltip title={config.source.name}>
+                <span className="video-recreation-source-name">文件：{config.source.name}</span>
+              </Tooltip>
+            </div>
+          </div>
           <div className="video-recreation-source-preview" aria-label="原视频预览">
             {sourceAsset && !sourceError ? (
               <AssetPreview
@@ -844,26 +847,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
               <p className="video-recreation-hint">原视频不可用，请刷新资源或重新选择。</p>
             )}
           </div>
-          <div className="video-recreation-source-meta" aria-label="来源信息">
-            <span>
-              来源：
-              {hasVersion(config.source.assetVersion)
-                ? `v${config.source.assetVersion}`
-                : '版本未知'}
-            </span>
-            <span>
-              时长：
-              {invalidDuration
-                ? '无效'
-                : (config.source.durationSeconds ?? config.analysis?.template.durationSeconds) ===
-                    undefined
-                  ? '待分析'
-                  : `${config.source.durationSeconds ?? config.analysis?.template.durationSeconds} 秒`}
-            </span>
-            <Tooltip title={config.source.name}>
-              <span className="video-recreation-source-name">文件：{config.source.name}</span>
-            </Tooltip>
-          </div>
         </header>
         {sourceError ? <p role="alert">{sourceError}</p> : null}
         {invalidDuration ? (
@@ -871,8 +854,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
         ) : null}
         {sourceChanged ? <p role="alert">来源已改变，请重新打开节点编辑器。</p> : null}
         <div className="video-recreation-model-actions">
-          <label className="node-quick-editor-field">
-            <span>分析模型</span>
+          <div className="video-recreation-model-select">
             <Select
               aria-label="分析模型"
               disabled={locked}
@@ -925,7 +907,7 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 })),
               ]}
             />
-          </label>
+          </div>
           <Button
             type="button"
             className="button button-secondary"
@@ -953,32 +935,42 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     : '分析整条视频'}
           </Button>
         </div>
-        <div className="video-recreation-actions">
-          {!request && !recovery && candidate && candidate.runId !== config.analysis?.runId ? (
-            <Button
-              type="button"
-              className="button button-secondary"
-              disabled={locked}
-              onClick={() => void adoptExistingAnalysis()}
-            >
-              采用已有分析
-            </Button>
-          ) : null}
-          {error && !submitting && !recovery ? (
-            <Button
-              type="button"
-              className="button button-secondary"
-              disabled={authChanged || sourceChanged || busy || editing}
-              onClick={queryAgain}
-            >
-              重新查询
-            </Button>
-          ) : null}
-        </div>
-        <p className="video-recreation-hint">
-          分析与视频生成使用独立模型。换人物或商品无需重新分析；最终提示词和视频生成模型在右侧调整。
-        </p>
-        <p role="status">{uploading ? '正在上传图片…' : status}</p>
+        {canAdoptCandidate || canRetryQuery ? (
+          <div className="video-recreation-actions">
+            {canAdoptCandidate ? (
+              <Button
+                type="button"
+                className="button button-secondary"
+                disabled={locked}
+                onClick={() => void adoptExistingAnalysis()}
+              >
+                采用已有分析
+              </Button>
+            ) : null}
+            {canRetryQuery ? (
+              <Button
+                type="button"
+                className="button button-secondary"
+                disabled={authChanged || sourceChanged || busy || editing}
+                onClick={queryAgain}
+              >
+                重新查询
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {loading ||
+        submitting ||
+        uploading ||
+        request ||
+        recovery ||
+        canAdoptCandidate ||
+        error ||
+        !config.analysis ? (
+          <p className="video-recreation-state" role="status">
+            {uploading ? '正在上传图片…' : status}
+          </p>
+        ) : null}
         {error ? (
           <p className="video-recreation-error" role="alert">
             {error}
@@ -994,10 +986,6 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 children: (
                   <div className="video-recreation-summary">
                     <p>{config.analysis.summary}</p>
-                    {config.analysis.modelAlias ? (
-                      <span>本次分析模型：{config.analysis.modelAlias}</span>
-                    ) : null}
-                    <span>分析完整时长：{config.analysis.template.durationSeconds} 秒</span>
                   </div>
                 ),
               },
@@ -1070,11 +1058,13 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                     preview={previews.get(`role:${role.id}`)}
                     onRetry={retryPreviews}
                   />
-                  {imagePicker(
-                    role.label,
-                    config.bindings.find((entry) => entry.roleId === role.id),
-                    { kind: 'role', id: role.id },
-                  )}
+                  <div className="video-recreation-object-resource">
+                    {imagePicker(
+                      role.label,
+                      config.bindings.find((entry) => entry.roleId === role.id),
+                      { kind: 'role', id: role.id },
+                    )}
+                  </div>
                 </article>
               ))}
               {config.analysis.template.roles.length === 0 ? (
@@ -1161,29 +1151,31 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                       preview={previews.get(`product:${product.id}`)}
                       onRetry={retryPreviews}
                     />
-                    {imagePicker(product.label, binding, { kind: 'product', id: product.id })}
-                    {binding ? (
-                      <label className="node-quick-editor-field">
-                        <span>用途与已确认卖点</span>
-                        <Textarea
-                          aria-label={`${product.label}用途与已确认卖点`}
-                          value={binding.description ?? ''}
-                          disabled={baseLocked}
-                          placeholder="仅填写您确认的信息；不从图片猜测功效"
-                          onChange={(event) =>
-                            void saveEdit({
-                              ...latest.current.config,
-                              productBindings: latest.current.config.productBindings?.map(
-                                (entry) =>
-                                  entry.productId === product.id
-                                    ? { ...entry, description: event.target.value }
-                                    : entry,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                    ) : null}
+                    <div className="video-recreation-object-resource">
+                      {imagePicker(product.label, binding, { kind: 'product', id: product.id })}
+                      {binding ? (
+                        <label className="node-quick-editor-field">
+                          <span>用途与已确认卖点</span>
+                          <Textarea
+                            aria-label={`${product.label}用途与已确认卖点`}
+                            value={binding.description ?? ''}
+                            disabled={baseLocked}
+                            placeholder="仅填写您确认的信息；不从图片猜测功效"
+                            onChange={(event) =>
+                              void saveEdit({
+                                ...latest.current.config,
+                                productBindings: latest.current.config.productBindings?.map(
+                                  (entry) =>
+                                    entry.productId === product.id
+                                      ? { ...entry, description: event.target.value }
+                                      : entry,
+                                ),
+                              })
+                            }
+                          />
+                        </label>
+                      ) : null}
+                    </div>
                   </article>
                 );
               })}

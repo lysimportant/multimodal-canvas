@@ -42,7 +42,30 @@ import {
   imageEditSourceOf,
   isImageEditSourceNode,
   nodeHasEcho,
+  requestPromptResourceSchema,
 } from './index';
+
+describe('request prompt resource contract', () => {
+  it('accepts a bounded frozen display name without making it an identity', () => {
+    expect(
+      requestPromptResourceSchema.parse({
+        assetId: 'asset-1',
+        assetVersion: 2,
+        name: '替换人物',
+        role: 'content',
+        sortOrder: 0,
+        mediaType: 'image',
+      }).name,
+    ).toBe('替换人物');
+    expect(() =>
+      requestPromptResourceSchema.parse({
+        role: 'content',
+        sortOrder: 0,
+        name: 'x'.repeat(161),
+      }),
+    ).toThrow();
+  });
+});
 
 describe('canvas protocol', () => {
   it('exposes the supported media, modes, and port roles', () => {

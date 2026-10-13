@@ -545,6 +545,17 @@ export function NodeQuickEditor({
       : node.data.mediaType === 'video' && invalidVideoDimensions.length > 0
         ? '视频宽高必须为正整数像素，且不能超过安全整数范围'
         : imageEditSourceIssue);
+  const runIssue = busy
+    ? '生成中'
+    : !enabled
+      ? '节点已停用'
+      : (generationCountIssue ??
+        mediaParameterIssue ??
+        (!hasRunnableParameters
+          ? imageEditPromptRequired
+            ? '请先填写想用这张图修改什么'
+            : '请先填写提示词或连接输入节点'
+          : undefined));
 
   const updateParameter = (key: keyof NodeMediaParameters, value: unknown) => {
     if (!onParametersChange) return;
@@ -993,11 +1004,15 @@ export function NodeQuickEditor({
     imageResolutionValue:
       compatibleImageOutputParameters?.size ?? mediaOptions.imageResolutionValue,
   });
+  const visibleSummaryItems =
+    isRecreation && node.data.mediaType === 'video'
+      ? [summaryItems[0]!, summaryItems[2]!, summaryItems[1]!]
+      : summaryItems;
   /** 容器级 Popover 为秒数及 Select 提供库层级上下文，避免子浮层落到参数页下面。 */
   const mediaSummary =
     node.data.mediaType === 'text' ? null : (
       <Popover
-        trigger={['click']}
+        trigger={isRecreation ? ['hover', 'click'] : ['click']}
         placement="topRight"
         open={mediaSettingsOpen}
         onOpenChange={setMediaSettingsOpen}
@@ -1043,11 +1058,11 @@ export function NodeQuickEditor({
           type="button"
           className="node-quick-editor-summary-button"
           aria-expanded={mediaSettingsOpen}
-          aria-label="媒体参数"
-          title={summaryItems.map((item) => item.label + '：' + item.value).join(' · ')}
+          aria-label={isRecreation ? '视频参数' : '媒体参数'}
+          title={visibleSummaryItems.map((item) => item.label + '：' + item.value).join(' · ')}
         >
           <SlidersHorizontal size={15} aria-hidden="true" />
-          <span>{summaryItems.map((item) => item.value).join(' · ')}</span>
+          <span>{visibleSummaryItems.map((item) => item.value).join(' · ')}</span>
         </Button>
       </Popover>
     );
@@ -1063,46 +1078,7 @@ export function NodeQuickEditor({
           onChange={(value) => onModelChange(parseModelOptionValue(value))}
           className="node-quick-editor-select-group"
         />
-        {isRecreation && (
-          <>
-            <NodeParameterSelect
-              label="视频清晰度"
-              allowCustomValue
-              value={normalizeCurrentOptionValue(
-                parameters.resolution ?? parameters.video_resolution ?? parameters.videoResolution,
-              )}
-              options={mediaOptions.resolution}
-              onChange={(value) => updateVideoParameter('resolution', value)}
-              disabled={!onParametersChange}
-              className="node-quick-editor-select-group"
-              optionLayout="grid"
-            />
-            <VideoDurationControl
-              value={durationDraft}
-              issue={durationIssue}
-              inputDisabled={!onParametersChange}
-              onChange={(value) => {
-                setDurationDraft(value);
-                if (value === '') updateVideoParameter('duration', undefined);
-                else if (
-                  Number.isFinite(Number(value)) &&
-                  (Number(value) > 0 || Number(value) === -1)
-                )
-                  updateVideoParameter('duration', Number(value));
-              }}
-            />
-            <NodeParameterSelect
-              label="视频比例"
-              allowCustomValue
-              value={normalizeCurrentOptionValue(storedAspectRatio)}
-              options={mediaOptions.aspectRatio}
-              onChange={(value) => updateVideoParameter('aspectRatio', value)}
-              disabled={!onParametersChange}
-              className="node-quick-editor-select-group"
-              optionLayout="grid"
-            />
-          </>
-        )}
+        {isRecreation && mediaSummary}
         {videoModeEditor}
         {node.data.mediaType === 'text' ? inferenceEditor : !isRecreation && mediaSummary}
       </div>
@@ -1127,7 +1103,7 @@ export function NodeQuickEditor({
   const controls = (
     <div className="node-quick-editor-controls">
       <div className="node-quick-editor-run-group">
-        {!isRecreation && skillPanel}
+        {skillPanel}
         <NodeParameterSelect
           label="生成数量"
           className="node-quick-editor-generation-count"
@@ -1170,19 +1146,7 @@ export function NodeQuickEditor({
                 type="button"
                 className="button button-primary node-quick-editor-run"
                 aria-label={busy ? '生成中' : '生成'}
-                title={
-                  busy
-                    ? '生成中'
-                    : !enabled
-                      ? '节点已停用'
-                      : (generationCountIssue ??
-                        mediaParameterIssue ??
-                        (!hasRunnableParameters
-                          ? imageEditPromptRequired
-                            ? '请先填写想用这张图修改什么'
-                            : '请先填写提示词或连接输入节点'
-                          : '生成'))
-                }
+                title={runIssue ?? '生成'}
                 onClick={onRun}
                 disabled={
                   busy ||
@@ -1389,9 +1353,9 @@ export function NodeQuickEditor({
                   <h4>提示词</h4>
                   <div className="node-quick-editor-prompt-group">{promptEditor}</div>
                   {controls}
-                  {generationCountIssue && (
+                  {runIssue && (
                     <p className="node-quick-editor-parameter-issue" role="status">
-                      {generationCountIssue}
+                      {runIssue}
                     </p>
                   )}
                 </section>

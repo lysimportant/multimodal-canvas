@@ -2135,7 +2135,7 @@ function WorkspaceApp({
             ...(previous?.inferenceStrength
               ? { inferenceStrength: previous.inferenceStrength }
               : {}),
-            ...(mediaType === 'video' ? { videoMode: 'text_to_video' as const } : {}),
+            ...(mediaType === 'video' ? { videoMode: 'omni_reference' as const } : {}),
             ...(dataOverrides ?? {}),
             createdAt: new Date().toISOString(),
           },

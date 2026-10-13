@@ -292,11 +292,14 @@ describe('AssetNode result presentation', () => {
     expect(badge?.querySelector('.lucide-clapperboard')).not.toBeNull();
     expect(badge?.closest('.flow-node-floating-controls')).toBeNull();
     expect(view.container.querySelector('.flow-asset-node')).not.toHaveClass('is-selected');
-    expect(screen.getByText('点击节点，按流程开始复刻')).toBeVisible();
+    expect(view.container.querySelector('.flow-node-preview video')).toHaveAttribute(
+      'src',
+      'http://localhost:3000/v1/assets/clip/versions/2/content',
+    );
     view.unmount();
     const ordinary = renderNode(makeNode({ mediaType: 'video' }));
     expect(ordinary.container.querySelector('.flow-node-recreation-badge')).toBeNull();
-    expect(screen.queryByText('点击节点，按流程开始复刻')).not.toBeInTheDocument();
+    expect(screen.queryByText('再次点击节点，打开复刻编辑器')).not.toBeInTheDocument();
   });
 
   it('复刻节点已有结果仍显示专属标识，不把空态引导盖在视频上', () => {
@@ -349,9 +352,10 @@ describe('AssetNode result presentation', () => {
         </NodeResizeStartContext.Provider>
       );
       const view = render(scene(node.data));
-      expect(
-        view.container.querySelector('.flow-node-preview img, .flow-node-preview video'),
-      ).toBeNull();
+      expect(view.container.querySelector('.flow-node-preview video')).toHaveAttribute(
+        'src',
+        'http://localhost:3000/v1/assets/clip/versions/2/content',
+      );
       const resultAsset = {
         assetId: 'generated-result',
         version: 3,
@@ -1765,7 +1769,7 @@ describe('AssetNode result presentation', () => {
   it('shows progress instead of a success placeholder while a run is active', () => {
     renderNode(makeNode({ runStatus: 'processing', runProgress: 48 }));
 
-    expect(screen.getByRole('status')).toHaveTextContent('处理中');
+    expect(screen.getByRole('status')).toHaveTextContent('请求中');
     expect(screen.getByLabelText('运行进度 48%')).toHaveTextContent('48%');
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
@@ -1786,7 +1790,7 @@ describe('AssetNode result presentation', () => {
       </NodeRunControlStoreContext.Provider>,
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('准备中');
+    expect(screen.getByRole('status')).toHaveTextContent('请求中');
     expect(screen.queryByText('上一次运行失败')).not.toBeInTheDocument();
 
     act(() => runControlStore.clear(node.id));

@@ -975,6 +975,8 @@ describe('NodeQuickEditor', () => {
     const fetcher = vi.fn();
     vi.stubGlobal('fetch', fetcher);
     const inputs = makeProps({
+      projectId: 'project-a',
+      promptSkills: PROMPT_SKILLS,
       node: {
         ...videoNode,
         data: {
@@ -997,13 +999,21 @@ describe('NodeQuickEditor', () => {
       onPromptSkillChange: vi.fn(),
     });
     renderRaw(<NodeQuickEditor {...inputs} recreationDialogOpen />);
-    expect(screen.getByRole('dialog', { name: '短视频复刻' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Skill 配置' })).not.toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: '短视频复刻' });
+    const skillTrigger = within(dialog).getByRole('button', { name: 'Skill 配置' });
+    expect(skillTrigger).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '生成' })).toHaveAttribute(
       'title',
       '请先分析整条参考视频',
     );
+    expect(within(dialog).getByRole('status')).toHaveTextContent('请先分析整条参考视频');
+    await user.click(skillTrigger);
+    const skillSettings = await within(dialog).findByRole('group', { name: 'Skill 配置' });
+    const skillSelect = within(skillSettings).getByRole('combobox', { name: '提示词 Skill' });
+    await user.click(skillSelect);
+    await user.click(within(dialog).getByRole('option', { name: PROMPT_SKILLS[0]!.name }));
+    expect(inputs.onPromptSkillChange).toHaveBeenCalledExactlyOnceWith(PROMPT_SKILLS[0]!.id);
     const group = screen.getByText('视频生成模型').parentElement as HTMLElement;
     await user.click(within(group).getByRole('combobox'));
     expect(selectPopup(group).queryByRole('option', { name: /分析文字模型/ })).toBeNull();
@@ -1013,12 +1023,12 @@ describe('NodeQuickEditor', () => {
       modelAlias: 'future-model',
       credentialId: testCredentialId,
     });
-    expect(inputs.onPromptSkillChange).not.toHaveBeenCalled();
+    expect(inputs.onPromptSkillChange).toHaveBeenCalledExactlyOnceWith(PROMPT_SKILLS[0]!.id);
     expect(inputs.onRun).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('复刻参数与生成模型同栏，默认取冻结来源尺寸和分析秒数，并接受用户自定义值', async () => {
+  it('复刻参数摘要与生成模型同栏，默认取冻结来源尺寸和分析秒数，并接受自定义时长', async () => {
     const user = userEvent.setup();
     const config: VideoRecreationConfig = {
       version: 1,
@@ -1096,15 +1106,13 @@ describe('NodeQuickEditor', () => {
       duration: 8.5,
     });
     const model = screen.getByRole('combobox', { name: /视频生成模型/ });
-    const resolution = screen.getByRole('combobox', { name: '视频清晰度：1080p' });
-    const ratio = screen.getByRole('combobox', { name: '视频比例：9:16' });
-    const duration = screen.getByRole('button', { name: '时长（秒）：8.5 秒' });
+    const summary = screen.getByRole('button', { name: '视频参数' });
     const parameterRow = model.closest('.node-quick-editor-settings');
-    expect(parameterRow).toContainElement(resolution);
-    expect(parameterRow).toContainElement(ratio);
-    expect(parameterRow).toContainElement(duration);
+    expect(parameterRow).toContainElement(summary);
     expect(screen.getAllByRole('textbox', { name: '提示词' })).toHaveLength(1);
 
+    await user.click(summary);
+    const duration = screen.getByRole('button', { name: '时长（秒）：8.5 秒' });
     await user.click(duration);
     fireEvent.change(screen.getByRole('spinbutton', { name: '自定义时长（秒）' }), {
       target: { value: '42.25' },
@@ -1122,24 +1130,9 @@ describe('NodeQuickEditor', () => {
       aspectRatio: '9:16',
     });
     expect(screen.getByRole('button', { name: '时长（秒）：未设置' })).toBeInTheDocument();
-    await user.click(resolution);
-    await user.type(screen.getByRole('textbox', { name: '自定义视频清晰度' }), 'future-8k');
-    await user.click(screen.getByRole('button', { name: '采用参数' }));
-    expect(onParametersChange).toHaveBeenLastCalledWith({
-      custom: true,
-      resolution: 'future-8k',
-      aspectRatio: '9:16',
-    });
-    fireEvent.keyDown(resolution, { key: 'Escape' });
-    await user.click(ratio);
-    await user.type(screen.getByRole('textbox', { name: '自定义视频比例' }), '13:24');
-    await user.click(screen.getByRole('button', { name: '采用参数' }));
-    expect(onParametersChange).toHaveBeenLastCalledWith({
-      custom: true,
-      resolution: 'future-8k',
-      aspectRatio: '13:24',
-    });
-    fireEvent.keyDown(ratio, { key: 'Escape' });
+    await user.click(summary);
+    expect(screen.getByRole('combobox', { name: '视频清晰度：1080p' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '视频比例：9:16' })).toBeInTheDocument();
     const generate = screen.getByRole('button', { name: '生成' });
     expect(generate).toBeEnabled();
     await user.click(generate);

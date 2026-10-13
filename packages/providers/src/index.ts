@@ -522,7 +522,10 @@ export class NewApiProvider {
       plan = {
         path: '/chat/completions',
         body,
-        prompt: { format: 'messages', ...textRequestPromptCapture(snapshot, body.messages) },
+        prompt: {
+          format: 'messages',
+          ...textRequestPromptCapture(snapshot, body.messages, [this.apiKey]),
+        },
       };
     } else if (imageRequest) {
       plan = {
@@ -531,7 +534,7 @@ export class NewApiProvider {
         prompt: {
           format: 'plain',
           parts: [{ order: 0, text: sentPromptText(imageRequest.body) }],
-          resources: imagePromptResources(imageRequest.sourceImages),
+          resources: imagePromptResources(imageRequest.sourceImages, [this.apiKey]),
         },
       };
     } else {
@@ -848,7 +851,7 @@ export type NewApiVideoProviderOptions = NewApiProviderOptions & {
   videoContract?: NewApiVideoContract;
   /** 查询等待基数，单位毫秒；允许 0 供隔离测试使用。 */
   pollIntervalMs?: number;
-  /** 单次执行的最大查询次数，必须为正整数。 */
+  /** 仅供隔离测试显式限制查询次数；生产默认持续查询，直到任务终态或主动取消。 */
   maxPollAttempts?: number;
   /** 同源受保护视频的下载上限，单位字节；默认 50 MiB。 */
   maxContentBytes?: number;
@@ -882,7 +885,7 @@ export class NewApiVideoProvider {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly pollIntervalMs: number;
-  private readonly maxPollAttempts: number;
+  private readonly maxPollAttempts?: number;
   private readonly maxContentBytes: number;
   private readonly maxResponseBytes: number;
   /** 新任务默认合同，不覆盖历史任务的冻结合同。 */
@@ -904,11 +907,10 @@ export class NewApiVideoProvider {
     this.timeoutMs = positiveInteger(options.timeoutMs, 900_000, 'timeoutMs');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.pollIntervalMs = nonNegativeInteger(options.pollIntervalMs, 2_000, 'pollIntervalMs');
-    this.maxPollAttempts = positiveInteger(
-      options.maxPollAttempts,
-      defaultVideoPollAttempts(this.timeoutMs, this.pollIntervalMs),
-      'maxPollAttempts',
-    );
+    this.maxPollAttempts =
+      options.maxPollAttempts === undefined
+        ? undefined
+        : positiveInteger(options.maxPollAttempts, 1, 'maxPollAttempts');
     this.maxContentBytes = positiveInteger(
       options.maxContentBytes,
       defaultVideoContentLimit,
@@ -1002,6 +1004,7 @@ export class NewApiVideoProvider {
       ),
     };
     let submissionUsage: ProviderUsage | undefined;
+    let creationPayload: Record<string, unknown> | undefined;
     let initialPhase: 'submitted' | 'resumed' = 'resumed';
     if (!platformJobId) {
       if (existingProviderJob?.payload?.phase === 'submitting') {
@@ -1071,7 +1074,7 @@ export class NewApiVideoProvider {
           attempt,
           format: 'plain',
           parts: [{ order: 0, text: sentPromptText(body) }],
-          resources: videoPromptResources(snapshot, body, inputs),
+          resources: videoPromptResources(snapshot, body, inputs, [this.apiKey]),
           // 只有真正写入创建体的负向字段才进入记录，画布上的编辑值不参与。
           negativeText: normalizeErrorField(
             body.negative_prompt ??
@@ -1158,60 +1161,7 @@ export class NewApiVideoProvider {
           },
         );
       }
-      let unifiedCreation: VideoPollResult | undefined;
-      if (unified) {
-        try {
-          unifiedCreation = parseUnifiedVideoPollResult(submission.payload, [this.apiKey]);
-        } catch (error) {
-          throw videoJobError(
-            error,
-            platformJobId,
-            videoJobPayloadSummary(
-              contract,
-              'submitted',
-              snapshot.modelAlias,
-              undefined,
-              undefined,
-              undefined,
-              requestIds,
-            ),
-            [this.apiKey],
-          );
-        }
-      }
-      const creationStatus = normalizeErrorField(
-        submission.payload.status ??
-          (isRecord(submission.payload.data) ? submission.payload.data.status : undefined),
-      )?.toLowerCase();
-      if (
-        creationStatus &&
-        ['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(creationStatus)
-      ) {
-        const terminal = unifiedCreation ?? parseVideoPollResult(submission.payload, [this.apiKey]);
-        const providerPayload = videoJobPayloadSummary(
-          contract,
-          'failed',
-          snapshot.modelAlias,
-          terminal.providerStatus,
-          terminal.progress,
-          undefined,
-          requestIds,
-        );
-        throw new NewApiProviderError(
-          videoTerminalFailureMessage(terminal, platformJobId, snapshot.modelAlias),
-          {
-            code:
-              terminal.status === 'cancelled'
-                ? 'VIDEO_GENERATION_CANCELLED'
-                : 'VIDEO_GENERATION_FAILED',
-            ...requestIds,
-            platformJobId,
-            providerPayload,
-            retryable: false,
-          },
-        );
-      }
-      submissionUsage = parseProviderUsage(submission.payload);
+      creationPayload = submission.payload;
       initialPhase = 'submitted';
     }
     const initialPayload = videoJobPayloadSummary(
@@ -1244,8 +1194,56 @@ export class NewApiVideoProvider {
     await reportVideoProgress(reportProgress, submittedProviderJob.progress ?? 5, platformJobId);
     throwIfProviderSignalAborted(signal, platformJobId);
 
+    if (creationPayload) {
+      submissionUsage = parseProviderUsage(creationPayload);
+      let unifiedCreation: VideoPollResult | undefined;
+      if (unified) {
+        try {
+          unifiedCreation = parseUnifiedVideoPollResult(creationPayload, [this.apiKey]);
+        } catch (error) {
+          throw videoJobError(error, platformJobId, initialPayload, [this.apiKey]);
+        }
+      }
+      const creationStatus = normalizeErrorField(
+        creationPayload.status ??
+          (isRecord(creationPayload.data) ? creationPayload.data.status : undefined),
+      )?.toLowerCase();
+      if (
+        creationStatus &&
+        ['failed', 'error', 'expired', 'cancelled', 'canceled'].includes(creationStatus)
+      ) {
+        const terminal = unifiedCreation ?? parseVideoPollResult(creationPayload, [this.apiKey]);
+        const providerPayload = videoJobPayloadSummary(
+          contract,
+          'failed',
+          snapshot.modelAlias,
+          terminal.providerStatus,
+          terminal.progress,
+          undefined,
+          requestIds,
+        );
+        throw new NewApiProviderError(
+          videoTerminalFailureMessage(terminal, platformJobId, snapshot.modelAlias),
+          {
+            code:
+              terminal.status === 'cancelled'
+                ? 'VIDEO_GENERATION_CANCELLED'
+                : 'VIDEO_GENERATION_FAILED',
+            ...requestIds,
+            platformJobId,
+            providerPayload,
+            retryable: false,
+          },
+        );
+      }
+    }
+
     let lastPoll: VideoPollResult | undefined;
-    for (let attempt = 1; attempt <= this.maxPollAttempts; attempt += 1) {
+    for (
+      let attempt = 1;
+      this.maxPollAttempts === undefined || attempt <= this.maxPollAttempts;
+      attempt += 1
+    ) {
       const waitMs = videoPollDelay(this.pollIntervalMs, attempt);
       if (waitMs > 0) await delay(waitMs, signal, platformJobId);
       try {
@@ -1321,7 +1319,7 @@ export class NewApiVideoProvider {
         if (
           error instanceof NewApiProviderError &&
           error.retryable &&
-          attempt < this.maxPollAttempts
+          (this.maxPollAttempts === undefined || attempt < this.maxPollAttempts)
         ) {
           continue;
         }
@@ -1415,14 +1413,12 @@ export class NewApiVideoProvider {
         };
       }
 
-      const progress = Math.max(
-        5,
-        Math.min(95, lastPoll.progress || Math.round((attempt / this.maxPollAttempts) * 90)),
-      );
+      const progress = Math.max(5, Math.min(95, lastPoll.progress));
       await reportVideoProgress(reportProgress, progress, platformJobId);
       throwIfProviderSignalAborted(signal, platformJobId);
     }
 
+    // 只可能由隔离测试显式配置的查询次数触发；单次 HTTP 超时不会结束已知任务。
     throw new NewApiProviderError('New API 视频任务轮询超时', {
       code: 'VIDEO_POLL_TIMEOUT',
       ...requestIds,
@@ -1807,21 +1803,6 @@ function delay(milliseconds: number, signal?: AbortSignal, platformJobId?: strin
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) onAbort();
   });
-}
-
-/** 根据超时预算和退避间隔计算默认轮询次数；显式次数配置仍优先。 */
-function defaultVideoPollAttempts(timeoutMs: number, pollIntervalMs: number): number {
-  // 零间隔仅用于测试；给出有限次数，避免无限紧密轮询。
-  if (pollIntervalMs === 0) return 120;
-  let remainingMs = timeoutMs;
-  let attempts = 0;
-  for (let multiplier = 1; multiplier <= 3; multiplier += 1) {
-    const count = Math.min(30, Math.ceil(remainingMs / (pollIntervalMs * multiplier)));
-    attempts += count;
-    remainingMs -= count * pollIntervalMs * multiplier;
-    if (remainingMs <= 0) return attempts;
-  }
-  return attempts + Math.ceil(remainingMs / (pollIntervalMs * 4));
 }
 
 /** 每 30 次轮询递增等待间隔，最多为基础间隔的四倍。 */
@@ -2798,6 +2779,16 @@ function normalizeErrorField(value: unknown): string | undefined {
   return nonEmptyString(value) ? value.trim() : undefined;
 }
 
+/** 记录冻结资源的安全显示名；凭据或 URL 片段不能进入请求审计记录。 */
+function requestResourceName(
+  value: unknown,
+  sensitiveValues: readonly string[],
+): string | undefined {
+  const name = normalizeErrorField(value);
+  if (!name || name.length > 160 || /(?:https?:\/\/|data:|blob:|\?)/i.test(name)) return undefined;
+  return sanitizeProviderErrorMessage(name, sensitiveValues, 160) === name ? name : undefined;
+}
+
 const maxProviderErrorMessageLength = 2_000;
 const redactedProviderErrorValue = '[REDACTED]';
 const maxProviderPayloadDepth = 4;
@@ -3698,7 +3689,7 @@ function chatMediaPartRole(part: ChatMediaPart): PortRole {
  * 从实际发送的 Chat Completions 消息派生请求文本。
  *
  * 一条消息对应一个文本块，顺序即消息顺序；数组内容只拼接 `type: 'text'` 块，
- * 提示词媒体与连线媒体分别按实际发送顺序对应冻结输入，只保留资产身份与版本。
+ * 提示词媒体与连线媒体分别按实际发送顺序对应冻结输入，只保留脱敏名称与资产身份、版本。
  */
 function textRequestPromptCapture(
   snapshot: RunSnapshot,
@@ -3707,6 +3698,7 @@ function textRequestPromptCapture(
     name?: string;
     content: string | ChatContentPart[];
   }[],
+  sensitiveValues: readonly string[],
 ): { parts: RequestPromptPart[]; resources: RequestPromptResource[] } {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   const mentions =
@@ -3734,9 +3726,11 @@ function textRequestPromptCapture(
       if (part.type === 'text') continue;
       if (input) {
         const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+        const name = requestResourceName(input.snapshot.data.label, sensitiveValues);
         resources.push({
           ...(assetId ? { assetId } : {}),
           ...(input.sourceAssetVersion ? { assetVersion: input.sourceAssetVersion } : {}),
+          ...(name ? { name } : {}),
           role: input.role,
           sortOrder: resources.length,
           mediaType: input.snapshot.data.mediaType,
@@ -3752,9 +3746,11 @@ function textRequestPromptCapture(
           candidate.mentionId === mention.mentionId,
       );
       const assetVersion = frozen?.assetVersion ?? mention.assetVersion;
+      const name = requestResourceName(mention.label, sensitiveValues);
       resources.push({
         assetId: mention.assetId,
         ...(assetVersion ? { assetVersion } : {}),
+        ...(name ? { name } : {}),
         role: chatMediaPartRole(part),
         sortOrder: resources.length,
         mediaType: mention.mediaType,
@@ -3767,16 +3763,21 @@ function textRequestPromptCapture(
 /**
  * 把实际发送的原图记录为参考资源身份。
  *
- * 只保存快照里已冻结的资产 ID 与版本；输入缺少资产身份时保留角色与顺序，
+ * 保存快照里已冻结的脱敏显示名、资产 ID 与版本；输入缺少资产身份时保留角色与顺序，
  * 绝不从 data URL、文件名或节点当前编辑状态推断身份。
  */
-function imagePromptResources(images: readonly ImageSourceInput[]): RequestPromptResource[] {
+function imagePromptResources(
+  images: readonly ImageSourceInput[],
+  sensitiveValues: readonly string[],
+): RequestPromptResource[] {
   return images.map((input, sortOrder) => {
     const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
     const assetVersion = input.assetVersion;
+    const name = requestResourceName(input.snapshot.data.label, sensitiveValues);
     return {
       ...(assetId ? { assetId } : {}),
       ...(assetVersion ? { assetVersion } : {}),
+      ...(name ? { name } : {}),
       role: input.role,
       sortOrder,
       mediaType: 'image',
@@ -3787,8 +3788,8 @@ function imagePromptResources(images: readonly ImageSourceInput[]): RequestPromp
 /**
  * 把视频创建体里真正携带的媒体记录为参考资源身份。
  *
- * 只记录请求体实际出现的帧、参考图片、视频和音频；被预检丢弃或未映射的输入
- * 不会因为出现在快照里就被写进记录。
+ * 只记录请求体实际出现的帧、参考图片、视频和音频及其冻结脱敏名称；被预检丢弃或
+ * 未映射的输入不会因为出现在快照里就被写进记录。
  * @param snapshot 用于与实际请求共享目标节点的显式资源顺序。
  * @param body 已组装的创建体，只记录其中实际发送的媒体字段。
  * @param inputs 已校验角色和冻结身份的视频输入。
@@ -3798,14 +3799,17 @@ function videoPromptResources(
   snapshot: RunSnapshot,
   body: Record<string, unknown>,
   inputs: VideoInputMapping,
+  sensitiveValues: readonly string[],
 ): RequestPromptResource[] {
   const resources: RequestPromptResource[] = [];
   const add = (input: RunInputSnapshot | undefined) => {
     if (!input) return;
     const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+    const name = requestResourceName(input.snapshot.data.label, sensitiveValues);
     resources.push({
       ...(assetId ? { assetId } : {}),
       ...(input.sourceAssetVersion ? { assetVersion: input.sourceAssetVersion } : {}),
+      ...(name ? { name } : {}),
       role: input.role,
       sortOrder: resources.length,
       mediaType: input.snapshot.data.mediaType,

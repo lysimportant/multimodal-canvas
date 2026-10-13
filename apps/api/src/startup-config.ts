@@ -128,7 +128,6 @@ export function validateApiStartupConfiguration(
   validatePositiveIntegerEnvironment(environment, 'NEW_API_TIMEOUT_MS', issues);
   validatePositiveIntegerEnvironment(environment, 'NEW_API_MAX_RESPONSE_BYTES', issues);
   validatePositiveIntegerEnvironment(environment, 'NEW_API_VIDEO_POLL_INTERVAL_MS', issues);
-  validatePositiveIntegerEnvironment(environment, 'NEW_API_VIDEO_MAX_POLL_ATTEMPTS', issues);
   validatePositiveIntegerEnvironment(environment, 'NEW_API_VIDEO_MAX_CONTENT_BYTES', issues);
 
   return issues;

@@ -3229,9 +3229,6 @@ function createNewApiProviders(
     timeoutMs,
     maxResponseBytes: responseMaxBytes,
     pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),
-    ...(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS?.trim()
-      ? { maxPollAttempts: Number(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS) }
-      : {}),
     maxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES ?? 50 * 1024 * 1024),
     ...(fetchImpl ? { fetchImpl } : {}),
     requireHttps: process.env.NODE_ENV === 'production',

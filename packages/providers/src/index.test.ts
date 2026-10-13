@@ -1346,6 +1346,7 @@ describe('NewApiProvider', () => {
         Array.from({ length: count }, (_, index) => ({
           assetId: `asset-${index}`,
           assetVersion: index + 1,
+          name: `Photo ${index + 1}`,
           role: 'imageEdit',
           sortOrder: index,
           mediaType: 'image',
@@ -1561,7 +1562,13 @@ describe('NewApiProvider', () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(records[0]!.resources).toEqual([
-      { assetId: 'asset-photo', role: 'content', sortOrder: 0, mediaType: 'image' },
+      {
+        assetId: 'asset-photo',
+        name: 'source-unknown-version',
+        role: 'content',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
     ]);
   });
 
@@ -2067,11 +2074,18 @@ describe('NewApiProvider', () => {
       {
         assetId: 'asset-first',
         assetVersion: 4,
+        name: 'first-image',
         role: 'content',
         sortOrder: 0,
         mediaType: 'image',
       },
-      { assetId: 'asset-second', role: 'content', sortOrder: 1, mediaType: 'image' },
+      {
+        assetId: 'asset-second',
+        name: 'second-image',
+        role: 'content',
+        sortOrder: 1,
+        mediaType: 'image',
+      },
     ]);
     expect(JSON.stringify(records)).not.toMatch(/data:image|base64|iVBOR/);
   });
@@ -2164,11 +2178,18 @@ describe('NewApiProvider', () => {
       {
         assetId: 'asset-mentioned',
         assetVersion: 3,
+        name: 'Image',
         role: 'referenceImage',
         sortOrder: 0,
         mediaType: 'image',
       },
-      { assetId: 'asset-linked', role: 'content', sortOrder: 1, mediaType: 'image' },
+      {
+        assetId: 'asset-linked',
+        name: 'linked-image',
+        role: 'content',
+        sortOrder: 1,
+        mediaType: 'image',
+      },
     ]);
     expect(JSON.stringify(records)).not.toMatch(/data:image|base64|iVBOR/);
   });
@@ -3556,6 +3577,7 @@ describe('NewApiProvider', () => {
       {
         assetId: 'asset-image',
         assetVersion: 2,
+        name: '产品图',
         role: 'referenceImage',
         sortOrder: 0,
         mediaType: 'image',
@@ -3654,6 +3676,7 @@ describe('NewApiProvider', () => {
       {
         assetId: 'asset-source',
         assetVersion: 3,
+        name: 'node_source',
         role: 'imageEdit',
         sortOrder: 0,
         mediaType: 'image',
@@ -4643,7 +4666,7 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('创建立即失败时仅冻结提交合同，不轮询或持久化成功状态', async () => {
+  it('创建立即失败时先持久化平台 ID，再报告明确终态且不轮询', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -4676,11 +4699,18 @@ describe('NewApiVideoProvider', () => {
       },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(onProviderJob).toHaveBeenCalledExactlyOnceWith({
+    expect(onProviderJob).toHaveBeenNthCalledWith(1, {
       provider: 'newapi',
       status: 'queued',
       progress: 0,
       payload: { contract: 'legacy-v1', phase: 'submitting', modelAlias: 'grok-imagine-video-1.5' },
+    });
+    expect(onProviderJob).toHaveBeenNthCalledWith(2, {
+      provider: 'newapi',
+      platformJobId: 'failed-at-create',
+      status: 'submitted',
+      progress: 5,
+      payload: { contract: 'legacy-v1', phase: 'submitted', modelAlias: 'grok-imagine-video-1.5' },
     });
   });
 
@@ -4895,7 +4925,7 @@ describe('NewApiVideoProvider', () => {
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
-  it('根据自定义等待时间扩展默认视频轮询，且只提交一次生成', async () => {
+  it('显式测试轮询上限只影响测试调用，且只提交一次生成', async () => {
     vi.useFakeTimers();
     try {
       const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
@@ -4916,6 +4946,7 @@ describe('NewApiVideoProvider', () => {
         fetchImpl,
         pollIntervalMs: 2_000,
         timeoutMs: 1_200_000,
+        maxPollAttempts: 195,
       });
       const result = expect(
         provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() }),
@@ -4930,6 +4961,131 @@ describe('NewApiVideoProvider', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('临时状态查询失败后继续使用同一平台任务 ID，并只提交一次生成', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request_id: 'recoverable-video' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'pending' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'done', video: { url: 'https://cdn.example/recovered.mp4' } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      maxPollAttempts: 4,
+    });
+
+    const result = await provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() });
+    expect(result.output).toMatchObject({ url: 'https://cdn.example/recovered.mp4' });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'GET')).toHaveLength(3);
+  });
+
+  it('超过旧默认查询次数后仍继续查询到明确终态', async () => {
+    let pollCount = 0;
+    let persistedId = false;
+    let queriedBeforePersistence = false;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({ request_id: 'long-running-video' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (!persistedId) queriedBeforePersistence = true;
+      pollCount += 1;
+      return new Response(
+        JSON.stringify(
+          pollCount <= 130
+            ? { status: 'pending' }
+            : { status: 'done', video: { url: 'https://cdn.example/long-running.mp4' } },
+        ),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    const result = await provider.execute({
+      snapshot: videoSnapshot(),
+      onProviderJob: async (update) => {
+        if (update.platformJobId === 'long-running-video') persistedId = true;
+      },
+    });
+
+    expect(result.output).toMatchObject({ url: 'https://cdn.example/long-running.mp4' });
+    expect(queriedBeforePersistence).toBe(false);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'GET')).toHaveLength(131);
+  });
+
+  it('单次状态查询超时后继续轮询已知任务，不重建生成请求', async () => {
+    let pollCount = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({ request_id: 'timeout-then-done' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      pollCount += 1;
+      if (pollCount === 1) {
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('poll timeout', 'AbortError')),
+            { once: true },
+          );
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          status: 'done',
+          video: { url: 'https://cdn.example/timeout-recovered.mp4' },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'server-secret',
+      fetchImpl,
+      pollIntervalMs: 0,
+      timeoutMs: 10,
+    });
+
+    const result = await provider.execute({ snapshot: videoSnapshot(), onProviderJob: vi.fn() });
+    expect(result.output).toMatchObject({ url: 'https://cdn.example/timeout-recovered.mp4' });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'GET')).toHaveLength(2);
   });
 
   it('propagates a caller abort through video polling with a non-retryable diagnostic', async () => {
@@ -5801,6 +5957,7 @@ describe('NewApiVideoProvider', () => {
         .map((input, sortOrder) => ({
           assetId: input.sourceAssetId,
           assetVersion: input.sourceAssetVersion,
+          name: input.snapshot.data.label,
           role: input.role,
           sortOrder,
           mediaType: input.snapshot.data.mediaType,
@@ -6170,10 +6327,43 @@ describe('NewApiVideoProvider', () => {
     expect(createBody.image).toEqual({ url: 'https://assets.example/first.png' });
     expect(records[0]?.parts).toEqual([{ order: 0, text: createBody.prompt }]);
     expect(records[0]?.resources).toEqual([
-      { assetId: 'asset-first-frame', role: 'firstFrame', sortOrder: 0, mediaType: 'image' },
+      {
+        assetId: 'asset-first-frame',
+        name: 'First frame',
+        role: 'firstFrame',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
     ]);
     // 参考资源只留身份，不保存供应商 URL 或媒体内容。
     expect(JSON.stringify(records)).not.toContain('assets.example');
+  });
+
+  it.each([
+    'https://assets.example/frame.png?signature=private-value',
+    'Authorization: Bearer private-value',
+    'test-secret',
+  ])('does not persist an unsafe frozen resource name: %s', async (label) => {
+    const snapshot = videoSnapshot();
+    snapshot.modelAlias = 'wan3.0-video';
+    snapshot.nodes[1]!.data.videoMode = 'first_frame';
+    snapshot.inputs[0]!.snapshot.data.label = label;
+    snapshot.inputs[0]!.sourceAssetId = 'asset-first-frame';
+    snapshot.inputs[0]!.sourceAssetVersion = 3;
+    const records: RequestPromptRecord[] = [];
+
+    await submitOfficialVideo(snapshot, records);
+
+    expect(records[0]?.resources).toEqual([
+      {
+        assetId: 'asset-first-frame',
+        assetVersion: 3,
+        role: 'firstFrame',
+        sortOrder: 0,
+        mediaType: 'image',
+      },
+    ]);
+    expect(JSON.stringify(records)).not.toContain(label);
   });
 
   it('does not persist a contract or submit when prompt persistence fails', async () => {

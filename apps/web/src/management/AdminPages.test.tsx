@@ -198,6 +198,57 @@ describe('资源分组与任务', () => {
     expectReadOnly();
   });
 
+  it('个人任务详情按需显示上游 ID、实际提示词与冻结资源，不自动发起恢复', async () => {
+    vi.mocked(managementRequest).mockImplementation(async (path) => {
+      if (path === '/account/runs/run-a')
+        return { run: { ...videoRun, platformJobId: 'platform-job-a' } };
+      if (path === '/runs/run-a/request-prompts')
+        return {
+          records: [
+            {
+              id: 'prompt-a',
+              nodeId: 'node-a',
+              modelAlias: '测试模型',
+              requestIdentity: 'request-a',
+              sendStatus: 'sent',
+              createdAt: run.createdAt,
+            },
+          ],
+        };
+      if (path === '/runs/run-a/request-prompts/prompt-a')
+        return {
+          record: {
+            parts: [{ order: 0, text: 'Generate the requested clip.' }],
+            negativeText: 'Avoid blurred faces.',
+            resources: [
+              {
+                assetId: 'asset-a',
+                assetVersion: 3,
+                name: '人物参考图',
+                role: 'content',
+                sortOrder: 0,
+                mediaType: 'image',
+              },
+            ],
+          },
+        };
+      return { runs: [videoRun], total: 1, page: 1, pageSize: 20 };
+    });
+    renderPage(<RunsPage userId="owner-a" />);
+    await userEvent.click(
+      within(await screen.findByRole('table')).getByRole('button', { name: '详情' }),
+    );
+    const dialog = await screen.findByRole('dialog', { name: '任务详情' });
+    await waitFor(() => expect(within(dialog).getByText('platform-job-a')).toBeVisible());
+    await userEvent.click(
+      await within(dialog).findByRole('button', { name: '查看请求内容 · 测试模型 · node-a' }),
+    );
+    expect(await within(dialog).findByText('Generate the requested clip.')).toBeVisible();
+    expect(within(dialog).getByText('Avoid blurred faces.')).toBeVisible();
+    expect(within(dialog).getByText('人物参考图 · asset-a · v3')).toBeVisible();
+    expectReadOnly();
+  });
+
   it.each(['owner-a', 'admin-a'])(
     '管理员 %s 只能返回自己的画布，详情读取不会重试生成',
     async (userId) => {

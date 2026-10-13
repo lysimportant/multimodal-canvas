@@ -2173,6 +2173,7 @@ describe('App 复刻节点创建', () => {
     act(() => view.canvas!.onAddGenerateNode('video'));
     expect(view.canvas!.nodes).toHaveLength(2);
     expect(view.canvas!.nodes[1].data.parameters).toEqual(node.data.parameters);
+    expect(view.canvas!.nodes[1].data.videoMode).toBe('omni_reference');
 
     await act(async () => view.canvas!.onRecreateVideo!());
     expect(view.canvas!.nodes).toHaveLength(3);

@@ -94,7 +94,7 @@ function managementRuns(records: RunRecord[]) {
 }
 
 describe('管理任务详情与视频获取', () => {
-  it('本人和管理员按 Run/项目归属读取与恢复原任务，响应不含平台 ID、快照或签名地址', async () => {
+  it('本人和管理员读取原平台任务 ID 并恢复原任务，不回传快照或签名地址', async () => {
     const context = new TestAuthContext();
     const owner = await context.session({ email: 'video-owner@example.test' });
     const other = await context.session({ email: 'video-other@example.test' });
@@ -116,6 +116,7 @@ describe('管理任务详情与视频获取', () => {
       const list = await app.inject({ method: 'GET', url: '/v1/account/runs', headers });
       expect(list.json().runs).toHaveLength(1);
       expect(list.json().runs[0]).toMatchObject({ id: record.id, recoverableVideo: true });
+      expect(list.body).not.toContain('PRIVATE_PLATFORM_JOB_ID');
       for (const base of ['/v1/account/runs', '/v1/admin/runs']) {
         const authorizedHeaders = base.includes('/admin/') ? adminHeaders : headers;
         const detail = await app.inject({
@@ -128,8 +129,11 @@ describe('管理任务详情与视频获取', () => {
           id: record.id,
           ownerId: owner.user.id,
           recoverableVideo: true,
+          platformJobId: 'PRIVATE_PLATFORM_JOB_ID',
         });
-        expect(detail.body).not.toMatch(/PRIVATE_|snapshot|providerJob|credential/);
+        expect(detail.body).not.toMatch(
+          /PRIVATE_FROZEN_PROMPT|PRIVATE_CREDENTIAL_ID|PRIVATE_PROVIDER_PAYLOAD|snapshot|providerJob|credential/,
+        );
         const response = await app.inject({
           method: 'POST',
           url: `${base}/${record.id}/recover`,
@@ -205,10 +209,11 @@ describe('管理任务详情与视频获取', () => {
         headers,
       });
       expect(result.json().run).toMatchObject({
+        platformJobId: 'PRIVATE_PLATFORM_JOB_ID',
         recoverableVideo: false,
         result: { asset: { assetId: 'result-asset' } },
       });
-      expect(result.body).not.toMatch(/PRIVATE_|contentUrl|providerJob/);
+      expect(result.body).not.toMatch(/PRIVATE_SIGNED_URL|contentUrl|providerJob/);
     } finally {
       await app.close();
     }

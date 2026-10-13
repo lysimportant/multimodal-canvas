@@ -199,6 +199,7 @@ describe('OpenAPI endpoint', () => {
     const runSchema = response.json().components.schemas.Run;
     expect(runSchema.additionalProperties).toBe(false);
     expect(runSchema.properties.providerJob).toBeUndefined();
+    expect(runSchema.properties.platformJobId).toMatchObject({ type: 'string' });
     expect(runSchema.properties.nodeTimings).toMatchObject({
       type: 'object',
       additionalProperties: { additionalProperties: false },
@@ -2679,6 +2680,7 @@ describe('webhook and run idempotency boundaries', () => {
       expect(current.json().run).toMatchObject({
         status: 'processing',
         progress: 95,
+        platformJobId: 'platform-webhook-app',
         snapshot: { canvasRevision: 1, inputCount: 0, inputs: [] },
       });
       expect(current.json().run.providerJob).toBeUndefined();

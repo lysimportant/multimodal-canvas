@@ -755,6 +755,7 @@ describe('worker provider job boundary', () => {
   it('aborts built-in video polling on worker cancellation without inventing a cancel request', async () => {
     const runId = '123e4567-e89b-12d3-a456-426614174020';
     const credentialId = '123e4567-e89b-12d3-a456-426614174021';
+    const persistedPlatformIds: string[] = [];
     let pollSignal: AbortSignal | undefined;
     let markPollStarted: (() => void) | undefined;
     const pollStarted = new Promise<void>((resolve) => {
@@ -769,6 +770,7 @@ describe('worker provider job boundary', () => {
         });
       }
       if (requestUrl.endsWith('/v1/videos/platform-video-cancel')) {
+        expect(persistedPlatformIds).toContain('platform-video-cancel');
         pollSignal = init?.signal ?? undefined;
         markPollStarted?.();
         return new Promise<Response>((_resolve, reject) => {
@@ -836,7 +838,9 @@ describe('worker provider job boundary', () => {
           async getProviderCredentials() {
             return { baseUrl: 'https://newapi.example/v1', apiKey: 'test-key' };
           },
-          async upsertProviderJob() {},
+          async upsertProviderJob({ providerJob }) {
+            if (providerJob.platformJobId) persistedPlatformIds.push(providerJob.platformJobId);
+          },
           async upsertRequestPromptRecord() {},
           async recordRequestPromptOutcome() {},
         },
@@ -854,6 +858,7 @@ describe('worker provider job boundary', () => {
 
       await expect(processing).resolves.toMatchObject({ status: 'cancelled' });
       expect(pollSignal?.aborted).toBe(true);
+      expect(persistedPlatformIds).toContain('platform-video-cancel');
       expect(resultArchiver).not.toHaveBeenCalled();
       expect(fetchImpl).toHaveBeenCalledTimes(2);
       expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/content'))).toBe(false);

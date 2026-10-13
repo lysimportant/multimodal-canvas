@@ -273,6 +273,12 @@ describe('短视频复刻面板', () => {
     const columnStyles = panelCss.match(/\.video-recreation-resources-column\s*\{([^}]+)\}/)?.[1];
     expect(columnStyles).toContain('min-height: 0;');
     expect(columnStyles).toContain('overflow-y: auto;');
+    expect(panelCss).toMatch(
+      /\.video-recreation-bindings\s*\{\s*grid-template-columns: minmax\(0, 1fr\);/,
+    );
+    expect(panelCss).toMatch(
+      /\.video-recreation-object\s*\{\s*display: grid;\s*grid-template-columns:/,
+    );
   });
 
   it('标题带专属图标，分析模型与动作同排，来源、时长和文件名保留', async () => {
@@ -284,6 +290,7 @@ describe('短视频复刻面板', () => {
     expect(heading.querySelector('.lucide-clapperboard')).toHaveAttribute('aria-hidden', 'true');
     expect(screen.queryByText('使用流程')).not.toBeInTheDocument();
     const sourceInfo = screen.getByLabelText('来源信息');
+    expect(sourceInfo.parentElement).toContainElement(heading);
     expect(Array.from(sourceInfo.children, (field) => field.textContent)).toEqual([
       '来源：v4',
       '时长：10 秒',
@@ -293,6 +300,7 @@ describe('短视频复刻面板', () => {
     expect(screen.queryByText('完整时长：10 秒')).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: '分析模型 ID' })).not.toBeInTheDocument();
     const model = screen.getByRole('combobox', { name: '分析模型' });
+    expect(screen.queryByText('分析模型', { exact: true })).not.toBeInTheDocument();
     expect(model.closest('.video-recreation-model-actions')).toContainElement(
       screen.getByRole('button', { name: '分析整条视频' }),
     );
@@ -343,6 +351,8 @@ describe('短视频复刻面板', () => {
     expect(screen.getByText(template.unknowns[0]!)).toBeVisible();
     await user.click(summary);
     expect(summary).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText(/本次分析模型：|分析完整时长：/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已保存整条视频分析/)).not.toBeInTheDocument();
     const role = screen.getByRole('article', { name: '人物：左侧人物' });
     expect(within(role).queryByText('左侧人物穿浅色外套')).not.toBeInTheDocument();
     await user.hover(within(role).getByRole('heading', { name: '左侧人物' }));
@@ -574,7 +584,7 @@ describe('短视频复刻面板', () => {
     render(<Harness />);
     await waitFor(() => expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
-    await screen.findByText('本次分析模型：qwen3.8-omni-flash');
+    await waitFor(() => expect(saved().analysis?.modelAlias).toBe('qwen3.8-omni-flash'));
     expect(saved().preservedRoleIds).toEqual(['actor_a', 'actor_b']);
     expect(screen.getByLabelText('左侧人物').closest('.ant-select')).toHaveTextContent(
       '保留原视频人物（不替换）',
@@ -605,7 +615,7 @@ describe('短视频复刻面板', () => {
     render(<Harness start={start} save={save} />);
     await waitFor(() => expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
-    await screen.findByText('本次分析模型：vision-a');
+    await waitFor(() => expect(saved().analysis?.modelAlias).toBe('vision-a'));
     expect(saved().analysis?.template).toEqual(template);
     expect(saved().preservedRoleIds).toEqual(start.preservedRoleIds);
     expect(videoRecreationConfigSchema.safeParse(saved()).success).toBe(true);
@@ -650,7 +660,7 @@ describe('短视频复刻面板', () => {
     render(<Harness start={start} save={save} />);
     await waitFor(() => expect(screen.getByRole('button', { name: '分析整条视频' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));
-    await screen.findByText('本次分析模型：vision-a');
+    await waitFor(() => expect(saved().analysis?.modelAlias).toBe('vision-a'));
     expect(saved().preservedRoleIds).toEqual(start.preservedRoleIds);
     expect(screen.getByText('同一角色不能重复保留')).toBeVisible();
     expect(videoRecreationConfigSchema.safeParse(saved()).success).toBe(true);
@@ -971,7 +981,8 @@ describe('短视频复刻面板', () => {
     vi.mocked(fetchVideoRecreation).mockResolvedValue({ analysis });
     vi.mocked(submitVideoRecreation).mockResolvedValue(next);
     render(<Harness start={ready} />);
-    await screen.findByText(/已保存整条视频分析/);
+    await waitFor(() => expect(fetchVideoRecreation).toHaveBeenCalled());
+    expect(screen.queryByText(/已保存整条视频分析/)).not.toBeInTheDocument();
     await selectOption('分析模型', /视觉分析乙/);
     expect(submitVideoRecreation).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '分析整条视频' }));

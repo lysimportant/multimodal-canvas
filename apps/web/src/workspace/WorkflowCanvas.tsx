@@ -471,6 +471,8 @@ export function WorkflowCanvas({
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const flowStore = useStoreApi();
   const [recreationDialogNodeId, setRecreationDialogNodeId] = useState<string | null>(null);
+  /** 复刻节点先聚焦并允许拖动，连续第二次点击同一节点才打开编辑窗口。 */
+  const focusedRecreationNodeRef = useRef<string | null>(null);
   const canvasAreaRef = useRef<HTMLElement>(null);
   /** 画布相对 React Flow 容器的屏幕边界，移动帧只读缓存，单位为 CSS 像素。 */
   const canvasBoundsRef = useRef<CanvasViewportBounds | null>(null);
@@ -758,9 +760,14 @@ export function WorkflowCanvas({
       suppressPaneClickRef.current = false;
       return;
     }
+    focusedRecreationNodeRef.current = null;
     setContextMenu(null);
     onClearNodeSelection();
   }, [onClearNodeSelection, referenceMessageApi, exitReferencePick]);
+  const handleNodeDragStart = useCallback(() => {
+    focusedRecreationNodeRef.current = null;
+    onNodeDragStart();
+  }, [onNodeDragStart]);
   /** 资源拖入画布保持复制语义，不随节点位置重新绑定。 */
   const handleDragOver = useCallback((event: DragEvent) => {
     event.preventDefault();
@@ -1042,9 +1049,16 @@ export function WorkflowCanvas({
     (event: ReactMouseEvent, node: AssetFlowNode) => {
       selectNodeByData(node.data, event);
       if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-      setRecreationDialogNodeId(
-        node.data.videoRecreation || node.data.videoRecreationDraft ? node.id : null,
-      );
+      if (node.data.videoRecreation || node.data.videoRecreationDraft) {
+        if (focusedRecreationNodeRef.current === node.id) setRecreationDialogNodeId(node.id);
+        else {
+          focusedRecreationNodeRef.current = node.id;
+          setRecreationDialogNodeId(null);
+        }
+      } else {
+        focusedRecreationNodeRef.current = null;
+        setRecreationDialogNodeId(null);
+      }
     },
     [selectNodeByData],
   );
@@ -1103,6 +1117,7 @@ export function WorkflowCanvas({
       if (shouldKeepNativeContextMenu(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
+      focusedRecreationNodeRef.current = null;
       if (node.selected && selectedResourceNodes.length > 1 && onAddSelectionGenerateNode) {
         handlePaneContextMenu(event);
         return;
@@ -1314,7 +1329,10 @@ export function WorkflowCanvas({
         skillLibraryLoading={skillLibraryLoading}
         node={editorNode}
         recreationDialogOpen={recreationDialogNodeId === editorNode.id}
-        onRecreationDialogClose={() => setRecreationDialogNodeId(null)}
+        onRecreationDialogClose={() => {
+          focusedRecreationNodeRef.current = null;
+          setRecreationDialogNodeId(null);
+        }}
         models={models}
         busy={editorBusy}
         runControlStore={nodeRunControlStore}
@@ -1623,7 +1641,7 @@ export function WorkflowCanvas({
                                               isValidConnection={isValidFlowConnection}
                                               onConnectStart={handleConnectStart}
                                               onConnectEnd={handleConnectEnd}
-                                              onNodeDragStart={onNodeDragStart}
+                                              onNodeDragStart={handleNodeDragStart}
                                               onNodeDrag={onNodeDrag}
                                               onNodeDragStop={onNodeDragStop}
                                               onMoveStart={handleViewportMoveStart}

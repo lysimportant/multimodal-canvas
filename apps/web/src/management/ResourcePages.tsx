@@ -1,6 +1,6 @@
 /** 用户分组资源库、受控媒体预览和任务中心。 */
 import { Button, Input } from '@multimodal-canvas/ui';
-import type { Asset } from '@multimodal-canvas/domain';
+import type { Asset, RequestPromptRecord } from '@multimodal-canvas/domain';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Progress, Select, Table } from 'antd';
 import {
@@ -995,7 +995,18 @@ type ManagedRun = {
   ownerId?: string | null;
   user?: ManagedUser | null;
   recoverableVideo: boolean;
+  platformJobId?: string;
   result?: { summary?: string; asset?: { assetId: string } };
+};
+
+/** 列表只包含请求身份；完整提示词及冻结资源在用户展开单条记录时读取。 */
+type ManagedRequestPromptSummary = {
+  id: string;
+  nodeId: string;
+  requestIdentity: string;
+  modelAlias: string;
+  sendStatus: RequestPromptRecord['sendStatus'];
+  createdAt: string;
 };
 
 /** 任务中心只在用户显式点击时查询原视频任务；详情轮询从不发起生成。 */
@@ -1006,6 +1017,7 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
   const [ownerId, setOwnerId] = useState('');
   const [page, setPage] = useState(1);
   const [selectedSnapshot, setSelected] = useState<ManagedRun | null>(null);
+  const [selectedRequestRecordId, setSelectedRequestRecordId] = useState<string | null>(null);
   const [recovering, setRecovering] = useState<{ id: string; updatedAt: string } | null>(null);
   const action = useAction();
   const basePath = `${admin ? '/admin' : '/account'}/runs`;
@@ -1036,6 +1048,33 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
     refetchInterval: selectedSnapshot ? 5_000 : false,
   });
   const selected = detail.data?.run ?? selectedSnapshot;
+  const requestPrompts = useQuery({
+    queryKey: ['management', userId, 'run-request-prompts', selectedSnapshot?.id],
+    queryFn: ({ signal }) =>
+      managementRequest<{ records: ManagedRequestPromptSummary[] }>(
+        `/runs/${encodeURIComponent(selectedSnapshot!.id)}/request-prompts`,
+        { signal },
+      ),
+    enabled: Boolean(selectedSnapshot && !admin && !detail.error),
+    retry: false,
+    refetchInterval: selectedSnapshot && !admin ? 5_000 : false,
+  });
+  const selectedRequestPrompt = useQuery({
+    queryKey: [
+      'management',
+      userId,
+      'run-request-prompt',
+      selectedSnapshot?.id,
+      selectedRequestRecordId,
+    ],
+    queryFn: ({ signal }) =>
+      managementRequest<{ record: RequestPromptRecord }>(
+        `/runs/${encodeURIComponent(selectedSnapshot!.id)}/request-prompts/${encodeURIComponent(selectedRequestRecordId!)}`,
+        { signal },
+      ),
+    enabled: Boolean(selectedSnapshot && selectedRequestRecordId && !admin && !detail.error),
+    retry: false,
+  });
   useEffect(() => {
     if (!recovering || detail.data?.run.id !== recovering.id) return;
     const current = detail.data.run;
@@ -1191,6 +1230,7 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
                   onClick={() => {
                     action.setNotice(null);
                     setRecovering(null);
+                    setSelectedRequestRecordId(null);
                     setSelected(run);
                   }}
                 >
@@ -1212,7 +1252,14 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
         />
       )}
       {selected && (
-        <Modal title="任务详情" busy={action.busy} onClose={() => setSelected(null)}>
+        <Modal
+          title="任务详情"
+          busy={action.busy}
+          onClose={() => {
+            setSelectedRequestRecordId(null);
+            setSelected(null);
+          }}
+        >
           {detail.error && (
             <QueryState error={detail.error} onRetry={() => void detail.refetch()} />
           )}
@@ -1236,6 +1283,10 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
               <dd>{selected.progress}%</dd>
             </div>
             <div>
+              <dt>上游任务 ID</dt>
+              <dd>{selected.platformJobId || '未记录'}</dd>
+            </div>
+            <div>
               <dt>创建时间</dt>
               <dd>{formatDate(selected.createdAt)}</dd>
             </div>
@@ -1246,6 +1297,72 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
           )}
           {selected.result?.summary && (
             <pre className="mg-run-result">{selected.result.summary}</pre>
+          )}
+          {!admin && !detail.error && (
+            <section aria-label="请求提示词与引用资源">
+              <h3>请求提示词与引用资源</h3>
+              <QueryState
+                loading={requestPrompts.isLoading}
+                error={requestPrompts.error}
+                onRetry={() => void requestPrompts.refetch()}
+              >
+                {requestPrompts.data?.records?.length ? (
+                  <div className="mg-form-actions">
+                    {requestPrompts.data.records.map((record) => (
+                      <Button
+                        key={record.id}
+                        type="button"
+                        className="mg-button"
+                        onClick={() => setSelectedRequestRecordId(record.id)}
+                      >
+                        查看请求内容 · {record.modelAlias} · {record.nodeId}
+                      </Button>
+                    ))}
+                  </div>
+                ) : !requestPrompts.isLoading && !requestPrompts.error ? (
+                  <p>暂无已保存的请求内容。</p>
+                ) : null}
+              </QueryState>
+              {selectedRequestRecordId && (
+                <QueryState
+                  loading={selectedRequestPrompt.isLoading}
+                  error={selectedRequestPrompt.error}
+                  onRetry={() => void selectedRequestPrompt.refetch()}
+                >
+                  {selectedRequestPrompt.data?.record && (
+                    <div>
+                      <pre className="mg-run-result">
+                        {selectedRequestPrompt.data.record.parts
+                          .map((part) => part.text)
+                          .join('\n\n')}
+                      </pre>
+                      {selectedRequestPrompt.data.record.negativeText && (
+                        <dl className="mg-details is-horizontal">
+                          <div>
+                            <dt>负向提示词</dt>
+                            <dd>{selectedRequestPrompt.data.record.negativeText}</dd>
+                          </div>
+                        </dl>
+                      )}
+                      <dl className="mg-details is-horizontal">
+                        {selectedRequestPrompt.data.record.resources.map((resource, index) => (
+                          <div key={`${resource.assetId ?? 'unknown'}-${index}`}>
+                            <dt>
+                              引用资源 {index + 1} · {resource.role}
+                            </dt>
+                            <dd>
+                              {resource.name || resource.assetId || '未记录资源名称'}
+                              {resource.name && resource.assetId ? ` · ${resource.assetId}` : ''}
+                              {resource.assetVersion ? ` · v${resource.assetVersion}` : ''}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  )}
+                </QueryState>
+              )}
+            </section>
           )}
           <div className="mg-form-actions">
             {!detail.error && detail.data?.run.recoverableVideo && (

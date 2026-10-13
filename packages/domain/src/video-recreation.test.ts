@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildVideoRecreationDraftPrompt,
   buildVideoRecreationPrompt,
   getVideoRecreationIssue,
   parseVideoRecreationTemplate,
@@ -124,6 +125,12 @@ const draftSnapshot: RunSnapshot = {
 };
 
 describe('短视频复刻空草稿', () => {
+  it('草稿提示词允许显示分析文字但不绕过完整配置校验', () => {
+    const draft = buildVideoRecreationDraftPrompt({ ...ready, bindings: [] });
+    expect(renderPromptDocument(draft)).toContain('Character character_a');
+    expect(renderPromptDocument(draft)).toContain('Choose whether to preserve');
+    expect(() => buildVideoRecreationPrompt({ ...ready, bindings: [] })).toThrow('请提供人物资源');
+  });
   it('保存与 JSON 恢复保留空草稿，不插入来源、分析或默认参数', () => {
     const canvas = { revision: 1, nodes: [draftNode], edges: [] };
     expect(canvasDocumentSchema.parse(JSON.parse(JSON.stringify(canvas)))).toEqual(canvas);
@@ -467,7 +474,7 @@ describe('整条短视频复刻合同', () => {
       getVideoRecreationIssue({ ...ready, source: { ...ready.source, durationSeconds: 12 } }),
     ).toContain('时长');
   });
-  it('拒绝不属于当前模板的角色、重复绑定和零人物模板', () => {
+  it('拒绝不属于当前模板的角色与重复绑定；无可替换对象仍可使用分析文字', () => {
     expect(
       getVideoRecreationIssue({ ...ready, bindings: [...ready.bindings, ready.bindings[0]!] }),
     ).toContain('重复');
@@ -477,12 +484,18 @@ describe('整条短视频复刻合同', () => {
         bindings: [{ ...ready.bindings[0]!, roleId: 'stranger' }],
       }),
     ).toContain('不一致');
+    const noObjects = {
+      ...ready,
+      analysis: { ...ready.analysis!, template: { ...template, roles: [] } },
+      bindings: [],
+    };
+    expect(getVideoRecreationIssue(noObjects)).toBeUndefined();
     expect(
-      getVideoRecreationIssue({
-        ...ready,
-        analysis: { ...ready.analysis!, template: { ...template, roles: [] } },
-      }),
-    ).toContain('未识别');
+      buildVideoRecreationPrompt(noObjects).blocks.filter((block) => block.type === 'mention'),
+    ).toEqual([]);
+    expect(renderPromptDocument(buildVideoRecreationPrompt(noObjects))).toContain(
+      'character_a转身',
+    );
   });
   it('人物明确保留可不上传，但拒绝重复、未知及保留替换冲突', () => {
     expect(getVideoRecreationIssue(objectReady)).toBeUndefined();
@@ -511,14 +524,23 @@ describe('整条短视频复刻合同', () => {
     const doc = buildVideoRecreationPrompt(objectReady);
     const text = renderPromptDocument(doc);
     expect(doc.blocks.filter((block) => block.type === 'mention')).toMatchObject([
-      { mentionId: 'recreation_source', assetId: 'video', assetVersion: 2 },
       { mentionId: 'recreation_character_a', assetId: 'person', assetVersion: 3 },
       { mentionId: 'recreation_product_a', assetId: 'perfume', assetVersion: 4 },
     ]);
+    expect(
+      doc.blocks.some((block) => block.type === 'mention' && block.mediaType === 'video'),
+    ).toBe(false);
+    expect(text).toContain('original source video was used only for analysis and traceability');
     expect(text).toContain('Replace only characters and products explicitly bound');
-    expect(text).toContain('Character character_b: Preserve this source character unchanged');
-    expect(text).toContain('Product product_b: Preserve this source product');
-    expect(text).toContain('Product product_c: Preserve this source product');
+    expect(text).toContain(
+      'Character character_b: Keep this character consistent with the analyzed appearance',
+    );
+    expect(text).toContain(
+      'Product product_b: Keep this product and its interactions consistent with the analyzed description',
+    );
+    expect(text).toContain(
+      'Product product_c: Keep this product and its interactions consistent with the analyzed description',
+    );
     expect(text).toContain('User-confirmed facts for product product_a');
     expect(text).toContain('do not apply original faces or clothing to replacement identities');
     expect(objectReady).toEqual(before);
@@ -533,12 +555,12 @@ describe('整条短视频复刻合同', () => {
     expect(getVideoRecreationIssue(productOnly)).toBeUndefined();
     expect(
       buildVideoRecreationPrompt(productOnly).blocks.filter((b) => b.type === 'mention'),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     const allPreserved = { ...productOnly, productBindings: [] };
     expect(getVideoRecreationIssue(allPreserved)).toBeUndefined();
     expect(
       buildVideoRecreationPrompt(allPreserved).blocks.filter((b) => b.type === 'mention'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
   it('商品绑定须属于当前对象且不可重复、共用人物资源或缺少用途', () => {
     const binding = objectReady.productBindings![0]!;
@@ -580,17 +602,16 @@ describe('整条短视频复刻合同', () => {
     const before = structuredClone(ready);
     const doc = buildVideoRecreationPrompt(ready);
     expect(doc.blocks.filter((block) => block.type === 'mention')).toMatchObject([
-      { assetId: 'video', assetVersion: 2, mediaType: 'video' },
       { assetId: 'person', assetVersion: 3, mediaType: 'image' },
     ]);
     expect(renderPromptDocument(doc)).toContain('Full observed duration: 10 seconds');
-    expect(renderPromptDocument(doc)).toContain('Preserve existing props/products');
+    expect(renderPromptDocument(doc)).toContain('written analysis');
     expect(ready).toEqual(before);
     const changed = buildVideoRecreationPrompt({
       ...ready,
       bindings: [{ ...ready.bindings[0]!, assetId: 'another-person', assetVersion: 7 }],
     });
-    expect(changed.blocks.filter((block) => block.type === 'mention')[1]).toMatchObject({
+    expect(changed.blocks.filter((block) => block.type === 'mention')[0]).toMatchObject({
       assetId: 'another-person',
       assetVersion: 7,
     });
@@ -605,7 +626,7 @@ describe('整条短视频复刻合同', () => {
       bindings: [...ready.bindings, { ...ready.bindings[0]!, roleId: 'character_b' }],
     };
     const doc = buildVideoRecreationPrompt(duo);
-    expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(2);
+    expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(1);
     expect(renderPromptDocument(doc)).toContain('same character image bound to character_a');
   });
   it('多人与多商品按模板顺序引用，同类共享资源去重且不合并不同版本', () => {
@@ -622,7 +643,6 @@ describe('整条短视频复刻合同', () => {
     };
     const doc = buildVideoRecreationPrompt(config);
     expect(doc.blocks.filter((block) => block.type === 'mention')).toMatchObject([
-      { mentionId: 'recreation_source', assetId: 'video', assetVersion: 2 },
       { mentionId: 'recreation_character_a', assetId: 'person', assetVersion: 3 },
       { mentionId: 'recreation_product_a', assetId: 'perfume', assetVersion: 4 },
       { mentionId: 'recreation_product_c', assetId: 'perfume', assetVersion: 5 },
@@ -644,7 +664,7 @@ describe('整条短视频复刻合同', () => {
     });
     expect(renderPromptDocument(doc)).toContain('Never drink perfume');
     expect(renderPromptDocument(doc)).toContain('香水；喷洒在手腕，不饮用。');
-    expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(3);
+    expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(2);
   });
   it('旧单商品与新对象卡并存时明确要求重新映射，不静默丢弃已保存绑定', () => {
     const legacy = {
@@ -660,7 +680,6 @@ describe('整条短视频复刻合同', () => {
         (b) => b.type === 'mention',
       ),
     ).toMatchObject([
-      { assetId: 'video' },
       { assetId: 'person' },
       { mentionId: 'recreation_product', assetId: 'old-product', assetVersion: 1 },
     ]);

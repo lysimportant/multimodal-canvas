@@ -538,9 +538,7 @@ async function createNode(page: Page, fromFrozenSource = false) {
     .locator('.react-flow__node')
     .filter({ has: page.getByRole('group', { name: '节点操作：短视频复刻', exact: true }) });
   await expect(node).toBeVisible();
-  await node.getByText('尚未生成', { exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '短视频复刻', exact: true });
-  await expect(dialog).toBeVisible();
+  const dialog = await clickRecreationNode(page, node);
   await expect(page.locator('.node-quick-editor')).toHaveCount(0);
   if (!fromFrozenSource) {
     await selectOption(
@@ -552,13 +550,37 @@ async function createNode(page: Page, fromFrozenSource = false) {
   await expect(dialog.getByRole('region', { name: '短视频复刻', exact: true })).toBeVisible();
   return node;
 }
+/** 首次点击聚焦节点，第二次点击同一内容区才打开复刻编辑器。 */
+async function clickRecreationNode(page: Page, node: Locator) {
+  const dialog = page.getByRole('dialog', { name: '短视频复刻', exact: true });
+  const content = node.locator('.flow-node-preview, .flow-node-placeholder').first();
+  await expect(content).toBeVisible();
+  await content.click({ position: { x: 12, y: 12 } });
+  await expect(dialog).toBeHidden();
+  await content.click({ position: { x: 12, y: 12 } });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+/** 在当前视口实际可点到的画布空白处取消节点选择。 */
+async function clickEmptyPane(page: Page) {
+  const point = await page.locator('.react-flow__pane').evaluate((pane) => {
+    const bounds = pane.getBoundingClientRect();
+    for (const yRatio of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+      for (const xRatio of [0.8, 0.65, 0.5, 0.35, 0.2]) {
+        const x = bounds.left + bounds.width * xRatio;
+        const y = bounds.top + bounds.height * yRatio;
+        if (document.elementFromPoint(x, y) === pane) return { x, y };
+      }
+    }
+    throw new Error('当前视口没有可点击的画布空白位置');
+  });
+  await page.mouse.click(point.x, point.y);
+}
 /** 只点击重开既有节点的专用 Dialog，不重新绑定、分析或生成。 */
 async function openRecreation(page: Page, id: string) {
   const node = page.locator('.react-flow__node[data-id="' + id + '"]');
   await expect(node).toBeVisible();
-  await node.getByText('尚未生成', { exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '短视频复刻', exact: true });
-  await expect(dialog).toBeVisible();
+  const dialog = await clickRecreationNode(page, node);
   await expect(page.locator('.node-quick-editor')).toHaveCount(0);
   return dialog.getByRole('region', { name: '短视频复刻', exact: true });
 }
@@ -702,6 +724,23 @@ async function expectRecreationLayout(
       expect(field.right).toBeLessThanOrEqual(sourceInfo.right + 1);
     }
   }
+  const controls = await dialog.evaluate((element) => {
+    const model = element.querySelector('.node-quick-editor-settings .node-parameter-select');
+    const parameters = element.querySelector(
+      '.node-quick-editor-settings .node-quick-editor-summary-button',
+    );
+    if (!model || !parameters) throw new Error('右栏缺少模型或视频参数入口');
+    const modelBounds = model.getBoundingClientRect();
+    const parameterBounds = parameters.getBoundingClientRect();
+    return {
+      modelCenterY: modelBounds.y + modelBounds.height / 2,
+      parameterCenterY: parameterBounds.y + parameterBounds.height / 2,
+      modelRight: modelBounds.right,
+      parameterLeft: parameterBounds.left,
+    };
+  });
+  expect(controls.modelCenterY).toBeCloseTo(controls.parameterCenterY, 0);
+  expect(controls.modelRight).toBeLessThan(controls.parameterLeft);
   return layout;
 }
 
@@ -724,10 +763,51 @@ async function expectSourcePreviews(panel: Locator) {
   );
   await expect(scene.locator('xpath=ancestor::figure[1]')).toHaveAttribute('data-cropped', 'false');
   await scene.evaluate((element) => (element as HTMLImageElement).decode());
+  const sceneLayout = await panel.locator('.video-recreation-scenes').evaluate((element) => {
+    const columns = getComputedStyle(element).gridTemplateColumns.split(' ').length;
+    const name = element.querySelector('h4')?.getBoundingClientRect();
+    const frame = element.querySelector('figure')?.getBoundingClientRect();
+    const hint = element.querySelector('p')?.getBoundingClientRect();
+    if (!name || !frame || !hint) throw new Error('场景缺少名称、缩略图或说明');
+    return {
+      columns,
+      height: element.getBoundingClientRect().height,
+      nameRight: name.right,
+      frameLeft: frame.left,
+      frameRight: frame.right,
+      hintLeft: hint.left,
+    };
+  });
+  expect(sceneLayout.columns).toBe(3);
+  expect(sceneLayout.height).toBeLessThanOrEqual(130);
+  expect(sceneLayout.nameRight).toBeLessThanOrEqual(sceneLayout.frameLeft + 1);
+  expect(sceneLayout.frameRight).toBeLessThanOrEqual(sceneLayout.hintLeft + 1);
   const measurements = [];
   for (const object of objects) {
     const preview = panel.getByRole('img', { name: object.label + '的原视频画面', exact: true });
     await expect(preview).toBeVisible({ timeout: 15000 });
+    const objectLayout = await preview.locator('xpath=ancestor::article[1]').evaluate((article) => {
+      const name = article.querySelector('h4')?.getBoundingClientRect();
+      const frame = article.querySelector('.video-recreation-preview')?.getBoundingClientRect();
+      const resource = article
+        .querySelector('.video-recreation-object-resource')
+        ?.getBoundingClientRect();
+      if (!name || !frame || !resource) throw new Error('对象缺少名称、原视频图或资源操作');
+      return {
+        nameRight: name.right,
+        frameLeft: frame.left,
+        frameRight: frame.right,
+        resourceLeft: resource.left,
+        columns: getComputedStyle(article).gridTemplateColumns.split(' ').length,
+        height: article.getBoundingClientRect().height,
+        bounded: article.scrollWidth <= article.clientWidth + 1,
+      };
+    });
+    expect(objectLayout.columns, object.label + '三段应在同一横排').toBe(3);
+    expect(objectLayout.height, object.label + '单项最高 130px').toBeLessThanOrEqual(130);
+    expect(objectLayout.nameRight).toBeLessThanOrEqual(objectLayout.frameLeft + 1);
+    expect(objectLayout.frameRight).toBeLessThanOrEqual(objectLayout.resourceLeft + 1);
+    expect(objectLayout.bounded).toBe(true);
     const figure = preview.locator('xpath=ancestor::figure[1]');
     await expect(figure).toHaveAttribute(
       'data-timestamp-seconds',
@@ -812,9 +892,7 @@ for (const viewport of [
       await expect(node).toBeVisible();
       const size = await node.boundingBox();
       expect(size).not.toBeNull();
-      await node.getByText('尚未生成', { exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: '短视频复刻', exact: true });
-      await expect(dialog).toBeVisible();
+      const dialog = await clickRecreationNode(page, node);
       const draftLayout = await expectRecreationLayout(dialog, viewport);
       await expect(dialog.getByRole('region', { name: '分析视频', exact: true })).toBeVisible();
       await expect(dialog.getByRole('region', { name: '替换资源', exact: true })).toBeVisible();
@@ -823,6 +901,7 @@ for (const viewport of [
       await expectSelection(reference, '选择项目视频');
       await expect(dialog.getByRole('button', { name: '使用此视频', exact: true })).toBeDisabled();
       await expect(dialog.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('status')).toContainText('请先选择参考视频并完成分析');
       await expect(dialog.getByLabel('上传参考视频', { exact: true })).toBeAttached();
       expect(ctx.posts).toHaveLength(0);
       expect(ctx.generates).toHaveLength(0);
@@ -866,8 +945,7 @@ for (const viewport of [
       await info.attach('复刻三栏边界', { path: layoutPath, contentType: 'application/json' });
       await dialog.getByRole('button', { name: '关闭编辑器', exact: true }).click();
       await expect(dialog).toBeHidden();
-      // 左上角导航覆盖画布；在资源栏右侧的空白区域取消选择，不使用强制点击。
-      await page.locator('.react-flow__pane').click({ position: { x: 300, y: 220 } });
+      await clickEmptyPane(page);
       await page.mouse.move(0, 0);
       await expect(node).not.toHaveClass(/\bselected\b/);
       expect(await node.evaluate((element) => element.matches(':hover'))).toBe(false);
@@ -892,14 +970,16 @@ for (const viewport of [
           return true;
         }),
       ).toBe(true);
-      await expect(node.getByText('尚未生成', { exact: true })).toBeVisible();
-      await expect(node.getByText('点击节点，按流程开始复刻', { exact: true })).toBeVisible();
+      await expect(node.locator('.flow-node-preview video')).toHaveAttribute(
+        'src',
+        /\/v1\/assets\/clip\/versions\/2\/content$/,
+      );
       const deselectedSize = await node.boundingBox();
       expect(deselectedSize?.width).toBeCloseTo(size!.width, 0);
       expect(deselectedSize?.height).toBeCloseTo(size!.height, 0);
       await page.screenshot({ path: info.outputPath('recreation-node-badge.png'), fullPage: true });
 
-      await node.getByText('尚未生成', { exact: true }).click();
+      await clickRecreationNode(page, node);
       const panel = page.getByRole('region', { name: '短视频复刻', exact: true });
       await expect(panel).toBeVisible();
       await expect(
@@ -910,6 +990,7 @@ for (const viewport of [
       await expect(panel.getByText('使用流程', { exact: true })).toHaveCount(0);
       await expect(panel.getByText('完整时长：10 秒', { exact: true })).toHaveCount(0);
       await expect(panel.getByRole('textbox', { name: '分析模型 ID', exact: true })).toHaveCount(0);
+      await expect(panel.getByText('分析模型', { exact: true })).toHaveCount(0);
       expect(
         await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
       ).toBe(true);
@@ -947,6 +1028,9 @@ for (const viewport of [
       await openRecreation(page, saved.id);
       await panel.getByRole('button', { name: '分析整条视频', exact: true }).click();
       await expect(panel.getByRole('combobox', { name: '主角', exact: true })).toBeVisible();
+      await expect(dialog.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
+        /Full observed duration: 10 seconds/,
+      );
       expect(ctx.posts).toHaveLength(1);
       expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
       expect(ctx.generates).toHaveLength(0);
@@ -987,7 +1071,7 @@ test('整条分析、绑定人物、自动组装和明确生成，保存重载�
     .toContain('Full observed duration: 10 seconds');
   const saved = ctx.canvas().nodes.find((n) => n.data.videoRecreation)!;
   expect(saved.data.parameters?.duration).toBe(10);
-  expect(saved.data.resourceRefs?.map((r) => r.assetId)).toEqual(['clip', 'person-a']);
+  expect(saved.data.resourceRefs?.map((r) => r.assetId)).toEqual(['person-a']);
   expect(saved.data.videoRecreation?.analysis?.template.dialogue).toEqual(template.dialogue);
   expect(saved.data.prompt).toContain('请看这个。');
   await expect(panel.getByText('查看完整模板、镜头动作与台词')).toHaveCount(0);
@@ -1055,7 +1139,7 @@ test('更换人物和商品不重复分析，慢保存不打断商品说明连�
       .canvas()
       .nodes.find((n) => n.data.videoRecreation)
       ?.data.resourceRefs?.map((r) => r.assetId),
-  ).toEqual(['clip', 'person-b', 'product']);
+  ).toEqual(['person-b', 'product']);
   expect(ctx.posts).toHaveLength(1);
   expect(ctx.generates).toHaveLength(0);
   expect(ctx.errors).toEqual([]);
@@ -1124,7 +1208,6 @@ test('历史回显冻结旧版本视频与时长，较小PC专用 Dialog 可完�
   });
   expect(saved.data.parameters?.duration).toBe(10);
   expect(saved.data.resourceRefs?.map((r) => [r.assetId, r.assetVersion])).toEqual([
-    ['clip', 2],
     ['person-a', 3],
   ]);
   await expect(dialog.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
@@ -1168,7 +1251,6 @@ test('只上传人物图片即可绑定真实返回版本，不额外分析或�
   await expectSelection(panel.getByRole('combobox', { name: '主角', exact: true }), '我的人物.jpg');
   const saved = ctx.canvas().nodes.find((n) => n.data.videoRecreation)!;
   expect(saved.data.resourceRefs?.map((r) => [r.assetId, r.assetVersion])).toEqual([
-    ['clip', 2],
     ['uploaded-character', 5],
   ]);
   expect(saved.data.videoRecreation?.product).toBeUndefined();
@@ -1204,7 +1286,7 @@ for (const viewport of [
         credentialId: analysisCredentialId,
         purpose: 'video_recreation',
       });
-      await expect(panel).toContainText('本次分析模型：qwen3.8-omni-flash');
+      await expect(panel.getByText('本次分析模型：qwen3.8-omni-flash')).toHaveCount(0);
       const sourcePreviews = await expectSourcePreviews(panel);
       const sourceReadsAfterAnalysis = ctx.sourceContentRequests.length;
       await expectSelection(
@@ -1277,7 +1359,6 @@ for (const viewport of [
             ?.data.resourceRefs?.map((reference) => [reference.assetId, reference.assetVersion]),
         )
         .toEqual([
-          ['clip', 2],
           ['person-b', 3],
           ['product', 3],
         ]);
@@ -1297,8 +1378,10 @@ for (const viewport of [
       expect(saved.data.videoRecreation?.product).toBeUndefined();
       expect(saved.data.parameters?.duration).toBe(10);
       expect(saved.data.prompt).toContain('Never drink perfume');
-      expect(saved.data.prompt).toContain('character_b: Preserve this source character unchanged');
-      expect(saved.data.prompt).toContain('product_b: Preserve this source product');
+      expect(saved.data.prompt).toContain('Character character_b: Keep this character consistent');
+      expect(saved.data.prompt).toContain(
+        'Product product_b: Keep this product and its interactions consistent',
+      );
       expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
       expect(ctx.generates).toHaveLength(0);
       const after = await node.boundingBox();
@@ -1326,7 +1409,7 @@ for (const viewport of [
       await expect(
         restored.getByRole('textbox', { name: '香水瓶用途与已确认卖点', exact: true }),
       ).toHaveValue(description);
-      await expect(restored).toContainText('本次分析模型：qwen3.8-omni-flash');
+      await expect(restored.getByText('本次分析模型：qwen3.8-omni-flash')).toHaveCount(0);
       expect(ctx.posts).toHaveLength(1);
       expect(ctx.generates).toHaveLength(0);
 
@@ -1344,13 +1427,12 @@ for (const viewport of [
       const generationColumn = editor.getByRole('region', { name: '生成设置', exact: true });
       const analysisScrollTop = await analysisColumn.evaluate((element) => element.scrollTop);
       const generationScrollTop = await generationColumn.evaluate((element) => element.scrollTop);
-      const replacements = fullPanel.locator('.video-recreation-replacement img');
-      await expect(replacements).toHaveCount(2);
-      for (const replacement of await replacements.all()) {
-        await replacement.scrollIntoViewIfNeeded();
-        await expect(replacement).toBeVisible();
-        await replacement.evaluate((element) => (element as HTMLImageElement).decode());
-      }
+      const replacementSelectors = fullPanel.locator(
+        '.video-recreation-object-resource [role="combobox"]',
+      );
+      await expect(replacementSelectors).toHaveCount(4);
+      await expectSelection(replacementSelectors.nth(0)!, '另一人物');
+      await expectSelection(replacementSelectors.nth(2)!, '新商品');
       await fullPanel
         .getByRole('img', { name: '主角的原视频画面', exact: true })
         .scrollIntoViewIfNeeded();
@@ -1360,9 +1442,14 @@ for (const viewport of [
         fullPage: true,
       });
       await fullPanel
-        .getByRole('combobox', { name: '手提袋', exact: true })
+        .getByRole('button', { name: '上传手提袋图片', exact: true })
         .scrollIntoViewIfNeeded();
-      expect(await resourcesColumn.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      const resourceScroll = await resourcesColumn.evaluate((element) => ({
+        top: element.scrollTop,
+        overflows: element.scrollHeight > element.clientHeight + 1,
+      }));
+      if (resourceScroll.overflows) expect(resourceScroll.top).toBeGreaterThan(0);
+      else expect(resourceScroll.top).toBe(0);
       expect(await analysisColumn.evaluate((element) => element.scrollTop)).toBe(analysisScrollTop);
       expect(await generationColumn.evaluate((element) => element.scrollTop)).toBe(
         generationScrollTop,
@@ -1447,7 +1534,7 @@ test('分析目录只列文本项，选择模型与分组后仅在明确分析�
     modelAlias: 'vision-test',
     credentialId: analysisCredentialId,
   });
-  await expect(panel).toContainText('本次分析模型：vision-test');
+  await expect(panel.getByText('本次分析模型：vision-test')).toHaveCount(0);
   expect(ctx.canvas().nodes.find((entry) => entry.data.videoRecreation)?.data.modelAlias).toBe(
     'MiniMax-H3',
   );
@@ -1499,7 +1586,9 @@ test('对象预览与项目图片搜索弹窗可交互，显式生成的图片�
   expect(ctx.posts).toHaveLength(1);
   expect(ctx.generates).toHaveLength(0);
 
-  const duration = editor.getByRole('button', { name: /^时长（秒）：/ });
+  const summary = editor.getByRole('button', { name: '视频参数', exact: true });
+  await summary.click();
+  const duration = page.getByRole('button', { name: /^时长（秒）：/ });
   await duration.click();
   const durationDialog = page.getByRole('dialog', { name: '视频时长', exact: true });
   await durationDialog.getByRole('spinbutton', { name: '自定义时长（秒）', exact: true }).fill('7');

@@ -85,9 +85,6 @@ const runExecutor =
         ...(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS
           ? { videoPollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS) }
           : {}),
-        ...(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS
-          ? { videoMaxPollAttempts: Number(process.env.NEW_API_VIDEO_MAX_POLL_ATTEMPTS) }
-          : {}),
         ...(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES
           ? { videoMaxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES) }
           : {}),

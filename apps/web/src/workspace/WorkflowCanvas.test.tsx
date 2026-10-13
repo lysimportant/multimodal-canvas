@@ -441,7 +441,7 @@ describe('WorkflowCanvas context menu', () => {
     expect(screen.queryByRole('combobox', { name: '参考视频节点' })).not.toBeInTheDocument();
   });
 
-  it('点击复刻节点打开独立 Dialog，关闭后可再次打开且不执行模型', async () => {
+  it('复刻节点首次点击聚焦、再次点击打开独立 Dialog，关闭后仍需两次点击', async () => {
     const recreation = {
       ...generateNode,
       id: 'recreation-draft',
@@ -462,6 +462,8 @@ describe('WorkflowCanvas context menu', () => {
     fireEvent.click(node);
     expect(props.onNodeSelect).toHaveBeenCalledWith(recreation);
     view.rerender(<WorkflowCanvas {...props} selectedNode={recreation} />);
+    expect(screen.queryByRole('dialog', { name: /短视频复刻/ })).not.toBeInTheDocument();
+    fireEvent.click(node);
     const dialog = await screen.findByRole('dialog', { name: /短视频复刻/ });
     await waitFor(() => expect(dialog).toBeVisible());
     expect(dialog).toHaveClass('node-quick-editor-recreation-dialog');
@@ -475,6 +477,8 @@ describe('WorkflowCanvas context menu', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: /短视频复刻/ })).not.toBeInTheDocument(),
     );
+    fireEvent.click(node);
+    expect(screen.queryByRole('dialog', { name: /短视频复刻/ })).not.toBeInTheDocument();
     fireEvent.click(node);
     await waitFor(() => expect(screen.getByRole('dialog', { name: /短视频复刻/ })).toBeVisible());
     expect(props.onRunNode).not.toHaveBeenCalled();

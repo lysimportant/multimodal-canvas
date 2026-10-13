@@ -280,6 +280,7 @@ describe('本地文字资源到 Chat Completions', () => {
         {
           assetId: asset.id,
           assetVersion: 1,
+          name: '参考素材',
           role: 'content',
           sortOrder: 0,
           mediaType: 'image',

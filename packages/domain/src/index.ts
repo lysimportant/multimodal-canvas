@@ -570,6 +570,8 @@ export const requestPromptPartSchema = z.object({
 export const requestPromptResourceSchema = z.object({
   assetId: z.string().trim().min(1).max(512).optional(),
   assetVersion: z.number().int().positive().optional(),
+  /** 冻结时记录的安全显示名；不用于资源寻址或授权。 */
+  name: z.string().trim().min(1).max(160).optional(),
   role: portRoleSchema,
   sortOrder: z.number().int().nonnegative(),
   mediaType: mediaTypeSchema.optional(),

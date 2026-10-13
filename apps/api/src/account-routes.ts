@@ -379,7 +379,14 @@ export function registerAccountRoutes(app: FastifyInstance, options: AccountRout
         const users = new Map(
           (await options.store.listUsers()).map((user) => [user.id, toPublicUser(user)]),
         );
-        return { run: managedRunDto(run.run, run.project, users) };
+        return {
+          run: {
+            ...managedRunDto(run.run, run.project, users),
+            ...(run.run.providerJob?.platformJobId?.trim()
+              ? { platformJobId: run.run.providerJob.platformJobId }
+              : {}),
+          },
+        };
       }),
     );
     app.post(

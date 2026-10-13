@@ -42,14 +42,17 @@ describe('复刻节点集成数据', () => {
     );
     expect(next.parameters).toEqual({ duration: 8, resolution: '720p' });
     expect(next.videoMode).toBe('omni_reference');
-    expect(next.resourceRefs?.map((ref) => ref.assetId)).toEqual(['clip', 'face']);
+    expect(next.resourceRefs?.map((ref) => ref.assetId)).toEqual(['face']);
+    expect(next.prompt).not.toContain('clip');
     expect(next.prompt).not.toContain('旧人物描述');
     expect(recreationGenerationIssue(next)).toBeUndefined();
     expect(data.parameters?.duration).toBe(5);
   });
-  it('重新分析和移除人物清空旧提示词，不能误用已生成模板', () => {
+  it('重新分析和移除人物显示最新分析草稿，但未完成绑定不能生成', () => {
     const next = applyVideoRecreationConfig(data, { ...config, bindings: [] });
-    expect(next.prompt).toBe('');
+    expect(next.prompt).toContain('actor转身抬手');
+    expect(next.prompt).toContain('Choose whether to preserve this character');
+    expect(next.prompt).not.toContain('旧人物描述');
     expect(next.resourceRefs).toEqual([]);
     expect(recreationGenerationIssue(next)).toContain('主角');
     const pending = applyVideoRecreationConfig(data, {
@@ -181,12 +184,11 @@ describe('复刻节点集成数据', () => {
     };
     const next = applyVideoRecreationConfig({ ...data, modelAlias: 'generation-model' }, objects);
     expect(next.resourceRefs).toEqual([
-      expect.objectContaining({ assetId: 'clip', assetVersion: 4, mediaType: 'video' }),
       expect.objectContaining({ assetId: 'face', assetVersion: 2, mediaType: 'image' }),
       expect.objectContaining({ assetId: 'product', assetVersion: 3, mediaType: 'image' }),
     ]);
-    expect(next.prompt).toContain('Character bystander: Preserve');
-    expect(next.prompt).toContain('Product bag: Preserve');
+    expect(next.prompt).toContain('Character bystander: Keep this character consistent');
+    expect(next.prompt).toContain('Product bag: Keep this product and its interactions consistent');
     expect(next.prompt).toContain('Use the same product image bound to bottle');
     expect(next.modelAlias).toBe('generation-model');
     expect(recreationGenerationIssue(next)).toBeUndefined();

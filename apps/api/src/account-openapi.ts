@@ -207,12 +207,16 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
       'recoverableVideo',
     ],
   );
-  /** 独立详情使用相同安全 DTO，不依赖列表页或筛选结果。 */
+  /** 独立详情仅向已授权读取者补充原平台任务 ID，不回传凭据或 Provider 载荷。 */
+  const managedRunDetail = {
+    ...managedRun,
+    properties: { ...managedRun.properties, platformJobId: string },
+  };
   const runDetail = (admin: boolean) => ({
     parameters: [id],
     get: operation(
       admin ? '管理员查询已授权原任务详情' : '查询本人原任务详情',
-      object({ run: managedRun }, ['run']),
+      object({ run: managedRunDetail }, ['run']),
     ),
   });
   /** 查询原视频任务不接受执行参数；空 JSON 请求体可以省略，202 仅表示受理。 */

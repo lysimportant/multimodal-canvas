@@ -282,7 +282,6 @@ describe('Worker production startup configuration', () => {
       NEW_API_TIMEOUT_MS: '120000',
       NEW_API_MAX_RESPONSE_BYTES: '52428800',
       NEW_API_VIDEO_POLL_INTERVAL_MS: '2000',
-      NEW_API_VIDEO_MAX_POLL_ATTEMPTS: '120',
       NEW_API_VIDEO_MAX_CONTENT_BYTES: '52428800',
     });
 
@@ -319,14 +318,12 @@ describe('Worker production startup configuration', () => {
       ...productionEnvironment,
       NEW_API_MAX_RESPONSE_BYTES: '0',
       NEW_API_VIDEO_POLL_INTERVAL_MS: '1.2',
-      NEW_API_VIDEO_MAX_POLL_ATTEMPTS: '9007199254740992',
       NEW_API_VIDEO_MAX_CONTENT_BYTES: '-4',
     });
 
     expect(issues.map(({ variable }) => variable)).toEqual([
       'NEW_API_MAX_RESPONSE_BYTES',
       'NEW_API_VIDEO_POLL_INTERVAL_MS',
-      'NEW_API_VIDEO_MAX_POLL_ATTEMPTS',
       'NEW_API_VIDEO_MAX_CONTENT_BYTES',
     ]);
   });

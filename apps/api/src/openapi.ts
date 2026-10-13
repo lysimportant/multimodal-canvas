@@ -756,6 +756,7 @@ const runSchema = {
     attempt: { type: 'integer', minimum: 1 },
     provider: { type: 'string' },
     modelAlias: { type: 'string' },
+    platformJobId: { type: 'string', minLength: 1 },
     snapshot: runSnapshotSchema,
     result: runResultSchema,
     error: { type: 'string' },
@@ -877,6 +878,7 @@ const runRequestPromptRecordSchema = {
         properties: {
           assetId: { type: 'string' },
           assetVersion: { type: 'integer', minimum: 1 },
+          name: { type: 'string', minLength: 1, maxLength: 160 },
           role: { type: 'string' },
           sortOrder: { type: 'integer', minimum: 0 },
           mediaType: { type: 'string', enum: ['text', 'image', 'audio', 'video'] },
@@ -2633,7 +2635,7 @@ export const openApiDocument = {
             maximum: 2147483647,
             default: 900000,
             description:
-              '节点生成请求超时及默认视频轮询等待预算，单位毫秒；部署 NEW_API_TIMEOUT_MS 优先。',
+              '节点调用上游的单次 HTTP 请求超时，单位毫秒；部署 NEW_API_TIMEOUT_MS 优先。异步视频任务轮询不受此值作为总等待预算限制。',
           },
           updatedAt: { type: 'string', format: 'date-time' },
         },
@@ -2662,7 +2664,7 @@ export const openApiDocument = {
             minimum: 1000,
             maximum: 2147483647,
             description:
-              '新开始执行节点的请求超时及视频轮询等待预算，单位毫秒；省略保留现值，显式 900000 恢复默认。',
+              '新开始执行节点调用上游的单次 HTTP 请求超时，单位毫秒；省略保留现值，显式 900000 恢复默认。',
           },
         },
         additionalProperties: false,
