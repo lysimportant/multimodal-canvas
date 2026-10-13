@@ -35,7 +35,7 @@ describe('复刻节点集成数据', () => {
       '选择参考视频',
     );
   });
-  it('一次更新配置、引用、英文提示词和全片时长', () => {
+  it('一次更新配置、引用、中文分镜提示词和全片时长', () => {
     const next = applyVideoRecreationConfig(
       { ...data, parameters: { resolution: '720p' } },
       config,
@@ -45,13 +45,14 @@ describe('复刻节点集成数据', () => {
     expect(next.resourceRefs?.map((ref) => ref.assetId)).toEqual(['face']);
     expect(next.prompt).not.toContain('clip');
     expect(next.prompt).not.toContain('旧人物描述');
+    expect(next.prompt).toContain('【镜头编号】：Shot 01');
     expect(recreationGenerationIssue(next)).toBeUndefined();
     expect(data.parameters?.duration).toBe(5);
   });
   it('重新分析和移除人物显示最新分析草稿，但未完成绑定不能生成', () => {
     const next = applyVideoRecreationConfig(data, { ...config, bindings: [] });
-    expect(next.prompt).toContain('actor转身抬手');
-    expect(next.prompt).toContain('Choose whether to preserve this character');
+    expect(next.prompt).toContain('主角转身抬手');
+    expect(next.prompt).toContain('主角：待选择保留或替换图');
     expect(next.prompt).not.toContain('旧人物描述');
     expect(next.resourceRefs).toEqual([]);
     expect(recreationGenerationIssue(next)).toContain('主角');
@@ -124,7 +125,7 @@ describe('复刻节点集成数据', () => {
     };
     const next = applyVideoRecreationConfig({ ...data, parameters: {} }, fractional);
     expect(next.parameters?.duration).toBe(8.5);
-    expect(next.prompt).toContain('Full observed duration: 8.5 seconds');
+    expect(next.prompt).toContain('【时长】：8.5s（原片 0–8.5s）');
     expect(recreationGenerationIssue(next)).toBeUndefined();
   });
   it('画布往返保留工作流，节点外框尺寸不受分析文字影响', () => {
@@ -187,9 +188,9 @@ describe('复刻节点集成数据', () => {
       expect.objectContaining({ assetId: 'face', assetVersion: 2, mediaType: 'image' }),
       expect.objectContaining({ assetId: 'product', assetVersion: 3, mediaType: 'image' }),
     ]);
-    expect(next.prompt).toContain('Character bystander: Keep this character consistent');
-    expect(next.prompt).toContain('Product bag: Keep this product and its interactions consistent');
-    expect(next.prompt).toContain('Use the same product image bound to bottle');
+    expect(next.prompt).toContain('配角（保留分析外观）');
+    expect(next.prompt).toContain('手提袋（按分析描述保留）');
+    expect(next.prompt).toContain('包装盒：新包装（沿用饮料瓶的参考图）');
     expect(next.modelAlias).toBe('generation-model');
     expect(recreationGenerationIssue(next)).toBeUndefined();
     const canvas = canvasDocumentSchema.parse({

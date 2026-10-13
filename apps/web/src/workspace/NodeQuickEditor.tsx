@@ -5,6 +5,7 @@ import {
   EyeOff,
   GitFork,
   ImageOff,
+  Languages,
   LoaderCircle,
   Play,
   SlidersHorizontal,
@@ -347,6 +348,10 @@ export function NodeQuickEditor({
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   /** 同一节点在快速面板和 Dialog 之间共用父层保存的文档。 */
   const [expandedEditorOpen, setExpandedEditorOpen] = useState(false);
+  /** 复刻右栏与放大窗口共用节点的结构化提示词和保存回调。 */
+  const [recreationPromptOpen, setRecreationPromptOpen] = useState(false);
+  const [recreationPromptSaving, setRecreationPromptSaving] = useState(false);
+  const [recreationPromptError, setRecreationPromptError] = useState<string>();
   const isRecreation = Boolean(node.data.videoRecreation || node.data.videoRecreationDraft);
   const dialogOpen = isRecreation ? recreationDialogOpen : expandedEditorOpen;
   const recreationSourceIdentity = node.data.videoRecreation
@@ -1232,6 +1237,12 @@ export function NodeQuickEditor({
         }}
       />
     ) : null;
+  const canRebuildRecreationPrompt = Boolean(
+    node.data.videoRecreation?.analysis &&
+    !node.data.videoRecreation.request &&
+    !busy &&
+    onVideoRecreationChange,
+  );
   const recreationSource =
     node.data.videoRecreationDraft && onVideoRecreationChange ? (
       <VideoRecreationSourcePicker
@@ -1273,7 +1284,10 @@ export function NodeQuickEditor({
         open={dialogOpen}
         onOpenChange={(open) => {
           if (isRecreation) {
-            if (!open) onRecreationDialogClose?.();
+            if (!open) {
+              setRecreationPromptOpen(false);
+              onRecreationDialogClose?.();
+            }
           } else setExpandedEditorOpen(open);
         }}
       >
@@ -1350,7 +1364,56 @@ export function NodeQuickEditor({
                 <section className="node-quick-editor-recreation-generate" aria-label="生成设置">
                   <h3>生成视频</h3>
                   {topControls}
-                  <h4>提示词</h4>
+                  <div className="node-quick-editor-recreation-prompt-heading">
+                    <h4>提示词</h4>
+                    <div className="node-quick-editor-recreation-prompt-actions">
+                      <Button
+                        type="button"
+                        className="node-quick-editor-recreation-prompt-rebuild"
+                        aria-label="整理为中文分镜"
+                        title="按现有分析重建，将覆盖当前提示词及其中的手动引用；不会重新分析"
+                        disabled={!canRebuildRecreationPrompt || recreationPromptSaving}
+                        onClick={async () => {
+                          const config = node.data.videoRecreation;
+                          if (
+                            !config?.analysis ||
+                            config.request ||
+                            busy ||
+                            !onVideoRecreationChange
+                          )
+                            return;
+                          setRecreationPromptSaving(true);
+                          setRecreationPromptError(undefined);
+                          try {
+                            await onVideoRecreationChange(config);
+                          } catch (error) {
+                            setRecreationPromptError(
+                              error instanceof Error ? error.message : '整理提示词未保存，请重试',
+                            );
+                          } finally {
+                            setRecreationPromptSaving(false);
+                          }
+                        }}
+                      >
+                        <Languages size={15} aria-hidden="true" />
+                        <span>整理为中文分镜</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        className="node-quick-editor-recreation-prompt-expand"
+                        aria-label="放大编辑提示词"
+                        title="放大编辑提示词"
+                        onClick={() => setRecreationPromptOpen(true)}
+                      >
+                        <Expand size={16} aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </div>
+                  {recreationPromptError && (
+                    <div className="node-quick-editor-recreation-prompt-error" role="alert">
+                      {recreationPromptError}
+                    </div>
+                  )}
                   <div className="node-quick-editor-prompt-group">{promptEditor}</div>
                   {controls}
                   {runIssue && (
@@ -1375,6 +1438,30 @@ export function NodeQuickEditor({
           </div>
         </DialogContent>
       </Dialog>
+      {isRecreation && (
+        <Dialog open={dialogOpen && recreationPromptOpen} onOpenChange={setRecreationPromptOpen}>
+          <DialogContent
+            className="node-quick-editor-dialog node-quick-editor-prompt-dialog"
+            aria-describedby={undefined}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="node-quick-editor-dialog-header">
+              <DialogTitle>完整提示词</DialogTitle>
+              <DialogClose asChild>
+                <Button
+                  type="button"
+                  className="node-quick-editor-dialog-close"
+                  aria-label="关闭完整提示词"
+                  title="关闭"
+                >
+                  <X size={17} aria-hidden="true" />
+                </Button>
+              </DialogClose>
+            </div>
+            <div className="node-quick-editor-prompt-dialog-body">{promptEditor}</div>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   );
 }

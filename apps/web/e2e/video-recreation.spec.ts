@@ -1029,7 +1029,7 @@ for (const viewport of [
       await panel.getByRole('button', { name: '分析整条视频', exact: true }).click();
       await expect(panel.getByRole('combobox', { name: '主角', exact: true })).toBeVisible();
       await expect(dialog.getByRole('textbox', { name: '提示词', exact: true })).toHaveValue(
-        /Full observed duration: 10 seconds/,
+        /【镜头编号】：Shot 01/,
       );
       expect(ctx.posts).toHaveLength(1);
       expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
@@ -1039,7 +1039,7 @@ for (const viewport of [
       await selectOption(panel.getByRole('combobox', { name: '主角', exact: true }), '我的人物');
       await expect
         .poll(() => ctx.canvas().nodes.find((item) => item.id === saved.id)?.data.prompt)
-        .toContain('Full observed duration: 10 seconds');
+        .toContain('【镜头编号】：Shot 01');
       await expect(generate).toBeEnabled();
       expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
       expect(ctx.generates).toHaveLength(0);
@@ -1068,7 +1068,7 @@ test('整条分析、绑定人物、自动组装和明确生成，保存重载�
   await selectOption(panel.getByRole('combobox', { name: '主角', exact: true }), '我的人物');
   await expect
     .poll(() => ctx.canvas().nodes.find((n) => n.data.videoRecreation)?.data.prompt)
-    .toContain('Full observed duration: 10 seconds');
+    .toContain('【镜头编号】：Shot 01');
   const saved = ctx.canvas().nodes.find((n) => n.data.videoRecreation)!;
   expect(saved.data.parameters?.duration).toBe(10);
   expect(saved.data.resourceRefs?.map((r) => r.assetId)).toEqual(['person-a']);
@@ -1104,6 +1104,52 @@ test('整条分析、绑定人物、自动组装和明确生成，保存重载�
   expect(ctx.errors).toEqual([]);
 });
 
+test('右栏放大提示词后可编辑完整中文分镜，并同步回原输入框', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const ctx = await fixture(page);
+  await createNode(page);
+  const recreation = page.getByRole('dialog', { name: '短视频复刻', exact: true });
+  await recreation.getByRole('button', { name: '分析整条视频', exact: true }).click();
+  const rightEditor = recreation.getByRole('textbox', { name: '提示词', exact: true });
+  await expect(rightEditor).toHaveValue(/【镜头编号】：Shot 01/);
+  await recreation.getByRole('button', { name: '放大编辑提示词', exact: true }).click();
+  const expanded = page.getByRole('dialog', { name: '完整提示词', exact: true });
+  await expect(expanded).toBeVisible();
+  const fullEditor = expanded.getByRole('textbox', { name: '提示词', exact: true });
+  await expect(fullEditor).toHaveValue(/【镜头编号】：Shot 02/);
+  await expect
+    .poll(async () => {
+      const panel = await expanded.boundingBox();
+      const editor = await fullEditor.boundingBox();
+      return Boolean(
+        panel &&
+        editor &&
+        panel.y >= 20 &&
+        panel.y + panel.height <= 980 &&
+        editor.y >= panel.y &&
+        editor.y + editor.height <= panel.y + panel.height + 1,
+      );
+    })
+    .toBe(true);
+  await page.screenshot({
+    path: info.outputPath('recreation-prompt-expanded.png'),
+  });
+  await fullEditor.fill('【镜头编号】：Shot 01\n【动作】：手动校对分镜');
+  await expect(fullEditor).toHaveValue(/手动校对分镜/);
+  await expanded.getByRole('button', { name: '关闭完整提示词', exact: true }).click();
+  await expect(expanded).toBeHidden();
+  await expect(rightEditor).toHaveValue(/手动校对分镜/);
+  await expect
+    .poll(() => ctx.canvas().nodes.find((node) => node.data.videoRecreation)?.data.prompt)
+    .toContain('手动校对分镜');
+  await recreation.getByRole('button', { name: '整理为中文分镜', exact: true }).click();
+  await expect(rightEditor).toHaveValue(/【镜头编号】：Shot 02/);
+  await expect(rightEditor).not.toHaveValue(/手动校对分镜/);
+  expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
+  expect(ctx.generates).toHaveLength(0);
+  expect(ctx.errors).toEqual([]);
+});
+
 test('更换人物和商品不重复分析，慢保存不打断商品说明连续输入', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const ctx = await fixture(page, 2, 150);
@@ -1133,7 +1179,7 @@ test('更换人物和商品不重复分析，慢保存不打断商品说明连�
     .toBe(description);
   await expect
     .poll(() => ctx.canvas().nodes.find((n) => n.data.videoRecreation)?.data.prompt)
-    .toContain('Never drink perfume');
+    .toContain('替换商品仅按已确认用途调整不兼容动作');
   expect(
     ctx
       .canvas()
@@ -1200,7 +1246,7 @@ test('历史回显冻结旧版本视频与时长，较小PC专用 Dialog 可完�
   await selectOption(panel.getByRole('combobox', { name: '主角', exact: true }), '我的人物');
   await expect
     .poll(() => ctx.canvas().nodes.find((n) => n.data.videoRecreation)?.data.prompt)
-    .toContain('Full observed duration: 10 seconds');
+    .toContain('【镜头编号】：Shot 01');
   const saved = ctx.canvas().nodes.find((n) => n.data.videoRecreation)!;
   expect(saved.data.videoRecreation?.source).toMatchObject({
     assetVersion: 2,
@@ -1377,11 +1423,9 @@ for (const viewport of [
       expect(saved.data.videoRecreation?.analysis?.modelAlias).toBe('qwen3.8-omni-flash');
       expect(saved.data.videoRecreation?.product).toBeUndefined();
       expect(saved.data.parameters?.duration).toBe(10);
-      expect(saved.data.prompt).toContain('Never drink perfume');
-      expect(saved.data.prompt).toContain('Character character_b: Keep this character consistent');
-      expect(saved.data.prompt).toContain(
-        'Product product_b: Keep this product and its interactions consistent',
-      );
+      expect(saved.data.prompt).toContain('替换商品仅按已确认用途调整不兼容动作');
+      expect(saved.data.prompt).toContain('同伴（保留分析外观');
+      expect(saved.data.prompt).toContain('手提袋（按分析描述保留');
       expect(ctx.postPaths).toEqual(['/v1/assets/clip/versions/2/reverse-prompts']);
       expect(ctx.generates).toHaveLength(0);
       const after = await node.boundingBox();

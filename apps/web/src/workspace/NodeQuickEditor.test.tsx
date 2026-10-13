@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PROMPT_SKILLS,
+  renderPromptDocument,
   videoModeLabels,
   type PromptDocument,
   type VideoRecreationConfig,
@@ -1007,6 +1008,7 @@ describe('NodeQuickEditor', () => {
       'title',
       '请先分析整条参考视频',
     );
+    expect(within(dialog).getByRole('button', { name: '整理为中文分镜' })).toBeDisabled();
     expect(within(dialog).getByRole('status')).toHaveTextContent('请先分析整条参考视频');
     await user.click(skillTrigger);
     const skillSettings = await within(dialog).findByRole('group', { name: 'Skill 配置' });
@@ -1026,6 +1028,152 @@ describe('NodeQuickEditor', () => {
     expect(inputs.onPromptSkillChange).toHaveBeenCalledExactlyOnceWith(PROMPT_SKILLS[0]!.id);
     expect(inputs.onRun).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('复刻提示词放大编辑与右栏即时同步，共用结构化文档保存且保留图片引用', async () => {
+    const onPromptDocumentChange = vi.fn();
+    const onRun = vi.fn();
+    const promptDocument = makeMentionDocument(imageMention);
+    /** 复现画布保存后立即将新文档回传至节点的受控链路。 */
+    function RecreationPromptEditor() {
+      const [savedDocument, setSavedDocument] = useState(promptDocument);
+      return (
+        <>
+          <NodeQuickEditor
+            {...makeProps({
+              node: {
+                ...videoNode,
+                data: {
+                  ...videoNode.data,
+                  prompt: renderPromptDocument(savedDocument),
+                  promptDocument: savedDocument,
+                  videoRecreation: {
+                    version: 1,
+                    source: { assetId: 'source-video', assetVersion: 1, name: '参考视频' },
+                    bindings: [],
+                  },
+                },
+              },
+              onPromptDocumentChange: (next) => {
+                onPromptDocumentChange(next);
+                setSavedDocument(next);
+              },
+              onRun,
+            })}
+            recreationDialogOpen
+          />
+          <output data-testid="saved-prompt">{JSON.stringify(savedDocument)}</output>
+        </>
+      );
+    }
+
+    renderRaw(<RecreationPromptEditor />);
+    const recreation = screen.getByRole('dialog', { name: '短视频复刻' });
+    const rightEditor = within(recreation).getByRole('textbox', { name: '提示词' });
+    const user = userEvent.setup();
+    const typeAtEnd = async (editor: HTMLElement, text: string) => {
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      document.getSelection()?.removeAllRanges();
+      document.getSelection()?.addRange(range);
+      await user.keyboard(text);
+    };
+    await typeAtEnd(rightEditor, ' 右栏扩写');
+    expect(onPromptDocumentChange).toHaveBeenCalled();
+    const callsAfterRightEdit = onPromptDocumentChange.mock.calls.length;
+    const expand = within(recreation).getByRole('button', { name: '放大编辑提示词' });
+    expect(expand.closest('.node-quick-editor-recreation-prompt-heading')).toHaveTextContent(
+      '提示词',
+    );
+    fireEvent.click(expand);
+    const full = screen.getByRole('dialog', { name: '完整提示词' });
+    const fullEditor = within(full).getByRole('textbox', { name: '提示词' });
+    expect(fullEditor).toHaveTextContent('右栏扩写');
+    await typeAtEnd(fullEditor, ' 完整扩写');
+    expect(onPromptDocumentChange.mock.calls.length).toBeGreaterThan(callsAfterRightEdit);
+    expect(rightEditor).toHaveTextContent('完整扩写');
+    expect(JSON.parse(screen.getByTestId('saved-prompt').textContent!).blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'mention',
+          mentionId: imageMention.mentionId,
+          assetId: imageMention.assetId,
+        }),
+      ]),
+    );
+    fireEvent.click(within(full).getByRole('button', { name: '关闭完整提示词' }));
+    expect(screen.queryByRole('dialog', { name: '完整提示词' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '短视频复刻' })).toBeInTheDocument();
+    expect(within(recreation).getByRole('textbox', { name: '提示词' })).toHaveTextContent(
+      '完整扩写',
+    );
+    expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it('旧复刻提示词仅在显式整理时重建，打开及编辑不会触发分析或覆盖内容', async () => {
+    const user = userEvent.setup();
+    const onVideoRecreationChange = vi.fn().mockRejectedValueOnce(new Error('保存暂时失败'));
+    const onPromptDocumentChange = vi.fn();
+    const onRun = vi.fn();
+    const config: VideoRecreationConfig = {
+      version: 1,
+      source: { assetId: 'source-video', assetVersion: 1, name: '参考视频' },
+      analysis: {
+        runId: 'analysis-run',
+        summary: '全片分析',
+        template: {
+          version: 1,
+          durationSeconds: 2,
+          roles: [],
+          shots: [{ startSeconds: 0, endSeconds: 2, action: '人物走入画面', camera: '固定镜头' }],
+          unknowns: [],
+        },
+      },
+      bindings: [],
+    };
+    const prompt = 'Legacy English storyboard.\nUser addition: keep the timing.';
+    const promptDocument: PromptDocument = { version: 1, blocks: [{ type: 'text', text: prompt }] };
+    const inputs = makeProps({
+      node: {
+        ...videoNode,
+        data: { ...videoNode.data, prompt, promptDocument, videoRecreation: config },
+      },
+      onVideoRecreationChange,
+      onPromptDocumentChange,
+      onRun,
+    });
+    renderRaw(<NodeQuickEditor {...inputs} recreationDialogOpen />);
+
+    const recreation = screen.getByRole('dialog', { name: '短视频复刻' });
+    const rightEditor = within(recreation).getByRole('textbox', { name: '提示词' });
+    expect(rightEditor).toHaveTextContent(
+      'Legacy English storyboard. User addition: keep the timing.',
+    );
+    expect(onVideoRecreationChange).not.toHaveBeenCalled();
+    expect(onPromptDocumentChange).not.toHaveBeenCalled();
+
+    await user.click(within(recreation).getByRole('button', { name: '放大编辑提示词' }));
+    const full = screen.getByRole('dialog', { name: '完整提示词' });
+    const fullEditor = within(full).getByRole('textbox', { name: '提示词' });
+    expect(fullEditor).toHaveTextContent(
+      'Legacy English storyboard. User addition: keep the timing.',
+    );
+    await user.click(within(full).getByRole('button', { name: '关闭完整提示词' }));
+    expect(within(recreation).getByRole('textbox', { name: '提示词' })).toHaveTextContent(
+      'Legacy English storyboard. User addition: keep the timing.',
+    );
+    expect(onVideoRecreationChange).not.toHaveBeenCalled();
+
+    await user.click(within(recreation).getByRole('button', { name: '整理为中文分镜' }));
+    expect(onVideoRecreationChange).toHaveBeenCalledExactlyOnceWith(config);
+    expect(await within(recreation).findByRole('alert')).toHaveTextContent('保存暂时失败');
+    await user.click(within(recreation).getByRole('button', { name: '整理为中文分镜' }));
+    expect(onVideoRecreationChange).toHaveBeenCalledTimes(2);
+    expect(within(recreation).queryByRole('alert')).not.toBeInTheDocument();
+    expect(onPromptDocumentChange).not.toHaveBeenCalled();
+    expect(onRun).not.toHaveBeenCalled();
   });
 
   it('复刻参数摘要与生成模型同栏，默认取冻结来源尺寸和分析秒数，并接受自定义时长', async () => {
@@ -1129,8 +1277,9 @@ describe('NodeQuickEditor', () => {
       resolution: '1080p',
       aspectRatio: '9:16',
     });
-    expect(screen.getByRole('button', { name: '时长（秒）：未设置' })).toBeInTheDocument();
+    expect(summary).toHaveAttribute('title', '清晰度：1080p · 时长：未设置 · 比例：9:16');
     await user.click(summary);
+    expect(screen.getByRole('button', { name: '时长（秒）：未设置' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '视频清晰度：1080p' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '视频比例：9:16' })).toBeInTheDocument();
     const generate = screen.getByRole('button', { name: '生成' });

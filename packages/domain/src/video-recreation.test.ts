@@ -127,8 +127,8 @@ const draftSnapshot: RunSnapshot = {
 describe('短视频复刻空草稿', () => {
   it('草稿提示词允许显示分析文字但不绕过完整配置校验', () => {
     const draft = buildVideoRecreationDraftPrompt({ ...ready, bindings: [] });
-    expect(renderPromptDocument(draft)).toContain('Character character_a');
-    expect(renderPromptDocument(draft)).toContain('Choose whether to preserve');
+    expect(renderPromptDocument(draft)).toContain('【镜头编号】：Shot 01');
+    expect(renderPromptDocument(draft)).toContain('主角：待选择保留或替换图');
     expect(() => buildVideoRecreationPrompt({ ...ready, bindings: [] })).toThrow('请提供人物资源');
   });
   it('保存与 JSON 恢复保留空草稿，不插入来源、分析或默认参数', () => {
@@ -279,6 +279,8 @@ describe('整条短视频复刻合同', () => {
       'Transcribe every intelligible spoken line verbatim',
     );
     expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('Use an empty dialogue array');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('optional evidenced Chinese lighting');
+    expect(VIDEO_RECREATION_ANALYSIS_INSTRUCTION).toContain('omit uncertain fields');
   });
   it('逐句台词保留原话、说话人和秒数，随分析模板进入生成提示词', () => {
     const withDialogue: VideoRecreationTemplate = {
@@ -295,12 +297,62 @@ describe('整条短视频复刻合同', () => {
         analysis: { ...ready.analysis!, template: withDialogue },
       }),
     );
-    expect(prompt).toContain(
-      '"startSeconds":1.2,"endSeconds":2.8,"speakerId":"character_a","text":"这款怎么用？"',
-    );
-    expect(prompt).toContain('"startSeconds":4.5,"endSeconds":5.4,"text":"请看这里。"');
-    expect(prompt).toContain('preserve their text and timing unless the user changes them');
-    expect(prompt).not.toContain('do not clone the original speaker or copy original dialogue');
+    expect(prompt).toContain('【台词】：1.2–2.8s 主角：“这款怎么用？”');
+    expect(prompt).toContain('【台词】：4.5–5.4s：“请看这里。”');
+    expect(prompt).toContain('保留原话和时间，不模仿原说话人音色');
+    expect(prompt).not.toContain('"startSeconds"');
+  });
+  it('按每个镜头输出中文广告分镜，缺失观察留空且不显示原始 JSON', () => {
+    const detailed: VideoRecreationTemplate = {
+      ...template,
+      roles: [
+        {
+          id: 'character_a',
+          label: '舞者',
+          appearances: [{ startSeconds: 4, endSeconds: 10 }],
+        },
+      ],
+      shots: [
+        template.shots[0]!,
+        {
+          ...template.shots[1]!,
+          shotType: '商品特写',
+          movement: '推镜',
+          environment: '白色房间',
+          lighting: '自然光',
+          colorTone: '暖调',
+          mood: '轻快、明亮',
+          advertisingPresentation: '商品正面短暂露出，未出现功效声明',
+          transition: '切至结束画面',
+        },
+      ],
+    };
+    expect(parseVideoRecreationTemplate(JSON.stringify(detailed))).toEqual(detailed);
+    const doc = buildVideoRecreationPrompt({
+      ...ready,
+      analysis: { ...ready.analysis!, template: detailed },
+    });
+    const prompt = renderPromptDocument(doc);
+    expect(prompt.match(/【镜头编号】：Shot \d+/gu)).toEqual([
+      '【镜头编号】：Shot 01',
+      '【镜头编号】：Shot 02',
+    ]);
+    expect(prompt).toContain('【画面比例】：以右侧视频参数为准');
+    expect(prompt).toContain('【镜头类型】：商品特写');
+    expect(prompt).toContain('【运镜方式】：推镜');
+    expect(prompt).toContain('【环境】：白色房间');
+    expect(prompt).toContain('【光线】：自然光');
+    expect(prompt).toContain('【色调】：暖调');
+    expect(prompt).toContain('【氛围关键词】：轻快、明亮');
+    expect(prompt).toContain('【广告卖点呈现】：原片可见：商品正面短暂露出');
+    expect(prompt).toContain('【转场提示】：切至结束画面');
+    expect(prompt).toContain('【负面提示】：变形、多手多脚、文字乱码');
+    expect(prompt).toContain('【光线】：待补充（分析未记录）');
+    expect(prompt.indexOf('我的人物')).toBeGreaterThan(prompt.indexOf('【镜头编号】：Shot 02'));
+    expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(1);
+    expect(prompt).not.toContain('"version"');
+    expect(prompt).not.toContain('"shots"');
+    expect(prompt).not.toContain('Recreate the short video');
   });
   it.each([
     { dialogue: [{ startSeconds: 1, endSeconds: 11, text: '超出时长' }] },
@@ -530,19 +582,14 @@ describe('整条短视频复刻合同', () => {
     expect(
       doc.blocks.some((block) => block.type === 'mention' && block.mediaType === 'video'),
     ).toBe(false);
-    expect(text).toContain('original source video was used only for analysis and traceability');
-    expect(text).toContain('Replace only characters and products explicitly bound');
-    expect(text).toContain(
-      'Character character_b: Keep this character consistent with the analyzed appearance',
-    );
-    expect(text).toContain(
-      'Product product_b: Keep this product and its interactions consistent with the analyzed description',
-    );
-    expect(text).toContain(
-      'Product product_c: Keep this product and its interactions consistent with the analyzed description',
-    );
-    expect(text).toContain('User-confirmed facts for product product_a');
-    expect(text).toContain('do not apply original faces or clothing to replacement identities');
+    expect(text).toContain('【参考图角色】：reference_image（普通参考角色，非首帧/非尾帧）');
+    expect(text).toContain('配角（保留分析外观：长发，站在右侧）');
+    expect(text).toContain('圆形罐装商品（按分析描述保留）');
+    expect(text).toContain('纸盒商品（按分析描述保留）');
+    expect(text).toContain('用户已确认用途/卖点：方形瓶装商品：香水；喷洒在手腕，不饮用。');
+    expect(text).toContain('不沿用原人物脸部或服装');
+    expect(text).not.toContain('"roles"');
+    expect(text).not.toContain('Recreate the short video');
     expect(objectReady).toEqual(before);
   });
   it('没有人物而识别到商品时可仅替换商品，未绑定商品继续保留', () => {
@@ -604,8 +651,8 @@ describe('整条短视频复刻合同', () => {
     expect(doc.blocks.filter((block) => block.type === 'mention')).toMatchObject([
       { assetId: 'person', assetVersion: 3, mediaType: 'image' },
     ]);
-    expect(renderPromptDocument(doc)).toContain('Full observed duration: 10 seconds');
-    expect(renderPromptDocument(doc)).toContain('written analysis');
+    expect(renderPromptDocument(doc)).toContain('【时长】：6s（原片 4–10s）');
+    expect(renderPromptDocument(doc)).toContain('【动作】：主角将商品正面朝向镜头并停住');
     expect(ready).toEqual(before);
     const changed = buildVideoRecreationPrompt({
       ...ready,
@@ -627,7 +674,7 @@ describe('整条短视频复刻合同', () => {
     };
     const doc = buildVideoRecreationPrompt(duo);
     expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(1);
-    expect(renderPromptDocument(doc)).toContain('same character image bound to character_a');
+    expect(renderPromptDocument(doc)).toContain('配角：我的人物（沿用主角的参考图）');
   });
   it('多人与多商品按模板顺序引用，同类共享资源去重且不合并不同版本', () => {
     const binding = objectReady.productBindings![0]!;
@@ -647,11 +694,9 @@ describe('整条短视频复刻合同', () => {
       { mentionId: 'recreation_product_a', assetId: 'perfume', assetVersion: 4 },
       { mentionId: 'recreation_product_c', assetId: 'perfume', assetVersion: 5 },
     ]);
+    expect(renderPromptDocument(doc)).toContain('配角：我的人物（沿用主角的参考图）');
     expect(renderPromptDocument(doc)).toContain(
-      'Character character_b: Use the same character image bound to character_a',
-    );
-    expect(renderPromptDocument(doc)).toContain(
-      'Product product_b replacement appearance reference: Use the same product image bound to product_a',
+      '圆形罐装商品：我的香水（沿用方形瓶装商品的参考图）',
     );
   });
   it('商品替换要求用途，组装适配动作约束且不添加未经确认卖点', () => {
@@ -662,7 +707,7 @@ describe('整条短视频复刻合同', () => {
       product,
       productDescription: '香水；喷洒在手腕，不饮用。',
     });
-    expect(renderPromptDocument(doc)).toContain('Never drink perfume');
+    expect(renderPromptDocument(doc)).toContain('替换商品仅按已确认用途调整不兼容动作');
     expect(renderPromptDocument(doc)).toContain('香水；喷洒在手腕，不饮用。');
     expect(doc.blocks.filter((block) => block.type === 'mention')).toHaveLength(2);
   });

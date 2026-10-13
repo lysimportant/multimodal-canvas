@@ -176,6 +176,103 @@
   font-size: 12px;
 }
 
+.node-quick-editor-recreation-prompt-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.node-quick-editor-recreation-prompt-heading h4 {
+  margin: 0;
+}
+
+.node-quick-editor-recreation-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.node-quick-editor-recreation-prompt-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--mc-border);
+  border-radius: 6px;
+  background: var(--mc-surface-soft);
+  color: var(--mc-text);
+  cursor: pointer;
+}
+
+.node-quick-editor-recreation-prompt-rebuild {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--mc-border);
+  border-radius: 6px;
+  background: var(--mc-surface-soft);
+  color: var(--mc-text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.node-quick-editor-recreation-prompt-expand:hover,
+.node-quick-editor-recreation-prompt-expand:focus-visible,
+.node-quick-editor-recreation-prompt-rebuild:not(:disabled):hover,
+.node-quick-editor-recreation-prompt-rebuild:not(:disabled):focus-visible {
+  background: var(--mc-surface-muted);
+  border-color: var(--mc-border-strong);
+}
+
+.node-quick-editor-recreation-prompt-rebuild:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.node-quick-editor-recreation-prompt-error {
+  color: var(--mc-danger, #b42318);
+  font-size: 12px;
+}
+
+.ant-modal.node-quick-editor-dialog.node-quick-editor-prompt-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(960px, calc(100vw - 40px));
+  max-height: calc(100dvh - 40px);
+  overflow: hidden;
+}
+
+.ant-modal-wrap.ant-modal-centered:has(> .node-quick-editor-prompt-dialog) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ant-modal-wrap.ant-modal-centered:has(> .node-quick-editor-prompt-dialog)::before {
+  display: none;
+}
+
+.node-quick-editor-prompt-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 14px;
+}
+
+.node-quick-editor-prompt-dialog .node-quick-editor-prompt :is(textarea, .resource-mention-input) {
+  height: min(62dvh, calc(100dvh - 200px));
+  min-height: min(62dvh, calc(100dvh - 200px));
+  max-height: min(62dvh, calc(100dvh - 200px));
+}
+
 .node-quick-editor-recreation-pending p {
   margin: 0;
   font-size: 12px;
