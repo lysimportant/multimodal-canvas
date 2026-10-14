@@ -3519,6 +3519,14 @@ function WorkspaceApp({
       runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
       pendingRunUpdateRef.current.delete(nodeId);
       setRunRecords(runRecordsRef.current);
+      if (
+        run.status === 'failed' &&
+        run.error &&
+        run.providerJob?.payload?.refundStatus &&
+        (currentRun?.status !== 'failed' || currentRun.error !== run.error)
+      ) {
+        setNotice({ kind: 'error', message: run.error });
+      }
       if (isActiveRunStatus(run.status)) {
         const currentControl = nodeRunControlStore.getSnapshot(nodeId);
         nodeRunControlStore.set(nodeId, {
@@ -3551,6 +3559,7 @@ function WorkspaceApp({
                 data: {
                   ...node.data,
                   runStatus: run.status,
+                  runId: run.id,
                   runProgress: run.progress,
                   runError: run.error,
                   nodeTiming: run.nodeTimings?.[nodeId],
@@ -3672,7 +3681,7 @@ function WorkspaceApp({
         }
         setNotice({
           kind: 'success',
-          message: '已请求停止：未发起的生成不会继续，已知运行正在取消；不保证远端任务终止或退款',
+          message: '已请求停止：未发起的生成不会继续，视频任务正在取消并申请 NewAPI 退款',
         });
         try {
           await cancelOperationRuns(operation);
@@ -3683,7 +3692,7 @@ function WorkspaceApp({
           }
           setNotice({
             kind: 'error',
-            message: `${error instanceof Error ? error.message : '停止运行失败'}；不保证远端任务终止或退款`,
+            message: `${error instanceof Error ? error.message : '停止运行失败'}；取消与退款尚未确认`,
           });
         }
         return;
@@ -3709,7 +3718,7 @@ function WorkspaceApp({
       nodeRunControlStore.set(nodeId, { stoppable: true, stopRequested: true });
       setNotice({
         kind: 'success',
-        message: '已请求停止运行；不保证远端任务终止或退款',
+        message: '已请求停止运行；视频任务正在取消并申请 NewAPI 退款',
       });
       try {
         await cancelKnownRun(run, nodeId, standaloneOperation);
@@ -3718,7 +3727,7 @@ function WorkspaceApp({
         nodeRunControlStore.set(nodeId, { stoppable: true, stopRequested: false });
         setNotice({
           kind: 'error',
-          message: `${error instanceof Error ? error.message : '停止运行失败'}；不保证远端任务终止或退款`,
+          message: `${error instanceof Error ? error.message : '停止运行失败'}；取消与退款尚未确认`,
         });
       }
     },
@@ -4360,7 +4369,7 @@ function WorkspaceApp({
                 }
                 setNotice({
                   kind: 'error',
-                  message: `${error instanceof Error ? error.message : '停止运行失败'}；可重试停止，但不保证远端任务终止或退款`,
+                  message: `${error instanceof Error ? error.message : '停止运行失败'}；可重试停止，取消与退款尚未确认`,
                 });
                 submissionError = error instanceof Error ? error.message : '停止运行失败';
                 break;
@@ -4882,7 +4891,7 @@ function WorkspaceApp({
         label: `${stopping ? '停止中' : stoppable ? '停止' : '运行'}「${selectedNode.data.label}」`,
         category: '运行',
         description: stoppable
-          ? '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
+          ? '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款'
           : '使用当前提示词、模型和推理强度',
         shortcut: 'R',
         icon: stoppable ? (
@@ -4934,7 +4943,10 @@ function WorkspaceApp({
         onCancel={closeStopConfirmation}
         onOk={confirmStopNode}
       >
-        <p>将停止本地后续提交，并请求取消已知运行。远端任务不一定会终止，也不保证退款。</p>
+        <p>
+          将停止后续提交并取消已知运行。视频任务会标记为失败，并向 NewAPI
+          申请退还费用；处理结果会在完成后提示。
+        </p>
       </Modal>
       <AssetRenameDialog
         asset={renamingAsset}
@@ -5233,7 +5245,7 @@ function WorkspaceApp({
                 }}
                 title={
                   selectedNodeBusy && selectedRunControl.stoppable
-                    ? '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
+                    ? '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款'
                     : selectedNode
                       ? '运行选中的节点'
                       : '先选择要运行的节点'

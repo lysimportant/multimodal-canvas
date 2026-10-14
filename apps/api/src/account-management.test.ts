@@ -115,7 +115,11 @@ describe('管理任务详情与视频获取', () => {
     try {
       const list = await app.inject({ method: 'GET', url: '/v1/account/runs', headers });
       expect(list.json().runs).toHaveLength(1);
-      expect(list.json().runs[0]).toMatchObject({ id: record.id, recoverableVideo: true });
+      expect(list.json().runs[0]).toMatchObject({
+        id: record.id,
+        targetNodeName: '合成视频',
+        recoverableVideo: true,
+      });
       expect(list.body).not.toContain('PRIVATE_PLATFORM_JOB_ID');
       for (const base of ['/v1/account/runs', '/v1/admin/runs']) {
         const authorizedHeaders = base.includes('/admin/') ? adminHeaders : headers;
@@ -127,6 +131,7 @@ describe('管理任务详情与视频获取', () => {
         expect(detail.statusCode).toBe(200);
         expect(detail.json().run).toMatchObject({
           id: record.id,
+          targetNodeName: '合成视频',
           ownerId: owner.user.id,
           recoverableVideo: true,
           platformJobId: 'PRIVATE_PLATFORM_JOB_ID',
@@ -227,6 +232,13 @@ describe('管理任务详情与视频获取', () => {
     const original = videoRun(project.id, owner.user.id);
     const records = [
       videoRun(project.id, owner.user.id, { id: 'run-cancelled', status: 'cancelled' }),
+      videoRun(project.id, owner.user.id, {
+        id: 'run-refunded',
+        providerJob: {
+          ...original.providerJob!,
+          payload: { ...original.providerJob!.payload, refundStatus: 'refunded' },
+        },
+      }),
       videoRun(project.id, owner.user.id, { id: 'run-cancelling', status: 'cancel_requested' }),
       videoRun(project.id, owner.user.id, { id: 'run-running', status: 'running' }),
       videoRun(project.id, owner.user.id, {

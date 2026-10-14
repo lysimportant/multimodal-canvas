@@ -18,6 +18,7 @@ import {
 export * from './video-recreation.js';
 export * from './moon-video-contract.js';
 export * from './image2pro-video-contract.js';
+export * from './image-chat-contract.js';
 export * from './yuanliu-video-contract.js';
 
 export * from './prompt-skills.js';
@@ -1716,7 +1717,8 @@ export const runJobDataSchema = z
   });
 
 export const runJobResultSchema = z.object({
-  status: z.enum(['succeeded', 'cancelled']),
+  status: z.enum(['succeeded', 'failed', 'cancelled']),
+  error: z.string().optional(),
   progress: z.number().int().min(0).max(100),
   result: runResultSchema.optional(),
   providerJob: providerJobSchema.optional(),
@@ -1730,7 +1732,7 @@ const runStatusTransitions: Record<RunStatus, readonly RunStatus[]> = {
   processing: ['succeeded', 'failed', 'cancel_requested'],
   succeeded: [],
   failed: [],
-  cancel_requested: ['cancelled'],
+  cancel_requested: ['cancelled', 'failed'],
   cancelled: [],
 };
 

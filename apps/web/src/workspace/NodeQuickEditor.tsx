@@ -30,6 +30,7 @@ import {
   GENERATION_COUNT_MAX,
   displayVideoMode,
   ImageOutputParameterError,
+  isGeminiChatImageModel,
   normalizeImageOutputParameters,
   resolveImageOutputParameters,
   isValidGenerationCount,
@@ -1131,8 +1132,8 @@ export function NodeQuickEditor({
             aria-label={runControl.stopRequested ? '停止中' : '停止生成'}
             title={
               runControl.stopRequested
-                ? '正在停止；不保证远端任务终止或退款'
-                : '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
+                ? '正在停止；视频取消与 NewAPI 退款处理中'
+                : '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款'
             }
             onClick={() => void onStop?.()}
             disabled={runControl.stopRequested}
@@ -2438,6 +2439,15 @@ function mergeOptions(...sources: readonly MediaOption[][]): MediaOption[] {
   );
 }
 
+/** Gemini Chat 图片协议只支持 1K、2K、4K；旧节点值仍由 ensureCurrentOption 保留以便修正。 */
+function geminiImageSizeOptions(options: readonly MediaOption[]): MediaOption[] {
+  return options.filter((option) => {
+    if (option.value === 'auto') return true;
+    const size = /^(\d+)x(\d+)$/i.exec(option.value);
+    return size !== null && [1024, 2048, 3840].includes(Math.max(Number(size[1]), Number(size[2])));
+  });
+}
+
 /** 目录提供建议，常用选项和已保存参数始终可以发送给上游。 */
 function getMediaOptions(
   model: ModelEntry | undefined,
@@ -2448,6 +2458,7 @@ function getMediaOptions(
 ) {
   const roots = getCapabilityRoots(model, mediaType),
     resolvedModelAlias = modelAlias ?? model?.id;
+  const isGeminiImage = mediaType === 'image' && isGeminiChatImageModel(resolvedModelAlias);
   const declaredQuality =
     readCapabilityOptions(
       roots,
@@ -2496,14 +2507,19 @@ function getMediaOptions(
     });
   const declaredImageSizes = imageSizeOptions(sizeSource, imageTierAspectRatio, resolvedModelAlias);
   const fallbackImageSizes = imageSizeOptions(
-    legacyImageResolutionTiers,
+    isGeminiImage
+      ? legacyImageResolutionTiers.filter((option) => option.value !== '3k')
+      : legacyImageResolutionTiers,
     imageTierAspectRatio,
     resolvedModelAlias,
   );
   const resolution =
     mediaType === 'image'
       ? ensureCurrentOption(
-          mergeOptions(declaredImageSizes, allowLegacyFallback ? fallbackImageSizes : []),
+          mergeOptions(
+            isGeminiImage ? geminiImageSizeOptions(declaredImageSizes) : declaredImageSizes,
+            allowLegacyFallback ? fallbackImageSizes : [],
+          ),
           imageResolutionValue,
           'resolution',
         )
@@ -2586,7 +2602,7 @@ function getMediaOptions(
     duration,
     imageResolutionValue,
     imageAspectRatioValue,
-    hasNativeImageQuality: allowLegacyFallback || Boolean(nativeQuality.length),
+    hasNativeImageQuality: !isGeminiImage && (allowLegacyFallback || Boolean(nativeQuality.length)),
   };
 }
 

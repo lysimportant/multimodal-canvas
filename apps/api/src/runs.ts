@@ -502,6 +502,7 @@ function createProviderJob(
 
 function canResumeProviderJob(previous: ProviderJob | undefined): previous is ProviderJob {
   if (!previous?.platformJobId) return false;
+  if (previous.payload?.refundStatus) return false;
   if (previous.status !== 'failed' && previous.status !== 'cancelled') return true;
   const payload = previous.payload;
   const statusResponse = isRecord(payload?.statusResponse) ? payload.statusResponse : undefined;
@@ -1745,6 +1746,12 @@ export class BullMqRunService implements RunService {
         updatedAt: new Date().toISOString(),
       };
       await this.persistence?.updateRun?.({ runId, status: updated.status });
+      if (this.execution) {
+        // Reuse the original frozen outbox with cancelRequested=true. The
+        // worker performs cancellation/refund only, without creating a video.
+        await this.execution.requestRecovery(runId, this.queue.name);
+        await this.dispatchOutbox(runId);
+      }
       return updated;
     }
     const current = await this.toRunRecord(job);
@@ -2182,6 +2189,7 @@ export class BullMqRunService implements RunService {
         const completedResult = completed.data.result;
         status = completed.data.status;
         progress = completed.data.progress;
+        error = completed.data.error;
         if (completedResult) {
           result = sanitizeRunResult(completedResult);
         }

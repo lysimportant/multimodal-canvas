@@ -357,7 +357,7 @@ export class PrismaExecutionService {
    *
    * 历史任务可能早于 ExecutionAuthorization，但取消不是执行授权。此路径允许它们
    * 按稳定 Run 身份停止本地投递，同时仍由 Worker 的只读恢复规则禁止新建请求。
-   * 视频请求已提交、送达未知或有平台 ID 时拒绝普通取消；非视频保留本地取消语义。
+   * 已提交视频也接受取消意图，由 Worker 按原身份标记失败并向 NewAPI 申请退款。
    */
   async requestCancellation(runId: string): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
@@ -376,24 +376,12 @@ export class PrismaExecutionService {
       const frozen = runSnapshotSchema.safeParse(
         run.snapshot ?? authorization?.snapshot ?? payload?.snapshot,
       );
-      const nodeIds = new Set(frozen.success ? frozen.data.nodes.map((node) => node.id) : []);
-      const videoNodeIds = new Set(
-        frozen.success
-          ? frozen.data.nodes
-              .filter((node) => node.data.mediaType === 'video' && node.data.mode !== 'source')
-              .map((node) => node.id)
-          : [],
-      );
       const sendIntents = await transaction.runSendIntent.findMany({
         where: { runId },
       });
       const submittedIntents = sendIntents.filter(
         (intent) =>
           intent.status === 'sending' || intent.status === 'unknown' || intent.status === 'sent',
-      );
-      const videoSentOrUncertain = submittedIntents.some(
-        (intent) =>
-          videoNodeIds.has(intent.nodeId) || (videoNodeIds.size > 0 && !nodeIds.has(intent.nodeId)),
       );
       const providerJobs = await transaction.providerJob.findMany({
         where: { runId: databaseRunId },
@@ -406,30 +394,6 @@ export class PrismaExecutionService {
         throw new ExecutionError(
           'send_requires_review',
           '无法核对原任务媒体类型，且请求已发送或状态不明，请核实原任务后再操作',
-        );
-      }
-      const hasVideoSendId = sendIntents.some(
-        (intent) =>
-          Boolean(intent.platformJobId?.trim()) &&
-          (videoNodeIds.has(intent.nodeId) ||
-            (videoNodeIds.size > 0 && !nodeIds.has(intent.nodeId))),
-      );
-      const hasVideoPlatformJob = providerJobs.some((entry) => {
-        if (!entry.platformJobId?.trim()) return false;
-        const jobPayload = entry.payload;
-        const nodeId =
-          jobPayload && typeof jobPayload === 'object' && !Array.isArray(jobPayload)
-            ? jobPayload.workflowNodeId
-            : undefined;
-        return (
-          (typeof nodeId === 'string' && videoNodeIds.has(nodeId)) ||
-          (videoNodeIds.size > 0 && (typeof nodeId !== 'string' || !nodeIds.has(nodeId)))
-        );
-      });
-      if (videoSentOrUncertain || hasVideoSendId || hasVideoPlatformJob) {
-        throw new ExecutionError(
-          'send_requires_review',
-          '渠道商 Provider 视频请求已发送或发送状态不明，无法普通取消，请恢复或核实原任务',
         );
       }
       if (outbox && payload) {
@@ -517,6 +481,22 @@ export class PrismaExecutionService {
         const providerJobs = await transaction.providerJob.findMany({
           where: { runId: authorization.databaseRunId },
         });
+        if (
+          providerJobs.some((job) => {
+            const evidence = job.payload;
+            return (
+              evidence !== null &&
+              typeof evidence === 'object' &&
+              !Array.isArray(evidence) &&
+              Boolean(evidence.refundStatus)
+            );
+          })
+        ) {
+          throw new ExecutionError(
+            'send_requires_review',
+            '视频任务已终止并处理退款，不能再获取原任务资源',
+          );
+        }
         const sending = await transaction.runSendIntent.findMany({
           where: { runId, status: 'sending', platformJobId: null },
           select: { nodeId: true },

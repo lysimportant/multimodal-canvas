@@ -910,6 +910,28 @@ describe('App 组件库迁移', () => {
     expect(pending.posts).toEqual(['a']);
   });
 
+  it('视频失败并收到退款回执后提示原任务状态及费用结果', async () => {
+    canvas.nodes = [videoNode('video-node', 'video-old')];
+    projectRuns = [
+      videoRunRecord({
+        status: 'failed',
+        error: '视频平台任务失败；NewAPI 费用已退还',
+        providerJob: {
+          id: 'provider-job-video-refunded',
+          provider: 'newapi',
+          status: 'failed',
+          progress: 100,
+          payload: { refundStatus: 'refunded' },
+          createdAt: '2026-09-25T00:00:00.000Z',
+          updatedAt: '2026-09-25T00:01:00.000Z',
+        },
+      }),
+    ];
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas!.nodes[0].data.runStatus).toBe('failed'));
+    expect(await screen.findByText('视频平台任务失败；NewAPI 费用已退还')).toBeInTheDocument();
+  });
+
   it('批量创建结果不明时停止后续提交，不重发原 POST', async () => {
     const node = imageNode('a', 'image-model');
     canvas.nodes = [{ ...node, data: { ...node.data, generationCount: 3 } }];

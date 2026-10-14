@@ -11,6 +11,7 @@ export type CanvasSnapshot = {
 /** 与 toCanvasDocument 一致的运行时字段，不参与文档判等或保存。 */
 const CANVAS_RUNTIME_DATA_KEYS: ReadonlySet<string> = new Set([
   'runStatus',
+  'runId',
   'runProgress',
   'runError',
   'nodeTiming',

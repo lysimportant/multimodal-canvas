@@ -985,6 +985,7 @@ type ManagedRun = {
   id: string;
   projectId: string;
   targetNodeId: string;
+  targetNodeName: string;
   status: string;
   progress: number;
   provider: string;
@@ -1181,6 +1182,7 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
               key: 'model',
               render: (_, run) => (
                 <>
+                  <strong>{run.targetNodeName}</strong>
                   <strong>{run.modelAlias || run.provider}</strong>
                   <small className="mg-truncate" title={run.id}>
                     {run.id}
@@ -1271,6 +1273,10 @@ export function RunsPage({ userId, admin = false }: { userId: string; admin?: bo
             <div>
               <dt>模型</dt>
               <dd>{selected.modelAlias}</dd>
+            </div>
+            <div>
+              <dt>节点</dt>
+              <dd>{selected.targetNodeName}</dd>
             </div>
             <div>
               <dt>状态</dt>

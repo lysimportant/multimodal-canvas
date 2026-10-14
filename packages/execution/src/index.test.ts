@@ -256,23 +256,18 @@ describe('PrismaExecutionService', () => {
   });
 
   it.each(['sending', 'unknown', 'sent'])(
-    '发送状态 %s 已提交或不明确时拒绝取消，保留 Run 和 outbox 原状',
+    '发送状态 %s 的视频仍接受持久取消意图，交由 Worker 退款',
     async (status) => {
       const f = recoveryFixture('video');
       f.intent(status, f.input('run_receipt', 'upstream', 7));
-      const runBefore = structuredClone(f.original.run);
-      const outboxBefore = structuredClone(f.original.outbox);
-
-      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
-        code: 'send_requires_review',
-      });
-      expect(f.original.run).toEqual(runBefore);
-      expect(f.original.outbox).toEqual(outboxBefore);
+      await f.service.requestCancellation('run_receipt');
+      expect(f.rows.run.get(f.original.run.id)?.status).toBe('CANCEL_REQUESTED');
+      expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ cancelRequested: true });
     },
   );
 
   it.each(['send-intent', 'provider-job'])(
-    '%s 有平台任务 ID 时拒绝普通取消，保留持久状态',
+    '%s 有平台任务 ID 时接受取消并保留原平台身份',
     async (source) => {
       const f = recoveryFixture('video');
       if (source === 'send-intent') f.intent('sent', f.input('run_receipt', 'upstream'), 'task-1');
@@ -282,31 +277,20 @@ describe('PrismaExecutionService', () => {
           provider: 'newapi',
           platformJobId: 'task-1',
         });
-      const runBefore = structuredClone(f.original.run);
-      const outboxBefore = structuredClone(f.original.outbox);
-
-      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
-        code: 'send_requires_review',
-      });
-      expect(f.original.run).toEqual(runBefore);
-      expect(f.original.outbox).toEqual(outboxBefore);
+      await f.service.requestCancellation('run_receipt');
+      expect(f.rows.run.get(f.original.run.id)?.status).toBe('CANCEL_REQUESTED');
+      expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ cancelRequested: true });
     },
   );
 
   it.each(['sending', 'unknown', 'sent'])(
-    '视频 Run 的 %s 发送节点无法归属时仍拒绝取消',
+    '视频 Run 的 %s 发送节点无法归属时仍记录取消，禁止新建请求',
     async (status) => {
       const f = recoveryFixture('video');
       f.intent(status, f.input('run_receipt', 'legacy-unknown-node'));
-      const runBefore = structuredClone(f.original.run);
-      const outboxBefore = structuredClone(f.original.outbox);
-
-      await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
-        code: 'send_requires_review',
-      });
-
-      expect(f.rows.run.get(f.original.run.id)).toEqual(runBefore);
-      expect(f.rows.outbox.get('run_receipt')).toEqual(outboxBefore);
+      await f.service.requestCancellation('run_receipt');
+      expect(f.rows.run.get(f.original.run.id)?.status).toBe('CANCEL_REQUESTED');
+      expect(f.rows.outbox.get('run_receipt')?.payload).toMatchObject({ cancelRequested: true });
     },
   );
 

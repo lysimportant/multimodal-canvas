@@ -41,6 +41,10 @@ import {
   NewApiProvider,
   NewApiProviderError,
   NewApiVideoProvider,
+  requestNewApiVideoRefund,
+  videoRefundMessage,
+  type VideoRefundReason,
+  type VideoRefundStatus,
   resolveProviderMentions,
   isNewApiVideoContract,
   type NewApiProviderRequest,
@@ -313,6 +317,7 @@ export function canResumeProviderJob(
   options: { allowTerminalStatus?: boolean } = {},
 ): providerJob is ProviderJob {
   if (!providerJob?.platformJobId) return false;
+  if (providerJob.payload?.refundStatus) return false;
   if (providerJob.status !== 'failed' && providerJob.status !== 'cancelled') return true;
   const payload = providerJob.payload;
   const statusResponse =
@@ -979,8 +984,26 @@ export function createRunWorker(options: {
           ].filter(
             (candidate): candidate is ProviderJob =>
               candidate !== undefined &&
+              !(initialData.retryOf && candidate.payload?.refundStatus) &&
               providerJobMatchesSnapshot(candidate, snapshotFingerprints, !initialData.retryOf),
           );
+          const refundedCandidate = providerCandidates.find(
+            (candidate) => candidate.payload?.refundStatus,
+          );
+          if (refundedCandidate) {
+            rejectedCreationErrors.set(
+              node.id,
+              String(
+                refundedCandidate.payload?.error ?? '视频任务已终止，禁止恢复已取消或退款的任务',
+              ),
+            );
+            workflowState = replaceWorkflowNodeState(workflowState, {
+              nodeId: node.id,
+              status: 'failed',
+              providerJob: refundedCandidate,
+            });
+            continue;
+          }
           const cachedCandidate = providerCandidates.find((candidate) =>
             cachedWorkflowResult(candidate),
           );
@@ -1363,20 +1386,92 @@ export function createRunWorker(options: {
         return true;
       };
 
+      let activeNodeId: string | undefined;
+      let activeSendIntent = false;
+      const refundVideoJob = async (
+        nodeId: string,
+        providerJob: ProviderJob | undefined,
+        reason: VideoRefundReason,
+      ): Promise<VideoRefundStatus> => {
+        if (providerJob?.payload?.refundStatus === 'refunded') return 'refunded';
+        if (initialData.provider !== 'newapi') return 'not_charged';
+        if (!providerJob?.platformJobId) {
+          return providerJob?.payload?.phase === 'submitting' ||
+            providerJob?.payload?.sendStatus === 'unknown' ||
+            providerJob?.payload?.newApiRequestId ||
+            (activeSendIntent && activeNodeId === nodeId)
+            ? 'pending'
+            : 'not_charged';
+        }
+        try {
+          const binding = executionSnapshot.executionBindings?.[nodeId];
+          const credentials = await options.persistence?.getProviderCredentials?.({
+            credentialId: binding?.credentialId ?? executionSnapshot.credentialId,
+            credentialVersion: binding?.credentialVersion ?? executionSnapshot.credentialVersion,
+          });
+          if (!credentials) return 'pending';
+          return await requestNewApiVideoRefund({
+            ...credentials,
+            platformJobId: providerJob.platformJobId,
+            reason,
+          });
+        } catch {
+          return 'pending';
+        }
+      };
+      let cancellationFinalized = false;
       const markCancelled = async (
         progress: number,
         activeNodeId?: string,
         activeNodeProviderJob?: ProviderJob,
       ): Promise<RunJobResult> => {
+        cancellationFinalized = true;
         const data = readJobData();
         const updatedAt = new Date().toISOString();
+        const videoCancellation = executionSnapshot.nodes.some(
+          (node) => node.data.mediaType === 'video' && node.data.mode !== 'source',
+        );
+        const terminalStatus = videoCancellation ? 'failed' : 'cancelled';
+        const refundOutcomes: VideoRefundStatus[] = [];
+        if (videoCancellation) {
+          const states = data.workflowState?.nodes ?? [];
+          for (const node of executionSnapshot.nodes) {
+            if (node.data.mediaType !== 'video' || node.data.mode === 'source') continue;
+            const state = states.find((entry) => entry.nodeId === node.id);
+            if (state?.status === 'succeeded') continue;
+            const originalJob =
+              (activeNodeId === node.id ? activeNodeProviderJob : undefined) ??
+              (state?.providerJob?.platformJobId
+                ? state.providerJob
+                : recoveredWorkflowProviderJobs.get(node.id)) ??
+              state?.providerJob ??
+              (node.id === executionSnapshot.targetNodeId ? data.providerJob : undefined);
+            const outcome = await refundVideoJob(node.id, originalJob, 'user_cancelled');
+            refundOutcomes.push(outcome);
+            if (originalJob) {
+              originalJob.payload = { ...originalJob.payload, refundStatus: outcome };
+              if (node.id === executionSnapshot.targetNodeId) data.providerJob = originalJob;
+            }
+          }
+        }
+        const refundStatus = refundOutcomes.includes('pending')
+          ? 'pending'
+          : refundOutcomes.includes('refunded')
+            ? 'refunded'
+            : 'not_charged';
+        const cancellationMessage = videoCancellation
+          ? `视频生成已取消，任务已标记失败；${videoRefundMessage(refundStatus)}`
+          : undefined;
         const providerJob: ProviderJob = {
           ...(data.providerJob ?? createProviderJobRecord(data.runId, data.provider)),
-          status: 'cancelled' as const,
+          status: terminalStatus,
           progress,
           payload: workflowProviderPayload(
             executionSnapshot.targetNodeId,
-            data.providerJob?.payload,
+            {
+              ...data.providerJob?.payload,
+              ...(videoCancellation ? { refundStatus, error: cancellationMessage } : {}),
+            },
             snapshotFingerprint,
           ),
           updatedAt,
@@ -1391,13 +1486,13 @@ export function createRunWorker(options: {
         );
         if (activeNodeId) cancelledNodeIds.add(activeNodeId);
         for (const nodeId of cancelledNodeIds) {
-          recordNodeTiming({ nodeId, finishedAt: updatedAt, outcome: 'cancelled' });
+          recordNodeTiming({ nodeId, finishedAt: updatedAt, outcome: terminalStatus });
         }
         const targetState = workflowNodeState(nextWorkflowState, executionSnapshot.targetNodeId);
         if (targetState) {
           nextWorkflowState = replaceWorkflowNodeState(nextWorkflowState, {
             ...targetState,
-            status: 'cancelled',
+            status: terminalStatus,
             providerJob,
           });
         }
@@ -1415,7 +1510,7 @@ export function createRunWorker(options: {
             );
           cancelledActiveProviderJob = {
             ...currentActiveProviderJob,
-            status: 'cancelled',
+            status: terminalStatus,
             progress,
             payload: workflowProviderPayload(
               activeNodeId,
@@ -1426,22 +1521,34 @@ export function createRunWorker(options: {
           };
           nextWorkflowState = replaceWorkflowNodeState(nextWorkflowState, {
             ...(activeState ?? { nodeId: activeNodeId }),
-            status: 'cancelled',
+            status: terminalStatus,
             providerJob: cancelledActiveProviderJob,
           });
         }
         await job.updateData({ ...data, providerJob, workflowState: nextWorkflowState });
         if (cancelledActiveProviderJob) await persistProviderJob(cancelledActiveProviderJob);
         await persistProviderJob(providerJob);
-        await persistRun('cancelled', providerJob, undefined, undefined, false, flushNodeTimings());
+        await persistRun(
+          terminalStatus,
+          providerJob,
+          undefined,
+          cancellationMessage,
+          false,
+          flushNodeTimings(),
+        );
         await job.updateProgress({
-          status: 'cancelled',
+          status: terminalStatus,
           progress,
           updatedAt,
         } satisfies WorkerProgress);
-        runLogger.info({ status: 'cancelled', progress }, 'run cancelled');
-        finishRunSpan('ok', 'cancelled');
-        return { status: 'cancelled', progress, providerJob };
+        runLogger.info({ status: terminalStatus, progress }, 'run cancelled');
+        finishRunSpan(videoCancellation ? 'error' : 'ok', terminalStatus);
+        return {
+          status: terminalStatus,
+          progress,
+          providerJob,
+          ...(cancellationMessage ? { error: cancellationMessage } : {}),
+        };
       };
 
       for (const [status, progress] of [
@@ -1465,10 +1572,8 @@ export function createRunWorker(options: {
         cancellationPollMs,
       );
       const cancellationSignal = cancellationMonitor.controller.signal;
-      let activeNodeId: string | undefined;
       let activeProviderJob: ProviderJob | undefined;
       let activeArchiveFinalizationPending = false;
-      let activeSendIntent = false;
       let activeArchivePhase = false;
       let currentOverallProgress = 80;
       try {
@@ -1812,7 +1917,51 @@ export function createRunWorker(options: {
                     }
                   : {}),
                 onProviderJob: async (update) => {
-                  if (cancellationSignal.aborted) return;
+                  if (cancellationSignal.aborted && node.data.mediaType !== 'video') return;
+                  if (cancellationFinalized) {
+                    // Extensions may return an identity after they were detached.
+                    // Refund that original task while preserving the failed state.
+                    if (node.data.mediaType !== 'video' || !update.platformJobId) return;
+                    const cancelledData = readJobData();
+                    const previous =
+                      workflowNodeState(cancelledData.workflowState!, node.id)?.providerJob ??
+                      providerJob;
+                    const lateJob: ProviderJob = {
+                      ...previous,
+                      platformJobId: update.platformJobId,
+                      status: 'failed',
+                      updatedAt: new Date().toISOString(),
+                    };
+                    const refundStatus = await refundVideoJob(node.id, lateJob, 'user_cancelled');
+                    const message = `视频生成已取消，任务已标记失败；${videoRefundMessage(refundStatus)}`;
+                    lateJob.payload = { ...lateJob.payload, refundStatus, error: message };
+                    const lateState = replaceWorkflowNodeState(cancelledData.workflowState!, {
+                      nodeId: node.id,
+                      status: 'failed',
+                      providerJob: lateJob,
+                    });
+                    const rootJob =
+                      node.id === executionSnapshot.targetNodeId
+                        ? lateJob
+                        : {
+                            ...cancelledData.providerJob!,
+                            payload: {
+                              ...cancelledData.providerJob?.payload,
+                              refundStatus,
+                              error: message,
+                            },
+                            updatedAt: lateJob.updatedAt,
+                          };
+                    await job.updateData({
+                      ...cancelledData,
+                      providerJob: rootJob,
+                      workflowState: lateState,
+                    });
+                    await persistProviderJob(lateJob);
+                    if (rootJob.id !== lateJob.id) await persistProviderJob(rootJob);
+                    await persistRun('failed', rootJob, undefined, message);
+                    return;
+                  }
                   const callbackData = readJobData();
                   let callbackWorkflowState =
                     callbackData.workflowState ??
@@ -1890,12 +2039,20 @@ export function createRunWorker(options: {
                       status: 'sent',
                       platformJobId: merged.platformJobId,
                     });
+                  // Preserve a create response received after stop, but keep the
+                  // durable cancellation intent until the refund completes.
+                  if (cancellationSignal.aborted) {
+                    Object.assign(providerJob, merged);
+                    return;
+                  }
                   await persistRun(
-                    merged.status === 'failed'
-                      ? 'failed'
-                      : merged.status === 'cancelled'
-                        ? 'cancelled'
-                        : 'processing',
+                    node.data.mediaType === 'video'
+                      ? 'processing'
+                      : merged.status === 'failed'
+                        ? 'failed'
+                        : merged.status === 'cancelled'
+                          ? 'cancelled'
+                          : 'processing',
                     merged,
                     undefined,
                     undefined,
@@ -1958,6 +2115,7 @@ export function createRunWorker(options: {
                 },
               },
               cancellationSignal,
+              currentData.provider === 'newapi' && node.data.mediaType === 'video',
             ));
           const execution = 'result' in returned ? returned : { result: returned };
 
@@ -2396,10 +2554,24 @@ export function createRunWorker(options: {
           },
         };
       } catch (rawError) {
+        if (activeProviderJob)
+          activeProviderJob = attachProviderErrorMetadata(activeProviderJob, rawError);
         // Skill 输出已经收到但不符合输出合同；这不是归档失败，也不能通过
         // 重放同一份暂存结果修复。先记录错误类型，再做脱敏，避免错误对象
         // 被包装后无法终止 BullMQ 的无意义重试。
         const promptOptimizationOutputError = rawError instanceof PromptOptimizationOutputError;
+        // 图片响应无法解析时重投不能恢复同步输出；保留首个错误及请求身份。
+        // 已收到或归档的结果仍走本地恢复流程，不受 Provider 的重试标记影响。
+        const terminalImageFailure =
+          rawError instanceof NewApiProviderError &&
+          !rawError.retryable &&
+          (rawError.code === 'PROVIDER_IMAGE_OUTPUT_MISSING' ||
+            rawError.code?.startsWith('PROVIDER_OUTPUT_') === true) &&
+          executionSnapshot.nodes.find((node) => node.id === activeNodeId)?.data.mediaType ===
+            'image' &&
+          !activeProviderJob?.platformJobId &&
+          activeProviderJob?.payload?.deliveryState !== 'received' &&
+          activeProviderJob?.payload?.deliveryState !== 'archived';
         let error = redactTransientAssetData(rawError);
         // 仅明确拒绝且没有结果或平台任务可恢复的创建请求终止队列重试。
         const rejectedCreation =
@@ -2493,7 +2665,26 @@ export function createRunWorker(options: {
           failedNodeProviderJobBase,
           error,
         );
-        const errorMessage = serializeWorkerError(error).errorMessage;
+        let errorMessage = serializeWorkerError(error).errorMessage;
+        const terminalVideoFailure =
+          executionSnapshot.nodes.find((node) => node.id === failedNodeId)?.data.mediaType ===
+            'video' &&
+          error instanceof NewApiProviderError &&
+          [
+            'VIDEO_GENERATION_FAILED',
+            'VIDEO_GENERATION_CANCELLED',
+            'VIDEO_TASK_NOT_FOUND',
+          ].includes(error.code ?? '');
+        if (terminalVideoFailure && error instanceof NewApiProviderError) {
+          const refundStatus = await refundVideoJob(
+            failedNodeId,
+            failedNodeWithMetadata,
+            error.code === 'VIDEO_TASK_NOT_FOUND' ? 'task_not_found' : 'task_failed',
+          );
+          failedNodeWithMetadata.payload = { ...failedNodeWithMetadata.payload, refundStatus };
+          errorMessage = `${errorMessage}；${videoRefundMessage(refundStatus)}`;
+          failedNodeWithMetadata.payload.error = errorMessage;
+        }
         const failedProviderJob: ProviderJob = {
           ...failedNodeWithMetadata,
           status: 'failed' as const,
@@ -2501,6 +2692,9 @@ export function createRunWorker(options: {
             failedNodeId,
             {
               ...(failedNodeWithMetadata.payload ?? {}),
+              ...(terminalImageFailure && rawError instanceof NewApiProviderError
+                ? { code: rawError.code, retryable: false, error: errorMessage }
+                : {}),
               ...(rejectedCreation
                 ? { sendStatus: 'failed', error: errorMessage }
                 : promptOptimizationOutputError
@@ -2528,6 +2722,9 @@ export function createRunWorker(options: {
                   {
                     ...(failedData.providerJob?.payload ?? {}),
                     error: errorMessage,
+                    ...(terminalVideoFailure
+                      ? { refundStatus: failedNodeWithMetadata.payload?.refundStatus }
+                      : {}),
                   },
                   snapshotFingerprint,
                 ),
@@ -2563,7 +2760,12 @@ export function createRunWorker(options: {
           'workflow.node_id': failedNodeId,
         });
         finishRunSpan('error', 'failed');
-        if (rejectedCreation || promptOptimizationOutputError) {
+        if (
+          rejectedCreation ||
+          terminalImageFailure ||
+          promptOptimizationOutputError ||
+          terminalVideoFailure
+        ) {
           const terminalError = new UnrecoverableError(errorMessage);
           terminalError.cause = error;
           throw terminalError;
@@ -2657,6 +2859,7 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'requestProviderJobId',
     'requestPromptRecords',
     'sendStatus',
+    'refundStatus',
     'snapshotFingerprint',
     'error',
     'statusResponse',
@@ -2871,7 +3074,14 @@ async function executeProviderWithCancellation(
   provider: ProviderExecutor,
   request: WorkerProviderRequest,
   signal: AbortSignal,
+  awaitVideoSubmission = false,
 ): Promise<RunResult | ProviderExecution> {
+  // Built-in video GETs abort promptly. Keep an already-sent POST alive until
+  // its original task identity is received, so cancellation can refund it.
+  if (awaitVideoSubmission && provider instanceof NewApiVideoProvider) {
+    if (signal.aborted) throw workerCancellationError();
+    return provider.execute(request);
+  }
   return executeWithCancellation(() => provider.execute(request), signal);
 }
 
@@ -3001,6 +3211,13 @@ function sanitizeProviderStatusResponse(value: unknown): Record<string, unknown>
       'requestId',
       'retryable',
       'error',
+      'choiceCount',
+      'contentType',
+      'textLength',
+      'contentPartCount',
+      'imageEntryCount',
+      'finishReason',
+      'hasRefusal',
     ]),
   );
 }
@@ -3245,7 +3462,7 @@ function createNewApiProviders(
     maxResponseBytes: responseMaxBytes,
     pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),
     maxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES ?? 50 * 1024 * 1024),
-    ...(fetchImpl ? { fetchImpl } : {}),
+    awaitSubmissionOnCancel: true,
     requireHttps: process.env.NODE_ENV === 'production',
   });
   return { standard, video };

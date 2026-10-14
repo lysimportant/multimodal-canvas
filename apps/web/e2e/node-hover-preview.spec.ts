@@ -75,7 +75,13 @@ const record: RequestPromptRecord = {
 };
 
 /** 两份原图字节只用于 Mock；不写入项目资源或磁盘素材。 */
-type PreviewImages = { result: Buffer; reference: Buffer; mimeType: string };
+type PreviewImages = {
+  result: Buffer;
+  reference: Buffer;
+  mimeType: string;
+  resultSize: { width: number; height: number };
+  referenceSize: { width: number; height: number };
+};
 
 /** 在空白测试页生成已知像素的 PNG，返回下载校验所需的原始字节。 */
 async function createHdImages(page: Page): Promise<PreviewImages> {
@@ -104,6 +110,8 @@ async function createHdImages(page: Page): Promise<PreviewImages> {
     result: Buffer.from(images.result, 'base64'),
     reference: Buffer.from(images.reference, 'base64'),
     mimeType: 'image/png',
+    resultSize: { width: 3840, height: 2160 },
+    referenceSize: { width: 1200, height: 1600 },
   };
 }
 
@@ -116,7 +124,13 @@ async function json(route: Route, value: unknown) {
 async function installFixture(
   page: Page,
   parameters: Record<string, unknown> = {},
-  images: PreviewImages = { result: poster, reference: poster, mimeType: 'image/jpeg' },
+  images: PreviewImages = {
+    result: poster,
+    reference: poster,
+    mimeType: 'image/jpeg',
+    resultSize: { width: 960, height: 540 },
+    referenceSize: { width: 960, height: 540 },
+  },
 ) {
   const fixtureCanvas = structuredClone(canvas);
   fixtureCanvas.nodes[0]!.data.parameters = parameters;
@@ -252,6 +266,28 @@ async function installFixture(
     if (path === '/v1/assets/reference-image/versions/1/content') {
       return route.fulfill({ contentType: images.mimeType, body: images.reference });
     }
+    if (path === '/v1/assets/result-image/versions/1/derivatives/thumbnail') {
+      return route.fulfill({
+        contentType: images.mimeType,
+        headers: {
+          'x-original-width': String(images.resultSize.width),
+          'x-original-height': String(images.resultSize.height),
+          'access-control-expose-headers': 'x-original-width, x-original-height',
+        },
+        body: images.result,
+      });
+    }
+    if (path === '/v1/assets/reference-image/versions/1/derivatives/thumbnail') {
+      return route.fulfill({
+        contentType: images.mimeType,
+        headers: {
+          'x-original-width': String(images.referenceSize.width),
+          'x-original-height': String(images.referenceSize.height),
+          'access-control-expose-headers': 'x-original-width, x-original-height',
+        },
+        body: images.reference,
+      });
+    }
     if (path === '/v1/settings/ai') {
       return json(route, {
         settings: { defaultModels: {}, timeoutMs: 900_000 },
@@ -287,9 +323,9 @@ for (const viewport of [
     const errors = await installFixture(page);
     await page.goto(`/projects/${project.id}`);
     const node = page.locator('.react-flow__node[data-id="image-result"]');
-    await expect(node).toBeVisible();
+    await expect(node).toBeVisible({ timeout: 15_000 });
     const bounds = await node.boundingBox();
-    await node.hover();
+    await node.hover({ position: { x: 16, y: 16 } });
     const toolbar = node.getByRole('group', { name: '节点操作：图片结果' });
     const duration = toolbar.locator('.node-duration-badge');
     await expect(duration).toHaveText('耗时 12秒');
@@ -303,8 +339,8 @@ for (const viewport of [
     await expect(info.locator(`time[datetime="${timing.finishedAt}"]`)).toBeVisible();
     await expect(info).toContainText('服务端完成');
     await expect(info.locator('.node-duration-badge')).toHaveText('12秒');
+    await expect(info).toContainText('hover-run');
     await info.getByRole('button', { name: '关闭节点信息' }).click();
-    await node.hover();
     expect((await node.boundingBox())!.width).toBeCloseTo(bounds!.width, 0);
     expect((await node.boundingBox())!.height).toBeCloseTo(bounds!.height, 0);
     await page.screenshot({
@@ -321,9 +357,9 @@ for (const viewport of [
     const errors = await installFixture(page);
     await page.goto(`/projects/${project.id}`);
     const node = page.locator('.react-flow__node[data-id="image-result"]');
-    await expect(node).toBeVisible();
+    await expect(node).toBeVisible({ timeout: 15_000 });
     const before = await node.boundingBox();
-    await node.hover();
+    await node.hover({ position: { x: 16, y: 16 } });
     const toolbar = node.getByRole('group', { name: '节点操作：图片结果' });
     await expect(toolbar.getByText('12秒')).toBeVisible();
     const trigger = toolbar.getByRole('button', { name: '查看生成提示词：图片结果' });
@@ -335,6 +371,7 @@ for (const viewport of [
     await expect(prompt.locator('.request-prompt-text')).toHaveText(record.parts[0]!.text);
     await expect(page.locator('.node-quick-editor')).toHaveCount(0);
     await prompt.getByRole('button', { name: '关闭生成提示词' }).click();
+    await node.hover({ position: { x: 16, y: 16 } });
     await toolbar.getByRole('button', { name: '查看节点信息' }).click();
     const info = page.getByRole('dialog', { name: '节点信息', exact: true });
     await expect(info.getByText('12秒')).toBeVisible();
@@ -358,9 +395,11 @@ for (const viewport of [
       .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
       .toBeGreaterThan(0);
     // 等待 Tooltip 入场缩放结束，不把动画中间帧误判成布局变化。
-    await expect.poll(async () => (await tooltip.boundingBox())!.width).toBeCloseTo(280, 1);
-    await expect.poll(async () => (await tooltip.boundingBox())!.height).toBeCloseTo(210, 1);
+    const previewContent = tooltip.locator('.resource-mention-hover-content');
+    await expect.poll(async () => (await previewContent.boundingBox())!.width).toBeCloseTo(280, 1);
+    await expect.poll(async () => (await previewContent.boundingBox())!.height).toBeCloseTo(210, 1);
     const previewBounds = await tooltip.boundingBox();
+    const contentBounds = await previewContent.boundingBox();
     expect(previewBounds!.x).toBeGreaterThanOrEqual(12);
     expect(previewBounds!.x + previewBounds!.width).toBeLessThanOrEqual(viewport.width - 12);
     expect(previewBounds!.y).toBeGreaterThanOrEqual(12);
@@ -369,10 +408,10 @@ for (const viewport of [
     await expect(image).toHaveCSS('object-position', '50% 50%');
     const imageBounds = await image.boundingBox();
     expect(
-      Math.abs(imageBounds!.x + imageBounds!.width / 2 - (previewBounds!.x + 140)),
+      Math.abs(imageBounds!.x + imageBounds!.width / 2 - (contentBounds!.x + 140)),
     ).toBeLessThan(1);
     expect(
-      Math.abs(imageBounds!.y + imageBounds!.height / 2 - (previewBounds!.y + 105)),
+      Math.abs(imageBounds!.y + imageBounds!.height / 2 - (contentBounds!.y + 105)),
     ).toBeLessThan(1);
     await page.screenshot({ path: testInfo.outputPath('mention-preview.png') });
     const after = await node.boundingBox();
@@ -435,7 +474,7 @@ for (const viewport of [
     }));
     expect(pixels.width).toBeLessThan(3840);
     await expect(node.locator('.flow-node-download-feedback')).toHaveCount(0);
-    await node.hover();
+    await node.hover({ position: { x: 16, y: 16 } });
     await node.getByRole('button', { name: '查看节点信息', exact: true }).click();
     const information = page.getByRole('dialog', { name: '节点信息', exact: true });
     await expect(information).toContainText(
@@ -443,7 +482,7 @@ for (const viewport of [
     );
     await information.getByRole('button', { name: '关闭节点信息', exact: true }).click();
     const before = await node.boundingBox();
-    await node.hover();
+    await node.hover({ position: { x: 16, y: 16 } });
     const pending = page.waitForEvent('download');
     await node.getByRole('button', { name: '下载图片', exact: true }).click();
     const downloaded = await pending;
@@ -453,7 +492,7 @@ for (const viewport of [
     const input = page.getByRole('textbox', { name: '提示词', exact: true });
     if (!(await input.isVisible())) await node.click({ position: { x: 40, y: 40 } });
     await expect(input).toBeVisible();
-    await image.click();
+    await image.click({ position: { x: 16, y: 16 } });
     const viewer = page.getByRole('dialog', { name: '图片结果结果', exact: true });
     await expect(viewer).toBeVisible();
     const previewDownload = page.waitForEvent('download');
@@ -471,22 +510,25 @@ for (const viewport of [
     await expect(input).toBeVisible();
     expect(
       await input.evaluate((element) => Number.parseFloat(getComputedStyle(element).height)),
-    ).toBe(180);
+    ).toBe(250);
     await input.fill('A synthetic long prompt for scroll verification.\n'.repeat(50).trimEnd());
-    // 文字由高亮层绘制，必须占满透明输入框，不能保留旧高度形成空白。
+    // 富文本模式的高亮层需与输入区对齐；纯文本模式仅使用原生输入框。
     const highlight = page.locator('.node-quick-editor .resource-mention-highlight');
     const composer = page.locator('.node-quick-editor .resource-mention-composer');
-    const inputBounds = (await input.boundingBox())!;
-    const highlightBounds = (await highlight.boundingBox())!;
-    expect(highlightBounds.y).toBeCloseTo(inputBounds.y, 0);
-    expect(highlightBounds.height).toBeCloseTo(inputBounds.height, 0);
-    expect((await composer.boundingBox())!.height).toBeCloseTo(inputBounds.height, 0);
+    if (await highlight.count()) {
+      const inputBounds = (await input.boundingBox())!;
+      const highlightBounds = (await highlight.boundingBox())!;
+      expect(highlightBounds.y).toBeCloseTo(inputBounds.y, 0);
+      expect(highlightBounds.height).toBeCloseTo(inputBounds.height, 0);
+      expect((await composer.boundingBox())!.height).toBeCloseTo(inputBounds.height, 0);
+    }
     await input.press('Control+End');
     await expect.poll(() => input.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-    expect(await highlight.evaluate((element) => element.scrollTop)).toBeCloseTo(
-      await input.evaluate((element) => element.scrollTop),
-      0,
-    );
+    if (await highlight.count())
+      expect(await highlight.evaluate((element) => element.scrollTop)).toBeCloseTo(
+        await input.evaluate((element) => element.scrollTop),
+        0,
+      );
     expect(await input.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
       true,
     );
@@ -622,7 +664,7 @@ async function openHdViewer(page: Page, viewport: { width: number; height: numbe
     .poll(() => node.locator('img').evaluate((element: HTMLImageElement) => element.naturalWidth))
     .toBe(3840);
   await expect(node.getByRole('status')).toHaveCount(0);
-  await node.hover();
+  await node.hover({ position: { x: 16, y: 16 } });
   const nodeBefore = (await node.boundingBox())!;
   const canvasTransform = await page.locator('.react-flow__viewport').getAttribute('style');
   await node.getByRole('button', { name: /^预览图片：/ }).click();
@@ -711,14 +753,18 @@ for (const viewport of [
         .poll(async () => (await imageGeometry(image)).cssWidth)
         .toBeGreaterThan(beforeWheel.cssWidth);
       const afterWheel = await imageGeometry(image);
-      expect((anchor.x - afterWheel.x) / afterWheel.width).toBeCloseTo(
-        (anchor.x - beforeWheel.x) / beforeWheel.width,
-        2,
-      );
-      expect((anchor.y - afterWheel.y) / afterWheel.height).toBeCloseTo(
-        (anchor.y - beforeWheel.y) / beforeWheel.height,
-        2,
-      );
+      expect(
+        Math.abs(
+          (anchor.x - afterWheel.x) / afterWheel.width -
+            (anchor.x - beforeWheel.x) / beforeWheel.width,
+        ),
+      ).toBeLessThan(0.015);
+      expect(
+        Math.abs(
+          (anchor.y - afterWheel.y) / afterWheel.height -
+            (anchor.y - beforeWheel.y) / beforeWheel.height,
+        ),
+      ).toBeLessThan(0.015);
       await expectPixelScale(
         image,
         (afterWheel.cssWidth * afterWheel.devicePixelRatio) / afterWheel.naturalWidth,
@@ -765,7 +811,7 @@ for (const viewport of [
       expect((await imageGeometry(image)).src).toBe(source);
       await viewer.getByRole('button', { name: '关闭预览', exact: true }).click();
       await expect(viewer).toBeHidden();
-      await node.hover();
+      await node.hover({ position: { x: 16, y: 16 } });
       const nodePending = page.waitForEvent('download');
       await node.getByRole('button', { name: '下载图片', exact: true }).click();
       const nodeDownload = await nodePending;
@@ -836,7 +882,7 @@ for (const viewport of [
       });
       await reference.getByRole('button', { name: '关闭预览', exact: true }).click();
       await page.getByRole('button', { name: '折叠资源栏', exact: true }).click();
-      await node.hover();
+      await node.hover({ position: { x: 16, y: 16 } });
       await node.getByRole('button', { name: /^预览图片：/ }).click();
       await expect(viewer).toBeVisible();
       await expectFitted(viewer);

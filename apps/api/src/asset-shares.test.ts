@@ -400,8 +400,22 @@ describe('asset share routes', () => {
     expect(verifyAssetShareToken({ token }, shareSecret)).toBeUndefined();
     expect(verifyAssetShareToken(Symbol('token'), shareSecret)).toBeUndefined();
 
-    vi.spyOn(store, 'getVersionContent').mockResolvedValueOnce(undefined);
+    vi.spyOn(store, 'hasContent').mockResolvedValueOnce(false);
     expect((await issueShare(app, asset.id)).statusCode).toBe(404);
+  });
+
+  it('creates a video share without reading the video body', async () => {
+    const { app, store, asset } = await fixture();
+    const readAsset = vi.spyOn(store, 'get');
+    const readBody = vi.spyOn(store, 'getVersionContent');
+    const readMetadata = vi.spyOn(store, 'getMetadata');
+    const checkContent = vi.spyOn(store, 'hasContent');
+
+    expect((await issueShare(app, asset.id)).statusCode).toBe(200);
+    expect(readMetadata).toHaveBeenCalledWith(asset.id, { ownerId });
+    expect(checkContent).toHaveBeenCalledWith(asset.id, { version: 1 }, { ownerId });
+    expect(readAsset).not.toHaveBeenCalled();
+    expect(readBody).not.toHaveBeenCalled();
   });
 
   it('validates password fields by UTF-16 length without widening the anonymous route allowlist', async () => {

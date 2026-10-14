@@ -978,6 +978,11 @@ describe('BullMQ run result integrity', () => {
       outbox.publishedAt = null;
       return true;
     });
+    const requestCancellation = vi.fn(async () => {
+      durable.status = 'cancel_requested';
+      outbox.payload.cancelRequested = true;
+      return durable;
+    });
     const update = vi.fn(async ({ data }: { data: { publishedAt?: Date | null } }) => {
       if (data.publishedAt !== undefined) outbox.publishedAt = data.publishedAt;
       return outbox;
@@ -999,9 +1004,15 @@ describe('BullMQ run result integrity', () => {
     const execution = {
       resolveRunId: vi.fn(async (id: string) => id),
       requestRecovery,
+      requestCancellation,
       prisma,
     };
-    const persistence = { getRun: vi.fn(async () => durable) };
+    const persistence = {
+      getRun: vi.fn(async () => durable),
+      updateRun: vi.fn(async ({ status }: { status: RunRecord['status'] }) => {
+        durable.status = status;
+      }),
+    };
     const service = new BullMqRunService({
       connection: { host: '127.0.0.1', port: 6379 },
       execution: execution as never,
@@ -1013,6 +1024,7 @@ describe('BullMQ run result integrity', () => {
       durable,
       outbox,
       requestRecovery,
+      requestCancellation,
       prisma,
       service,
       setState: (value: string) => {
@@ -1020,6 +1032,27 @@ describe('BullMQ run result integrity', () => {
       },
     };
   }
+
+  it('队列任务消失后仍沿原出站记录投递取消，不重复创建视频', async () => {
+    const { runId, durable, outbox, requestCancellation, requestRecovery, service } =
+      createRecoveryFixture();
+    durable.status = 'running';
+    state.job = undefined;
+    try {
+      await expect(service.cancel(runId)).resolves.toMatchObject({
+        id: runId,
+        status: 'cancel_requested',
+      });
+      expect(requestCancellation).toHaveBeenCalledOnce();
+      expect(requestRecovery).toHaveBeenCalledExactlyOnceWith(runId, 'multimodal-canvas-runs');
+      expect(outbox.payload).toMatchObject({ runId, cancelRequested: true });
+      expect(state.add).toHaveBeenCalledOnce();
+      expect(state.job?.data).toMatchObject({ runId, cancelRequested: true });
+      expect(state.job?.data.retrieveOnly).not.toBe(true);
+    } finally {
+      await service.close();
+    }
+  });
 
   it('失败视频任务只读恢复先复核授权，再用原 Job 重新排队并更新进度时间', async () => {
     const { runId, job, durable, outbox, requestRecovery, service } = createRecoveryFixture();

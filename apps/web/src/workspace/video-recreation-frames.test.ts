@@ -3,6 +3,9 @@ import * as auth from '../auth-client';
 import {
   createVideoRecreationFrameBatch,
   initialVideoRecreationPreviews,
+  loadFrozenVideo,
+  MAX_CACHED_VIDEO_BYTES,
+  warmFrozenVideoCache,
   type VideoRecreationFrameBatch,
   type VideoRecreationPreviewItem,
 } from './video-recreation-frames';
@@ -29,6 +32,7 @@ let automaticSeek: boolean;
 let brokenDecoder: boolean;
 let serial: number;
 let currentTimes: WeakMap<HTMLMediaElement, number>;
+let videoCaches: Map<string, Map<string, Response>>;
 const drawImage = vi.fn();
 
 /** 模拟完成解码的浏览器事件；真实编码和像素由 PC 浏览器烟测另外核验。 */
@@ -67,6 +71,29 @@ beforeEach(() => {
   brokenDecoder = false;
   serial = 0;
   currentTimes = new WeakMap();
+  videoCaches = new Map();
+  Object.defineProperty(globalThis, 'caches', {
+    configurable: true,
+    value: {
+      open: async (name: string) => {
+        let videoCache = videoCaches.get(name);
+        if (!videoCache) {
+          videoCache = new Map();
+          videoCaches.set(name, videoCache);
+        }
+        return {
+          match: async (key: string) => videoCache.get(key)?.clone(),
+          put: async (key: string, response: Response) => {
+            videoCache.set(key, response.clone());
+          },
+          keys: async () => [...videoCache.keys()].map((url) => new Request(url)),
+          delete: async (key: string) => videoCache.delete(key),
+        };
+      },
+      keys: async () => [...videoCaches.keys()],
+      delete: async (name: string) => videoCaches.delete(name),
+    },
+  });
   drawImage.mockReset();
   Object.defineProperty(URL, 'createObjectURL', {
     configurable: true,
@@ -114,12 +141,14 @@ beforeEach(() => {
 
 afterEach(() => {
   leases.splice(0).forEach((lease) => lease.release());
+  auth.clearAuthSession();
   vi.restoreAllMocks();
   vi.useRealTimers();
   if (originalCreate) Object.defineProperty(URL, 'createObjectURL', originalCreate);
   else Reflect.deleteProperty(URL, 'createObjectURL');
   if (originalRevoke) Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
   else Reflect.deleteProperty(URL, 'revokeObjectURL');
+  Reflect.deleteProperty(globalThis, 'caches');
 });
 
 describe('原视频截帧 batch', () => {
@@ -163,6 +192,91 @@ describe('原视频截帧 batch', () => {
     lease.release();
     lease.release();
     expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3);
+  });
+
+  it('同账户重复打开相同冻结视频时从本地缓存复用，不重复网络下载', async () => {
+    auth.persistAuthSession({
+      user: { id: 'owner-a', role: 'user', createdAt: '2025-01-01T00:00:00.000Z' },
+    });
+    const first = await loadFrozenVideo(source, new AbortController().signal);
+    await vi.waitFor(() =>
+      expect(videoCaches.get('multimodal-canvas:video:v1:owner-a')?.size).toBe(1),
+    );
+    const second = await loadFrozenVideo(source, new AbortController().signal);
+
+    expect(first.size).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(auth.apiFetch).toHaveBeenCalledTimes(2);
+    expect(auth.apiFetch).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ method: 'HEAD', cache: 'no-store' }),
+      expect.anything(),
+    );
+    expect([...videoCaches.get('multimodal-canvas:video:v1:owner-a')!.keys()]).toEqual([
+      'http://localhost:3000/v1/assets/source-video/versions/4/content',
+    ]);
+  });
+
+  it('后台缓存不等待预览组件存活，切换账户后不能读到旧账户视频', async () => {
+    auth.persistAuthSession({
+      user: { id: 'owner-a', role: 'user', createdAt: '2025-01-01T00:00:00.000Z' },
+    });
+    let releaseDownload!: (response: Response) => void;
+    vi.mocked(auth.apiFetch).mockImplementationOnce(
+      () => new Promise((resolve) => (releaseDownload = resolve)),
+    );
+    warmFrozenVideoCache(source, 20);
+    await vi.waitFor(() => expect(auth.apiFetch).toHaveBeenCalledTimes(1));
+    releaseDownload(new Response('cached video', { headers: { 'content-type': 'video/mp4' } }));
+    await vi.waitFor(() =>
+      expect(videoCaches.get('multimodal-canvas:video:v1:owner-a')?.size).toBe(1),
+    );
+
+    auth.persistAuthSession({
+      user: { id: 'owner-b', role: 'user', createdAt: '2025-01-01T00:00:00.000Z' },
+    });
+    await loadFrozenVideo(source, new AbortController().signal);
+    expect(auth.apiFetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(auth.apiFetch).mock.calls[1]?.[1]).not.toMatchObject({ method: 'HEAD' });
+    await vi.waitFor(() =>
+      expect(videoCaches.has('multimodal-canvas:video:v1:owner-a')).toBe(false),
+    );
+    await vi.waitFor(() =>
+      expect(videoCaches.get('multimodal-canvas:video:v1:owner-b')?.size).toBe(1),
+    );
+  });
+
+  it('未知大小的视频先读取长度再缓存，超出上限时不下载正文', async () => {
+    auth.persistAuthSession({
+      user: { id: 'owner-size-check', role: 'user', createdAt: '2025-01-01T00:00:00.000Z' },
+    });
+    vi.mocked(auth.apiFetch).mockImplementation(async (_url, init) =>
+      init?.method === 'HEAD'
+        ? new Response(null, { headers: { 'content-length': '22' } })
+        : new Response('isolated video fixture', { headers: { 'content-type': 'video/mp4' } }),
+    );
+    warmFrozenVideoCache(source);
+    await vi.waitFor(() =>
+      expect(videoCaches.get('multimodal-canvas:video:v1:owner-size-check')?.size).toBe(1),
+    );
+    expect(vi.mocked(auth.apiFetch).mock.calls.map(([, init]) => init?.method)).toEqual([
+      'HEAD',
+      undefined,
+    ]);
+
+    const oversized = { assetId: 'oversized-video', assetVersion: 1 };
+    vi.mocked(auth.apiFetch)
+      .mockClear()
+      .mockResolvedValue(
+        new Response(null, {
+          headers: { 'content-length': String(MAX_CACHED_VIDEO_BYTES + 1) },
+        }),
+      );
+    warmFrozenVideoCache(oversized);
+    await vi.waitFor(() => expect(auth.apiFetch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(auth.apiFetch).mock.calls[0]?.[1]).toMatchObject({ method: 'HEAD' });
+    expect(videoCaches.get('multimodal-canvas:video:v1:owner-size-check')?.size).toBe(1);
   });
 
   it('没有画面定位不读取视频；旧出现时间可回退且不冒充模型preview', async () => {

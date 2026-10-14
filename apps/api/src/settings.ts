@@ -1,5 +1,6 @@
 import {
   image2proVideoContractForModel,
+  isGeminiChatImageModel,
   type MediaType,
   type ModelSelection,
 } from '@multimodal-canvas/domain';
@@ -211,7 +212,12 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
   const explicitMediaTypes = extractMediaTypes(candidate);
   const inferredMediaTypes =
     explicitMediaTypes.length > 0 ? explicitMediaTypes : inferMediaTypes(id);
-  const mediaTypes: MediaType[] = inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text'];
+  const mediaTypes: MediaType[] = [
+    ...new Set([
+      ...(inferredMediaTypes.length > 0 ? inferredMediaTypes : ['text' as const]),
+      ...(isGeminiChatImageModel(id) ? ['image' as const] : []),
+    ]),
+  ];
   const capabilities = isRecord(candidate.capabilities) ? candidate.capabilities : undefined;
   return {
     id,
@@ -231,6 +237,7 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
 
 function inferMediaTypes(modelAlias: string): MediaType[] {
   if (image2proVideoContractForModel(modelAlias)) return ['video'];
+  if (isGeminiChatImageModel(modelAlias)) return ['image'];
   const normalized = modelAlias.trim().toLowerCase();
   if (/^(gpt-image|dall[-_]?e|imagen|flux|sdxl|stable[-_]?diffusion|midjourney)/.test(normalized)) {
     return ['image'];

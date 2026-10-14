@@ -569,7 +569,7 @@ describe('AssetPreview', () => {
     },
   );
 
-  it('视频预览使用解码尺寸适配并保留原生播放控件', () => {
+  it('视频预览舞台在元数据到达后保持固定尺寸并保留原生播放控件', () => {
     vi.stubGlobal('innerWidth', 1280);
     vi.stubGlobal('innerHeight', 900);
     render(
@@ -587,10 +587,7 @@ describe('AssetPreview', () => {
     });
     fireEvent.loadedMetadata(video);
     expect(video).toHaveAttribute('controls');
-    expect(viewer.querySelector('.artifact-preview-viewer-stage')).toHaveStyle({
-      width: '934px',
-      height: '525.375px',
-    });
+    expect(viewer.querySelector('.artifact-preview-viewer-stage')).not.toHaveAttribute('style');
   });
 
   it('预览尺寸无效或加载失败时给出错误和重新加载入口', async () => {

@@ -1,4 +1,9 @@
-import { apiFetch, getAuthSessionGeneration, subscribeAuthSession } from '../auth-client';
+import {
+  apiFetch,
+  getAuthSessionGeneration,
+  readAuthSession,
+  subscribeAuthSession,
+} from '../auth-client';
 import { API_BASE_URL } from './contracts';
 
 /** 原视频的冻结资源版本；不接受外部 URL 或隐式最新版。 */
@@ -40,6 +45,192 @@ const FRAME_MAX_EDGE = 480;
 const VIDEO_READ_TIMEOUT_MS = 60_000;
 /** 解码、定位或图片编码迟迟不返回时允许用户显式重试。 */
 const FRAME_TIMEOUT_MS = 10_000;
+const VIDEO_CACHE_PREFIX = 'multimodal-canvas:video:v1:';
+export const MAX_CACHED_VIDEO_BYTES = 128 * 1024 * 1024;
+const MAX_CACHED_VIDEOS = 2;
+const memoryVideoCache = new Map<string, Blob>();
+const backgroundVideoDownloads = new Map<string, AbortController>();
+let cacheGeneration = getAuthSessionGeneration();
+let cacheSessionListener: (() => void) | undefined;
+
+async function cleanVideoCaches(currentName?: string): Promise<void> {
+  if (typeof caches === 'undefined') return;
+  try {
+    const names = await caches.keys();
+    await Promise.all(
+      names
+        .filter((name) => name.startsWith(VIDEO_CACHE_PREFIX) && name !== currentName)
+        .map((name) => caches.delete(name)),
+    );
+  } catch {
+    // 浏览器限制存储时仍可继续使用网络预览。
+  }
+}
+
+function currentVideoCacheName(): string | undefined {
+  const userId = readAuthSession()?.user.id;
+  const name = userId ? `${VIDEO_CACHE_PREFIX}${encodeURIComponent(userId)}` : undefined;
+  if (!cacheSessionListener)
+    cacheSessionListener = subscribeAuthSession(() => {
+      if (cacheGeneration !== getAuthSessionGeneration()) {
+        cacheGeneration = getAuthSessionGeneration();
+        for (const controller of backgroundVideoDownloads.values()) controller.abort();
+        backgroundVideoDownloads.clear();
+        memoryVideoCache.clear();
+        void cleanVideoCaches(currentVideoCacheName());
+      }
+    });
+  if (cacheGeneration !== getAuthSessionGeneration()) {
+    cacheGeneration = getAuthSessionGeneration();
+    for (const controller of backgroundVideoDownloads.values()) controller.abort();
+    backgroundVideoDownloads.clear();
+    memoryVideoCache.clear();
+  }
+  void cleanVideoCaches(name);
+  return name;
+}
+
+async function readCachedVideo(url: string, signal: AbortSignal): Promise<Blob | undefined> {
+  const name = currentVideoCacheName();
+  if (!name) return undefined;
+  const memory = memoryVideoCache.get(url);
+  if (memory) return memory;
+  if (typeof caches === 'undefined') return undefined;
+  try {
+    const response = await caches.open(name).then((cache) => cache.match(url));
+    if (!response) return undefined;
+    const blob = await withAbort(response.blob(), signal);
+    if (!blob.size) return undefined;
+    rememberVideo(url, blob);
+    return blob;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberVideo(url: string, blob: Blob): void {
+  if (blob.size > MAX_CACHED_VIDEO_BYTES || !blob.size) return;
+  memoryVideoCache.delete(url);
+  memoryVideoCache.set(url, blob);
+  while (memoryVideoCache.size > MAX_CACHED_VIDEOS)
+    memoryVideoCache.delete(memoryVideoCache.keys().next().value!);
+}
+
+async function cacheVideo(url: string, blob: Blob, generation: number): Promise<void> {
+  if (blob.size > MAX_CACHED_VIDEO_BYTES || !blob.size) return;
+  const name = currentVideoCacheName();
+  if (!name || typeof caches === 'undefined' || generation !== getAuthSessionGeneration()) return;
+  try {
+    const cache = await caches.open(name);
+    if (generation !== getAuthSessionGeneration()) return;
+    await cache.put(
+      url,
+      new Response(blob, {
+        headers: { 'content-type': blob.type || 'application/octet-stream' },
+      }),
+    );
+    if (generation !== getAuthSessionGeneration()) {
+      await caches.delete(name);
+      return;
+    }
+    const keys = await cache.keys();
+    await Promise.all(keys.slice(0, -MAX_CACHED_VIDEOS).map((key) => cache.delete(key)));
+  } catch {
+    // 缓存失败不影响当前预览。
+  }
+}
+
+function videoCacheKey(source: VideoRecreationPreviewSource): string {
+  return `${API_BASE_URL}/v1/assets/${encodeURIComponent(source.assetId)}/versions/${source.assetVersion}/content`;
+}
+
+/** 仅读取本地冻结版本；命中时重新验证当前账户的读取权限。 */
+export async function loadCachedFrozenVideo(
+  source: VideoRecreationPreviewSource,
+  signal: AbortSignal,
+): Promise<Blob | undefined> {
+  const generation = getAuthSessionGeneration();
+  const contentUrl = videoCacheKey(source);
+  const blob = await readCachedVideo(contentUrl, signal);
+  signal.throwIfAborted();
+  if (!blob) return undefined;
+  const validation = await withAbort(
+    apiFetch(
+      contentUrl,
+      { method: 'HEAD', signal, cache: 'no-store' },
+      { expectedAuthGeneration: generation },
+    ),
+    signal,
+  );
+  if (!validation.ok) throw new Error(`原视频读取失败（${validation.status}），请重试`);
+  return blob;
+}
+
+/** 同一冻结版本的原视频先读当前账户本地缓存，未命中才下载一次。 */
+export async function loadFrozenVideo(
+  source: VideoRecreationPreviewSource,
+  signal: AbortSignal,
+  maxBytes?: number,
+): Promise<Blob> {
+  const cached = await loadCachedFrozenVideo(source, signal);
+  if (cached) return cached;
+  const generation = getAuthSessionGeneration();
+  const contentUrl = videoCacheKey(source);
+  const response = await withAbort(
+    apiFetch(contentUrl, { signal, cache: 'no-store' }, { expectedAuthGeneration: generation }),
+    signal,
+  );
+  if (!response.ok) throw new Error(`原视频读取失败（${response.status}），请重试`);
+  const declaredBytes = Number(response.headers.get('content-length'));
+  if (maxBytes && Number.isFinite(declaredBytes) && declaredBytes > maxBytes)
+    throw new Error('视频超过本地缓存上限');
+  const blob = await withAbort(response.blob(), signal);
+  signal.throwIfAborted();
+  if (maxBytes && blob.size > maxBytes) throw new Error('视频超过本地缓存上限');
+  if (generation === getAuthSessionGeneration() && readAuthSession()) {
+    rememberVideo(contentUrl, blob);
+    void cacheVideo(contentUrl, blob, generation);
+  }
+  if (!blob.size) throw new Error('原视频内容为空，无法截取画面');
+  return blob;
+}
+
+/** 首次预览先用浏览器播放；元数据就绪后独立下载并保存，以便关闭后再次打开。 */
+export function warmFrozenVideoCache(
+  source: VideoRecreationPreviewSource,
+  knownSizeBytes = 0,
+): void {
+  if (!readAuthSession()) return;
+  currentVideoCacheName();
+  const key = videoCacheKey(source);
+  if (backgroundVideoDownloads.has(key)) return;
+  const controller = new AbortController();
+  backgroundVideoDownloads.set(key, controller);
+  const timer = setTimeout(() => controller.abort(), VIDEO_READ_TIMEOUT_MS);
+  const generation = getAuthSessionGeneration();
+  const download = async () => {
+    if (knownSizeBytes > MAX_CACHED_VIDEO_BYTES) return;
+    if (!knownSizeBytes) {
+      const head = await apiFetch(
+        key,
+        { method: 'HEAD', signal: controller.signal, cache: 'no-store' },
+        { expectedAuthGeneration: generation },
+      );
+      const sizeBytes = Number(head.headers.get('content-length'));
+      if (!head.ok || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) return;
+      if (sizeBytes > MAX_CACHED_VIDEO_BYTES) return;
+    }
+    await loadFrozenVideo(source, controller.signal, MAX_CACHED_VIDEO_BYTES);
+  };
+  void download()
+    .catch(() => {
+      // 后台缓存失败不影响当前正在播放的视频。
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      if (backgroundVideoDownloads.get(key) === controller) backgroundVideoDownloads.delete(key);
+    });
+}
 
 /** 校验定位，不用任意首帧冒充没有画面证据的识别对象。 */
 function resolveLocation(item: VideoRecreationPreviewItem):
@@ -277,18 +468,8 @@ export function createVideoRecreationFrameBatch(
       );
       let blob: Blob;
       try {
-        const response = await withAbort(
-          apiFetch(
-            `${API_BASE_URL}/v1/assets/${encodeURIComponent(source.assetId)}/versions/${source.assetVersion}/content`,
-            { signal: downloadSignal, cache: 'no-store' },
-            { expectedAuthGeneration: generation },
-          ),
-          downloadSignal,
-        );
-        if (!response.ok) throw new Error(`原视频读取失败（${response.status}），请重试`);
-        blob = await withAbort(response.blob(), downloadSignal);
+        blob = await loadFrozenVideo(source, downloadSignal);
         controller.signal.throwIfAborted();
-        if (!blob.size) throw new Error('原视频内容为空，无法截取画面');
       } finally {
         clearTimeout(timer);
       }

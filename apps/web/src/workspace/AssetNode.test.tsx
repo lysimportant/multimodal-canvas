@@ -2259,6 +2259,7 @@ describe('画布选区模式', () => {
     const onLabelChange = vi.fn();
     const node = makeNode({
       runStatus: 'running',
+      runId: 'run-node-1',
       nodeTiming: { nodeId: 'node_1', startedAt: new Date().toISOString() },
     });
     const scene = (selectionMode: boolean) => (
@@ -2288,6 +2289,9 @@ describe('画布选区模式', () => {
     expect(screen.getByRole('dialog', { name: '节点信息' })).toBe(info);
     expect(within(info).getByText('运行', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
       '运行中',
+    );
+    expect(within(info).getByText('任务 ID', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
+      'run-node-1',
     );
     expect(interval).not.toHaveBeenCalled();
     expect(clearInterval).not.toHaveBeenCalled();

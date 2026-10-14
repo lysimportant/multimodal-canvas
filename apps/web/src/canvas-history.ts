@@ -26,6 +26,7 @@ function restoreSnapshot(
       if (live) {
         Object.assign(data, {
           runStatus: live.data.runStatus,
+          runId: live.data.runId,
           runProgress: live.data.runProgress,
           runError: live.data.runError,
           nodeTiming: live.data.nodeTiming,
@@ -36,6 +37,7 @@ function restoreSnapshot(
       const run = runs[node.id];
       if (run && (!data.manualOutput || data.manualOutputRunId === run.id)) {
         data.runStatus = run.status;
+        data.runId = run.id;
         data.runProgress = run.progress;
         data.runError = run.error;
         data.nodeTiming = run.nodeTimings?.[node.id];

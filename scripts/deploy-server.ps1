@@ -1,29 +1,20 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Builds amd64 Docker images locally, transfers them to the Linux server, and starts Compose.
+Builds amd64 Docker images locally and packages them for manual FTP upload.
 .EXAMPLE
 .\deploy-server.bat
-.EXAMPLE
-.\deploy-server.bat -Database Neon -Gateway On
-.EXAMPLE
-.\deploy-server.bat -PackageOnly
 
-The server's .env.compose is authoritative. This script never uploads a local env file.
-OpenSSH prompts for the server password (once for scp and once for ssh) unless a key is configured.
+The server's .env.compose is authoritative and is excluded from the archive.
+This script only creates local files. Upload and server startup are manual.
 #>
 [CmdletBinding()]
-param(
-  [ValidateSet('Auto', 'Local', 'Neon')][string]$Database = 'Auto',
-  [ValidateSet('Auto', 'On', 'Off')][string]$Gateway = 'Auto',
-  [switch]$PackageOnly
-)
+param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repository = Split-Path $PSScriptRoot -Parent
-$remote = 'root@47.242.207.224'
 $remoteProject = '/opt/multimodal-canvas'
 $images = @(
   'multimodal-canvas-initialize:local',
@@ -75,7 +66,7 @@ function Assert-LocalDocker {
 
 try {
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Use this entry on Windows.' }
-  foreach ($command in @('docker.exe', 'ssh.exe', 'scp.exe', 'tar.exe')) {
+  foreach ($command in @('docker.exe', 'tar.exe')) {
     if (-not (Get-Command $command -CommandType Application -ErrorAction SilentlyContinue)) {
       throw "Missing $command in PATH."
     }
@@ -88,7 +79,9 @@ try {
   $id = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
   $outputDirectory = Join-Path $repository '.local-deploy'
   $stage = Join-Path $outputDirectory "$id-stage"
-  $archive = Join-Path $outputDirectory "$id.tar.gz"
+  $archiveName = "multimodal-canvas-$id.tar.gz"
+  $archive = Join-Path $outputDirectory $archiveName
+  $partialArchive = "$archive.partial"
   New-Item -ItemType Directory -Path (Join-Path $stage 'docker'), (Join-Path $stage 'scripts') -Force | Out-Null
 
   Push-Location $repository
@@ -132,7 +125,8 @@ try {
     Write-Host 'Saving Docker images; this may take several minutes...'
     Invoke-Checked 'docker.exe' (@('image', 'save', '-o', (Join-Path $stage 'images.tar')) + $images) 'Cannot save Docker images'
     Write-Host 'Compressing deployment archive...'
-    Invoke-Checked 'tar.exe' @('-czf', $archive, '-C', $stage, 'images.tar', 'compose.yaml', 'compose.neon.yaml', 'docker', 'scripts') 'Cannot create deployment archive'
+    Invoke-Checked 'tar.exe' @('-czf', $partialArchive, '-C', $stage, 'images.tar', 'compose.yaml', 'compose.neon.yaml', 'docker', 'scripts') 'Cannot create deployment archive'
+    Move-Item -LiteralPath $partialArchive -Destination $archive
     $stagePath = [IO.Path]::GetFullPath($stage)
     $outputPrefix = [IO.Path]::GetFullPath($outputDirectory).TrimEnd('\') + '\'
     if (-not $stagePath.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -145,21 +139,25 @@ try {
 
   $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
   $sizeGb = [math]::Round((Get-Item -LiteralPath $archive).Length / 1GB, 2)
-  Write-Host "Archive ready: $archive ($sizeGb GB, SHA-256 $hash)"
-  if ($PackageOnly) { exit 0 }
+  $checksumName = "$archiveName.sha256"
+  [IO.File]::WriteAllText((Join-Path $outputDirectory $checksumName), "$hash  $archiveName`n", [Text.Encoding]::ASCII)
+  $serverCommand = @(
+    "cd '$remoteProject' &&",
+    "sha256sum -c '$checksumName' &&",
+    "tar -xOzf '$archiveName' scripts/deploy-server-apply.sh | bash -s -- '$archiveName'"
+  ) -join "`n"
+  $instructions = Join-Path $outputDirectory "$id-server-commands.txt"
+  [IO.File]::WriteAllText($instructions, "$serverCommand`n", [Text.Encoding]::ASCII)
 
-  $archiveName = ".incoming-$id.tar.gz"
-  $remoteArchive = "$remoteProject/$archiveName"
-  Write-Host 'Uploading archive. OpenSSH may ask for the server password...'
-  Invoke-Checked 'scp.exe' @('-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15', $archive, "${remote}:$remoteArchive") 'Upload failed'
-
-  # All interpolated arguments are controlled here and contain only safe path/hash/mode characters.
-  $applyName = ".deploy-apply-$id.sh"
-  $remoteCommand = "cd '$remoteProject' && printf '%s  %s\n' '$hash' '$archiveName' | sha256sum -c - && tar -xOf '$archiveName' scripts/deploy-server-apply.sh > '$applyName' && bash '$applyName' '$archiveName' '$Database' '$Gateway' '$id' && rm -f -- '$applyName'"
-  Write-Host 'Starting services on the server. OpenSSH may ask for the password again...'
-  Invoke-Checked 'ssh.exe' @('-T', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=15', $remote, $remoteCommand) 'Remote deployment failed'
-  Write-Host 'Deployment completed successfully.'
+  Write-Host "Package ready ($sizeGb GB). Upload BOTH files to ${remoteProject}/:"
+  Write-Host "  $archive"
+  Write-Host "  $(Join-Path $outputDirectory $checksumName)"
+  Write-Host "Server commands saved to: $instructions"
+  Write-Host ''
+  Write-Host $serverCommand
+  Write-Host ''
+  Write-Host 'Local packaging completed. The server has not been contacted.'
 } catch {
-  Write-Host "Deployment stopped: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host "Packaging stopped: $($_.Exception.Message)" -ForegroundColor Red
   exit 1
 }

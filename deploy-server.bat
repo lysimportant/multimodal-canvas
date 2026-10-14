@@ -2,11 +2,14 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
+title Multimodal Canvas - Local Package
+echo Building a local package for manual upload...
+echo.
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\deploy-server.ps1" %*
-set "DEPLOY_EXIT=%ERRORLEVEL%"
+set "PACKAGE_EXIT=%ERRORLEVEL%"
 
-if not "%DEPLOY_EXIT%"=="0" echo Deployment failed. See the message above.
+if not "%PACKAGE_EXIT%"=="0" echo Packaging failed. See the message above.
 echo.
 pause
-exit /b %DEPLOY_EXIT%
+exit /b %PACKAGE_EXIT%

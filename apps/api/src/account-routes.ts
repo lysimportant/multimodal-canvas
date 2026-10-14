@@ -632,6 +632,7 @@ type ManagedRunDto = {
   projectId: string;
   projectName: string;
   targetNodeId: string;
+  targetNodeName: string;
   status: RunRecord['status'];
   progress: number;
   attempt: number;
@@ -677,6 +678,7 @@ function managedRunDto(
     run.provider === 'newapi' &&
     run.providerJob?.provider === 'newapi' &&
     Boolean(run.providerJob.platformJobId?.trim()) &&
+    !run.providerJob.payload?.refundStatus &&
     !run.result?.asset,
   );
   return {
@@ -684,6 +686,7 @@ function managedRunDto(
     projectId: run.projectId,
     projectName: project.name,
     targetNodeId: run.targetNodeId,
+    targetNodeName: typeof target?.data.label === 'string' ? target.data.label : run.targetNodeId,
     status: run.status,
     progress: run.progress,
     attempt: run.attempt,

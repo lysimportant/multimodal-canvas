@@ -31,8 +31,9 @@ describe('账户菜单', () => {
     );
     expect(trigger).toHaveFocus();
     expect(logout).not.toHaveBeenCalled();
-    await actor.click(trigger);
-    await actor.click(screen.getByRole('menuitem', { name: '退出登录' }));
+    await actor.unhover(trigger);
+    await actor.hover(trigger);
+    await actor.click(await screen.findByRole('menuitem', { name: '退出登录' }));
     let dialog = await screen.findByRole('dialog', { name: '退出登录？' });
     expect(logout).not.toHaveBeenCalled();
     await actor.click(within(dialog).getByRole('button', { name: '继续使用' }));
@@ -40,8 +41,9 @@ describe('账户菜单', () => {
       expect(screen.queryByRole('dialog', { name: '退出登录？' })).not.toBeInTheDocument(),
     );
     expect(logout).not.toHaveBeenCalled();
-    await actor.click(trigger);
-    await actor.click(screen.getByRole('menuitem', { name: '退出登录' }));
+    await actor.unhover(trigger);
+    await actor.hover(trigger);
+    await actor.click(await screen.findByRole('menuitem', { name: '退出登录' }));
     dialog = await screen.findByRole('dialog', { name: '退出登录？' });
     const confirm = within(dialog).getByRole('button', { name: '退出登录' });
     fireEvent.click(confirm);

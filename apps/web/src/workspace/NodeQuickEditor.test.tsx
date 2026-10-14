@@ -276,7 +276,7 @@ describe('NodeQuickEditor', () => {
       expect(stop).toBeEnabled();
       expect(stop).toHaveAttribute(
         'title',
-        '停止本地后续提交并取消已知运行；不保证远端任务终止或退款',
+        '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款',
       );
       await user.click(stop);
       expect(onStop).toHaveBeenCalledOnce();
@@ -1278,8 +1278,8 @@ describe('NodeQuickEditor', () => {
       aspectRatio: '9:16',
     });
     expect(summary).toHaveAttribute('title', '清晰度：1080p · 时长：未设置 · 比例：9:16');
-    await user.click(summary);
-    expect(screen.getByRole('button', { name: '时长（秒）：未设置' })).toBeInTheDocument();
+    await user.hover(summary);
+    expect(await screen.findByRole('button', { name: '时长（秒）：未设置' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '视频清晰度：1080p' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '视频比例：9:16' })).toBeInTheDocument();
     const generate = screen.getByRole('button', { name: '生成' });
@@ -2972,6 +2972,40 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).toHaveBeenCalledOnce();
     expect(onParametersChange).toHaveBeenCalledWith({ quality: 'auto' });
     expect(onParametersChange.mock.lastCall?.[0]).not.toHaveProperty('size');
+  });
+
+  it('Gemini 图片只显示 1K、2K、4K 尺寸，不显示 GPT Image 的质量控件', async () => {
+    const user = userEvent.setup();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: { ...imageNode.data, modelAlias: 'gemini-3-pro-image-preview' },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'gemini-3-pro-image-preview',
+              name: 'Gemini 图片',
+              mediaTypes: ['image'],
+              capabilities: { resolutions: ['1k', '2k', '3k', '4k'], quality: ['high'] },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    for (const pixels of ['1024 × 1024', '2048 × 2048', '3840 × 3840']) {
+      expect(
+        selectPopup(resolutionGroup).getByRole('option', { name: new RegExp(pixels) }),
+      ).toBeInTheDocument();
+    }
+    expect(
+      selectPopup(resolutionGroup).queryByRole('option', { name: /3072 × 3072/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('生成质量')).not.toBeInTheDocument();
   });
 
   it('目录显式声明 sizes:auto 时提供自动尺寸', async () => {

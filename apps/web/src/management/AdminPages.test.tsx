@@ -21,6 +21,7 @@ const run = {
   id: 'run-a',
   projectId: 'project-a',
   targetNodeId: 'node-a',
+  targetNodeName: '文案节点',
   ownerId: 'owner-a',
   modelAlias: '测试模型',
   provider: 'mock',
@@ -169,6 +170,7 @@ describe('资源分组与任务', () => {
     );
     const view = renderPage(<RunsPage userId="owner-a" />);
     const table = await screen.findByRole('table');
+    expect(within(table).getByText('文案节点')).toBeVisible();
     expect(view.container.querySelector('.ant-table')).not.toBeNull();
     expect(within(table).queryByRole('columnheader', { name: '所属用户' })).toBeNull();
     expect(within(table).getByRole('progressbar', { name: '测试模型的进度' })).toHaveAttribute(
@@ -183,6 +185,7 @@ describe('资源分组与任务', () => {
     const dialog = await screen.findByRole('dialog', { name: '任务详情' });
     await waitFor(() => expect(dialog).toBeVisible());
     expect(within(dialog).getByRole('alert')).toHaveTextContent(run.error);
+    expect(within(dialog).getByText('文案节点')).toBeVisible();
     expect(within(dialog).getByText(run.result.summary)).toBeVisible();
     expect(dialog.querySelector('.mg-run-result b')).toBeNull();
     expect(within(dialog).getByRole('link', { name: '返回画布' })).toHaveAttribute(

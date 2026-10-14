@@ -3985,7 +3985,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!body.success) return reply.code(400).send({ error: 'invalid asset share request' });
 
     const scope = { ownerId: principal.userId };
-    const asset = await assetStore.get(request.params.assetId, scope);
+    const asset = assetStore.getMetadata
+      ? await assetStore.getMetadata(request.params.assetId, scope)
+      : await assetStore.get(request.params.assetId, scope);
     if (!asset || asset.status !== 'ready') {
       return reply.code(404).send({ error: 'asset not found' });
     }
@@ -3994,8 +3996,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? versions.find((candidate) => candidate.version === body.data.version)
       : versions.at(-1);
     if (!selected) return reply.code(404).send({ error: 'asset version not found' });
-    const content = await assetStore.getVersionContent(asset.id, selected.version, scope);
-    if (content === undefined) {
+    const exists = await assetContentExists(
+      assetStore,
+      asset.id,
+      { version: selected.version },
+      scope,
+    );
+    if (!exists) {
       return reply.code(404).send({ error: 'asset version not found' });
     }
 

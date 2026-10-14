@@ -4,6 +4,7 @@
   flex-direction: column;
   gap: 14px;
   width: min(640px, calc(100vw - 32px));
+  height: min(560px, calc(100dvh - 48px));
   max-height: calc(100dvh - 48px);
   padding: 22px;
   overflow: hidden;

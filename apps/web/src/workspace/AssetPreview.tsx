@@ -45,6 +45,11 @@ import { fetchNodeAssetDownload } from './node-asset-download';
 import { AssetShareButton } from './AssetShareButton';
 import { ImagePreviewStage } from './ImagePreviewStage';
 import { MediaPreviewPlayer } from './MediaPreviewPlayer';
+import {
+  loadCachedFrozenVideo,
+  MAX_CACHED_VIDEO_BYTES,
+  warmFrozenVideoCache,
+} from './video-recreation-frames';
 import { getImageThumbnailSource, resolveOriginalImageAsset } from './image-thumbnail-cache';
 import { useImageThumbnail } from './use-image-thumbnail';
 import './artifact-preview.css';
@@ -568,6 +573,7 @@ function NaturalMediaViewer({
   resetKey,
   onMediaError,
   onRetry,
+  onVideoReady,
 }: {
   kind: 'image' | 'video';
   src: string;
@@ -575,6 +581,7 @@ function NaturalMediaViewer({
   resetKey: string;
   onMediaError?: (mediaErrorCode?: number) => boolean;
   onRetry?: () => void;
+  onVideoReady?: () => void;
 }) {
   /** 当前资源解码尺寸；未知时让媒体按自身布局加载。 */
   const [naturalSize, setNaturalSize] = useState<MediaDimensions>();
@@ -636,12 +643,13 @@ function NaturalMediaViewer({
         onLoadedMetadata={(event) => {
           const video = event.currentTarget as HTMLVideoElement;
           acceptDimensions(video.videoWidth, video.videoHeight);
+          onVideoReady?.();
         }}
         renderMedia={(media) => (
           <ZoomableMediaStage
             resetKey={`${resetKey}:${attempt}:${viewport.width}:${viewport.height}`}
             enablePanAtFit={false}
-            dimensions={fittedSize}
+            dimensions={undefined}
           >
             {media}
           </ZoomableMediaStage>
@@ -856,6 +864,61 @@ export type AssetViewerDialogProps = {
   src?: string;
 };
 
+/** 首次直接流式预览；本地缓存命中时在权限校验后复用原文件。 */
+function useCachedVideoPreview(asset: Asset, open: boolean, reloadKey: number) {
+  const generation = useSyncExternalStore(
+    subscribeAuthSession,
+    getAuthSessionGeneration,
+    getAuthSessionGeneration,
+  );
+  const versionMatch = /\/versions\/([1-9]\d*)\/content(?:$|\?)/.exec(asset.contentUrl);
+  const version = versionMatch ? Number(versionMatch[1]) : Number(asset.latestVersion);
+  const eligible =
+    open &&
+    asset.mediaType === 'video' &&
+    Boolean(readAuthSession()) &&
+    isApiResultUrl(resolveUploadUrl(asset.contentUrl, API_BASE_URL)) &&
+    Number.isSafeInteger(version) &&
+    version > 0 &&
+    asset.sizeBytes >= 0 &&
+    asset.sizeBytes <= MAX_CACHED_VIDEO_BYTES;
+  const previousOpen = useRef(open);
+  const openSequence = useRef(0);
+  if (!open && previousOpen.current) openSequence.current++;
+  previousOpen.current = open;
+  const identity = `${generation}:${asset.id}:${version}:${reloadKey}:${openSequence.current}`;
+  const [state, setState] = useState<{ identity: string; url?: string }>();
+
+  useEffect(() => {
+    if (!eligible || !Number.isSafeInteger(version)) return;
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    void loadCachedFrozenVideo({ assetId: asset.id, assetVersion: version }, controller.signal)
+      .then((blob) => {
+        if (controller.signal.aborted || generation !== getAuthSessionGeneration()) return;
+        if (blob) objectUrl = URL.createObjectURL(blob);
+        setState({ identity, url: objectUrl });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setState({ identity });
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [asset.id, eligible, generation, identity, version]);
+
+  return {
+    eligible,
+    loading: eligible && state?.identity !== identity,
+    url: eligible && state?.identity === identity ? state.url : undefined,
+    warm: () => {
+      if (eligible && state?.identity === identity && !state.url)
+        warmFrozenVideoCache({ assetId: asset.id, assetVersion: version }, asset.sizeBytes);
+    },
+  };
+}
+
 /**
  * 页内资源预览对话框：图片/视频支持缩放平移，媒体下载保留当前版本原文件。
  * @param asset 要预览的资源。
@@ -873,11 +936,14 @@ export function AssetViewerDialog({
   const asset = resolveOriginalImageAsset(inputAsset);
   const kind = resolveArtifactKind(asset);
   const [reloadKey, setReloadKey] = useState(0);
+  const cachedVideo = useCachedVideoPreview(asset, open, reloadKey);
   const originalSrc = asset.contentUrl === inputAsset.contentUrl ? src : undefined;
-  const needsSign = open && kind !== 'text';
+  const needsSign =
+    open && kind !== 'text' && !(cachedVideo.eligible && (cachedVideo.loading || cachedVideo.url));
   const access = useAuthenticatedAssetUrl(asset, reloadKey, needsSign);
   const resolvedSrc =
-    needsSign && requiresAssetAuthorization(asset) ? access.url : (originalSrc ?? access.url);
+    cachedVideo.url ??
+    (needsSign && requiresAssetAuthorization(asset) ? access.url : (originalSrc ?? access.url));
   const retry = () => setReloadKey((current) => current + 1);
   const viewerTitleId = useId();
   const resetKey = `${asset.id}:${resolvedSrc}:${reloadKey}:${open ? 'open' : 'closed'}`;
@@ -1009,13 +1075,13 @@ export function AssetViewerDialog({
               {downloadError}
             </div>
           )}
-          {access.loading ? (
+          {cachedVideo.loading || (!cachedVideo.url && access.loading) ? (
             <ArtifactState
               className="artifact-preview-viewer-state"
               state="loading"
               message="正在读取产物…"
             />
-          ) : 'error' in access && access.error ? (
+          ) : !cachedVideo.url && 'error' in access && access.error ? (
             <ArtifactState
               className="artifact-preview-viewer-state"
               state="error"
@@ -1049,6 +1115,7 @@ export function AssetViewerDialog({
               name={asset.name}
               onMediaError={access.recover}
               onRetry={retry}
+              onVideoReady={cachedVideo.warm}
             />
           ) : kind === 'audio' ? (
             <div className="artifact-preview-viewer-audio">

@@ -1,3 +1,6 @@
+export { requestNewApiVideoRefund, videoRefundMessage } from './video-refund.js';
+export type { VideoRefundReason, VideoRefundStatus } from './video-refund.js';
+
 import type {
   FrozenPromptMention,
   ImageEditCapability,
@@ -18,6 +21,7 @@ import {
   ImageOutputParameterError,
   imageEditSourceSchema,
   normalizeImageOutputParameters,
+  resolveImageOutputParameters,
   precheckVideoGenerationInputs,
   renderPromptDocument,
   resolveImageEditMaxImages,
@@ -26,6 +30,7 @@ import {
   videoFamilyForModel,
   videoModeForPromptMentions,
   image2proVideoContractForModel,
+  isGeminiChatImageModel,
   yuanliuVideoContractForModel,
   resolveYuanliuVideoParameters,
   resolveImage2proVideoParameters,
@@ -442,6 +447,26 @@ type ImageProviderRequest = {
   sourceImages: ImageSourceInput[];
 };
 
+type ImageChatProviderRequest = {
+  body: Record<string, unknown>;
+  prompt: string;
+  sourceImages: ImageSourceInput[];
+};
+
+/** Honor the frozen protocol; repair the old Images default for known Gemini image models. */
+function imageRequestContract(snapshot: RunSnapshot): 'openai-images' | 'openai-chat-completions' {
+  const contract = snapshot.executionBindings?.[snapshot.targetNodeId]?.contract;
+  if (contract === 'openai-chat-completions') return contract;
+  if (contract === undefined || contract === 'openai-images')
+    return isGeminiChatImageModel(snapshot.modelAlias)
+      ? 'openai-chat-completions'
+      : 'openai-images';
+  throw new NewApiProviderError('当前图片模型使用了未接通的执行协议', {
+    code: 'IMAGE_CONTRACT_UNSUPPORTED',
+    retryable: false,
+  });
+}
+
 /**
  * 将通用快照映射为 New API 文本、图片或音频请求。
  * 视频由 NewApiVideoProvider 按显式冻结合同独立处理。
@@ -495,8 +520,19 @@ export class NewApiProvider {
     // 供应商是否识别该键、如何去重尚需契约确认，不能据此自动重试。
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
+    const imageChatRequest =
+      target.data.mediaType === 'image' &&
+      imageRequestContract(snapshot) === 'openai-chat-completions'
+        ? this.imageChatRequest(
+            snapshot,
+            target.data.label,
+            target.data.prompt,
+            target.data.promptDocument,
+            resolvedMentions,
+          )
+        : undefined;
     const imageRequest =
-      target.data.mediaType === 'image'
+      target.data.mediaType === 'image' && !imageChatRequest
         ? this.imageRequest(
             snapshot,
             target.data.label,
@@ -525,6 +561,16 @@ export class NewApiProvider {
         prompt: {
           format: 'messages',
           ...textRequestPromptCapture(snapshot, body.messages, [this.apiKey]),
+        },
+      };
+    } else if (imageChatRequest) {
+      plan = {
+        path: '/chat/completions',
+        body: imageChatRequest.body,
+        prompt: {
+          format: 'messages',
+          parts: [{ order: 0, role: 'user', text: imageChatRequest.prompt }],
+          resources: imagePromptResources(imageChatRequest.sourceImages, [this.apiKey]),
         },
       };
     } else if (imageRequest) {
@@ -577,7 +623,9 @@ export class NewApiProvider {
         target.data.mediaType === 'text'
           ? parseTextOutput(response.payload)
           : target.data.mediaType === 'image'
-            ? parseImageOutput(response.payload, snapshot)
+            ? imageChatRequest
+              ? parseChatImageOutput(response.payload, snapshot)
+              : parseImageOutput(response.payload, snapshot)
             : parseAudioOutput(response.payload, snapshot);
       await reportProgress?.(100);
       throwIfProviderSignalAborted(signal);
@@ -735,6 +783,38 @@ export class NewApiProvider {
     return { path: '/images/edits', body: form, sourceImages: mapping.images };
   }
 
+  private imageChatRequest(
+    snapshot: RunSnapshot,
+    label: string,
+    nodePrompt?: string,
+    nodePromptDocument?: PromptDocument,
+    resolvedMentions?: readonly ResolvedMention[],
+  ): ImageChatProviderRequest {
+    const mapping = mapImageGenerationInputs(
+      snapshot,
+      label,
+      nodePrompt,
+      nodePromptDocument,
+      resolvedMentions,
+    );
+    assertImageEditSourceInput(snapshot, mapping);
+    const parts: ChatContentPart[] = [{ type: 'text', text: mapping.prompt }];
+    for (const image of mapping.images)
+      parts.push({ type: 'image_url', image_url: { url: imageChatContentUrl(image) } });
+    const parameters = isGeminiChatImageModel(snapshot.modelAlias)
+      ? geminiChatImageParameters(snapshot.parameters, snapshot.modelAlias)
+      : providerParameters(snapshot.parameters, 'image', snapshot.modelAlias);
+    return {
+      body: {
+        ...parameters,
+        model: snapshot.modelAlias,
+        messages: [{ role: 'user', content: mapping.images.length ? parts : mapping.prompt }],
+      },
+      prompt: mapping.prompt,
+      sourceImages: mapping.images,
+    };
+  }
+
   private audioPayload(
     snapshot: RunSnapshot,
     label: string,
@@ -847,6 +927,8 @@ export function isNewApiVideoContract(value: unknown): value is NewApiVideoContr
 
 /** 视频执行选项；构造器默认 legacy，新任务可显式选官方统一协议。 */
 export type NewApiVideoProviderOptions = NewApiProviderOptions & {
+  /** Retain an in-flight create response so Worker cancellation can refund its task. */
+  awaitSubmissionOnCancel?: boolean;
   /** 仅用于尚未冻结合同的新任务；恢复优先使用 providerJob.payload.contract。 */
   videoContract?: NewApiVideoContract;
   /** 查询等待基数，单位毫秒；允许 0 供隔离测试使用。 */
@@ -881,6 +963,7 @@ const maxUnexplainedVideoFailureRechecks = 3;
  * 新建任务必须先通过 onProviderJob 持久化合同；已有 ID 不重新 POST。
  */
 export class NewApiVideoProvider {
+  private readonly awaitSubmissionOnCancel: boolean;
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
@@ -894,6 +977,7 @@ export class NewApiVideoProvider {
 
   /** 校验连接与轮询配置；不发请求，未知合同直接抛出 TypeError。 */
   constructor(options: NewApiVideoProviderOptions) {
+    this.awaitSubmissionOnCancel = options.awaitSubmissionOnCancel === true;
     this.videoContract = options.videoContract ?? 'legacy-v1';
     if (!isNewApiVideoContract(this.videoContract)) {
       throw new TypeError(
@@ -1116,7 +1200,7 @@ export class NewApiVideoProvider {
           'POST',
           body,
           idempotencyKey,
-          signal,
+          this.awaitSubmissionOnCancel ? undefined : signal,
           contract,
           snapshot.executionBindings?.[snapshot.targetNodeId]?.authority,
         );
@@ -2638,14 +2722,20 @@ function providerResponseError(
     formatDetailedProviderError({
       action,
       status: response.status,
-      code: providerError.code,
+      code:
+        action === '视频查询' && [404, 410].includes(response.status)
+          ? 'VIDEO_TASK_NOT_FOUND'
+          : providerError.code,
       requestId,
       providerMessage: providerError.message,
       extra,
     }),
     {
       status: response.status,
-      code: providerError.code,
+      code:
+        action === '视频查询' && [404, 410].includes(response.status)
+          ? 'VIDEO_TASK_NOT_FOUND'
+          : providerError.code,
       requestId,
       newApiRequestId,
       providerPayload: sanitizeProviderPayload(isRecord(payload) ? payload : { body: payload }),
@@ -3428,6 +3518,95 @@ function parseImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProvide
   throw new NewApiProviderError('New API 图片响应缺少 url 或 base64 内容');
 }
 
+function parseChatImageOutput(payload: unknown, snapshot: RunSnapshot): ImageProviderOutput {
+  if (!isRecord(payload) || !Array.isArray(payload.choices) || payload.choices.length === 0)
+    throw chatImageOutputError('New API 聊天生图响应缺少 choices[0] 内容', payload);
+  assertSingleMediaResult(payload.choices);
+  const choice = payload.choices[0];
+  const message = isRecord(choice) && isRecord(choice.message) ? choice.message : undefined;
+  if (!message) throw chatImageOutputError('New API 聊天生图响应缺少 message 内容', payload);
+
+  const images: Record<string, unknown>[] = [];
+  const addImage = (value: unknown) => {
+    if (typeof value === 'string') {
+      if (/^(?:data:image\/|https?:\/\/)/i.test(value.trim())) images.push({ url: value });
+      return;
+    }
+    if (!isRecord(value)) return;
+    const inline = value.inline_data ?? value.inlineData;
+    if (isRecord(inline) && nonEmptyString(inline.data)) {
+      images.push({
+        b64_json: inline.data,
+        mime_type: inline.mime_type ?? inline.mimeType,
+      });
+      return;
+    }
+    const imageUrl = value.image_url ?? value.imageUrl ?? value.url;
+    const url = isRecord(imageUrl) ? imageUrl.url : imageUrl;
+    if (nonEmptyString(url)) {
+      images.push({ url });
+      return;
+    }
+    if (nonEmptyString(value.b64_json)) images.push({ b64_json: value.b64_json });
+  };
+  const content = message.content;
+  if (Array.isArray(message.images) && message.images.length > 0) {
+    assertSingleMediaResult(message.images);
+    for (const item of message.images) addImage(item);
+  } else {
+    for (const item of Array.isArray(content) ? content : []) addImage(item);
+    const text = extractTextContent(content);
+    if (text && images.length === 0) {
+      const standalone = text.trim();
+      if (/^https?:\/\/\S+$/i.test(standalone) && mimeTypeFromUrl(standalone, 'image')) {
+        // Some NewAPI gateways return the generated image address directly as chat text.
+        addImage(standalone);
+      } else if (/^data:image\/[^\s]+;base64,/i.test(standalone)) {
+        addImage(standalone);
+      } else {
+        // Markdown 图片可带尖括号、标题或换行的 base64；普通文字链接不作为图片。
+        for (const match of text.matchAll(/!\[[^\]]*\]\(([^)]*)\)/g)) {
+          const target = match[1]?.trim() ?? '';
+          const withoutTitle = target.replace(/\s+(?:"[^"\r\n]*"|'[^'\r\n]*')$/, '');
+          const url = /^<[^>]+>$/.test(withoutTitle) ? withoutTitle.slice(1, -1) : withoutTitle;
+          if (/^data:image\/[^;,\s]+;base64,/i.test(url) || /^https?:\/\/\S+$/i.test(url))
+            addImage(url);
+        }
+      }
+    }
+  }
+  if (images.length === 0)
+    throw chatImageOutputError('New API 聊天生图响应缺少图片内容（上游已返回响应）', payload);
+  assertSingleMediaResult(images);
+  return parseImageOutput({ data: images }, snapshot);
+}
+
+/** 仅保存响应形态和已知结束原因，不持久化用户文字、图片字节或临时地址。 */
+function chatImageOutputError(message: string, payload: unknown): NewApiProviderError {
+  const choices = isRecord(payload) && Array.isArray(payload.choices) ? payload.choices : [];
+  const choice = choices[0];
+  const reply = isRecord(choice) && isRecord(choice.message) ? choice.message : undefined;
+  const content = reply?.content;
+  const finishReason = isRecord(choice) ? choice.finish_reason : undefined;
+  const knownFinishReasons = ['stop', 'length', 'content_filter', 'tool_calls', 'function_call'];
+  return new NewApiProviderError(message, {
+    code: 'PROVIDER_IMAGE_OUTPUT_MISSING',
+    retryable: false,
+    providerPayload: {
+      choiceCount: choices.length,
+      contentType: content === null ? 'null' : Array.isArray(content) ? 'array' : typeof content,
+      textLength: extractTextContent(content)?.length ?? 0,
+      contentPartCount: Array.isArray(content) ? content.length : 0,
+      imageEntryCount: Array.isArray(reply?.images) ? reply.images.length : 0,
+      finishReason:
+        typeof finishReason === 'string' && knownFinishReasons.includes(finishReason)
+          ? finishReason
+          : 'unknown',
+      hasRefusal: nonEmptyString(reply?.refusal),
+    },
+  });
+}
+
 function parseAudioOutput(payload: unknown, snapshot: RunSnapshot): AudioProviderOutput {
   const requestedFormat = outputFormat(snapshot.parameters);
   if (isBinaryResponsePayload(payload)) {
@@ -3908,6 +4087,104 @@ function providerParameters(
     }
   }
   return providerParameters;
+}
+
+/** New API 的 Gemini Chat 兼容层仅从 extra_body.google.image_config 读取图片配置。 */
+function geminiChatImageParameters(
+  parameters: Record<string, unknown>,
+  modelAlias: string,
+): Record<string, unknown> {
+  const normalized = providerParameters(parameters, 'image', modelAlias);
+  const imageConfig = geminiImageConfig(normalized);
+  const result = { ...normalized };
+  // These are Images API aliases. Sending them to Chat Completions either has no effect or is ambiguous.
+  for (const key of [
+    'size',
+    'image_size',
+    'imageSize',
+    'resolution',
+    'aspectRatio',
+    'aspect_ratio',
+    'ratio',
+    'quality',
+    'image_quality',
+    'imageQuality',
+  ])
+    delete result[key];
+  if (!imageConfig) return result;
+
+  const extraBody = result.extra_body;
+  if (extraBody !== undefined && !isRecord(extraBody))
+    throw invalidProviderParameter('image', 'extra_body', '必须是对象，才能写入 Gemini 图片配置');
+  const google = extraBody?.google;
+  if (google !== undefined && !isRecord(google))
+    throw invalidProviderParameter(
+      'image',
+      'extra_body.google',
+      '必须是对象，才能写入 Gemini 图片配置',
+    );
+  const existingImageConfig = google?.image_config;
+  if (existingImageConfig !== undefined && !isRecord(existingImageConfig))
+    throw invalidProviderParameter(
+      'image',
+      'extra_body.google.image_config',
+      '必须是对象，才能写入 Gemini 图片配置',
+    );
+  result.extra_body = {
+    ...(extraBody ?? {}),
+    google: {
+      ...(google ?? {}),
+      image_config: { ...(existingImageConfig ?? {}), ...imageConfig },
+    },
+  };
+  return result;
+}
+
+const geminiImageResolutionForLongEdge: Readonly<Record<number, '1K' | '2K' | '4K'>> = {
+  1024: '1K',
+  2048: '2K',
+  3840: '4K',
+};
+
+const geminiImageAspectRatios = [
+  '1:1',
+  '16:9',
+  '9:16',
+  '4:3',
+  '3:4',
+  '3:2',
+  '2:3',
+  '21:9',
+] as const;
+
+/** Convert the canvas pixel size into Gemini's documented aspect-ratio and image-size enums. */
+function geminiImageConfig(
+  parameters: Record<string, unknown>,
+):
+  | { aspect_ratio: (typeof geminiImageAspectRatios)[number]; image_size: '1K' | '2K' | '4K' }
+  | undefined {
+  const size = parameters.size;
+  if (size === undefined || (typeof size === 'string' && size.trim().toLowerCase() === 'auto'))
+    return undefined;
+  if (typeof size !== 'string')
+    throw invalidProviderParameter('image', 'size', 'Gemini 图片尺寸必须是 WIDTHxHEIGHT');
+  const dimensions = /^(\d+)x(\d+)$/i.exec(size.trim());
+  if (!dimensions)
+    throw invalidProviderParameter('image', 'size', 'Gemini 图片尺寸必须是 WIDTHxHEIGHT');
+  const width = Number(dimensions[1]);
+  const height = Number(dimensions[2]);
+  const imageSize = geminiImageResolutionForLongEdge[Math.max(width, height)];
+  if (!imageSize)
+    throw invalidProviderParameter('image', 'size', 'Gemini 图片清晰度仅支持 1K、2K、4K');
+  const resolution = imageSize.toLowerCase();
+  const aspectRatio = geminiImageAspectRatios.find(
+    (candidate) =>
+      resolveImageOutputParameters({ resolution, aspectRatio: candidate }).size ===
+      `${width}x${height}`,
+  );
+  if (!aspectRatio)
+    throw invalidProviderParameter('image', 'size', 'Gemini 图片比例不受支持，请选择标准比例');
+  return { aspect_ratio: aspectRatio, image_size: imageSize };
 }
 
 /** 返回字段范围或类型错误；约束描述由本地代码提供，不拼接不可信输入值。 */
@@ -4776,6 +5053,15 @@ function imageFormFile(
     file: new File([bytes], filename, { type: mimeType }),
     filename,
   };
+}
+
+/** Chat Completions image parts require a hydrated, validated inline source. */
+function imageChatContentUrl(input: RunInputSnapshot): string {
+  const contentUrl = input.snapshot.data.contentUrl;
+  const parsed = nonEmptyString(contentUrl) ? parseDataUrl(contentUrl) : undefined;
+  if (!parsed) throw inputRoleValueError('image', input.role, '可发送的图片内容');
+  const mimeType = validatedMediaMimeType(parsed.mimeType, 'image') ?? 'image/png';
+  return `data:${mimeType};base64,${validatedMediaBase64(parsed.base64)}`;
 }
 
 function resolveMappedPromptInput(

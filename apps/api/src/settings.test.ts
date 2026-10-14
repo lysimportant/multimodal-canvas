@@ -126,6 +126,16 @@ describe('New API 模型目录规范化', () => {
     expect(models).toEqual([expect.objectContaining({ id: 'gpt-image-2', mediaTypes: ['image'] })]);
   });
 
+  it('将 Gemini 生图模型识别为图片模型，保留精确模型 ID', () => {
+    const ids = ['gemini-3-pro-image-preview', 'gemini-nano-banana-2.1', 'gemini-2.5-flash-image'];
+    const models = normalizeModelsPayload({ data: ids.map((id) => ({ id })) });
+    expect(models.map((model) => model.id)).toEqual(ids);
+    expect(models.every((model) => model.mediaTypes.includes('image'))).toBe(true);
+    expect(normalizeModelsPayload({ data: [{ id: ids[0], type: 'chat' }] })[0]?.mediaTypes).toEqual(
+      ['text', 'image'],
+    );
+  });
+
   it('推断常见视频别名并保留完整按次模型 ID', () => {
     const models = normalizeModelsPayload({
       data: [

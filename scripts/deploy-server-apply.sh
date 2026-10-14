@@ -4,13 +4,13 @@ set -euo pipefail
 umask 077
 
 archive_name="${1:?archive name required}"
-database_mode="${2:?database mode required}"
-gateway_mode="${3:?gateway mode required}"
-release_id="${4:?release id required}"
+database_mode="${2:-Auto}"
+gateway_mode="${3:-Auto}"
 project='/opt/multimodal-canvas'
 cd "$project"
 
-[[ "$archive_name" =~ ^\.incoming-[0-9]{14}-[a-f0-9]{8}\.tar\.gz$ ]] || { echo 'Invalid archive name.' >&2; exit 1; }
+[[ "$archive_name" =~ ^(multimodal-canvas-|\.incoming-)([0-9]{14}-[a-f0-9]{8})\.tar\.gz$ ]] || { echo 'Invalid archive name.' >&2; exit 1; }
+release_id="${4:-${BASH_REMATCH[2]}}"
 [[ "$release_id" =~ ^[0-9]{14}-[a-f0-9]{8}$ ]] || { echo 'Invalid release id.' >&2; exit 1; }
 [[ "$database_mode" =~ ^(Auto|Local|Neon)$ ]] || { echo 'Invalid database mode.' >&2; exit 1; }
 [[ "$gateway_mode" =~ ^(Auto|On|Off)$ ]] || { echo 'Invalid gateway mode.' >&2; exit 1; }
@@ -37,13 +37,13 @@ fi
 
 if [[ "$database_mode" == Auto ]]; then
   if [[ -n "$existing_database" ]]; then database_mode="$existing_database"
-  else echo 'Cannot identify the existing database mode; run with -Database Local or -Database Neon.' >&2; exit 1
+  else echo 'Cannot identify the existing database mode; pass Local or Neon as the second argument.' >&2; exit 1
   fi
 fi
 if [[ "$gateway_mode" == Auto ]]; then
   if has_service gateway; then gateway_mode=On
   elif has_service web; then gateway_mode=Off
-  else echo 'Cannot identify the existing gateway mode; run with -Gateway On or -Gateway Off.' >&2; exit 1
+  else echo 'Cannot identify the existing gateway mode; pass On or Off as the third argument.' >&2; exit 1
   fi
 fi
 
@@ -100,5 +100,4 @@ if [[ "$gateway_mode" == On ]]; then compose+=(--profile server); fi
 "${compose[@]}" config --quiet
 "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 180
 "${compose[@]}" ps --all
-rm -f -- "$archive_name"
 echo 'Server deployment completed; .env.compose and Docker volumes were preserved.'

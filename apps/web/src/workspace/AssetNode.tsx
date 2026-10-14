@@ -1212,6 +1212,10 @@ export function AssetNode({
                 <dd>{effectiveRunStatus ? runStatusLabel(effectiveRunStatus) : '未运行'}</dd>
               </div>
               <div>
+                <dt>任务 ID</dt>
+                <dd>{data.runId ?? '未记录'}</dd>
+              </div>
+              <div>
                 <dt>节点创建时间</dt>
                 <dd>
                   {infoTimes.createdAt ? (

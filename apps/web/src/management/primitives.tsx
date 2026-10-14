@@ -228,7 +228,7 @@ export function UserIdentity({
   );
 }
 
-/** 日期展示保留分钟精度；无效时间显示明确占位。 */
+/** 日期展示精确到秒；无效时间显示明确占位。 */
 export function formatDate(value?: string | null): string {
   if (!value || Number.isNaN(Date.parse(value))) return '暂无';
   return new Intl.DateTimeFormat('zh-CN', {
@@ -237,6 +237,7 @@ export function formatDate(value?: string | null): string {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
   }).format(new Date(value));
 }
 

@@ -697,6 +697,7 @@
 
 .node-quick-editor-dialog.node-quick-editor-dialog {
   width: min(860px, calc(100vw - 32px));
+  height: min(720px, calc(100dvh - 40px));
   max-height: calc(100dvh - 40px);
 }
 

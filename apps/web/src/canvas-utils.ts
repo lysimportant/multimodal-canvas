@@ -18,6 +18,8 @@ import {
 const canvasGroupSchemaArray = canvasGroupSchema.array();
 
 export type FlowNodeData = CanvasDocument['nodes'][number]['data'] & {
+  /** 当前节点最近一次服务端运行 ID；仅用于画布悬浮信息，不写入画布文档。 */
+  runId?: string;
   runStatus?: RunStatus;
   runProgress?: number;
   runError?: string;
@@ -240,6 +242,7 @@ export function toCanvasDocument(
     nodes: nodes.map(({ id, type, position, width, height, data }) => {
       const {
         runStatus: _runStatus,
+        runId: _runId,
         runProgress: _runProgress,
         runError: _runError,
         nodeTiming: _nodeTiming,
@@ -931,6 +934,7 @@ function cloneNodeForClipboard(node: AssetFlowNode): AssetFlowNode {
   const cloned = structuredClone(node);
   const {
     runStatus: _runStatus,
+    runId: _runId,
     runProgress: _runProgress,
     runError: _runError,
     nodeTiming: _nodeTiming,

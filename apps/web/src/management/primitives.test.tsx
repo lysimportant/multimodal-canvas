@@ -5,11 +5,14 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Modal, Notice, Pagination, QueryState } from './primitives';
+import { formatDate, Modal, Notice, Pagination, QueryState } from './primitives';
 
 afterEach(cleanup);
 
 describe('管理业务薄适配', () => {
+  it('任务时间展示秒级精度', () => {
+    expect(formatDate('2026-09-12T00:01:09Z')).toMatch(/:09$/);
+  });
   it('加载、请求失败、空数据和已加载内容仍然互斥，并使用库组件', async () => {
     const retry = vi.fn();
     const view = render(
