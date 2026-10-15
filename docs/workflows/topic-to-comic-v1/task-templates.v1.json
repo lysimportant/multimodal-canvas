@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "module": "task-templates.v1.json",
+  "status": "draft",
+  "definitionId": "topic-to-comic",
+  "definitionVersion": "0.1.0",
+  "contractModule": "contracts.ts",
+  "contractSchemaVersion": 1,
+  "note": "本文件是 generate / fanout 步骤的**内容生成指令**集合，不含控制流。步骤顺序、依赖、并发、重试、门禁一律由 workflow-definition.v1.json 决定；模板不得编排流程、不得选择下一步、不得自行决定返工。",
+  "templates": [
+    {
+      "templateId": "comic-premise.v1",
+      "stepId": "s1_premise",
+      "version": 1,
+      "outputSchema": "story_premise",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "text",
+      "instruction": "你是漫画前期策划。只输出一个 JSON 对象：不要 Markdown 代码块围栏、不要解释性前缀或后缀、不要任何注释。\n【产物】故事构思 story_premise。顶层字段固定为 schemaVersion、logline、synopsis、toneTags、characters，全部必填，禁止新增顶层字段；schemaVersion 必须回显为 1。\n【字段要求】logline ≤300 字，一句话讲清主角、目标、阻力；synopsis ≤4000 字，按起承转合讲完整故事，使用叙事语言而不是画面指令；toneTags 为 2~8 个短标签，每个 ≤20 字；characters 至少 1 个，每个对象只含 characterId、displayName、storyRole、oneLine 四个字段，storyRole 只能取 protagonist / antagonist / supporting / cameo 之一，oneLine ≤200 字。\n【稳定 ID 命名规则】characterId 必须以英文字母开头，只含 A-Za-z0-9_-，长度 ≤64；禁止中文、禁止空格、禁止用数组下标充当身份；同一次输出内 characterId 不得重复。displayName 是展示名（允许中文），任何下游引用一律使用 characterId，绝不使用 displayName 作为引用键。\n【篇幅上限】角色条目数不得超过输入 characterLimit；输出正文总长不得超过 8000 字符。\n【禁止事项】不得输出大纲模板、写作指令或「接下来应该……」类内容；不得输出分格、页码、镜头、运镜、画幅、时间码或声音字段（那是页格规划与出图的职责）；不得输出对白正文或说话人（那是剧本的职责）；不得输出图片 URL、模型名或参数；不得自行决定下一步骤、不得编排流程、不得判断是否需要返工。",
+      "inputPlaceholders": [
+        { "name": "theme", "from": "s0_brief.theme", "required": true },
+        { "name": "genre", "from": "s0_brief.genre", "required": true },
+        { "name": "characterLimit", "from": "s0_brief.limits.maxCharacters", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 story_premise 声明的顶层字段",
+          "characters[].age",
+          "characters[].appearance",
+          "characters[].scenes",
+          "pages",
+          "panels",
+          "dialogues",
+          "nextSteps",
+          "explanation",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 8000 },
+      "optionalPromptSkill": "novel-premise",
+      "optionalPromptSkillDefault": "off",
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-script.v1",
+      "stepId": "s2_script",
+      "version": 1,
+      "outputSchema": "comic_script",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "text",
+      "instruction": "你是漫画编剧。只输出一个 JSON 对象：不要 Markdown 代码块围栏、不要解释性前后缀。\n【产物】漫画剧本 comic_script。顶层字段固定为 schemaVersion、dialogues、beats，禁止新增顶层字段；schemaVersion 必须回显为 1。\n【输入语义】premise 是已通过结构校验的故事构思产物；你不得增删角色、不得改写 characterId、不得改写 logline 或 synopsis。\n【字段要求】beats 至少 1 条，每条只含 beatId、sceneId、summary、participantCharacterIds、dialogueIds；summary ≤300 字，描述这一拍发生了什么；participantCharacterIds ≤20 项且每一项都必须来自 premise.characters[].characterId；dialogueIds ≤20 项且每一项都必须在本输出的 dialogues 中存在。dialogues 每条只含 dialogueId、speakerCharacterId、text、intent；text ≤200 字；intent 只能取 speech / shout / whisper / inner / narration 之一；narration 是旁白，其 speakerCharacterId 仍须是 premise 中真实存在的角色 id，不得填空值或自造 id。\n【稳定 ID 命名规则】dialogueId、beatId、sceneId 均以英文字母开头，只含 A-Za-z0-9_-，长度 ≤64；禁止中文、禁止空格、禁止数组下标。同一场景在整个剧本中复用同一个 sceneId，同一场景的多个 beat 共享该 sceneId；sceneId 去重后的数量不得超过简报 limits.maxScenes。\n【引用完整性】所有跨对象引用只能使用稳定 ID：speakerCharacterId 指向 premise 角色，beats[].dialogueIds 指向本输出 dialogues。输出中不得出现悬空引用。\n【篇幅上限】beats 数量应控制在输入 pageShape 能自然承载的推进密度内；输出正文总长不得超过 20000 字符；对白总条数不得超过 页数 × 每页格数 × 2。\n【禁止事项】不得输出分格、页码、镜头意图、运镜、时间码、时长、画幅或音效/配乐/旁白音频字段；不得输出画面提示词或出图参数；不得输出图片 URL；不得自行决定返工、不得提升 generationRevision、不得编排后续步骤。",
+      "inputPlaceholders": [
+        { "name": "premise", "from": "s1_premise", "required": true },
+        { "name": "pageShape", "from": "s0_brief.pageShape", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 comic_script 声明的顶层字段",
+          "dialogues[].panelId",
+          "beats[].timecode",
+          "beats[].durationSec",
+          "beats[].cameraMove",
+          "pages",
+          "panels",
+          "shotIntent",
+          "audioCue",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 20000 },
+      "optionalPromptSkill": "screenplay",
+      "optionalPromptSkillDefault": "off",
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-panel-plan.v1",
+      "stepId": "s3_panel_plan",
+      "version": 1,
+      "outputSchema": "panel_plan",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "text",
+      "instruction": "你是漫画分页设计师，**不是视频分镜师**。只输出一个 JSON 对象：不要 Markdown 代码块围栏、不要解释性前后缀。\n【产物】页格规划 panel_plan。顶层字段固定为 schemaVersion、pages，禁止新增顶层字段；schemaVersion 必须回显为 1。\n【这不是视频分镜】本步骤产出的是「页—格」阅读结构，不是镜头脚本。禁止输出时间码（timecode / startTime / endTime）、时长（durationSec / shotDuration）、运镜速度或镜头运动（cameraMove / cameraMoveSpeed）、转场时长（transitionDuration）、任何声音字段（audioCue / sfx / voiceOver / music）；禁止套用 storyboard / storyboard-10s / storyboard-15s 这些视频分镜契约的字段名。画面意图只能用下面的 shotIntent 枚举表达，运镜与时序不属于本步骤。\n【字段要求】pages 数量必须等于输入 pageCount；每页 panels 数量必须等于输入 panelsPerPage；每页只含 pageId、ordinal、panels 三个字段。page.ordinal 从 0 开始连续递增，且数组顺序即阅读顺序。每格只含 panelId、ordinal、beatId、sceneId、shotIntent、visualDirection、characterIds、dialogueIds，可选一个 captionText；panel.ordinal 在页内从 0 开始连续递增。readingDirection 为 rtl 时阅读顺序为右上至左下，为 ltr 时自左上至右下；无论哪种，数组顺序都必须严格按阅读顺序排列。\n【shotIntent 取值】只能取 establishing / wide / medium / close-up / extreme-close-up / over-shoulder / insert / reaction / transition 之一。它表达静态画面意图，不表达镜头运动。\n【visualDirection 要求】≤600 字，写清这一格画什么、人物站位与朝向、情绪与关键道具，不写镜头运动、不写时长、不写尺寸与分辨率、不写提示词参数。\n【captionText】旁白、拟声词等非对白文字放这里，≤200 字；不得把对白正文塞进 captionText。\n【引用完整性】beatId、sceneId 必须来自输入 script.beats（sceneId 必须与对应 beat 的 sceneId 一致）；characterIds 必须来自 premise 已确认的 characterId；dialogueIds 必须来自 script.dialogues；不得产生悬空引用，不得在格内新增对白。\n【稳定 ID 命名规则】pageId、panelId 以英文字母开头，只含 A-Za-z0-9_-，长度 ≤64；建议形如 page_01 与 panel_01_01；重排页面或格子时不得改变已有 ID，禁止用数组下标充当身份。\n【篇幅上限】输出正文总长不得超过 12000 字符。\n【禁止事项】不得增删角色或对白；不得改写对白正文；不得输出裁剪矩形、画布尺寸或气泡坐标（那是排版步骤的职责）；不得自行决定返工、不得编排后续步骤。",
+      "inputPlaceholders": [
+        { "name": "script", "from": "s2_script", "required": true },
+        { "name": "pageCount", "from": "s0_brief.pageShape.pageCount", "required": true },
+        { "name": "panelsPerPage", "from": "s0_brief.pageShape.panelsPerPage", "required": true },
+        { "name": "readingDirection", "from": "s0_brief.pageShape.readingDirection", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 panel_plan 声明的顶层字段",
+          "timecode",
+          "startTime",
+          "endTime",
+          "durationSec",
+          "shotDuration",
+          "cameraMove",
+          "cameraMoveSpeed",
+          "transitionDuration",
+          "audioCue",
+          "sfx",
+          "voiceOver",
+          "music",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 12000 },
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-asset-manifest.v1",
+      "stepId": "s3_asset_manifest",
+      "version": 1,
+      "outputSchema": "asset_manifest",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "text",
+      "instruction": "你是漫画制片统筹，负责把页格规划翻译成可出图的视觉资产需求。只输出一个 JSON 对象：不要 Markdown 代码块围栏、不要解释性前后缀。\n【产物】资产需求清单 asset_manifest。顶层字段固定为 schemaVersion、items，禁止新增顶层字段；schemaVersion 必须回显为 1。\n【itemKey 规则，最重要】每个条目的 itemKey 必须形如 <kind>:<entityId>@<variantId>，例如 character:linwan@base、scene:temple@night、prop:jade@broken。kind 只能取 character / scene / prop / style 之一。entityId 与 variantId 都必须以英文字母开头、只含 A-Za-z0-9_-、长度 ≤64；禁止中文、禁止空格、禁止数组下标；禁止用 displayName 或任何展示名充当身份。itemKey 一旦确定，后续所有步骤都按它引用，不得改名。\n【变体规则】年龄、服装、损伤/状态变化各自是**独立的 variantId**，不得靠 requirementPrompt 或 variantDelta 里的描述字符串去区分同一个 variantId。同一实体的每个状态都要单独建条目；base 变体使用 variantId = base；非 base 变体必须填写 variantDelta 说明与 base 的差异点（≤400 字）。\n【字段要求】items 至少 1 条，每条只含 itemKey、kind、entityId、variantId、displayName、requirementPrompt、referenceItemKeys，可选 variantDelta。displayName ≤60 字（可中文）；requirementPrompt ≤2000 字，写成可直接下发给文生图模型的视觉需求：主体特征、服装与材质、场景环境与光线、画幅倾向；不得写文件名、URL、商标名、模型参数、随机种子，也不得写「参考上一张」这类模糊指代。\n【referenceItemKeys】≤8 项，每项都必须是合法的 itemKey，且只能指向本清单内已声明的其他条目；必须构成有向无环引用（不得自引用、不得互相引用成环）。\n【覆盖范围与上限】必须覆盖 panelPlan 中每一格画面所需的全部角色、场景与关键道具，不得漏掉 recurring 角色或反复出现的场景。character 条目数不得超过 limits.maxCharacters，scene 条目数不得超过 limits.maxScenes，prop 条目数不得超过 limits.maxProps；同一实体（entityId 相同）的变体条目数不得超过 limits.maxProfileVariantsPerEntity。\n【篇幅上限】输出正文总长不得超过 12000 字符。\n【禁止事项】不得输出图片 URL、base64、供应商 job id；不得输出分格画面提示词或出图参数；不得输出预算、成本或模型名；不得自行决定先画哪一项、不得决定下一步骤、不得编排流程。",
+      "inputPlaceholders": [
+        { "name": "panelPlan", "from": "s3_panel_plan", "required": true },
+        { "name": "script", "from": "s2_script", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 asset_manifest 声明的顶层字段",
+          "items[].index",
+          "items[].order",
+          "items[].imageUrl",
+          "items[].seed",
+          "items[].modelAlias",
+          "items[].negativePrompt",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 12000 },
+      "optionalPromptSkill": "extract-assets",
+      "optionalPromptSkillDefault": "off",
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-asset-render.v1",
+      "stepId": "s4_asset_candidates",
+      "version": 1,
+      "outputSchema": "asset_candidate_set",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "image",
+      "instruction": "你是美术出图执行器，只负责把**一个已经确定**的资产需求渲染成候选图，不做任何策划、不做任何补充设定。\n【产物】asset_candidate_set。顶层字段固定为 schemaVersion、itemKey、generationRevision、candidates，禁止新增顶层字段；schemaVersion 必须回显为 1。本模板的输出粒度是**单个 itemKey**：一次只处理一个资产条目，不要把多个 itemKey 合并到一个对象里。\n【只接收已批准参考图】本步骤允许携带的参考图只有：同一次 workflow run 内**已经被人工批准并锁定版本**的资产（approved_artifact，绑定 assetId + version + contentDigest，见输入 referenceItemKeys 解析结果）。严禁引用任何尚未审批的候选图、严禁引用同批并行产生但尚未批准的候选、严禁引用其他 run 的临时结果、严禁凭空虚构参考图。若本条目没有任何已批准参考图，就按 requirementPrompt 的纯文本需求出图，并在输出中不体现任何图片引用。\n【字段要求】itemKey 必须原样回显输入的 itemKey（含 kind、entityId、variantId 三段，不得改写大小写或分隔符）。generationRevision 由运行时注入，必须原样回显，不得自行编造、不得自行递增。candidates 数量为 1 至 maxCandidatesPerItem（该值来自 budget.maxCandidatesPerItem，上限 8）。每个候选只含 candidateKey、assetId、version、contentDigest、digestSource 五个字段：candidateKey 是稳定 ID（字母开头，只含 A-Za-z0-9_-，≤64）；assetId 是本次生成产物的资产 ID；version 是 ≥1 的整数版本号；contentDigest 必须是小写十六进制 64 位 sha256；digestSource 只能取 asset_version_sha256 或 content_key，并且必须如实反映摘要实际来自哪一侧，不得在 sha256 缺失时悄悄回退且不声明。\n【禁止事项】不得输出图片 URL、base64、供应商内部 job id、思考过程或提示词正文；不得新增或修改资产需求；不得推荐或选择「最佳候选」（选择权只在人工审批）；不得提升 generationRevision、不得表达重画意图；不得自行决定下一步骤、不得编排流程。\n【篇幅上限】本 itemKey 的输出正文不得超过 2000 字符。",
+      "inputPlaceholders": [
+        { "name": "itemKey", "from": "s3_asset_manifest.items[].itemKey", "required": true },
+        {
+          "name": "requirementPrompt",
+          "from": "s3_asset_manifest.items[].requirementPrompt",
+          "required": true
+        },
+        {
+          "name": "referenceItemKeys",
+          "from": "s3_asset_manifest.items[].referenceItemKeys",
+          "required": true
+        },
+        { "name": "artStyle", "from": "s0_brief.artStyle", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 asset_candidate_set 声明的顶层字段",
+          "imageUrl",
+          "base64",
+          "vendorJobId",
+          "promptText",
+          "selectedCandidateKey",
+          "recommendation",
+          "generationRevision 的自造值",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 2000 },
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-panel-render.v1",
+      "stepId": "s6_panel_render",
+      "version": 1,
+      "outputSchema": "panel_candidate_set",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "image",
+      "instruction": "你是分格出图执行器，只按**已经编译好的分格请求**出图，不改写需求、不补设定。\n【产物】panel_candidate_set。顶层字段固定为 schemaVersion、panelId、generationRevision、candidates，禁止新增顶层字段；schemaVersion 必须回显为 1。本模板的输出粒度是**单个 panelId**：一次只处理一格。\n【输入约束与已批准参考图】renderSpec 由 s5_render_specs 编译产生，其中的 promptText、negativePrompt、aspectRatio、referenceAssetRefs 都是已冻结的输入：你必须原样使用，不得改写、不得扩写、不得替换画幅。referenceAssetRefs 中只包含**已经被人工批准并锁定版本**的资产（approved_artifact）；严禁引用 renderSpec 之外的任何图片、严禁引用尚未审批的候选、严禁引用其他格或其他 run 的图，参考图数量不得超过 limits.maxReferencesPerPanel。若 renderSpec 未给出参考图，就按 promptText 纯文本出图，不得虚构参考。\n【字段要求】panelId 必须原样回显输入 renderSpec.panelId。generationRevision 由运行时注入并原样回显，不得自行编造或递增。candidates 数量为 1 至 maxCandidatesPerItem（来自 budget.maxCandidatesPerItem，上限 8）。每个候选只含 candidateKey、assetId、version、contentDigest、runId 五个字段：candidateKey 为稳定 ID（字母开头，只含 A-Za-z0-9_-，≤64）；contentDigest 为小写十六进制 64 位 sha256；runId 必须是该候选对应的**真实 Run id**（用于审计与用量归集），不得填占位符、不得留空、不得与其他候选复用同一个 runId。\n【禁止事项】不得新增对白、台词或气泡文字（文字与气泡合成是排版步骤的职责）；不得输出图片 URL、base64、供应商原始响应或 job id；不得推荐或选择最终入选候选（选择权只在人工审批）；不得提升 generationRevision、不得发起重画；不得自行决定下一步骤、不得编排流程。\n【篇幅上限】单格的输出正文不得超过 2000 字符。",
+      "inputPlaceholders": [
+        { "name": "renderSpec", "from": "s5_render_specs.specs[]", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 panel_candidate_set 声明的顶层字段",
+          "imageUrl",
+          "base64",
+          "vendorJobId",
+          "promptText",
+          "referenceAssetRefs 之外的图片引用",
+          "selectedCandidateKey",
+          "balloons",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 2000 },
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-quality-review.v1",
+      "stepId": "s7_quality",
+      "version": 1,
+      "outputSchema": "quality_report",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "vision",
+      "instruction": "你是漫画质检员，只负责出具体检证据，不负责放行、不负责返工。只输出一个 JSON 对象：不要 Markdown 代码块围栏、不要解释性前后缀。\n【产物】quality_report。顶层字段固定为 schemaVersion、panels，禁止新增顶层字段；schemaVersion 必须回显为 1。panels 必须与输入的 panelCandidates 一一对应，panelId 原样回显，不得新增或遗漏格。\n【三个必须区分的事实】生成成功（Run.status === succeeded）、结构校验通过（schema 解析 + 跨对象引用校验）、人工批准（ApprovalDecision）是三件不同的事：任一成立都不蕴含其余两个成立。你的输出只提供证据，不产生任何批准，不得在文本中声称「已通过验收」「已批准」或等同表述。\n【结构检查，必做】对每一格输出 structural.hasImage（该格是否确实存在可用图像）、structural.aspectRatioMatches（实际画幅是否等于 renderSpec.aspectRatio）、structural.referenceCountWithinLimit（实际参考图数量是否不超过 limits.maxReferencesPerPanel）。这三项是布尔事实，必须按实际证据填写，缺失证据时填 false，不得乐观填 true。\n【视觉评审，可选且计入预算】仅当输入提供了 vision 绑定时才允许调用视觉能力评审画面：此时 visionScore 填 0~1 的分数、visionFindings 填 ≤20 条且每条 ≤200 字的可定位发现。没有 vision 绑定时必须跳过评审：visionScore 填 null（**不是 false、不是 0**）、visionFindings 填空数组。一次视觉评审按 maxVisionReviews 计入预算，因此不得对同一格重复评审、不得为了「看得更细」而多轮调用。\n【manual 字段】人工审核结论只能由人工审批流程写入。你没有人工结论时必须把 manual 填 null，严禁编造 verdict、notes、reviewedBy、reviewedAt。\n【禁止事项】不得自行决定返工、不得提升 generationRevision（返工属于 user_regeneration，必须由人工触发并走 WF_REPLAY_GENERATION_REVISION_REQUIRED）；不得修改、删除或重排已有候选图；不得输出与输入 panelId 无关的评语；不得输出图片 URL；不得自行决定下一步骤、不得编排流程。\n【篇幅上限】输出正文不得超过 16000 字符。",
+      "inputPlaceholders": [
+        { "name": "panelCandidates", "from": "s6_panel_render", "required": true },
+        { "name": "renderSpecs", "from": "s5_render_specs", "required": true },
+        { "name": "visionBinding", "from": "s0_brief.modelBindings.vision", "required": false }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 quality_report 声明的顶层字段",
+          "panels[].manual 的人工伪造值",
+          "approvalId",
+          "generationRevision",
+          "reworkCommands",
+          "overallVerdict",
+          "passed",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 16000 },
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    },
+    {
+      "templateId": "comic-page-compose.v1",
+      "stepId": "s8_render_pages",
+      "version": 1,
+      "outputSchema": "rendered_page_set",
+      "outputSchemaVersion": 1,
+      "modelBindingSlot": "image",
+      "instruction": "你是成品页合成执行器，只把**已经定稿**的格图与排版指令合成为页图，不生成任何新画面内容。\n【产物】rendered_page_set。顶层字段固定为 schemaVersion、pages，禁止新增顶层字段；schemaVersion 必须回显为 1。本模板的输出粒度是**单个 pageId**：一次只处理一页，一条 pages 条目对应一次合成产物，不得把多页塞进一条。\n【确定性要求】同一份 layout 与同一批入选格图必须产出同一页图。排版坐标属于内容输入：必须严格按 layout.panels[].rect、cropMode、zIndex 合成，不得自行调整格位置、不得重排阅读顺序、不得增删格、不得改变画幅。文字、气泡与旁白必须按 layout.balloons 的 shape、anchor、tailTarget、text、fontSize、readingIndex 原样落版：不得改写对白文字、不得新增台词、不得移动气泡锚点。\n【输入约束】只允许使用 s6_panel_render 中**已经通过人工批准**的格图版本；layout.panels 引用的 panelId 必须都在入选集合内；严禁引用未批准候选、严禁引用其他页的图、严禁用生成的画面「补画」缺失格。\n【字段要求】pages 每条只含 pageId、ordinal、assetId、version、contentDigest 五个字段：pageId 与 ordinal 原样回显 layout；version 为 ≥1 的整数；contentDigest 为小写十六进制 64 位 sha256。\n【禁止事项】不得让模型重新生成或补全画面内容；不得输出图片 URL、base64、供应商 job id 或原始响应；不得决定重新合成、不得编排后续步骤；本步骤不产生批准结论，页图是否可用由人工门禁判定。\n【篇幅上限】单页的输出正文不得超过 1000 字符。",
+      "inputPlaceholders": [
+        { "name": "layout", "from": "s8_layout", "required": true },
+        { "name": "panelCandidates", "from": "s6_panel_render", "required": true }
+      ],
+      "outputContract": {
+        "format": "json",
+        "mustEchoSchemaVersion": true,
+        "forbiddenExtras": [
+          "未在 rendered_page_set 声明的顶层字段",
+          "pages[].panels",
+          "pages[].balloons",
+          "imageUrl",
+          "base64",
+          "vendorJobId",
+          "regeneratedContent",
+          "nextSteps",
+          "markdown_fence"
+        ]
+      },
+      "lengthLimits": { "maxOutputChars": 1000 },
+      "promptSkillRole": "optimizer_only",
+      "contractStability": "改措辞允许；改字段集合必须提升 outputSchemaVersion"
+    }
+  ]
+}

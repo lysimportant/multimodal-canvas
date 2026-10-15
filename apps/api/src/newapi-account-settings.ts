@@ -130,12 +130,22 @@ export class NewApiAccountSettings implements AiSettingsStoreLike {
         identityId: identity.id,
         credentialId: id,
         group: { not: '神秘分组' },
-        status: 'active',
+        status: { not: 'removed' },
       },
       include: { credential: true },
     });
     if (!row?.credential || row.credential.ownerId !== identity.userId)
-      throw new NewApiAccountError('credential_not_found', '分组模型不可调用', 404);
+      throw new NewApiAccountError(
+        'credential_not_found',
+        '该分组凭据不可用，请在设置中重新同步分组',
+        404,
+      );
+    if (row.status !== 'active')
+      throw new NewApiAccountError(
+        'group_unavailable',
+        row.error ?? '分组尚未同步，请在设置中同步分组后重试',
+        409,
+      );
     return {
       credentialId: id,
       credentialVersion: row.credential.version,

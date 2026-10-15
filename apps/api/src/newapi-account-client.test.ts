@@ -2,6 +2,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { NewApiAccountClient } from './newapi-account-client';
 
 describe('New API 分组错误边界', () => {
+  it('分组令牌冲突保留具体原因，不误报账号已退出或恢复被人工修改的令牌', async () => {
+    const client = new NewApiAccountClient({
+      issuer: 'https://newapi.example.test',
+      clientId: 'canvas',
+      instanceId: 'test',
+      redirectUri: 'http://localhost/v1/auth/newapi/callback',
+      fetchImpl: vi.fn(async () =>
+        Response.json(
+          {
+            code: 'canvas_managed_token_changed',
+            message: 'synthetic-sensitive-upstream-body',
+          },
+          { status: 409 },
+        ),
+      ),
+    });
+    await expect(
+      client.group('synthetic-grant', 'default', 'same-operation'),
+    ).rejects.toMatchObject({
+      code: 'group_token_changed',
+      status: 409,
+      message: '分组授权与令牌状态不一致，请重新连接 New API 账号后同步分组',
+      recovery: undefined,
+    });
+  });
+
   it('换号提示保留固定回调及 PKCE，普通授权不增加 prompt', () => {
     const client = new NewApiAccountClient({
       issuer: 'https://newapi.example.test',
@@ -131,7 +157,7 @@ describe('New API 分组错误边界', () => {
     });
     await expect(
       client.repairGroup('synthetic-grant-token', 'default', 'repair-operation', expected),
-    ).rejects.toMatchObject({ code: 'group_changed', status: 409 });
+    ).rejects.toMatchObject({ code: 'group_token_changed', status: 409 });
   });
 
   it('超限错误响应丢弃原文后仍保留 401 失效语义', async () => {

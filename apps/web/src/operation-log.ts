@@ -162,6 +162,11 @@ function safeEntry(input: OperationLogInput): OperationLogInput {
       '请先登录',
       '请使用 New API 登录',
       'Skill 操作需要用户身份',
+      '分组模型不可调用',
+      '该分组凭据不可用，请在设置中重新同步分组',
+      '分组尚未同步，请在设置中同步分组后重试',
+      '分组授权与令牌状态不一致，请重新连接 New API 账号后同步分组',
+      'New API 分组令牌或权限已变化，请在上游核对',
     ]);
     if (safeMessages.has(message) && message.length <= 160) output.errorMessage = message;
   }

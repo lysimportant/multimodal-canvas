@@ -73,4 +73,27 @@ describe('browser-local operation log', () => {
       errorMessage: 'authentication required',
     });
   });
+
+  it('records the actionable group failure while excluding arbitrary upstream text', () => {
+    const errorMessage = '分组授权与令牌状态不一致，请重新连接 New API 账号后同步分组';
+    recordOperationLog('user-a', {
+      category: 'request',
+      action: '请求返回错误',
+      statusCode: 409,
+      errorCode: 'group_unavailable',
+      errorMessage,
+    });
+    expect(readOperationLogs('user-a')[0]).toMatchObject({
+      errorCode: 'group_unavailable',
+      errorMessage,
+    });
+    recordOperationLog('user-a', {
+      category: 'request',
+      action: '请求返回错误',
+      statusCode: 409,
+      errorCode: 'group_unavailable',
+      errorMessage: 'synthetic-sensitive-upstream-body',
+    });
+    expect(readOperationLogs('user-a')[0]).not.toHaveProperty('errorMessage');
+  });
 });

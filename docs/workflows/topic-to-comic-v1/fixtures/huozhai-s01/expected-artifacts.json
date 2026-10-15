@@ -1,0 +1,784 @@
+{
+  "_fixture": {
+    "fixtureId": "huozhai-s01",
+    "fixtureKind": "excerpt_adaptation",
+    "phase": "P1",
+    "purpose": "人工校订的期望产物：validateComicArtifacts() 必须对 artifacts 返回空错误码数组 []。",
+    "artifactSchemaVersion": 1,
+    "workflowDefinitionId": "topic-to-comic",
+    "workflowDefinitionVersion": "0.1.0",
+    "readerHint": "artifacts 里的每个对象都按 contracts.ts 的对应 schema 单独解析（全部是 .strict()，不允许额外键）。本文件顶层的 _fixture / _provenance / _approvalDisclaimer 是本文件的元信息，不属于任何 artifact，必须在送入 schema 之前剥离；expectedIssueCodes 与 negativeCases 是校订者写下的期望值，同样不进 schema。",
+    "syntheticValues": [
+      "全部 64 位小写十六进制摘要（contentDigest / candidateSetDigest / definitionDigest / briefDigest / imageDigest）都是 sha256('fixture:huozhai-s01:...' 形式的稳定内容键) 的合成值；格式合法、内容可复算，但不对应任何真实落盘产物。",
+      "assetId / approvalId / approvedBy / reviewedBy / workflowRunId / runId 均为夹具自造的稳定 ID，不代表数据库里存在任何记录。",
+      "canvas 坐标、balloon 锚点、ordinal 都是夹具为满足排版校验而人工排定的。"
+    ]
+  },
+
+  "_provenance": "hand_authored_fixture_from_huozhai_excerpt",
+
+  "_approvalDisclaimer": "本夹具中的『审批』全部是合成的，不代表真实人工审批。原始素材的资产从未生成或定稿：资产提示词包（G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md）第 5 行原文写着「本文件中的资产均为“提示词候选”，尚未生成、筛选或定稿；不能把提示词当成已定稿图片」，第 2247 行交接处原文写着「已定稿资产：无；当前仅完成61项可直接出图的候选提示词」。因此 approvedRefs 里的 approvalId、approvedBy、approvedAt、version、candidateSetDigest 没有一条来自真实审批事件。digestSource 之所以是 content_key 而不是 asset_version_sha256：digestSource 的取值本身要求如实记录摘要来源（contracts.ts:505-509 明确写了『sha256 与 contentKey 的取舍必须显式记录来源，不能悄悄回退』），而资产没有落盘产物，拿不到 AssetVersion.sha256（prisma/schema.prisma:322 允许该字段为空），所以只能声明为 content_key —— 这正是本夹具未形成生产闭环的直接证据，不是可以顺手写死成 sha256 的展示字段。",
+
+  "artifacts": {
+    "brief": {
+      "schemaVersion": 1,
+      "theme": "清代直隶，胡父在烛下翻看账册，冷静下令把张家的门从外面锁上——他要用一把锁和一场火，偿清张月坪对他的活命之恩。",
+      "genre": "年代／世情悬疑（清末志怪世情；动画短片改编）",
+      "artStyle": {
+        "preset": "ink",
+        "notes": "二维民族手绘风格动画取帧：墨黑大面积留底，烛光只照局部；深木家具与粗布衣料的质感，人物轮廓清晰、比例统一。"
+      },
+      "pageShape": {
+        "pageCount": 1,
+        "panelsPerPage": 4,
+        "readingDirection": "ltr"
+      },
+      "language": "zh-CN",
+      "audienceRating": "general",
+      "budget": {
+        "maxTextGenerations": 12,
+        "maxImageGenerations": 8,
+        "maxVisionReviews": 4,
+        "maxVendorRequests": 40,
+        "maxRegenerationsPerItem": 1,
+        "maxCandidatesPerItem": 2,
+        "maxPromptOptimizations": 0,
+        "amountBudget": null
+      },
+      "limits": {
+        "maxCharacters": 2,
+        "maxScenes": 1,
+        "maxProps": 1,
+        "maxPages": 1,
+        "maxPanelsPerPage": 4,
+        "maxReferencesPerPanel": 3,
+        "maxProfileVariantsPerEntity": 2
+      },
+      "modelBindings": {
+        "text": "text-standard",
+        "image": "image-standard",
+        "vision": "vision-standard"
+      },
+      "allowPromptOptimization": false
+    },
+
+    "premise": {
+      "schemaVersion": 1,
+      "logline": "清夜书房里，胡父只用一句问话和一句吩咐，就把张月坪一家的生死记进了自己的账目。",
+      "synopsis": "直隶献县，胡宅书房。夜已深，烛火很稳。胡父坐在书案后翻着一本账册，两名手下站在暗处；他问：张家今夜有几个人？手下答：张月坪，还有三个小子。胡父翻过一页，说：门从外面锁死。手下迟疑着说：那几个孩子——话被打断，胡父抬眼，说出那句后来烧掉整条巷子的话：火若留根，风一吹还会再起。然后他蘸墨，在账册上写下一个“清”字。本页只呈现这一决策瞬间：没有纵火，没有哭喊，只有一个人如何在烛光里把恩义换算成必须清除的数目。",
+      "toneTags": ["年代", "冷静", "压迫感", "恩义与冷血"],
+      "characters": [
+        {
+          "characterId": "hufu",
+          "displayName": "胡父",
+          "storyRole": "antagonist",
+          "oneLine": "晚清直隶乡绅，外有善人之名，内里把人情记成账目；一句吩咐就能定人生死。"
+        },
+        {
+          "characterId": "hujiashouxia",
+          "displayName": "胡家手下",
+          "storyRole": "supporting",
+          "oneLine": "胡父身边听命的人，负责回报张家的人口与动向；只答话，不表态。"
+        }
+      ]
+    },
+
+    "script": {
+      "schemaVersion": 1,
+      "dialogues": [
+        {
+          "dialogueId": "dlg_hufu_ask",
+          "speakerCharacterId": "hufu",
+          "text": "张家今夜有几个人？",
+          "intent": "speech"
+        },
+        {
+          "dialogueId": "dlg_shouxia_answer",
+          "speakerCharacterId": "hujiashouxia",
+          "text": "张月坪，还有三个小子。",
+          "intent": "speech"
+        },
+        {
+          "dialogueId": "dlg_hufu_lock",
+          "speakerCharacterId": "hufu",
+          "text": "门从外面锁死。",
+          "intent": "speech"
+        },
+        {
+          "dialogueId": "dlg_shouxia_hesitate",
+          "speakerCharacterId": "hujiashouxia",
+          "text": "那几个孩子——",
+          "intent": "whisper"
+        },
+        {
+          "dialogueId": "dlg_hufu_order",
+          "speakerCharacterId": "hufu",
+          "text": "火若留根，风一吹还会再起。",
+          "intent": "speech"
+        }
+      ],
+      "beats": [
+        {
+          "beatId": "beat_huozhai_01",
+          "sceneId": "huzhaishufang",
+          "summary": "夜，胡宅书房。胡父在烛下压着账册清点张家的数目。",
+          "participantCharacterIds": ["hufu", "hujiashouxia"],
+          "dialogueIds": []
+        },
+        {
+          "beatId": "beat_huozhai_02",
+          "sceneId": "huzhaishufang",
+          "summary": "胡父问：张家今夜有几个人。",
+          "participantCharacterIds": ["hufu"],
+          "dialogueIds": ["dlg_hufu_ask"]
+        },
+        {
+          "beatId": "beat_huozhai_03",
+          "sceneId": "huzhaishufang",
+          "summary": "手下回报：张月坪，还有三个小子。",
+          "participantCharacterIds": ["hufu", "hujiashouxia"],
+          "dialogueIds": ["dlg_shouxia_answer"]
+        },
+        {
+          "beatId": "beat_huozhai_04",
+          "sceneId": "huzhaishufang",
+          "summary": "胡父吩咐：门从外面锁死。手下迟疑：那几个孩子——；胡父抬眼截断：火若留根，风一吹还会再起，随即蘸墨在账册上写下一个“清”字。",
+          "participantCharacterIds": ["hufu", "hujiashouxia"],
+          "dialogueIds": ["dlg_hufu_lock", "dlg_shouxia_hesitate", "dlg_hufu_order"]
+        }
+      ]
+    },
+
+    "panelPlan": {
+      "schemaVersion": 1,
+      "pages": [
+        {
+          "pageId": "page_huozhai_01",
+          "ordinal": 0,
+          "panels": [
+            {
+              "panelId": "panel_huozhai_01",
+              "ordinal": 0,
+              "beatId": "beat_huozhai_01",
+              "sceneId": "huzhaishufang",
+              "shotIntent": "establishing",
+              "visualDirection": "私密小书房的全景：深木书案横在画面下三分之一，案上一本深蓝灰布面账册被一只手压住，旁边是毛笔、砚台与一支单头蜡烛。背景大面积墨黑，烛光只擦亮书案与人物的左半身。一名手下立在书案后方，身形半没在黑里。",
+              "characterIds": ["hufu", "hujiashouxia"],
+              "dialogueIds": [],
+              "captionText": "第7场｜夜·内｜胡宅书房"
+            },
+            {
+              "panelId": "panel_huozhai_02",
+              "ordinal": 1,
+              "beatId": "beat_huozhai_02",
+              "sceneId": "huzhaishufang",
+              "shotIntent": "close-up",
+              "visualDirection": "近景俯视：压在账册上的那只手与翻开的旧黄内页，朱墨笔搁在页边。画面右上角露出胡父的下半张脸与下颌线，光从下方烛火打上来。",
+              "characterIds": ["hufu"],
+              "dialogueIds": ["dlg_hufu_ask"]
+            },
+            {
+              "panelId": "panel_huozhai_03",
+              "ordinal": 2,
+              "beatId": "beat_huozhai_03",
+              "sceneId": "huzhaishufang",
+              "shotIntent": "over-shoulder",
+              "visualDirection": "越肩视角，从胡父肩后看向书案对面的手下。手下垂手站着，正面朝向书案，身后是可辨的木格书架与更深的黑；书案边缘的账册留在画面左前景。",
+              "characterIds": ["hufu", "hujiashouxia"],
+              "dialogueIds": ["dlg_shouxia_answer", "dlg_shouxia_hesitate"]
+            },
+            {
+              "panelId": "panel_huozhai_04",
+              "ordinal": 3,
+              "beatId": "beat_huozhai_04",
+              "sceneId": "huzhaishufang",
+              "shotIntent": "extreme-close-up",
+              "visualDirection": "大特写：胡父的眼睛与眉骨，只有一侧被烛光照亮，另一侧沉在黑里；瞳孔里映着一点火的颜色。画面下缘是重新落笔的手与账册的一角。",
+              "characterIds": ["hufu"],
+              "dialogueIds": ["dlg_hufu_lock", "dlg_hufu_order"],
+              "captionText": "账册上只许出现一个“清”字。"
+            }
+          ]
+        }
+      ]
+    },
+
+    "assetManifest": {
+      "schemaVersion": 1,
+      "items": [
+        {
+          "itemKey": "character:hufu@base",
+          "kind": "character",
+          "entityId": "hufu",
+          "variantId": "base",
+          "displayName": "胡父",
+          "requirementPrompt": "清末直隶乡绅男性，五十岁上下的年纪感，面容清瘦、颧骨明显、眼神内敛不外露，两鬓花白、发辫一丝不乱；身着深色团花缎面长袍外罩玄色马褂，材质厚重不反光，配一枚素面玉扳指。本变体为书房夜内的常服状态：坐姿端庄，右手压册，半张脸沉在阴影里。线条取二维民族手绘动画的定稿轮廓，比例统一，不高光油亮、不写实摄影化。",
+          "referenceItemKeys": []
+        },
+        {
+          "itemKey": "character:hujiashouxia@base",
+          "kind": "character",
+          "entityId": "hujiashouxia",
+          "variantId": "base",
+          "displayName": "胡家手下",
+          "requirementPrompt": "清末直隶胡府仆役男性，三十岁上下，中等身形，方脸浓眉、胡茬短硬，神情克制、无多余表情；身着靛青色粗布短打扮，外罩深灰比甲，腰系布带，足踏黑布鞋，发辫盘于颈后。本变体为书房夜内的垂手听命状态：站立在书案之后，重心稳，双手自然垂在身侧，随时准备回话。与胡父同处一室时，身高与肩宽须明显低于胡父，以保持主从关系。",
+          "referenceItemKeys": []
+        },
+        {
+          "itemKey": "scene:huzhaishufang@base",
+          "kind": "scene",
+          "entityId": "huzhaishufang",
+          "variantId": "base",
+          "displayName": "胡宅书房",
+          "requirementPrompt": "清末乡绅宅内的私密小书房，空场母版：深木书案横陈，案上有账册、毛笔、砚台与一支单头蜡烛，案后是可辨的木格书架与紧闭的窗棂。背景大面积压成墨黑，只让烛光擦亮书案与靠案的一小块墙面，其余细节一律不交代。本场景不画入任何人形，人物由 character 变体单独提供；色调为冷灰与烛黄的对比，气氛安静而压迫。",
+          "referenceItemKeys": []
+        },
+        {
+          "itemKey": "prop:hufuzhangce@base",
+          "kind": "prop",
+          "entityId": "hufuzhangce",
+          "variantId": "base",
+          "displayName": "胡父账册",
+          "requirementPrompt": "深蓝灰布面线装账册，边角磨白，露出旧黄内页与朱墨批注；旁边配一支蘸朱墨的毛笔。画面中唯一允许清晰可读的字是「清」，其余笔迹一律处理为不可辨认的墨线，禁止出现乱码或伪文字。本变体为合置在书案上的状态：布面朝上、页边微微翘起，可用作压页与落笔两种动作的底图。",
+          "referenceItemKeys": []
+        }
+      ]
+    },
+
+    "approvedRefs": [
+      {
+        "itemKey": "character:hufu@base",
+        "entityId": "hufu",
+        "variantId": "base",
+        "assetId": "asset_hufu_base_v1",
+        "version": 1,
+        "contentDigest": "c44cf18d7d6d752761a4852cf45a3367cd1e157b76332f459894c32a00f45bf5",
+        "digestSource": "content_key",
+        "approvalId": "appr_hufu_base_v1",
+        "approvedBy": "fixture_author",
+        "approvedAt": "2026-09-29T00:00:00.000Z",
+        "candidateSetDigest": "bde03cc71e8eab39bc2b3a51ab8aa1f773767219de62ae6046dbfc21e8b4916d"
+      },
+      {
+        "itemKey": "character:hujiashouxia@base",
+        "entityId": "hujiashouxia",
+        "variantId": "base",
+        "assetId": "asset_hujiashouxia_base_v1",
+        "version": 1,
+        "contentDigest": "90efcd3d7c5ed268601467e8f936822c5f05eca2b9c40897de8dd4d012ca554d",
+        "digestSource": "content_key",
+        "approvalId": "appr_hujiashouxia_base_v1",
+        "approvedBy": "fixture_author",
+        "approvedAt": "2026-09-29T00:00:00.000Z",
+        "candidateSetDigest": "d524eeff08785c21ab7c2c8f2dd9327834ac13427ea63b7cb4c99aea1d4557a8"
+      },
+      {
+        "itemKey": "scene:huzhaishufang@base",
+        "entityId": "huzhaishufang",
+        "variantId": "base",
+        "assetId": "asset_huzhaishufang_base_v1",
+        "version": 1,
+        "contentDigest": "ba8a402c3fa11a7be6ba48b743c2028713bfafa6217b2f952d11d49e522c925d",
+        "digestSource": "content_key",
+        "approvalId": "appr_huzhaishufang_base_v1",
+        "approvedBy": "fixture_author",
+        "approvedAt": "2026-09-29T00:00:00.000Z",
+        "candidateSetDigest": "be50d3f1f0c6415ad831cf371955768af3c50ccb2a55be1039df31db117e52fd"
+      },
+      {
+        "itemKey": "prop:hufuzhangce@base",
+        "entityId": "hufuzhangce",
+        "variantId": "base",
+        "assetId": "asset_hufuzhangce_base_v1",
+        "version": 1,
+        "contentDigest": "82073b34b14666de907b2011b5627d8d05cc397cee43f9842a7ccc2cd719504a",
+        "digestSource": "content_key",
+        "approvalId": "appr_hufuzhangce_base_v1",
+        "approvedBy": "fixture_author",
+        "approvedAt": "2026-09-29T00:00:00.000Z",
+        "candidateSetDigest": "b76d7c81099006b88e4d514614f5e7f4670c2276ed6656fcc0166e86c57b353d"
+      }
+    ],
+
+    "renderSpecs": [
+      {
+        "panelId": "panel_huozhai_01",
+        "pageId": "page_huozhai_01",
+        "generationRevision": 1,
+        "promptText": "二维民族手绘动画风格的单幅漫画格，画面比例 3:4。清末乡绅宅内私密小书房的全景：深木书案横在画面下方，案上一本深蓝灰布面账册被一只手按住，旁边是毛笔、砚台与一支单头蜡烛。背景大面积压成墨黑，烛光只擦亮书案与人物左半身。胡父坐在案后，须严格保持与参考图相同的面部特征、发辫、胡须与服装：深色团花缎面长袍外罩玄色马褂、素面玉扳指；一名胡家手下半没在黑里立在案后，同样保持与参考图相同的靛青粗布短打与深灰比甲。两人轮廓清晰、比例统一，不写成写实摄影。禁止出现任何文字、题字或水印（账册上只允许出现一个「清」字）。",
+        "negativePrompt": "写实摄影质感、3D 渲染、油亮高光、现代服饰、欧美面孔、多余人物、人物换装、换脸、变形手指、画面出框、水印、签名、乱码文字、可辨认的成段文字",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:hufu@base",
+            "entityId": "hufu",
+            "variantId": "base",
+            "assetId": "asset_hufu_base_v1",
+            "version": 1,
+            "contentDigest": "c44cf18d7d6d752761a4852cf45a3367cd1e157b76332f459894c32a00f45bf5",
+            "digestSource": "content_key",
+            "approvalId": "appr_hufu_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "bde03cc71e8eab39bc2b3a51ab8aa1f773767219de62ae6046dbfc21e8b4916d"
+          },
+          {
+            "itemKey": "character:hujiashouxia@base",
+            "entityId": "hujiashouxia",
+            "variantId": "base",
+            "assetId": "asset_hujiashouxia_base_v1",
+            "version": 1,
+            "contentDigest": "90efcd3d7c5ed268601467e8f936822c5f05eca2b9c40897de8dd4d012ca554d",
+            "digestSource": "content_key",
+            "approvalId": "appr_hujiashouxia_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "d524eeff08785c21ab7c2c8f2dd9327834ac13427ea63b7cb4c99aea1d4557a8"
+          },
+          {
+            "itemKey": "scene:huzhaishufang@base",
+            "entityId": "huzhaishufang",
+            "variantId": "base",
+            "assetId": "asset_huzhaishufang_base_v1",
+            "version": 1,
+            "contentDigest": "ba8a402c3fa11a7be6ba48b743c2028713bfafa6217b2f952d11d49e522c925d",
+            "digestSource": "content_key",
+            "approvalId": "appr_huzhaishufang_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "be50d3f1f0c6415ad831cf371955768af3c50ccb2a55be1039df31db117e52fd"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "quality": "high",
+          "styleStrength": 0.7,
+          "characterConsistency": true
+        },
+        "seed": 100001
+      },
+      {
+        "panelId": "panel_huozhai_02",
+        "pageId": "page_huozhai_01",
+        "generationRevision": 1,
+        "promptText": "二维民族手绘动画风格的单幅漫画格，画面比例 3:4。近景俯视：一只戴素面玉扳指的手压在翻开的旧黄账册内页上，页边搁着一支蘸了朱墨的毛笔，布面为深蓝灰、边角磨白。画面右上角只露出胡父的下半张脸与下颌线，须发与深色缎面长袍的衣领必须与参考图完全一致，保持与参考图相同的面部特征与服装。烛光自下方打上来，形成单一方向的暖光，背景压成墨黑。不出现第二个人物，不出现任何成段文字或水印。",
+        "negativePrompt": "写实摄影质感、3D 渲染、油亮高光、现代服饰、欧美面孔、暴露第二个人物、换装、换脸、变形手指、画面出框、水印、签名、乱码文字、可辨认的成段文字",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:hufu@base",
+            "entityId": "hufu",
+            "variantId": "base",
+            "assetId": "asset_hufu_base_v1",
+            "version": 1,
+            "contentDigest": "c44cf18d7d6d752761a4852cf45a3367cd1e157b76332f459894c32a00f45bf5",
+            "digestSource": "content_key",
+            "approvalId": "appr_hufu_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "bde03cc71e8eab39bc2b3a51ab8aa1f773767219de62ae6046dbfc21e8b4916d"
+          },
+          {
+            "itemKey": "prop:hufuzhangce@base",
+            "entityId": "hufuzhangce",
+            "variantId": "base",
+            "assetId": "asset_hufuzhangce_base_v1",
+            "version": 1,
+            "contentDigest": "82073b34b14666de907b2011b5627d8d05cc397cee43f9842a7ccc2cd719504a",
+            "digestSource": "content_key",
+            "approvalId": "appr_hufuzhangce_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "b76d7c81099006b88e4d514614f5e7f4670c2276ed6656fcc0166e86c57b353d"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "quality": "high",
+          "styleStrength": 0.7,
+          "characterConsistency": true
+        },
+        "seed": 100002
+      },
+      {
+        "panelId": "panel_huozhai_03",
+        "pageId": "page_huozhai_01",
+        "generationRevision": 1,
+        "promptText": "二维民族手绘动画风格的单幅漫画格，画面比例 3:4。越肩视角：从胡父的肩后看向书案对面。胡家手下垂手站在案前，正面朝向书案，神情克制，必须保持与参考图相同的面部特征与服装（靛青粗布短打、深灰比甲、腰系布带）；他的身高与肩宽须明显低于胡父。胡父只以肩背与半张侧脸出现在画面左前景，其缎面长袍与发辫同样与参考图一致。背景是可辨的木格书架与更深的墨黑，书案边缘的深蓝灰账册留在左前景。两人比例统一，不写成写实摄影。禁止任何文字与水印。",
+        "negativePrompt": "写实摄影质感、3D 渲染、油亮高光、现代服饰、欧美面孔、多余人物、人物换装、换脸、主从身高关系颠倒、变形手指、画面出框、水印、签名、乱码文字、可辨认的成段文字",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:hujiashouxia@base",
+            "entityId": "hujiashouxia",
+            "variantId": "base",
+            "assetId": "asset_hujiashouxia_base_v1",
+            "version": 1,
+            "contentDigest": "90efcd3d7c5ed268601467e8f936822c5f05eca2b9c40897de8dd4d012ca554d",
+            "digestSource": "content_key",
+            "approvalId": "appr_hujiashouxia_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "d524eeff08785c21ab7c2c8f2dd9327834ac13427ea63b7cb4c99aea1d4557a8"
+          },
+          {
+            "itemKey": "character:hufu@base",
+            "entityId": "hufu",
+            "variantId": "base",
+            "assetId": "asset_hufu_base_v1",
+            "version": 1,
+            "contentDigest": "c44cf18d7d6d752761a4852cf45a3367cd1e157b76332f459894c32a00f45bf5",
+            "digestSource": "content_key",
+            "approvalId": "appr_hufu_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "bde03cc71e8eab39bc2b3a51ab8aa1f773767219de62ae6046dbfc21e8b4916d"
+          },
+          {
+            "itemKey": "scene:huzhaishufang@base",
+            "entityId": "huzhaishufang",
+            "variantId": "base",
+            "assetId": "asset_huzhaishufang_base_v1",
+            "version": 1,
+            "contentDigest": "ba8a402c3fa11a7be6ba48b743c2028713bfafa6217b2f952d11d49e522c925d",
+            "digestSource": "content_key",
+            "approvalId": "appr_huzhaishufang_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "be50d3f1f0c6415ad831cf371955768af3c50ccb2a55be1039df31db117e52fd"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "quality": "high",
+          "styleStrength": 0.7,
+          "characterConsistency": true
+        },
+        "seed": 100003
+      },
+      {
+        "panelId": "panel_huozhai_04",
+        "pageId": "page_huozhai_01",
+        "generationRevision": 1,
+        "promptText": "二维民族手绘动画风格的单幅漫画格，画面比例 3:4。大特写：胡父的眼睛与眉骨占满画面，只有一侧被烛光照亮，另一侧完全沉进墨黑；瞳孔里映着一点火的颜色。眉毛、眼角纹路、须发与发辫边缘必须与参考图逐项对齐，保持与参考图相同的面部特征与服装（深色缎面长袍的高领只露出一角）。画面下缘是重新落笔的手与深蓝灰账册的一角，保持与参考图相同的布面材质与旧黄内页。情绪的克制比表情的夸张更重要。禁止任何文字与水印，账册上只允许出现一个「清」字。",
+        "negativePrompt": "写实摄影质感、3D 渲染、油亮高光、现代服饰、欧美面孔、夸张狰狞表情、血污、换脸、变形手指、画面出框、水印、签名、乱码文字、可辨认的成段文字",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:hufu@base",
+            "entityId": "hufu",
+            "variantId": "base",
+            "assetId": "asset_hufu_base_v1",
+            "version": 1,
+            "contentDigest": "c44cf18d7d6d752761a4852cf45a3367cd1e157b76332f459894c32a00f45bf5",
+            "digestSource": "content_key",
+            "approvalId": "appr_hufu_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "bde03cc71e8eab39bc2b3a51ab8aa1f773767219de62ae6046dbfc21e8b4916d"
+          },
+          {
+            "itemKey": "prop:hufuzhangce@base",
+            "entityId": "hufuzhangce",
+            "variantId": "base",
+            "assetId": "asset_hufuzhangce_base_v1",
+            "version": 1,
+            "contentDigest": "82073b34b14666de907b2011b5627d8d05cc397cee43f9842a7ccc2cd719504a",
+            "digestSource": "content_key",
+            "approvalId": "appr_hufuzhangce_base_v1",
+            "approvedBy": "fixture_author",
+            "approvedAt": "2026-09-29T00:00:00.000Z",
+            "candidateSetDigest": "b76d7c81099006b88e4d514614f5e7f4670c2276ed6656fcc0166e86c57b353d"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "quality": "high",
+          "styleStrength": 0.7,
+          "characterConsistency": true
+        },
+        "seed": 100004
+      }
+    ],
+
+    "qualityReport": {
+      "schemaVersion": 1,
+      "panels": [
+        {
+          "panelId": "panel_huozhai_01",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": null,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "空间交代完整，人物没有换装，主从身高关系正确。",
+            "reviewedBy": "fixture_author",
+            "reviewedAt": "2026-09-29T00:00:00.000Z"
+          }
+        },
+        {
+          "panelId": "panel_huozhai_02",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": null,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "账册只有「清」字清晰，其余笔迹不可辨认，符合资产提示词的约束。",
+            "reviewedBy": "fixture_author",
+            "reviewedAt": "2026-09-29T00:00:00.000Z"
+          }
+        },
+        {
+          "panelId": "panel_huozhai_03",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": null,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "越肩视角下回答者面孔与参考图一致，没有出现第三个身影。",
+            "reviewedBy": "fixture_author",
+            "reviewedAt": "2026-09-29T00:00:00.000Z"
+          }
+        },
+        {
+          "panelId": "panel_huozhai_04",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": null,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "收束格的瞳中火光成立；情绪克制，没有夸张到变形。",
+            "reviewedBy": "fixture_author",
+            "reviewedAt": "2026-09-29T00:00:00.000Z"
+          }
+        }
+      ]
+    },
+
+    "layouts": [
+      {
+        "schemaVersion": 1,
+        "pageId": "page_huozhai_01",
+        "ordinal": 0,
+        "canvas": {
+          "width": 1200,
+          "height": 1800,
+          "unit": "px"
+        },
+        "panels": [
+          {
+            "panelId": "panel_huozhai_01",
+            "rect": { "x": 60, "y": 60, "width": 1080, "height": 440 },
+            "cropMode": "cover",
+            "zIndex": 0
+          },
+          {
+            "panelId": "panel_huozhai_02",
+            "rect": { "x": 60, "y": 520, "width": 520, "height": 520 },
+            "cropMode": "cover",
+            "zIndex": 1
+          },
+          {
+            "panelId": "panel_huozhai_03",
+            "rect": { "x": 620, "y": 520, "width": 520, "height": 520 },
+            "cropMode": "cover",
+            "zIndex": 2
+          },
+          {
+            "panelId": "panel_huozhai_04",
+            "rect": { "x": 60, "y": 1060, "width": 1080, "height": 520 },
+            "cropMode": "cover",
+            "zIndex": 3
+          }
+        ],
+        "balloons": [
+          {
+            "balloonId": "balloon_hufu_ask",
+            "dialogueId": "dlg_hufu_ask",
+            "panelId": "panel_huozhai_02",
+            "shape": "speech",
+            "anchor": { "x": 320, "y": 580 },
+            "tailTarget": { "x": 300, "y": 700 },
+            "text": "张家今夜有几个人？",
+            "fontSize": 28,
+            "readingIndex": 0
+          },
+          {
+            "balloonId": "balloon_shouxia_answer",
+            "dialogueId": "dlg_shouxia_answer",
+            "panelId": "panel_huozhai_03",
+            "shape": "speech",
+            "anchor": { "x": 880, "y": 580 },
+            "tailTarget": { "x": 860, "y": 700 },
+            "text": "张月坪，还有三个小子。",
+            "fontSize": 28,
+            "readingIndex": 1
+          },
+          {
+            "balloonId": "balloon_shouxia_hesitate",
+            "dialogueId": "dlg_shouxia_hesitate",
+            "panelId": "panel_huozhai_03",
+            "shape": "whisper",
+            "anchor": { "x": 700, "y": 960 },
+            "tailTarget": { "x": 680, "y": 1040 },
+            "text": "那几个孩子——",
+            "fontSize": 24,
+            "readingIndex": 2
+          },
+          {
+            "balloonId": "balloon_hufu_order",
+            "dialogueId": "dlg_hufu_order",
+            "panelId": "panel_huozhai_04",
+            "shape": "speech",
+            "anchor": { "x": 380, "y": 1120 },
+            "tailTarget": { "x": 340, "y": 1240 },
+            "text": "火若留根，风一吹还会再起。",
+            "fontSize": 30,
+            "readingIndex": 3
+          },
+          {
+            "balloonId": "balloon_hufu_lock",
+            "dialogueId": "dlg_hufu_lock",
+            "panelId": "panel_huozhai_04",
+            "shape": "speech",
+            "anchor": { "x": 900, "y": 1120 },
+            "tailTarget": { "x": 940, "y": 1240 },
+            "text": "门从外面锁死。",
+            "fontSize": 28,
+            "readingIndex": 4
+          }
+        ]
+      }
+    ],
+
+    "exportManifest": {
+      "schemaVersion": 1,
+      "workflowRunId": "run_huozhai_s01_fixture",
+      "definitionId": "topic-to-comic",
+      "definitionVersion": "0.1.0",
+      "definitionDigest": "a78dcd37abea68b397f91a0f4944b80980195be80ca11c83381d75b225d07b3e",
+      "briefDigest": "f3a7b1a68712bde2840d22c099959d505b39074ba196c0b9229ba628d7bee2b0",
+      "pages": [
+        {
+          "pageId": "page_huozhai_01",
+          "ordinal": 0,
+          "imageAssetId": "asset_page_huozhai_01_v1",
+          "imageVersion": 1,
+          "imageDigest": "a2b1c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f809",
+          "panelCandidates": [
+            {
+              "panelId": "panel_huozhai_01",
+              "assetId": "asset_panel_huozhai_01_v1",
+              "version": 1,
+              "contentDigest": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "panelId": "panel_huozhai_02",
+              "assetId": "asset_panel_huozhai_02_v1",
+              "version": 1,
+              "contentDigest": "2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            {
+              "panelId": "panel_huozhai_03",
+              "assetId": "asset_panel_huozhai_03_v1",
+              "version": 1,
+              "contentDigest": "3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            {
+              "panelId": "panel_huozhai_04",
+              "assetId": "asset_panel_huozhai_04_v1",
+              "version": 1,
+              "contentDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+            }
+          ]
+        }
+      ],
+      "excludedPanels": [],
+      "generatedAt": "2026-09-29T00:00:00.000Z",
+      "approvedAt": "2026-09-29T00:00:00.000Z"
+    }
+  },
+
+  "expectedIssueCodes": [],
+
+  "negativeCases": [
+    {
+      "name": "对白说话人未在 premise.characters 中声明",
+      "mutation": "把 script.dialogues[4]（dlg_hufu_order，本页收束台词）的 speakerCharacterId 从 \"hufu\" 改成 \"hufu_shadow\"。",
+      "expectedIssueCode": "WF_REF_UNKNOWN_SPEAKER",
+      "detectionPath": "contracts.ts:894-897 —— characterIds 取自 premise.characters，说话人不在此集合即命中。"
+    },
+    {
+      "name": "渲染规格引用了未列入 assetManifest 的资产",
+      "mutation": "把 renderSpecs[0].referenceAssetRefs 换成 3 条已批准引用 + 1 条 itemKey 为 \"character:zhangyueping@base\" 的引用（该资产在 source-map 中标记为未绑定）。",
+      "expectedIssueCode": "WF_REF_ASSET_NOT_APPROVED",
+      "detectionPath": "contracts.ts:947-952 —— approvedByKey 里查不到该 itemKey，直接命中并 continue。注意：这样构造出的 4 条引用同时超过 limits.maxReferencesPerPanel=3，因此实际返回值是 [\"WF_LIMIT_REFERENCES\",\"WF_REF_ASSET_NOT_APPROVED\"] —— 断言应当用『包含』而不是『等于』。",
+      "verifiedActualCodes": ["WF_LIMIT_REFERENCES", "WF_REF_ASSET_NOT_APPROVED"]
+    },
+    {
+      "name": "渲染规格引用的资产版本与批准版本不一致",
+      "mutation": "把 renderSpecs[1].referenceAssetRefs[0].contentDigest 改成另一个合法的 64 位十六进制值，version 保持 1。",
+      "expectedIssueCode": "WF_REF_ASSET_VERSION_STALE",
+      "detectionPath": "contracts.ts:953-956 —— 同一 itemKey 的 approved.version / approved.contentDigest 与引用逐字段比对，任一不同即命中。"
+    },
+    {
+      "name": "同一 itemKey 出现两条批准引用（版本分歧）",
+      "mutation": "在 approvedRefs 里再追加一条 itemKey 为 \"character:hufu@base\"、version 为 2 的引用。",
+      "expectedIssueCode": "WF_REF_ASSET_VERSION_STALE",
+      "detectionPath": "contracts.ts:930-936 —— 同一 itemKey 的批准引用数 > 1 即视为陈旧。"
+    },
+    {
+      "name": "单格参考图数量超过 brief.limits.maxReferencesPerPanel",
+      "mutation": "在 renderSpecs[1].referenceAssetRefs 里追加第 3、第 4 条引用（scene:huzhaishufang@base、character:hujiashouxia@base），使该格引用数为 4，而 limits.maxReferencesPerPanel=3。",
+      "expectedIssueCode": "WF_LIMIT_REFERENCES",
+      "detectionPath": "contracts.ts:944-946 —— spec.referenceAssetRefs.length > brief.limits.maxReferencesPerPanel。"
+    },
+    {
+      "name": "排版矩形超出画布",
+      "mutation": "把 layouts[0].panels[3].rect 从 {x:60,y:1060,width:1080,height:520} 改成 {x:60,y:1060,width:1080,height:1400}。",
+      "expectedIssueCode": "WF_LAYOUT_RECT_INVALID",
+      "detectionPath": "contracts.ts:969-972 —— y + height = 2460 超出 canvas.height + 0.5 = 1800.5。"
+    },
+    {
+      "name": "导出清单缺页",
+      "mutation": "删除整个 exportManifest 字段（该字段在 validateComicArtifacts 的入参里是可选的），或改为 pages: []。",
+      "expectedIssueCode": "WF_EXPORT_INCOMPLETE",
+      "detectionPath": "contracts.ts:988-992 —— panelPlan.pages 里的 pageId 未被 manifest.pages 覆盖，且两侧页数不等。"
+    },
+    {
+      "name": "导出清单的 definitionVersion 与契约不一致",
+      "mutation": "把 exportManifest.definitionVersion 从 \"0.1.0\" 改成 \"0.2.0\"。",
+      "expectedIssueCode": "WF_EXPORT_VERSION_MISMATCH",
+      "detectionPath": "contracts.ts:993 —— manifest.definitionVersion !== '0.1.0'。"
+    }
+  ],
+
+  "manualReviewCases": [
+    {
+      "name": "maxProps 未被 validateComicArtifacts 强制",
+      "observation": "brief.limits.maxProps=1，而 assetManifest 中 kind=\"prop\" 的条目恰好 1 条，因此本夹具对齐了该上限。但 contracts.ts:855-997 的校验函数只检查 maxCharacters / maxScenes / maxPages / maxPanelsPerPage / maxReferencesPerPanel，从未读取 maxProps，也从未读取 maxProfileVariantsPerEntity。",
+      "handling": "本夹具不因此放宽自身设计；该缺口只记录在这里，供契约维护者判断是否要补校验。"
+    },
+    {
+      "name": "manual.verdict 全部为 accepted 而没有 rejected 分支",
+      "observation": "qualityReportSchema 允许 manual.verdict 取 accepted / rework；本夹具所有格均为 accepted，未覆盖 rework 路径。",
+      "handling": "expectedIssueCodes 为空是硬要求，故不在此文件里制造 rework 样例。返工路径应由 recovery-cases 覆盖：contracts.ts:852-853 指向 fixtures/recovery-cases.json；该文件在本夹具写入时已存在（由并行工作创建），但它不含 manual.verdict=rework 的样例，因此这条路径目前无人覆盖。"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "theme": "暴雨夜，外卖骑手林晚在最后一单的备注栏里认出三年前不告而别的妹妹的字迹：「哥，我在楼下，别淋雨。」",
+  "genre": "现代都市温情",
+  "artStyle": {
+    "preset": "color-anime",
+    "notes": "雨夜冷蓝主调，暖色只留给门厅声控灯与手机屏幕；线条干净、色块克制，淋雨状态用贴头发的发丝与肩部水痕表现，不使用写实伤口或任何超现实特效。"
+  },
+  "pageShape": {
+    "pageCount": 1,
+    "panelsPerPage": 4,
+    "readingDirection": "rtl"
+  },
+  "language": "zh-CN",
+  "audienceRating": "general",
+  "budget": {
+    "maxTextGenerations": 12,
+    "maxImageGenerations": 20,
+    "maxVisionReviews": 8,
+    "maxVendorRequests": 64,
+    "maxRegenerationsPerItem": 2,
+    "maxCandidatesPerItem": 2,
+    "maxPromptOptimizations": 0,
+    "amountBudget": null
+  },
+  "limits": {
+    "maxCharacters": 2,
+    "maxScenes": 1,
+    "maxProps": 0,
+    "maxPages": 1,
+    "maxPanelsPerPage": 4,
+    "maxReferencesPerPanel": 3,
+    "maxProfileVariantsPerEntity": 2
+  },
+  "modelBindings": {
+    "text": "text-standard",
+    "image": "image-standard",
+    "vision": "vision-review"
+  },
+  "allowPromptOptimization": false,
+
+  "_fixture": {
+    "kind": "theme-mini",
+    "purpose": "验证「用户原创一句主题 → 分页漫画」的真实入口链路（从 s0_brief 起，而不是已有剧本改编）；规模锁定首版验收：1 页、4 格、2 个主要角色、1 个主要场景、0 个道具。",
+    "expectedValidation": "validateComicArtifacts 返回空数组",
+    "pairedWith": "expected-artifacts.json",
+    "schemaNote": "本键【不参与】comicBriefSchema 校验：comicBriefSchema 是 .strict() 的，直接把本文件的全部字段交给 comicBriefSchema.parse() 会因无法识别顶层键 _fixture 而失败。调用方必须先删掉顶层 _fixture（或只取其余字段构成的 brief 子对象）再 parse；expected-artifacts.json 里的 artifacts.brief 就是剥离 _fixture 之后的同一份 brief，可用于逐字比对。",
+    "budgetNote": "amountBudget = null 表示本环境没有价格信息（见 workflow-definition.v1.json 的 budgetPolicy.unknownPrice：representation = \"amountBudget = null\"，mustNotDisplayAsZeroCost = true）。成本约束改由 maxVendorRequests = 64 等硬上限兜底，属于保守上限，不表示零成本。",
+    "counterBudgetNote": "maxTextGenerations 12 / maxImageGenerations 20 / maxVisionReviews 8 均为保守上限：本夹具实际只使用 s1、s2、s3_panel_plan、s3_asset_manifest 四个 text 步骤，s4 的 4 个资产项与 s6 的 4 个分格各 2 个候选，s8_render_pages 的 1 页，余量留给 bounded 重试与 s7 返工。"
+  }
+}

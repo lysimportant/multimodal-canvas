@@ -1,0 +1,100 @@
+{
+  "_fixture": {
+    "fixtureId": "huozhai-s01",
+    "fixtureKind": "excerpt_adaptation",
+    "phase": "P1",
+    "purpose": "S0 ComicBrief 的节选夹具输入：验证 comicBriefSchema 的结构、以及 s0_brief 的前置校验（requireModelBindings=['text','image']、amountBudget 必须显式存在）。",
+    "derivedFrom": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md 第7场（218-247 行）",
+    "sourceMap": "fixtures/huozhai-s01/source-map.json",
+    "notAProductionRun": true,
+    "stripBeforeParse": "_fixture 是本夹具的元信息，不属于 comicBriefSchema。comicBriefSchema 是 .strict() 的，消费方必须先删除这个键再把对象交给 s0_brief（或改用 _fixture.briefPayloadOnly 里那份不含元信息的正文：它与下面顶层字段逐字相同）。",
+    "fieldNotes": {
+      "budget": "amountBudget 为 null：夹具环境没有价格信息，且契约刻意禁止把「不知道价格」写成 0 成本。其余七个字段是请求数硬上限，取自 budgetPolicySchema 的必填集合。maxPromptOptimizations=0 与 allowPromptOptimization=false 一致。",
+      "limits": "maxProps=1：本页只有『胡父账册』一件道具；资产提示词包声明的翻页/压页/落笔三种状态在本夹具中退化为提示词里的动作描述，不另立 variant。maxCharacters=2：剧本第 220 行的『两名手下』压缩为单数角色『胡家手下』。maxScenes=1 对应第7场书房单场景。",
+      "modelBindings": "使用别名而不是具体模型名（契约理由：写死模型名会让输入指纹随供应商版本漂移）。vision 可选；此处给出是因为 qualityReport.panels[].structural.visionScore 需要有对应的自动评审通道。",
+      "artStyle": "preset 取 ink 是因为素材画风为二维民族手绘、墨黑留底、烛光局部照明；4 个可选 preset 中它最近。",
+      "audienceRating": "general：节选只呈现『下令』这一决策瞬间，不含暴力过程、出血或情色内容。"
+    },
+    "briefPayloadOnly": {
+      "schemaVersion": 1,
+      "theme": "清代直隶，胡父在烛下翻看账册，冷静下令把张家的门从外面锁上——他要用一把锁和一场火，偿清张月坪对他的活命之恩。",
+      "genre": "年代／世情悬疑（清末志怪世情；动画短片改编）",
+      "artStyle": {
+        "preset": "ink",
+        "notes": "二维民族手绘风格动画取帧：墨黑大面积留底，烛光只照局部；深木家具与粗布衣料的质感，人物轮廓清晰、比例统一。"
+      },
+      "pageShape": {
+        "pageCount": 1,
+        "panelsPerPage": 4,
+        "readingDirection": "ltr"
+      },
+      "language": "zh-CN",
+      "audienceRating": "general",
+      "budget": {
+        "maxTextGenerations": 12,
+        "maxImageGenerations": 8,
+        "maxVisionReviews": 4,
+        "maxVendorRequests": 40,
+        "maxRegenerationsPerItem": 1,
+        "maxCandidatesPerItem": 2,
+        "maxPromptOptimizations": 0,
+        "amountBudget": null
+      },
+      "limits": {
+        "maxCharacters": 2,
+        "maxScenes": 1,
+        "maxProps": 1,
+        "maxPages": 1,
+        "maxPanelsPerPage": 4,
+        "maxReferencesPerPanel": 3,
+        "maxProfileVariantsPerEntity": 2
+      },
+      "modelBindings": {
+        "text": "text-standard",
+        "image": "image-standard",
+        "vision": "vision-standard"
+      },
+      "allowPromptOptimization": false
+    }
+  },
+
+  "schemaVersion": 1,
+  "theme": "清代直隶，胡父在烛下翻看账册，冷静下令把张家的门从外面锁上——他要用一把锁和一场火，偿清张月坪对他的活命之恩。",
+  "genre": "年代／世情悬疑（清末志怪世情；动画短片改编）",
+  "artStyle": {
+    "preset": "ink",
+    "notes": "二维民族手绘风格动画取帧：墨黑大面积留底，烛光只照局部；深木家具与粗布衣料的质感，人物轮廓清晰、比例统一。"
+  },
+  "pageShape": {
+    "pageCount": 1,
+    "panelsPerPage": 4,
+    "readingDirection": "ltr"
+  },
+  "language": "zh-CN",
+  "audienceRating": "general",
+  "budget": {
+    "maxTextGenerations": 12,
+    "maxImageGenerations": 8,
+    "maxVisionReviews": 4,
+    "maxVendorRequests": 40,
+    "maxRegenerationsPerItem": 1,
+    "maxCandidatesPerItem": 2,
+    "maxPromptOptimizations": 0,
+    "amountBudget": null
+  },
+  "limits": {
+    "maxCharacters": 2,
+    "maxScenes": 1,
+    "maxProps": 1,
+    "maxPages": 1,
+    "maxPanelsPerPage": 4,
+    "maxReferencesPerPanel": 3,
+    "maxProfileVariantsPerEntity": 2
+  },
+  "modelBindings": {
+    "text": "text-standard",
+    "image": "image-standard",
+    "vision": "vision-standard"
+  },
+  "allowPromptOptimization": false
+}

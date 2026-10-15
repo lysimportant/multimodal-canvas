@@ -1,0 +1,484 @@
+{
+  "_fixture": {
+    "fixtureId": "huozhai-s01",
+    "fixtureKind": "excerpt_adaptation",
+    "phase": "P1",
+    "contractModule": "docs/workflows/topic-to-comic-v1/contracts.ts",
+    "contractSchemaVersion": 1,
+    "workflowDefinitionId": "topic-to-comic",
+    "workflowDefinitionVersion": "0.1.0",
+    "generatedBy": "hand_authored_fixture",
+    "notAProductionRun": true,
+    "summary": "从《火债》第7场「胡宅书房」节选改编的 1 页 4 格分页漫画夹具。原始素材是视频制作规格（分镜 116 镜 / Seedance 56 段），本夹具只取其中连续的一场，并把镜头重组映射为漫画格；资产从未真正生成或定稿，因此所有资产审批字段均为夹具合成。"
+  },
+
+  "sources": [
+    {
+      "logicalName": "screenplay_full",
+      "displayName": "《火债》完整剧本 v1",
+      "absolutePath": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "bytes": 20339,
+      "characters": 7515,
+      "lineCount": 631,
+      "role": "本节的唯一剧作事实来源：场次划分、场景标题、人物名、台词正文与对白归属均以此文件为准。",
+      "readCoverage": "全文 1-630 行通读；节选依据集中在第 7 场（218-247 行）。"
+    },
+    {
+      "logicalName": "storyboard_full",
+      "displayName": "《火债》全片分镜 16:9 v1",
+      "absolutePath": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "bytes": 99280,
+      "characters": 37621,
+      "lineCount": 744,
+      "role": "镜头级视觉方向来源：镜号、镜别、时长、构图与光位。本夹具把它当作「镜头意图候选」，只保留可映射为静态画面的部分。",
+      "readCoverage": "全片 116 个镜号已确认存在（S01-01..S20-06）；节选细读第 7 场 S07-01..S07-05（259-282 行）及相邻场次上下文（250-258 行）。",
+      "note": "116 镜与 Seedance 56 段不是逐项等同关系，需要重组映射。"
+    },
+    {
+      "logicalName": "asset_prompt_pack",
+      "displayName": "《火债》资产提示词包（按出镜顺序）",
+      "absolutePath": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "bytes": 170582,
+      "characters": 74758,
+      "lineCount": 2264,
+      "role": "资产需求与一致性锁定的文本来源：itemKey 的 entityId/variantId 命名依据、requirementPrompt 的改写来源、以及「资产尚未定稿」这一事实约束的出处。",
+      "readCoverage": "读取状态说明（第 5 行）、第 7/16/17 场的段落素材清单（1011-1013、1077-1079 行）、目标资产条目 A012/CH001（355-383）、A027/CH007（978-996）、A028/SC006（1015-1043）、A029/PR006（1044-1062），以及变更记录与交接（2241、2247 行）。",
+      "note": "文件开头即声明全部资产为「提示词候选」，尚未生成、筛选或定稿；因此本夹具不引用任何真实资产版本。"
+    },
+    {
+      "logicalName": "seedance_prompt_pack",
+      "displayName": "《火债》Seedance 2.0 提示词包（严格格式 10 秒 16:9）",
+      "absolutePath": "G:\\skillplugins\\剧本成品范例\\火债\\火债_Seedance2.0提示词包_严格格式_10秒_16比9(2).md",
+      "bytes": 62441,
+      "characters": 22873,
+      "lineCount": 634,
+      "role": "段号索引与「一段一镜一提示词」的组织方式来源；本夹具用它标注节选对应的段号区间。",
+      "readCoverage": "56 个段标题全部定位（P01..P56，第 1 行标题 + 56 个 '### PNN｜' 行，行号已实测）；节选细读 P16｜冷静下令（176-187 行）、P17｜火若留根（188-198 行）。",
+      "note": "Seedance 段号顺序与分镜镜号顺序不是一对一，本夹具只做区间标注，不做逐段等同。"
+    }
+  ],
+
+  "excerptScope": {
+    "strategy": "单一连续场次节选 + 1 页 4 格压缩改编；不覆盖全片。",
+    "screenplay": [
+      {
+        "sceneNumber": 7,
+        "sceneHeading": "场景 7　夜·内　胡宅书房",
+        "lineRange": "218-247",
+        "coverage": "本场全部台词与舞台指示，压缩为 4 个 beat。这是本夹具唯一的剧作来源场次。"
+      },
+      {
+        "sceneNumber": 8,
+        "sceneHeading": "场景 8　夜·外/内　张家",
+        "lineRange": "249-292",
+        "coverage": "仅取开场两句（铁链穿门环、咔哒锁死，第 251-253 行）作为本页落点之后的「后果」；纵火与护子的主体过程不进入本次分页画面。"
+      }
+    ],
+    "storyboardShotRange": [
+      {
+        "shotRange": "S07-01 .. S07-05",
+        "lineRange": "266-279",
+        "lineHeaderRange": "259-282",
+        "coverage": "本节选的画面来源。5 个视频镜头（4+4+4+5+5=22 秒）重排为 4 格；上界 259（场次标题）与下界 282（跨段状态）之间的镜头主体为 266-279 行。"
+      },
+      {
+        "shotRange": "S08-01",
+        "lineRange": "292-293",
+        "coverage": "「铁链穿门环、咔哒锁死」的超特写，作 page_000 落点后的余味与跨页钩子，不成格。"
+      }
+    ],
+    "seedanceSegmentRange": [
+      {
+        "segmentRange": "P16 .. P17",
+        "lineRange": "176-198",
+        "segmentTitles": ["P16｜冷静下令", "P17｜火若留根"],
+        "coverage": "与分镜 S07 场次对应，合计 20 秒素材，压缩为 1 页 4 格。注意：分镜 S07 建议时长 22 秒，与 Seedance 的 2×10 秒并不相等，两者只是同一节拍的两种规格。"
+      }
+    ],
+    "excludedByDesign": [
+      "全片其余 19 个场次与 111 个镜号未纳入，本夹具不是全片闭环。",
+      "第 1 场的纵火施暴过程（暴力的直接呈现）不在节选内；本页只呈现「下令」这一决策瞬间。",
+      "第 7 场中「还有三个小子」这一信息不单独成格，压缩为手下反应格的画面内容（见 videoToComicConversion 第 3 条）。"
+    ]
+  },
+
+  "lineRefs": [
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 218,
+      "quote": "## 场景 7　夜·内　胡宅书房",
+      "usedFor": "确定 sceneId=huzhaishufang（书房）、场景时段为夜·内、以及「私密决策空间」的视觉基调。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 220,
+      "quote": "烛火很稳。",
+      "usedFor": "panel_000 的视觉基调：单支烛火的稳定暖光，也是「冷静」情绪的唯一光源依据。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 222,
+      "quote": "胡父坐在书案后，翻着一本账册。两名手下站在暗处。",
+      "usedFor": "panel_000 的 visualDirection（坐书案后、翻账册、手下在暗处）、prop:hufuzhangce@base 的动作依据，以及「两名手下只入画一人」的取舍理由。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 225,
+      "quote": "张家今夜有几个人？",
+      "usedFor": "dialogue dlg_hufu_ask（intent=speech，speakerCharacterId=Hufu）与 panel_001（close-up 的问句格）。台词正文位于人物名之后的缩进行（第 224 行为人物名「胡父」）。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 228,
+      "quote": "张月坪，还有三个小子。",
+      "usedFor": "dialogue dlg_shouxia_answer（intent=speech，speakerCharacterId=Hujiashouxia）；「还有三个」不单独成格。台词正文位于人物名之后（第 227 行为人物名「手下」）。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 233,
+      "quote": "门从外面锁死。",
+      "usedFor": "dialogue dlg_hufu_lock（intent=speech）；这句话把「书房下令」与场景 8 门外落锁连成因果。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 238,
+      "quote": "那几个孩子——",
+      "usedFor": "dialogue dlg_shouxia_hesitate（intent=whisper）；被打断的半句，是本页唯一的犹疑声部，也是 panel_002 的情绪落点。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 243,
+      "quote": "火若留根，风一吹还会再起。",
+      "usedFor": "dialogue dlg_hufu_order（本页的收束台词）与 panel_003 的 extreme-close-up 视觉方向。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_完整剧本_v1.md",
+      "line": 245,
+      "quote": "他蘸墨，在账册上写下一个“清”字。",
+      "usedFor": "panel_003 的主体动作（蘸墨、落笔写「清」）与 captionText 的依据；也解释了 prop:hufuzhangce@base 为何必须锁死「唯一清晰可辨的字为清」。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 259,
+      "quote": "## 场景组 S07｜胡宅书房·下令灭门",
+      "usedFor": "确认节选落在分镜第 S07 场次组，场次名「下令灭门」与剧本第 7 场同指一节拍。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 261,
+      "quote": "- 建议时长：22 秒",
+      "usedFor": "视频规格侧的时长基线：5 镜共 22 秒，与 Seedance 的 2×10 秒并不相等，说明 116 镜与 56 段不能逐项等同。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 262,
+      "quote": "- 场景：SC006；角色：CH001、CH007；道具：PR006",
+      "usedFor": "分镜侧给出的资产引用清单，与资产提示词包的 A028/SC006、A012/CH001、A027/CH007、A029/PR006 一一对应；本夹具的 assetManifest 四项即由此清单限定。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 266,
+      "quote": "### S07-01｜4秒",
+      "usedFor": "panel_000 采用 shotIntent=establishing 的节奏依据（4 秒固定镜头，烛火几乎不动）。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 267,
+      "quote": "焦段：70mm｜光圈：F3.2｜景深与焦点锁：浅景深锁烛芯，胡父模糊坐在后景｜机位：摄影机位于烛台侧前方桌面高度，近景｜构图：稳定烛焰居左，胡父剪影居右｜运镜：固定镜头，烛火几乎不动｜主体动作/表情：胡父翻账页，两名手下一动不动｜台词与语气：纸页声，无对白｜光影：单烛暖光，背景大面积墨黑｜限制：慢镜头功能为建立冷静杀意；禁止无来源补光｜下一段衔接：胡父手指压住账页。",
+      "usedFor": "panel_000 的构图与光影直接来源：「烛焰居左、胡父剪影居右」「单烛暖光、背景大面积墨黑」被改写为静态提示词；这一整行同时是「要删掉的焦段/光圈/运镜/时长字段」的样本。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 269,
+      "quote": "### S07-02｜4秒",
+      "usedFor": "panel_001 采用 shotIntent=close-up 的来源镜（锁胡父眼睛）。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 270,
+      "quote": "焦段：85mm｜光圈：F2.8｜景深与焦点锁：锁胡父眼睛，手下在后景柔焦｜机位：摄影机位于胡父正前方眼平近景｜构图：胡父正面略偏下，头顶留白压缩｜运镜：极慢推近，问句结束即停｜主体动作/表情：胡父不抬头，眼珠先向上，随后才抬脸｜台词与语气：胡父平静得近乎日常：“张家今夜有几个人？”｜光影：烛光只亮下半张脸，眼窝压暗｜限制：不做狞笑；不允许额外仆役｜下一段衔接：焦点转到手下。",
+      "usedFor": "panel_001 的表演与光位来源：「眼珠先向上，随后才抬脸」「烛光只亮下半张脸，眼窝压暗」；「不做狞笑」被保留为 negativePrompt。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 272,
+      "quote": "### S07-03｜4秒",
+      "usedFor": "panel_002 采用 shotIntent=over-shoulder 的来源镜（过肩拍手下中景）。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 273,
+      "quote": "焦段：50mm｜光圈：F4｜景深与焦点锁：中景深锁两名手下，胡父肩部作前景｜机位：过胡父左肩拍手下中景｜构图：迟疑手下靠左，冷硬手下靠右｜运镜：固定过肩｜主体动作/表情：迟疑手下喉结动一下，冷硬手下低眼｜台词与语气：手下压低声音：“张月坪，还有三个小子。”｜光影：两人脸各有半边藏在黑暗｜限制：两名手下脸型动作不同｜下一段衔接：胡父翻过一页，纸声切回。",
+      "usedFor": "panel_002 的构图来源（过肩、迟疑手下靠左冷硬手下靠右、两人各半边脸藏在黑暗）；这里「两名手下」在夹具中被压成单数角色 Hujiashouxia，理由见 videoToComicConversion。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 275,
+      "quote": "### S07-04｜5秒",
+      "usedFor": "panel_002 之后的口型/反应节拍；本夹具把它并入 panel_003 的落点，而不是新开一格。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 276,
+      "quote": "焦段：70mm｜光圈：F3.2｜景深与焦点锁：焦点锁胡父压页的指尖与嘴部｜机位：摄影机位于书案右前方胸口高度，中近景｜构图：账册占下三分之一，胡父脸居上方｜运镜：从手指缓慢上移到脸｜主体动作/表情：胡父翻页、压平，嘴角没有变化｜台词与语气：胡父不疾不徐：“门从外面锁死。”手下迟疑：“那几个孩子——”｜光影：烛光在纸面形成亮矩形，胡父脸仍半暗｜限制：停顿留足但不拖；账册位置连续｜下一段衔接：胡父抬眼截断手下。",
+      "usedFor": "panel_003 的动作与道具连续性来源：「账册占下三分之一」「账册位置连续」；台词提示「门从外面锁死。」与「那几个孩子——」即 dlg_hufu_lock 与 dlg_shouxia_hesitate。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 278,
+      "quote": "### S07-05｜5秒",
+      "usedFor": "panel_003 采用 shotIntent=extreme-close-up（下令的眼睛切到笔尖「清」字），作为整页的收束。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 279,
+      "quote": "焦段：100mm｜光圈：F2.8｜景深与焦点锁：超浅景深，先锁胡父眼睛，再落到笔尖“清”字｜机位：摄影机位于胡父左前45°眼平特写，随后视线摇到桌面｜构图：眼睛特写切笔尖微距｜运镜：视线摇镜，笔落纸后固定｜主体动作/表情：胡父目光冷硬一瞬，随即低头蘸墨写“清”｜台词与语气：胡父声音轻却斩断：“火若留根，风一吹还会再起。”｜光影：朱墨在暖黄纸上近似血色，周边黑暗｜限制：账册只出现“清”一字；禁止乱码；不加笑声｜下一段衔接：最后一笔墨线延伸为张家门上黑色铁链。",
+      "usedFor": "panel_003 的视觉方向（眼平特写切笔尖微距、朱墨近似血色、周边黑暗）与 negativePrompt（禁止乱码、不加笑声）；「账册只出现清一字」被提升为 prop 资产的一致性锁。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_全片分镜_16比9_v1.md",
+      "line": 282,
+      "quote": "胡父已明确下令外锁纵火；PR006 账册留在书房。“清”字墨线匹配切到 PR001A 铁链，进入当夜张家强动作段。",
+      "usedFor": "确认本场次以「下令外锁纵火」收束，并说明「清」字墨线是转场匹配点——这正是本页最后一格的收尾依据。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 5,
+      "quote": "> 状态说明：本文件中的资产均为“提示词候选”，尚未生成、筛选或定稿；不能把提示词当成已定稿图片。",
+      "usedFor": "本夹具最硬的事实约束来源，也是 _approvalDisclaimer 与 notAClosedLoop 的直接依据。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 355,
+      "quote": "#### A012 / CH001｜胡父",
+      "usedFor": "entityId=hufu、assetKind=character、displayName「胡父」的命名来源。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 373,
+      "quote": "一致性锁定：胡父在后续所有段落中必须沿用本页定稿的轮廓、比例、材质、配色与标志性细节；同一资产只生成一个稳定版本，不自行换装、改色、增减数量或现代化。",
+      "usedFor": "renderSpecs 中「保持与参考图相同的面部特征与服装」这一角色一致性写法的依据；也说明本节选不需要新增 variantId。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 978,
+      "quote": "#### A027 / CH007｜胡家手下",
+      "usedFor": "entityId=hujiashouxia、displayName「胡家手下」的命名来源；剧本第 7 场对该角色只有职能称谓「手下」。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 1015,
+      "quote": "#### A028 / SC006｜胡宅书房",
+      "usedFor": "entityId=huzhaishufang、assetKind=scene 的命名来源。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 1027,
+      "quote": "资产内容：私密小书房，深木书案、账册、毛笔、砚台、单支蜡烛，背景大面积墨黑，两名手下站位在书案后方；民族二维手绘16:9空场母版，烛光只照局部。",
+      "usedFor": "panel_000 的场景描述与 requirementPrompt 改写；同时暴露一处素材内部矛盾（见 inconsistencies）。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 1056,
+      "quote": "资产内容：深蓝灰布面账册、旧黄内页、毛笔与朱墨，唯一允许清晰出现的字为“清”；包含翻页、压页、落笔三种状态。二维道具状态图，禁止额外乱码。",
+      "usedFor": "prop:hufuzhangce@base 的 requirementPrompt，并解释为何 panel_000/panel_003 分别选「压页」与「落笔」。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "line": 2247,
+      "quote": "已定稿资产：无；当前仅完成61项可直接出图的候选提示词",
+      "usedFor": "notAClosedLoop 的核心声明：本节选没有任何可引用的真实已批准资产版本。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_Seedance2.0提示词包_严格格式_10秒_16比9(2).md",
+      "line": 176,
+      "quote": "### P16｜冷静下令",
+      "usedFor": "节选段号区间的起点，并确认「下令」这一节拍在视频规格里就是本段的题眼。"
+    },
+    {
+      "file": "G:\\skillplugins\\剧本成品范例\\火债\\火债_Seedance2.0提示词包_严格格式_10秒_16比9(2).md",
+      "line": 188,
+      "quote": "### P17｜火若留根",
+      "usedFor": "节选段号区间的终点；panel_003 的 caption 与落点台词由此得名。"
+    }
+  ],
+
+  "assetIdMapping": [
+    {
+      "sourceAssetName": "胡父",
+      "sourceAssetRef": "A012 / CH001｜胡父",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 355,
+      "fixtureItemKey": "character:hufu@base",
+      "entityId": "hufu",
+      "variantId": "base",
+      "boundInFixture": true,
+      "bindingStatus": "fixture_synthesized",
+      "note": "原素材只有候选提示词（第 358 行版本号写作 CH001_胡父_v0.1_候选），没有生成图、没有审批记录。本夹具的 assetId/version/contentDigest/approvalId 全部是合成的格式合法值，不代表真实审批。"
+    },
+    {
+      "sourceAssetName": "胡家手下",
+      "sourceAssetRef": "A027 / CH007｜胡家手下",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 978,
+      "fixtureItemKey": "character:hujiashouxia@base",
+      "entityId": "hujiashouxia",
+      "variantId": "base",
+      "boundInFixture": true,
+      "bindingStatus": "fixture_synthesized",
+      "note": "提示词包第 981 行同样标注为「_v0.1_候选」。剧本对该角色只有「手下」的职能称谓，无姓名。"
+    },
+    {
+      "sourceAssetName": "胡宅书房",
+      "sourceAssetRef": "A028 / SC006｜胡宅书房",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 1015,
+      "fixtureItemKey": "scene:huzhaishufang@base",
+      "entityId": "huzhaishufang",
+      "variantId": "base",
+      "boundInFixture": true,
+      "bindingStatus": "fixture_synthesized",
+      "note": "场景只有「夜」一种状态，不另设 variant。原素材标注「空场母版」，但同一条提示词又写了「两名手下站位在书案后方」。"
+    },
+    {
+      "sourceAssetName": "胡父账册",
+      "sourceAssetRef": "A029 / PR006｜胡父账册",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 1044,
+      "fixtureItemKey": "prop:hufuzhangce@base",
+      "entityId": "hufuzhangce",
+      "variantId": "base",
+      "boundInFixture": true,
+      "bindingStatus": "fixture_synthesized",
+      "note": "本夹具只绑定 base 一个账号；原提示词声明的「翻页/压页/落笔」三种道具状态在本夹具里退化为 promptText 中的动作描述，不另立 variantId（原因见视频转漫画说明）。"
+    },
+    {
+      "sourceAssetName": "张月坪",
+      "sourceAssetRef": "CH002｜张月坪",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 548,
+      "fixtureItemKey": null,
+      "entityId": "zhangyueping",
+      "variantId": null,
+      "boundInFixture": false,
+      "bindingStatus": "prompt_exists_not_generated_not_bound",
+      "note": "原素材有候选提示词但从未生成、从未定稿；本夹具中标记为未绑定。他在第 7 场只是被谈论的对象，不出镜。"
+    },
+    {
+      "sourceAssetName": "张家三子",
+      "sourceAssetRef": "CH008｜张家三子",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 577,
+      "fixtureItemKey": null,
+      "entityId": "zhangsanzi",
+      "variantId": null,
+      "boundInFixture": false,
+      "bindingStatus": "prompt_exists_not_generated_not_bound",
+      "note": "同上：有候选提示词、无生成、无定稿。剧本第 224 行以「三个儿子」的形式被提及，不入画。"
+    },
+    {
+      "sourceAssetName": "张家铁锁与铁链（PR001A）",
+      "sourceAssetRef": "PR001A｜张家铁锁与铁链",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 1092,
+      "fixtureItemKey": null,
+      "entityId": "zhangjiatiesuo",
+      "variantId": null,
+      "boundInFixture": false,
+      "bindingStatus": "prompt_exists_not_generated_not_bound",
+      "note": "「从外面锁门」这一指令的关键道具，但落锁发生在第 8 场及以后，不在本次 1 页节选内，故不绑定。"
+    },
+    {
+      "sourceAssetName": "灯油、火折子与柴垛（PR014）",
+      "sourceAssetRef": "PR014｜灯油、火折子与柴垛",
+      "sourceFile": "G:\\skillplugins\\剧本成品范例\\火债\\火债_资产提示词包_按出镜顺序_v1(1).md",
+      "sourceLine": 1121,
+      "fixtureItemKey": null,
+      "entityId": "dengyouhuozhezi",
+      "variantId": null,
+      "boundInFixture": false,
+      "bindingStatus": "prompt_exists_not_generated_not_bound",
+      "note": "与第 6 场纵火相关，但本页只画书房内的决策，不出现引火物；不绑定。"
+    }
+  ],
+
+  "videoToComicConversion": [
+    {
+      "decision": "合并：5 个镜头 → 4 格",
+      "from": ["S07-01", "S07-02", "S07-03", "S07-04", "S07-05"],
+      "to": ["panel_000", "panel_001", "panel_002", "panel_003"],
+      "mapping": "S07-01→panel_000（establishing 空间交代）；S07-02→panel_001（close-up 账册与手）；S07-03→panel_002（over-shoulder 回答者）；S07-04+S07-05→panel_003（把「特写」与「大特写」两级压进同一格的 extreme-close-up 落点）。",
+      "why": "pageShape 固定 1 页 4 格，5 个镜头必须有一个被吸收。被吸收的是 S07-04：它与 S07-05 同属父亲面部节拍，拆成两格会稀释收束力度。"
+    },
+    {
+      "decision": "删除：镜别/焦段/时长/光比等摄影参数",
+      "from": ["分镜正文中的「4秒」「大远景」等字段", "Seedance 段正文中的时长与运镜描述"],
+      "to": "panelSchema 只保留 shotIntent（枚举）与 visualDirection（≤600 字）",
+      "why": "contracts.ts 的 panelSchema 刻意把镜头表述做成可枚举的 shotIntent 而不是自由文本运镜脚本；时长在静态分页漫画里没有承载物，「同时长」会变成假精确。"
+    },
+    {
+      "decision": "改写：复数「两名手下」压缩为单数角色",
+      "from": "剧本第 222 行「两名手下站在暗处」；资产提示词 A028 亦写「两名手下站位在书案后方」",
+      "to": "premise.characters 恰好 2 人（胡父 + 胡家手下），画面只入画一人",
+      "why": "brief.limits.maxCharacters=2 是节选夹具的硬上限。两人的职能与外观在提示词包里本就是一个群像资产（CH007），取其一不产生新的实体，也不与任何素材冲突。"
+    },
+    {
+      "decision": "删除：声音、配乐、环境音与转场黑场",
+      "from": "「转场黑场」「画外」等衔接描述",
+      "to": "分页漫画以翻页缝隙替代；panel_003 的 captionText 承担上一场的因果衔接",
+      "why": "音频字段在静态分页漫画里没有承载物；把这些字段留在产物里会污染指纹，也会让下游误以为存在音轨。"
+    },
+    {
+      "decision": "降级：账册的三种道具状态 → base 变体 + 提示词内动作",
+      "from": "资产提示词 A029「包含翻页、压页、落笔三种状态」",
+      "to": "只保留 prop:hufuzhangce@base，动作写进 panel_000（压页）与 panel_003（落笔）的 promptText",
+      "why": "brief.limits.maxProps=1 且 maxProfileVariantsPerEntity=2，若为三种状态各立 variantId 就会超限。这里刻意选择「不伪造更多变体」，并把取舍显式记录，而不是偷偷放宽 limits。"
+    },
+    {
+      "decision": "删除：镜头之间的视线与运镜连续性约束",
+      "from": "分镜中「接上镜」「摇移」等连续性说明",
+      "to": "由 4 格的阅读顺序（ltr，ordinal 0→3）与眼线方向承担",
+      "why": "分格漫画的连续性来自格序与视线，不来自摄影机运动；保留运镜描述会与 shotIntent 枚举产生双重事实来源。"
+    },
+    {
+      "decision": "扩展：为节选补出的夹具专属信息",
+      "from": "原始三份素材都没有的字段",
+      "to": "stable id 命名（hufu / hujiashouxia / huzhaishufang / hufuzhangce）、格号 ordinal、canvas 坐标、balloon 锚点",
+      "why": "视频素材只有段号与镜号，没有漫画所需的分页、坐标与稳定 ID。这些是夹具的合成内容，不是素材事实，故在 _fixture 与 _approvalDisclaimer 中逐条标明。"
+    },
+    {
+      "decision": "不改写：台词正文逐字保留",
+      "from": "剧本第 222、224、228 行",
+      "to": "script.dialogues 的 text",
+      "why": "台词是原作的剧作事实，任何「润色」都会让夹具失去可追溯性。本夹具未做任何改写，连句末标点也与剧本一致（不加句末的「。」）。"
+    }
+  ],
+
+  "notAClosedLoop": {
+    "statement": "本夹具不是已完成的生产闭环，只是节选适配。原始资产从未真正生成或定稿——资产提示词包第 5 行原文即为「本文件中的资产均为“提示词候选”，尚未生成、筛选或定稿；不能把提示词当成已定稿图片」，交接处第 2247 行原文为「已定稿资产：无；当前仅完成61项可直接出图的候选提示词」。",
+    "implications": [
+      "expected-artifacts.json 中的 approvedRefs 没有任何一条对应真实资产版本；assetId / version / contentDigest / candidateSetDigest / approvalId / approvedBy 均为夹具合成的格式合法值。",
+      "因此 digestSource 只能是 content_key：资产没有落盘产物，拿不到 AssetVersion.sha256（prisma/schema.prisma:322 允许该字段为空），无从写出 asset_version_sha256。",
+      "视频侧的真实性同样不足：分镜 116 镜约 9 分 14 秒、Seedance 56 段，两者需要重组映射而非逐项等同；本夹具只覆盖其中连续的一场。",
+      "本夹具可以用于验证 contracts.ts 的结构校验与跨对象引用校验，但不能用于证明任何实际出图、审图或排版流程已经跑通。"
+    ]
+  },
+
+  "inconsistencies": [
+    {
+      "where": "资产提示词包 A028 / SC006｜胡宅书房（第 1015-1043 行，资产内容见第 1027 行）",
+      "issue": "同一条资产描述自相矛盾：既称「二维手绘16:9空场母版」（空场），又在同一句里写「两名手下站位在书案后方」（含人物）。",
+      "handling": "本夹具按「场景母版不含人物、人物单独作为 character 资产」处理；未修改素材，仅记录。"
+    },
+    {
+      "where": "资产提示词包文件头（第 2247 行）与正文小节标题",
+      "issue": "对外宣称「61项」资产提示词，但实测 '#### A' 条目共 61 条、去重后只有 53 个 A 编号（A011/A015/A021/A022/A034/A035/A039/A045 各重复一次）。条数与编号唯一数不一致。",
+      "handling": "本夹具只按 A012/A027/A028/A029 四条真实条目建映射，不依赖总数。"
+    },
+    {
+      "where": "video 规格与资产包之间",
+      "issue": "分镜 116 镜、Seedance 56 段、资产 61（或 53）条三者粒度不同，不存在逐项一一对应表。",
+      "handling": "source-map 只声明区间（S07-01..S07-05 / P16..P17）并给出重组映射，不构造逐项等同。"
+    }
+  ]
+}

@@ -299,6 +299,12 @@ export class NewApiAccountClient {
             409,
             expected,
           );
+        if (response.status === 409 && value?.code === 'canvas_managed_token_changed')
+          throw new NewApiAccountError(
+            'group_token_changed',
+            '分组授权与令牌状态不一致，请重新连接 New API 账号后同步分组',
+            409,
+          );
         throw new NewApiAccountError(
           response.status === 401 || response.status === 403
             ? 'authorization_revoked'

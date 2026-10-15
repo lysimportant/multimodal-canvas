@@ -88,6 +88,9 @@ function entryDetails(entry: OperationLogEntry): string[] {
       forbidden: '无权限',
       rate_limited: '请求过于频繁',
       server_error: '服务端错误',
+      credential_not_found: '分组凭据不可用',
+      group_unavailable: '分组不可用',
+      group_token_changed: '分组授权与令牌状态不一致',
     };
     details.push(`错误：${errorLabels[entry.errorCode] ?? entry.errorCode}`);
   }

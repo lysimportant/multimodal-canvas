@@ -1,0 +1,1265 @@
+{
+  "_fixture": {
+    "kind": "recovery-cases",
+    "usedBy": "P2 测试",
+    "schemaVersion": 1,
+    "workflowId": "topic-to-comic",
+    "workflowVersion": "0.1.0",
+    "contractSchemaVersion": 1,
+    "purpose": "事件序列 → 期望状态 的场景库。每条给出具体事件、期望的绝对数字（stepRun 数 / Run 数 / 供应商创建请求数 / 审批态）与 mustNot 清单，供 P2 写测试时逐条断言。",
+    "sourceOfTruth": [
+      "docs/workflows/topic-to-comic-v1/contracts.ts",
+      "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json",
+      "docs/workflows/topic-to-comic-v1/runtime-semantics.md",
+      "docs/workflows/topic-to-comic-v1/README.md"
+    ],
+    "siblingArtifacts": [
+      {
+        "path": "docs/workflows/topic-to-comic-v1/runtime-semantics.md",
+        "status": "本夹具首版落盘时该文件尚未产出；现已存在（473 行 / 44891 字节，12 节：三层关系、唯一键、两层指纹、提交幂等键、生成修订 vs 技术重试、审批状态机、等待人工的语义、失效传播、迟到/过期回调、取消、部分成功、事务边界）",
+        "consequence": "本夹具首版的 statusVocabulary / approvalStatusVocabulary / rc_cancel_late_result 处置已在第二次修订中按该文件对齐：WorkflowRun.status 取 :46，WorkflowStepRun.status 取 :64，审批状态取 :361-367 与转换表 :371-381，等待期纪律取 :430-452，迟到处置取 :536-547，取消取 :576-589。冲突一律以 runtime-semantics.md 为准"
+      }
+    ],
+    "placeholderSyntax": "事件 detail 中以 \"$digest:<name>\" 出现的字符串由 _fixture.digests 解析为 64 位小写 hex；以 \"$key:<name>\" 出现的字符串由 _fixture.idempotencyKeys 解析",
+    "digests": {
+      "briefA": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "definition": "8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f",
+      "premiseArtifact": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "scriptArtifact": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "panelPlanArtifact": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+      "assetManifestArtifact": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+      "candidateLinwanA": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+      "candidateLinwanB": "0707070707070707070707070707070707070707070707070707070707070707",
+      "targetStale": "1818181818181818181818181818181818181818181818181818181818181818",
+      "targetMismatch": "2929292929292929292929292929292929292929292929292929292929292929",
+      "linwanV1Content": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+      "qiaoV1Content": "4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+      "templeV1Content": "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+      "fingerprintS6Panel3": "6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d",
+      "promptTooLong": "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e"
+    },
+    "idempotencyKeys": {
+      "K1_linwan_base_r1": "topic-to-comic|s4_asset_candidates|character:linwan@base|r1|6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d",
+      "K2_panel_p1_3_r1": "topic-to-comic|s6_panel_render|panel:p1_3|r1|6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d",
+      "K3_panel_p1_1_r1": "topic-to-comic|s6_panel_render|panel:p1_1|r1|6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d"
+    },
+    "idempotencyKeyNote": "键形如 contracts.ts:1072 submitIdempotencyKey() 的产物（definitionId|stepId|itemKey|r<generationRevision>|<fingerprint 前 32 位>，上限 200，见 packages/domain/src/index.ts:1651）；此处长度仅作形状示例，P2 必须用真实指纹重算。",
+    "fieldSemantics": {
+      "stepRunCount": "该 WorkflowRun 下 WorkflowStepRun 的总行数（绝对数）。唯一键为 (workflowRunId, stepId, itemKey, generationRevision)：技术重试不新增行，用户\u201c再画一张\u201d（generationRevision 提升）新增行。",
+      "runCount": "该 WorkflowRun 下 Run 的总行数（绝对数，不是增量）。",
+      "runCountDelta": "本 case 关键事件造成的 Run 净增。",
+      "vendorCreateRequests": "发出的供应商付费创建请求总次数（绝对数）。\u201c发出\u201d指真正到达供应商 POST，不含被本地拒绝的尝试。",
+      "vendorCreateRequestsDelta": "本 case 关键事件造成的净增。",
+      "status": "WorkflowRun 状态，取值见 statusVocabulary。",
+      "stepStatus": "被断言的那一个 WorkflowStepRun 的状态（仅在该 case 聚焦单步时给出）。",
+      "approvalStatus": "本 case 结束时被断言的那个 itemKey 的审批态，取值见 approvalStatusVocabulary（runtime-semantics.md:361-367）；gate 整体分布见各 case 的 *ItemKeys 字段。",
+      "canvasNodes": "画布投影结果：newNodes 为本 case 新增节点数，nodeKeys 为必须存在的稳定键，total 为断言时刻的节点总数。",
+      "exportFiles": "本 case 结束时产出的导出文件（文件名或 schema 名）；空数组表示不得产出任何交付物。"
+    },
+    "statusVocabulary": {
+      "running": "有在途子项，未处于人工等待。",
+      "awaiting_decision": "某个 gate 已持久化等待审批。用词取自 README.md 第 7 节 P2 完成标志（\u201c三个 gate 都停成 awaiting_decision\u201d）。",
+      "needs_review": "发送结果不确定，禁止自动重发。用词取自 workflow-definition.v1.json:422（s6_panel_render.retryPolicy.sendUnknownPolicy.status，同 :583 复用于 s8_render_pages）。",
+      "failed": "存在失败子项或预算耗尽，已停止新派发。runtime-semantics.md:46 的 WorkflowRun.status 取值里没有 blocked，故首版 blocked 统一改为 failed + 对应的 WF_*_EXCEEDED / 失败子项 issueCode。",
+      "cancelled": "用户取消，保留已产出结果（workflow-definition.v1.json:711-715 cancellationBehavior）。",
+      "succeeded": "全部产物就绪且已导出。",
+      "_note": "已按 runtime-semantics.md 对齐。P1 裁决（FINDINGS-p1.md F-22）：needs_review 已正式列入 runtime-semantics.md:46 的 WorkflowRun.status 枚举，因此本文件的 running / awaiting_decision / needs_review / succeeded / failed / cancelled 六个运行级取值全部有权威出处，原先登记的枚举缺口已消除。needs_review 是可再入状态：已 succeeded 的 WorkflowRun 收到迟到结果时按 §9.3 转为 needs_review 而非静默忽略。blocked 仍不在该枚举内，故首版的 blocked 继续由 failed + WF_BUDGET_EXCEEDED 取代。RunStatus 枚举（prisma/schema.prisma:28-38）只有 DRAFT/QUEUED/PREPARING/RUNNING/PROCESSING/SUCCEEDED/FAILED/CANCEL_REQUESTED/CANCELLED，因此 needs_review 与 awaiting_decision 只能落在工作流层状态上，不得塞进 RunStatus。"
+    },
+    "approvalStatusVocabulary": {
+      "_authority": "runtime-semantics.md:361-367 的五个审批状态，逐字沿用；首版的 not_reached / partial / stale_rejected 三个自造值已废弃。",
+      "pending": "步骤已就绪但尚未产出待审产物（首版的 not_reached 即此态）。",
+      "awaiting_decision": "产物已冻结、artifactDigest 已记录，等待人工决定；零新增生成调用。",
+      "approved": "存在有效 approved 决定，绑定到 targetArtifactDigest。",
+      "rejected": "存在有效 rejected 决定；步骤回到可重画。",
+      "stale": "审批所依赖的输入已变更，该审批不再可信（转换表 T4 / T7，runtime-semantics.md:376-379）。首版的 stale_rejected 拆分为：拒绝动作返回 WF_STATE_APPROVAL_STALE，而 gate 自身的状态是 stale。",
+      "_perItemNote": "g_assets 是 perItemApproval=true，因此一个 gate 同时可能持有多个逐 itemKey 的状态（例如 linwan=approved、qiao=pending）。case 的 approvalStatus 给出被断言的那个 itemKey 的状态，gate 的整体分布另由 approvedItemKeys / unapprovedItemKeys / retainedApprovedItemKeys / invalidatedApprovedItemKeys 给出；首版的 partial 不是状态，已废弃。"
+    },
+    "scale": {
+      "pages": 1,
+      "pageIds": ["pg1"],
+      "panelsPerPage": 4,
+      "panelIds": ["p1_1", "p1_2", "p1_3", "p1_4"],
+      "characters": 2,
+      "characterItemKeys": ["character:linwan@base", "character:qiao@base"],
+      "scenes": 1,
+      "sceneItemKeys": ["scene:temple@night"],
+      "references": "README.md 第 2 节：1 页 / 4 格 / 最多 2 个主要角色 / 1 个主要场景"
+    },
+    "baselineCounts": {
+      "_note": "首版验收规模跑完一整条链路的基线绝对值，供各 case 对照。",
+      "stepRunCount": 12,
+      "runCount": 11,
+      "vendorCreateRequests": 11,
+      "breakdown": {
+        "s0_brief": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0, "reason": "type=transform, vendorCall=false（workflow-definition.v1.json:46-47）" },
+        "s1_premise": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
+        "s2_script": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
+        "s3_panel_plan": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
+        "s3_asset_manifest": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
+        "g_story": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
+        "s4_asset_candidates": { "stepRuns": 3, "runs": 3, "vendorCreateRequests": 3, "reason": "foreach 展开 3 个 itemKey（2 角色 + 1 场景）" },
+        "g_assets": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
+        "s5_render_specs": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0, "reason": "type=transform, vendorCall=false（:348-349）" },
+        "s6_panel_render": { "stepRuns": 4, "runs": 4, "vendorCreateRequests": 4, "reason": "foreach 展开 4 格" },
+        "s7_quality": { "stepRuns": 1, "runs": "1（仅当 brief.modelBindings.vision 存在）", "vendorCreateRequests": "1（同上；缺失即跳过评审，visionScore 为 null）" },
+        "s8_layout": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
+        "s8_render_pages": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
+        "g_final": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
+        "s9_export": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 }
+      },
+      "visionSkippedAssumption": "上面 runCount=11 / vendorCreateRequests=11 按\u201c未绑定 vision、s7_quality 跳过评审\u201d计算；绑定 vision 后为 12 / 12（含 4 次逐格评审则为 15 / 15）。P2 必须在 brief 里显式固定 vision 绑定，否则该数字不可断言。"
+    },
+    "planningStances": [
+      {
+        "id": "stance_send_unknown",
+        "text": "\u201c超时 / unknown 当作可以重新创建的失败\u201d是最严重的错误：换幂等键重发会造成重复付费并破坏现有发送防重。",
+        "authority": "packages/execution/src/index.ts:737（record.status !== 'pending' 即拒绝再次创建）；workflow-definition.v1.json:421-427、:659-665；contracts.ts:157",
+        "assertedIn": ["rc_send_unknown", "rc_archive_failure", "rc_restart_recovery"]
+      },
+      {
+        "id": "stance_latest_success_is_not_approval",
+        "text": "\u201c最新成功结果\u201d不等于\u201c人工批准版本\u201d。候选的最近成功 Run 只是候选；只有 ApprovalDecision 产出的 approved_artifact 才能进入下游。",
+        "authority": "contracts.ts:244-253（approved_artifact 的定义）、:231-243（generated_artifact ≠ approved）；apps/api/src/connected-image-results.ts:55 取的就是\u201c最近成功\u201d；apps/api/src/ 的 connected-text-inputs.ts:63 甚至能把上游提示词当正文",
+        "assertedIn": ["rc_archive_failure", "rc_duplicate_approval", "rc_upstream_revision_change"]
+      },
+      {
+        "id": "stance_free_text_steps",
+        "text": "\u201c纯文本步骤不花钱\u201d不能作为计划前提；只有不调用付费模型的 fixture / mock 验证才可以这样承诺。真实 provider 下 s1_premise / s2_script / s3_panel_plan / s3_asset_manifest 都是 vendorCall=true 的付费文本步骤，必须照样预留与结算额度。",
+        "authority": "workflow-definition.v1.json:74、:103、:133、:172（budgetClass: text 且 vendorCall: true）；:686-699（budgetPolicy.counters 含 textGenerations）",
+        "assertedIn": ["rc_budget_exhausted", "rc_prompt_too_long"]
+      }
+    ],
+    "coverage": {
+      "_note": "本夹具对 contracts.ts:121-172 的 WORKFLOW_ISSUE_CODES 共 35 个码的覆盖情况。uncoveredIssueCodes 与 issueCodesWithoutProducer 是 P1 的发现，不是本夹具的缺陷。",
+      "coveredIssueCodes": [
+        "WF_STATE_SEND_UNKNOWN",
+        "WF_STATE_APPROVAL_STALE",
+        "WF_STATE_APPROVAL_DUPLICATE",
+        "WF_REPLAY_GENERATION_REVISION_REQUIRED",
+        "WF_BUDGET_EXCEEDED",
+        "WF_LIMIT_PROMPT_CHARS",
+        "WF_EXPORT_INCOMPLETE"
+      ],
+      "uncoveredIssueCodes": [
+        "WF_SCHEMA_VERSION_UNSUPPORTED",
+        "WF_INPUT_INVALID",
+        "WF_STABLE_ID_INVALID",
+        "WF_DUPLICATE_STABLE_ID",
+        "WF_TASK_TEMPLATE_MISSING",
+        "WF_MODEL_BINDING_MISSING",
+        "WF_REF_DANGLING",
+        "WF_REF_UNKNOWN_SPEAKER",
+        "WF_REF_ITEM_KEY_INVALID",
+        "WF_REF_ASSET_VARIANT_MISSING",
+        "WF_REF_ASSET_NOT_APPROVED",
+        "WF_REF_ASSET_VERSION_STALE",
+        "WF_LIMIT_CHARACTERS",
+        "WF_LIMIT_SCENES",
+        "WF_LIMIT_PAGES",
+        "WF_LIMIT_PANELS",
+        "WF_LIMIT_REFERENCES",
+        "WF_LIMIT_FOREACH_ITEMS",
+        "WF_LAYOUT_RECT_INVALID",
+        "WF_LAYOUT_PANEL_MISSING",
+        "WF_LAYOUT_BALLOON_OVERFLOW",
+        "WF_LAYOUT_READING_ORDER_INVALID",
+        "WF_STATE_APPROVAL_TARGET_MISMATCH",
+        "WF_STATE_STEP_REVISION_MISMATCH",
+        "WF_REPLAY_FINGERPRINT_MISMATCH",
+        "WF_REPLAY_KEY_TOO_LONG",
+        "WF_BUDGET_UNKNOWN_PRICE",
+        "WF_EXPORT_VERSION_MISMATCH"
+      ],
+      "issueCodesWithoutProducerInContractsTs": [
+        "WF_SCHEMA_VERSION_UNSUPPORTED",
+        "WF_INPUT_INVALID",
+        "WF_STABLE_ID_INVALID",
+        "WF_TASK_TEMPLATE_MISSING",
+        "WF_MODEL_BINDING_MISSING",
+        "WF_REF_ASSET_VARIANT_MISSING",
+        "WF_LIMIT_FOREACH_ITEMS",
+        "WF_STATE_APPROVAL_STALE",
+        "WF_STATE_APPROVAL_DUPLICATE",
+        "WF_STATE_SEND_UNKNOWN",
+        "WF_STATE_STEP_REVISION_MISMATCH",
+        "WF_REPLAY_FINGERPRINT_MISMATCH",
+        "WF_REPLAY_GENERATION_REVISION_REQUIRED",
+        "WF_BUDGET_EXCEEDED",
+        "WF_BUDGET_UNKNOWN_PRICE",
+        "WF_REPLAY_KEY_TOO_LONG"
+      ],
+      "issueCodesWithProducerInContractsTs": [
+        "WF_DUPLICATE_STABLE_ID",
+        "WF_REF_DANGLING",
+        "WF_REF_UNKNOWN_SPEAKER",
+        "WF_REF_ITEM_KEY_INVALID",
+        "WF_REF_ASSET_NOT_APPROVED",
+        "WF_REF_ASSET_VERSION_STALE",
+        "WF_LIMIT_CHARACTERS",
+        "WF_LIMIT_SCENES",
+        "WF_LIMIT_PAGES",
+        "WF_LIMIT_PANELS",
+        "WF_LIMIT_REFERENCES",
+        "WF_LIMIT_PROMPT_CHARS",
+        "WF_LAYOUT_RECT_INVALID",
+        "WF_LAYOUT_PANEL_MISSING",
+        "WF_LAYOUT_BALLOON_OVERFLOW",
+        "WF_LAYOUT_READING_ORDER_INVALID",
+        "WF_STATE_APPROVAL_TARGET_MISMATCH",
+        "WF_EXPORT_INCOMPLETE",
+        "WF_EXPORT_VERSION_MISMATCH"
+      ],
+      "coverageArithmetic": "35 个码 = 19 个在 contracts.ts 内可产出 + 16 个在 contracts.ts 内无产出者（其中 1 个 WF_REPLAY_KEY_TOO_LONG 只以裸 Error 字符串抛出，workflowIssueCodesOf() 无法提取，见 README.md 第 9 节第 4 条）。全仓夹具合计覆盖 18 个：本夹具 7 个 + 两份 expected-artifacts.json 的负样例 13 个（其中 6 个仅本夹具覆盖、11 个仅负样例覆盖、2 个两者都覆盖）。仍未被任何夹具覆盖 17 个，逐条列在 uncoveredByAllFixtures 与 acceptance-matrix.md 的错误码覆盖表中 —— 这是 P1 的实质发现。",
+      "coveredByArtifactFixtures": {
+        "theme-mini/expected-artifacts.json": ["WF_REF_UNKNOWN_SPEAKER", "WF_REF_ASSET_NOT_APPROVED", "WF_REF_ITEM_KEY_INVALID", "WF_REF_ASSET_VERSION_STALE", "WF_LIMIT_REFERENCES", "WF_LIMIT_PROMPT_CHARS", "WF_DUPLICATE_STABLE_ID", "WF_LIMIT_SCENES", "WF_LAYOUT_PANEL_MISSING", "WF_LAYOUT_BALLOON_OVERFLOW", "WF_LAYOUT_RECT_INVALID", "WF_EXPORT_INCOMPLETE"],
+        "huozhai-s01/expected-artifacts.json": ["WF_REF_UNKNOWN_SPEAKER", "WF_REF_ASSET_NOT_APPROVED", "WF_REF_ASSET_VERSION_STALE", "WF_LIMIT_REFERENCES", "WF_LAYOUT_RECT_INVALID", "WF_EXPORT_INCOMPLETE", "WF_EXPORT_VERSION_MISMATCH"],
+        "_note": "huozhai-s01 的 WF_REF_ASSET_NOT_APPROVED 负样例自述实际返回两个码 WF_LIMIT_REFERENCES 与 WF_REF_ASSET_NOT_APPROVED（该文件 :697-698），因此 P2 断言必须用『包含』而不是『等于』。",
+        "_regressionNote": "本夹具首版写这批负样例不存在，是当时的真实状态；第二次修订时两份 expected-artifacts.json 已由同批协作落盘，故此处改为实测清单。"
+      },
+      "uncoveredByAllFixtures": ["WF_SCHEMA_VERSION_UNSUPPORTED", "WF_INPUT_INVALID", "WF_STABLE_ID_INVALID", "WF_TASK_TEMPLATE_MISSING", "WF_MODEL_BINDING_MISSING", "WF_REF_DANGLING", "WF_REF_ASSET_VARIANT_MISSING", "WF_LIMIT_CHARACTERS", "WF_LIMIT_PAGES", "WF_LIMIT_PANELS", "WF_LIMIT_FOREACH_ITEMS", "WF_LAYOUT_READING_ORDER_INVALID", "WF_STATE_APPROVAL_TARGET_MISMATCH", "WF_STATE_STEP_REVISION_MISMATCH", "WF_REPLAY_FINGERPRINT_MISMATCH", "WF_REPLAY_KEY_TOO_LONG", "WF_BUDGET_UNKNOWN_PRICE"]
+    },
+    "assumptionsToConfirm": [
+      "WorkflowStepRun 的唯一键为 (workflowRunId, stepId, itemKey, generationRevision)（README.md 第 8 节第 2 步）。本夹具的 stepRunCount 全部按此计算。",
+      "\u201c供应商创建请求数\u201d只统计真正到达供应商 POST 的调用；本地因预算/审批/发送防重被拒绝的尝试不计数。",
+      "画布投影在 stepRun 建立时落稳定节点（mode=stable_node_per_item），技术重试与 generationRevision 提升都不新建节点。若实现改为\u201c首次成功后才落节点\u201d，本夹具的 canvasNodes.newNodes 需整体后移一格。",
+      "s7_quality 的 vision 绑定在 P2 的 brief 里显式缺席，故基线 runCount 为 11。"
+    ]
+  },
+
+  "cases": [
+    {
+      "caseId": "rc_duplicate_submit",
+      "title": "重复提交同一逻辑步骤",
+      "severity": "blocker",
+      "phase": "P2",
+      "stance": "幂等是成功语义，不是错误语义：第二次提交必须返回第一次的结果，而不是产生第二个付费请求或第二个错误码。",
+      "preconditions": [
+        "项目 projectId=P 与画布 C 存在，C.revision=0，无节点",
+        "brief 通过 comicBriefSchema（contracts.ts:303-347），briefDigest=$digest:briefA",
+        "WorkflowRun 尚未创建，Run 表内 (P, 任何幂等键) 无记录",
+        "预算充裕：budget.maxVendorRequests >= 10"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "workflow.run.submit",
+          "detail": { "definitionId": "topic-to-comic", "definitionVersion": "0.1.0", "definitionDigest": "$digest:definition", "projectId": "P", "briefDigest": "$digest:briefA" },
+          "expectedReaction": "受理，创建 WorkflowRun WFR-1 并返回其 id"
+        },
+        {
+          "at": "t1",
+          "action": "workflow.run.submit",
+          "detail": { "definitionId": "topic-to-comic", "definitionVersion": "0.1.0", "definitionDigest": "$digest:definition", "projectId": "P", "briefDigest": "$digest:briefA" },
+          "expectedReaction": "返回同一个 WFR-1，不新建 WorkflowRun"
+        },
+        {
+          "at": "t2",
+          "action": "step.dispatch",
+          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "generationRevision": 1, "idempotencyKey": "$key:K1_linwan_base_r1" },
+          "expectedReaction": "创建 WorkflowStepRun 与 Run R-1（status=pending）"
+        },
+        {
+          "at": "t3",
+          "action": "step.dispatch",
+          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "generationRevision": 1, "idempotencyKey": "$key:K1_linwan_base_r1" },
+          "expectedReaction": "返回 t2 的同一个 WorkflowStepRun 与同一个 Run R-1"
+        },
+        {
+          "at": "t4",
+          "action": "vendor.create",
+          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "idempotencyKey": "$key:K1_linwan_base_r1", "paid": true, "budgetClass": "image" },
+          "expectedReaction": "付费请求恰好发出 1 次"
+        },
+        {
+          "at": "t5",
+          "action": "canvas.projection_write",
+          "detail": { "mode": "batch_canvas_command_with_expectedRevision", "expectedRevision": 0, "keys": ["character:linwan@base"] },
+          "expectedReaction": "画布新增 1 个稳定节点，revision 变为 1"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 1,
+        "runCountDelta": 1,
+        "vendorCreateRequests": 1,
+        "vendorCreateRequestsDelta": 1,
+        "status": "running",
+        "workflowRunIds": ["WFR-1"],
+        "distinctWorkflowRunCount": 1,
+        "returnedWorkflowRunIdAtT1": "WFR-1",
+        "approvalStatus": "pending",
+        "canvasNodes": { "newNodes": 1, "nodeKeys": ["character:linwan@base"], "total": 1, "expectedRevisionUsed": 0 },
+        "exportFiles": [],
+        "issueCodes": []
+      },
+      "mustNot": [
+        "为同一 briefDigest 新建第二个 WorkflowRun（t1 必须返回 WFR-1）",
+        "为同一 (workflowRunId, stepId, itemKey, generationRevision) 新建第二个 WorkflowStepRun",
+        "为同一 (projectId, idempotencyKey) 新建第二个 Run —— prisma/schema.prisma:382 的 @@unique([projectId, idempotencyKey]) 必须真正兜住，而不是靠应用层判断",
+        "发出第二次供应商创建请求（付费请求必须恰好 1 次）",
+        "用某个错误码拒绝第二次提交（去重是成功语义；WORKFLOW_ISSUE_CODES 中不存在也无法存在\u201c重复提交\u201d码）",
+        "为同一次步骤派发新建第二个画布节点（workflow-definition.v1.json:722 mustNotCreateNodePerAttempt）",
+        "把 t3 当成\u201c用户要求再画一张\u201d从而提升 generationRevision"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/contracts.ts:1072-1090",
+        "prisma/schema.prisma:382",
+        "packages/execution/src/index.ts:184",
+        "packages/execution/src/index.ts:297",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:298-304",
+        "packages/domain/src/index.ts:1651"
+      ]
+    },
+
+    {
+      "caseId": "rc_send_unknown",
+      "title": "发送结果不确定（超时），必须进 needs_review",
+      "severity": "blocker",
+      "phase": "P2",
+      "stance": "把\u201c超时 / unknown\u201d当作可以重新创建的失败是最严重的错误：换幂等键重发会造成重复付费，并破坏 packages/execution/src/index.ts:737 的发送防重。",
+      "preconditions": [
+        "WorkflowRun WFR-1 已通过 g_assets，处于 s6_panel_render",
+        "本次派发对象：stepId=s6_panel_render, itemKey=panel:p1_3, generationRevision=1",
+        "候选幂等键 K2_panel_p1_3_r1 = $key:K2_panel_p1_3_r1（由 contracts.ts:1072 submitIdempotencyKey 生成，未超过 200 字符）",
+        "预算已按 atomic_reserve_before_dispatch 预留 1 次 image 生成额度",
+        "该 stepRun 此前无任何成功结果（不是\u201c已有结果但归档失败\u201d那一类）"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "step.dispatch",
+          "detail": { "stepId": "s6_panel_render", "itemKey": "panel:p1_3", "generationRevision": 1, "idempotencyKey": "$key:K2_panel_p1_3_r1", "snapshotFingerprint": "$digest:fingerprintS6Panel3" },
+          "expectedReaction": "创建 WorkflowStepRun 与 Run R-1"
+        },
+        {
+          "at": "t1",
+          "action": "run.send_intent",
+          "detail": { "runId": "R-1", "status": "pending" },
+          "expectedReaction": "落库为 pending，允许发送"
+        },
+        {
+          "at": "t2",
+          "action": "vendor.create",
+          "detail": { "runId": "R-1", "paid": true, "budgetClass": "image", "httpMethod": "POST", "endpoint": "images/generations" },
+          "expectedReaction": "第 1 次、也是唯一一次付费创建请求"
+        },
+        {
+          "at": "t3",
+          "action": "vendor.response_absent",
+          "detail": { "reason": "client_timeout_after_send", "elapsedMs": 60000, "httpStatus": null, "platformJobId": null, "errorBody": null },
+          "expectedReaction": "既不能判定成功，也不能判定失败；发送状态变为 unknown"
+        },
+        {
+          "at": "t4",
+          "action": "run.send_intent_mark_unknown",
+          "detail": { "runId": "R-1", "issueCode": "WF_STATE_SEND_UNKNOWN" },
+          "expectedReaction": "WorkflowStepRun 状态置 needs_review，记录 WF_STATE_SEND_UNKNOWN"
+        },
+        {
+          "at": "t5",
+          "action": "retryPolicy.evaluate",
+          "detail": { "condition": "发送结果不确定", "source": "workflow-definition.v1.json:659-665" },
+          "expectedReaction": "action=needs_review；不派发、不重试、不新建 Run"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 1,
+        "runCountDelta": 1,
+        "vendorCreateRequests": 1,
+        "vendorCreateRequestsDelta": 1,
+        "status": "needs_review",
+        "stepStatus": "needs_review",
+        "approvalStatus": "approved",
+        "canvasNodes": { "newNodes": 1, "nodeKeys": ["panel:p1_3"], "total": 1 },
+        "exportFiles": [],
+        "issueCodes": ["WF_STATE_SEND_UNKNOWN"],
+        "runReuseAssertion": "R-1 必须仍是唯一承载本次发送的 Run；其 idempotencyKey 必须仍等于 $key:K2_panel_p1_3_r1"
+      },
+      "mustNot": [
+        "自动重新创建付费请求（不得出现第 2 次 vendor.create）",
+        "更换幂等键：不得用新的 generationRevision 或新指纹生成 K2'，换键重发等于重复付费",
+        "把 unknown 归类为\u201c可重试的失败\u201d并走 bounded retry / Run.retryOf 链（workflow-definition.v1.json:421-424 明确 mustNotAutoResubmit 且 mustNotChangeIdempotencyKey）",
+        "绕过 packages/execution/src/index.ts:737 另写一套发送逻辑（该行是发送防重的唯一拒绝点：record.status !== 'pending' 即抛 send_requires_review）",
+        "把 stepRun 标为 failed 后交给\u201c再画一张\u201d路径（那会提升 generationRevision 并再次付费）",
+        "把未知结果当作成功并继续派发 s7_quality（s7 的输入 panelCandidates 必须是结构校验通过的产物）",
+        "把\u201c已有结果但归档失败\u201d的 recover_existing_result 策略误用到本 case（本 case 从未收到结果）"
+      ],
+      "relevantCodeRefs": [
+        "packages/execution/src/index.ts:737",
+        "packages/execution/src/index.ts:184",
+        "packages/execution/src/index.ts:297",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:415-427",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:659-665",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:157"
+      ]
+    },
+
+    {
+      "caseId": "rc_archive_failure",
+      "title": "已有结果但归档失败，必须恢复原结果而不是重新生成",
+      "severity": "high",
+      "phase": "P2",
+      "stance": "\u201c最新成功结果\u201d不等于\u201c人工批准版本\u201d；同样，\u201cRun 成功\u201d也不等于\u201c产物已归档\u201d。归档失败只能恢复已有结果，禁止重新生成。",
+      "preconditions": [
+        "WorkflowRun WFR-1 在 s4_asset_candidates，itemKey=character:linwan@base, generationRevision=1",
+        "Run R-1 已发送且供应商已返回成功结果，图片字节已落库（Run.result 非空）",
+        "contentDigest=$digest:linwanV1Content",
+        "AssetVersion 尚未写入（本次归档是第一次写入 v1）",
+        "无可复用的已批准引用（approvedAssetRefs 为空）"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "vendor.create",
+          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "paid": true, "budgetClass": "image" },
+          "expectedReaction": "唯一一次付费创建请求"
+        },
+        {
+          "at": "t1",
+          "action": "vendor.result_received",
+          "detail": { "runId": "R-1", "httpStatus": 200, "platformJobId": "J-1", "contentDigest": "$digest:linwanV1Content" },
+          "expectedReaction": "Run.status=SUCCEEDED，结果冻结进 Run.result"
+        },
+        {
+          "at": "t2",
+          "action": "artifact.archive_begin",
+          "detail": { "target": "AssetVersion", "assetId": "asset_linwan", "version": 1 },
+          "expectedReaction": "进入归档阶段（此时生成已经完成）"
+        },
+        {
+          "at": "t3",
+          "action": "artifact.archive_failed",
+          "detail": { "reason": "object_store_5xx", "httpStatus": 503, "attempt": 1 },
+          "expectedReaction": "归档失败被单独记账，不得改写为生成失败"
+        },
+        {
+          "at": "t4",
+          "action": "retryPolicy.evaluate",
+          "detail": { "condition": "已有结果但归档失败", "source": "workflow-definition.v1.json:654-658" },
+          "expectedReaction": "action=recover_existing_result，mustNotRegenerate=true"
+        },
+        {
+          "at": "t5",
+          "action": "artifact.archive_retry",
+          "detail": { "source": "Run.result（同一份已冻结字节）", "contentDigest": "$digest:linwanV1Content", "attempt": 2 },
+          "expectedReaction": "归档成功，写入 AssetVersion v1（sha256/contentKey 之一，digestSource 显式记录）"
+        },
+        {
+          "at": "t6",
+          "action": "gate.enter",
+          "detail": { "stepId": "g_assets", "targetKind": "asset_candidate", "perItemApproval": true },
+          "expectedReaction": "g_assets 停在 awaiting_decision，等待人工逐项选定"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 1,
+        "runCountDelta": 1,
+        "vendorCreateRequests": 1,
+        "vendorCreateRequestsDelta": 1,
+        "status": "awaiting_decision",
+        "stepStatus": "succeeded",
+        "approvalStatus": "awaiting_decision",
+        "approvalRows": 0,
+        "archivedAssetVersionCount": 1,
+        "canvasNodes": { "newNodes": 1, "nodeKeys": ["character:linwan@base"], "total": 1 },
+        "exportFiles": [],
+        "issueCodes": [],
+        "issueCodesNote": "WORKFLOW_ISSUE_CODES 中不存在\u201c归档失败\u201d码（workflow-definition.v1.json:654-658 的分类项也没有 issueCodes 字段），因此本 case 期望空数组；这是覆盖缺口而不是本 case 的断言遗漏。"
+      },
+      "mustNot": [
+        "重新调用供应商（不得出现第 2 次 vendor.create）：已有结果时重新生成是直接重复付费",
+        "提升 generationRevision 或走\u201c再画一张\u201d路径（归档失败是技术问题，不是用户要求换图）",
+        "丢弃已收到的 Run.result 并从 s4_asset_candidates 头部重跑",
+        "把 Run.status 改写为 FAILED（Run 已成功；失败发生在归档阶段，两者必须分开记账）",
+        "在归档成功时顺手写入 approvedAssetRefs（归档 ≠ 审批；approved_artifact 只能来自 ApprovalDecision，contracts.ts:244-252）",
+        "把\u201c最近一次成功的 Run 结果\u201d当作\u201c人工批准版本\u201d传给 s5_render_specs（apps/api/src/connected-image-results.ts:55 的取法正是这个错误）",
+        "为归档恢复新建 Run（应复用原 Run，或经 Run.retryOf 链显式记账，prisma/schema.prisma:370）",
+        "在归档失败时把该 itemKey 标为终态 failed 并使 g_assets 跳过它"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:654-658",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:244-252",
+        "prisma/schema.prisma:330",
+        "prisma/schema.prisma:322",
+        "apps/api/src/connected-image-results.ts:55",
+        "packages/execution/src/index.ts:184"
+      ]
+    },
+
+    {
+      "caseId": "rc_stale_approval",
+      "title": "审批时 expectedStepRevision 已过期",
+      "severity": "high",
+      "phase": "P3",
+      "stance": "审批是绑定到具体产物修订的决定，不是\u201c当前屏幕上显示的东西\u201d。过期必须拒绝，不得静默接受，也不得降级为人工驳回。",
+      "preconditions": [
+        "WorkflowRun WFR-1 停在 gate g_assets（workflow-definition.v1.json:308-341）",
+        "客户端持有的 expectedStepRevision=3",
+        "服务端该步骤当前修订=4：用户此前对 character:linwan@base 触发过一次\u201c再画一张\u201d，generationRevision 由 1 提升到 2（workflow-definition.v1.json:645 userRegeneration）",
+        "待批准候选集：{ck_a, ck_b}，均为 generationRevision=2 的候选",
+        "本 case 不涉及\u201c候选是否存在\u201d的问题：ck_a 确实存在"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "revision.advance",
+          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "fromGenerationRevision": 1, "toGenerationRevision": 2, "stepRevision": 4 },
+          "expectedReaction": "步骤修订推进到 4，客户端未刷新"
+        },
+        {
+          "at": "t1",
+          "action": "approval.submit",
+          "detail": {
+            "approvalId": "ap_1",
+            "workflowRunId": "WFR-1",
+            "stepId": "g_assets",
+            "expectedStepRevision": 3,
+            "targetKind": "asset_candidate",
+            "targetItemKey": "character:linwan@base",
+            "targetArtifactDigest": "$digest:targetStale",
+            "decision": "approved",
+            "selectedCandidateKey": "ck_a",
+            "actorId": "u_1",
+            "decidedAt": "2026-10-16T02:00:00.000Z",
+            "decisionIdempotencyKey": "dak_1"
+          },
+          "expectedReaction": "拒绝：expectedStepRevision(3) !== 当前步骤修订(4)，返回 WF_STATE_APPROVAL_STALE"
+        },
+        {
+          "at": "t2",
+          "action": "gate.state_check",
+          "detail": { "stepId": "g_assets" },
+          "expectedReaction": "gate 转为 stale（runtime-semantics.md:379 T7：等待期间上游变更，awaiting_decision → stale），客户端需重新拉取修订后重试"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 0,
+        "runCountDelta": 0,
+        "vendorCreateRequests": 0,
+        "vendorCreateRequestsDelta": 0,
+        "status": "awaiting_decision",
+        "approvalStatus": "stale",
+        "approvalStatusNote": "首版写作 awaiting_decision；按 runtime-semantics.md:379（T7：等待期间上游变更，awaiting_decision → stale）修正：s4_asset_candidates 的 generationRevision 1→2 使 g_assets 的待审产物失效，故 gate 自身为 stale。t1 的提交因 expectedStepRevision 过期返回 WF_STATE_APPROVAL_STALE，拒绝结果不变。",
+        "approvalRows": 0,
+        "approvedAssetRefs": 0,
+        "clientExpectedStepRevision": 3,
+        "serverStepRevision": 4,
+        "canvasNodes": { "newNodes": 0, "nodeKeys": [], "total": 0 },
+        "exportFiles": [],
+        "issueCodes": ["WF_STATE_APPROVAL_STALE"]
+      },
+      "mustNot": [
+        "接受该审批并写入 ApprovalDecision 行（approvalRows 必须为 0）",
+        "把 stale 拒绝降级为 decision=rejected 落库：\u201c拒绝\u201d是人工否决，\u201c过期\u201d是并发前置条件不满足，两者语义不同",
+        "写入 approvedAssetRefs —— 哪怕 ck_a 确实存在且内容摘要对得上",
+        "因审批过期而自动重发 s4_asset_candidates（过期不是重画理由，会直接重复付费）",
+        "提升 generationRevision 以\u201c让这次审批重新有效\u201d",
+        "静默接受并只记一条警告日志后继续（workflow-definition.v1.json:326-328 只允许失效依赖该 itemKey 的下游，不允许接受陈旧决定）",
+        "把 WF_STATE_APPROVAL_STALE 与 WF_STATE_APPROVAL_TARGET_MISMATCH 混用（后者是 targetArtifactDigest / selectedCandidateKey 与审批对象不符）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/contracts.ts:561-612",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:570",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:326-333",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:222-231",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:154"
+      ]
+    },
+
+    {
+      "caseId": "rc_duplicate_approval",
+      "title": "同一 approvalId 重复提交必须无副作用",
+      "severity": "high",
+      "phase": "P3",
+      "stance": "重复审批是幂等成功，不是失败；但同一个 approvalId 携带不同载荷是冲突，必须拒绝且不得覆盖已记录的决策。",
+      "preconditions": [
+        "gate g_assets 有 3 个待批准 itemKey：character:linwan@base、character:qiao@base、scene:temple@night（perItemApproval=true）",
+        "本 case 只批准 character:linwan@base，另两项保持未决，故 gate 不会满足",
+        "客户端已持久化 approvalId=ap_1 与 decisionIdempotencyKey=dak_1，不得每次请求重新生成（contracts.ts:582-585）",
+        "服务端该步骤当前修订=2",
+        "候选集 {ck_a, ck_b}，targetArtifactDigest=$digest:candidateLinwanA"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "approval.submit",
+          "detail": {
+            "approvalId": "ap_1",
+            "workflowRunId": "WFR-1",
+            "stepId": "g_assets",
+            "expectedStepRevision": 2,
+            "targetKind": "asset_candidate",
+            "targetItemKey": "character:linwan@base",
+            "targetArtifactDigest": "$digest:candidateLinwanA",
+            "decision": "approved",
+            "selectedCandidateKey": "ck_a",
+            "actorId": "u_1",
+            "decidedAt": "2026-10-16T02:10:00.000Z",
+            "decisionIdempotencyKey": "dak_1"
+          },
+          "expectedReaction": "受理：写入 1 条 ApprovalDecision，approvedAssetRefs 增加 1 条（已批准 1/3 项）"
+        },
+        {
+          "at": "t1",
+          "action": "approval.submit",
+          "detail": { "samePayloadAs": "t0", "reason": "客户端网络重试" },
+          "expectedReaction": "幂等 noop：返回与 t0 相同的结果，不产生任何新副作用，不返回错误码"
+        },
+        {
+          "at": "t2",
+          "action": "approval.submit",
+          "detail": {
+            "approvalId": "ap_1",
+            "workflowRunId": "WFR-1",
+            "stepId": "g_assets",
+            "expectedStepRevision": 2,
+            "targetKind": "asset_candidate",
+            "targetItemKey": "character:linwan@base",
+            "targetArtifactDigest": "$digest:candidateLinwanB",
+            "decision": "approved",
+            "selectedCandidateKey": "ck_b",
+            "actorId": "u_1",
+            "decidedAt": "2026-10-16T02:11:00.000Z",
+            "decisionIdempotencyKey": "dak_1"
+          },
+          "expectedReaction": "拒绝：同一 approvalId / decisionIdempotencyKey 携带不同 targetArtifactDigest 与 selectedCandidateKey，返回 WF_STATE_APPROVAL_DUPLICATE，并且不覆盖 t0 的决策"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 0,
+        "runCountDelta": 0,
+        "vendorCreateRequests": 0,
+        "vendorCreateRequestsDelta": 0,
+        "status": "awaiting_decision",
+        "approvalStatus": "approved",
+        "approvalStatusNote": "被断言的是 character:linwan@base：t0 已批准，t2 的冲突提交被拒绝且不覆盖它，故该 itemKey 为 approved。gate 整体仍未满足（另两项 pending），首版的 partial 不是 runtime-semantics.md:361-367 的取值之一，已废弃，改用逐 itemKey 分布表达。",
+        "approvedItemKeys": ["character:linwan@base"],
+        "unapprovedItemKeys": ["character:qiao@base", "scene:temple@night"],
+        "approvalRows": 1,
+        "approvedAssetRefs": 1,
+        "recordedDecision": { "approvalId": "ap_1", "selectedCandidateKey": "ck_a", "targetArtifactDigest": "$digest:candidateLinwanA" },
+        "canvasNodes": { "newNodes": 0, "nodeKeys": [], "total": 0 },
+        "exportFiles": [],
+        "issueCodes": ["WF_STATE_APPROVAL_DUPLICATE"],
+        "issueCodesByEvent": { "t0": [], "t1": [], "t2": ["WF_STATE_APPROVAL_DUPLICATE"] }
+      },
+      "mustNot": [
+        "把 t1（完全相同的重复提交）当作错误返回 WF_STATE_APPROVAL_DUPLICATE（definition 明确 duplicateApprovalIsNoop=true，workflow-definition.v1.json:330-331）",
+        "写入第二条 ApprovalDecision（approvalId 与 decisionIdempotencyKey 必须唯一）",
+        "让重复审批再次唤醒下游而产生任何新的供应商创建请求（approvalEventEffect=idempotent_wakeup_only，:236、:337）",
+        "向 approvedAssetRefs 追加第二条同 itemKey 引用（会在 validateComicArtifacts 触发 WF_REF_ASSET_VERSION_STALE，contracts.ts:933-935）",
+        "允许 t2 覆盖 t0 已记录的 selectedCandidateKey 或 targetArtifactDigest",
+        "把 t2 当成\u201c用户改主意\u201d并作为一次新的合法审批受理",
+        "在 gate 只批准 1/3 项时放行 s5_render_specs（joinPolicy 对 perItemApproval 的 gate 仍是 all_required）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/contracts.ts:561-612",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:585",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:933-935",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:330-337",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:156"
+      ]
+    },
+
+    {
+      "caseId": "rc_single_item_failure",
+      "title": "4 格中第 3 格失败：保留其余 3 格、只重试第 3 格、完整交付仍阻断",
+      "severity": "high",
+      "phase": "P2",
+      "stance": "部分子项失败必须按 per_item 隔离：已成功子项不重发，失败子项不许用\u201c提升修订\u201d偷换概念，完整交付在 all_required 未满足前一律阻断。",
+      "preconditions": [
+        "panelPlan：1 页 4 格，panelId=p1_1..p1_4，ordinal=0..3（contracts.ts:418-457）",
+        "s5_render_specs 已产出 4 条 spec，全部 referenceAssetRefs 都是已批准版本",
+        "g_assets 已全部批准；g_final 尚未到达",
+        "预算足以覆盖 4 次首轮 + 1 次技术重试（budget.maxImageGenerations >= 5）",
+        "s6_panel_render.retryPolicy = { mode: bounded, maxAttempts: 2, technicalRetryKeepsGenerationRevision: true, failureIsolation: per_item }（workflow-definition.v1.json:415-420）"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "step.fanout_expand",
+          "detail": { "stepId": "s6_panel_render", "itemKeyTemplate": "panel:{panelId}", "expandedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "generationRevision": 1, "maxConcurrency": 4 },
+          "expectedReaction": "创建 4 个 WorkflowStepRun（每格 1 个，唯一键含 generationRevision=1）"
+        },
+        {
+          "at": "t1",
+          "action": "vendor.create",
+          "detail": { "count": 4, "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "paid": true, "budgetClass": "image" },
+          "expectedReaction": "首轮 4 次付费请求"
+        },
+        {
+          "at": "t2",
+          "action": "item.succeeded",
+          "detail": { "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_4"], "archivedAssetVersions": 3 },
+          "expectedReaction": "3 格产物落库并冻结；其稳定画布节点就位"
+        },
+        {
+          "at": "t3",
+          "action": "item.failed",
+          "detail": { "itemKey": "panel:p1_3", "attempt": 1, "reason": "vendor_5xx", "httpStatus": 502 },
+          "expectedReaction": "只有 panel:p1_3 进入重试判定"
+        },
+        {
+          "at": "t4",
+          "action": "item.technical_retry",
+          "detail": { "itemKey": "panel:p1_3", "attempt": 2, "generationRevision": 1, "keepsIdempotencyKey": true, "newRunViaRetryOf": true },
+          "expectedReaction": "第 5 次 vendor.create；新建 Run 通过 Run.retryOf 指向原 Run；不新建 WorkflowStepRun"
+        },
+        {
+          "at": "t5",
+          "action": "item.failed",
+          "detail": { "itemKey": "panel:p1_3", "attempt": 2, "reason": "vendor_5xx", "httpStatus": 503 },
+          "expectedReaction": "panel:p1_3 终态 failed（maxAttempts=2 已用尽）"
+        },
+        {
+          "at": "t6",
+          "action": "step.join_evaluate",
+          "detail": { "joinPolicy": "all_required", "fullDeliveryStillBlocked": true, "source": "workflow-definition.v1.json:678-682" },
+          "expectedReaction": "s6_panel_render 不满足，s7_quality 不派发"
+        },
+        {
+          "at": "t7",
+          "action": "export.attempt",
+          "detail": { "stepId": "s9_export", "requestedBy": "u_1", "note": "有人试图只导出 3 格" },
+          "expectedReaction": "拒绝并返回 WF_EXPORT_INCOMPLETE（rejectOnIncomplete=true，workflow-definition.v1.json:634）"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 4,
+        "runCount": 5,
+        "runCountDelta": 5,
+        "vendorCreateRequests": 5,
+        "vendorCreateRequestsDelta": 5,
+        "status": "failed",
+        "stepStatus": "failed",
+        "approvalStatus": "pending",
+        "itemStates": { "panel:p1_1": "succeeded", "panel:p1_2": "succeeded", "panel:p1_3": "failed", "panel:p1_4": "succeeded" },
+        "retriedItemKeys": ["panel:p1_3"],
+        "untouchedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_4"],
+        "canvasNodes": { "newNodes": 4, "nodeKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "total": 4 },
+        "exportFiles": [],
+        "issueCodes": ["WF_EXPORT_INCOMPLETE"],
+        "issueCodesByEvent": { "t7": ["WF_EXPORT_INCOMPLETE"] }
+      },
+      "mustNot": [
+        "重跑 panel:p1_1 / panel:p1_2 / panel:p1_4（已成功子项不得重发；independentCheckpointPerItem=true，:403）",
+        "为 panel:p1_3 的技术重试提升 generationRevision（technicalRetryKeepsGenerationRevision=true，:419）",
+        "为 panel:p1_3 的技术重试更换 itemKey（否则会新建第二个 WorkflowStepRun 与第二个画布节点）",
+        "整篇重画（4 格全部重新付费）：单格失败不得触发整篇重画（:405）",
+        "在 3/4 成功时输出 comic_export_manifest，或把第 4 格写进 excludedPanels \u201c作为正常排除\u201d来放行交付（excludedPanels 是留痕，不是放行开关）",
+        "把 failFast 打开并取消其他 3 格已完成的产物（failFast=false，:402）",
+        "把\u201c部分子项失败\u201d表达为一次网络重试或一次\u201c再画一张\u201d（二者都会换键或换修订）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:392-406",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:415-420",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:678-682",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:628-636",
+        "prisma/schema.prisma:370",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:170"
+      ]
+    },
+
+    {
+      "caseId": "rc_upstream_revision_change",
+      "title": "用户换了主角定稿图：只使依赖该 itemKey 的下游与审批失效",
+      "severity": "high",
+      "phase": "P3",
+      "stance": "\u201c再画一张\u201d是提升 generationRevision 的用户动作，不是网络重试；失效只沿 itemKey 的真实依赖传播，且重画不新建画布节点。",
+      "preconditions": [
+        "g_assets 已批准全部 3 项：character:linwan@base v1、character:qiao@base v1、scene:temple@night v1",
+        "s5_render_specs 已基于上述批准版本产出 4 条 spec",
+        "4 格中只有 panel:p1_1 与 panel:p1_3 的 referenceAssetRefs 含 character:linwan@base；panel:p1_2 与 panel:p1_4 只引用 character:qiao@base / scene:temple@night",
+        "已批准的 contentDigest：linwan=$digest:linwanV1Content, qiao=$digest:qiaoV1Content, temple=$digest:templeV1Content",
+        "budget.maxRegenerationsPerItem=1"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "asset.regenerate",
+          "detail": { "itemKey": "character:linwan@base", "fromGenerationRevision": 1, "toGenerationRevision": 2, "initiatedBy": "u_1", "reason": "用户换主角定稿图" },
+          "expectedReaction": "新建 generationRevision=2 的 WorkflowStepRun 与 Run；唯一键不含 r2 的旧行保留"
+        },
+        {
+          "at": "t1",
+          "action": "vendor.create",
+          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "generationRevision": 2, "paid": true, "budgetClass": "image" },
+          "expectedReaction": "第 1 次、也是唯一一次新增付费请求（计数相对 t0 前 +1）"
+        },
+        {
+          "at": "t2",
+          "action": "staleness.propagate",
+          "detail": { "changedItemKey": "character:linwan@base", "policy": "invalidate_only_dependents_of_changed_itemKey", "source": "workflow-definition.v1.json:326-329" },
+          "expectedReaction": "g_assets 中该 itemKey 的批准失效；s5 中引用该 itemKey 的 spec 失效；依赖这些 spec 的 panel:p1_1 / panel:p1_3 及其 g_final / s9 失效"
+        },
+        {
+          "at": "t3",
+          "action": "approval.preserve_check",
+          "detail": { "preservedItemKeys": ["character:qiao@base", "scene:temple@night"], "preservedPanels": ["panel:p1_2", "panel:p1_4"] },
+          "expectedReaction": "不受影响资产的批准原样保留，不需要重新审批"
+        },
+        {
+          "at": "t4",
+          "action": "asset.regenerate",
+          "detail": { "itemKey": "character:linwan@base", "generationRevision": 2, "initiatedBy": "u_1", "note": "客户端在修订未提升的情况下再次请求换图" },
+          "expectedReaction": "拒绝并返回 WF_REPLAY_GENERATION_REVISION_REQUIRED，不发出任何付费请求"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 4,
+        "runCount": 4,
+        "runCountDelta": 1,
+        "vendorCreateRequests": 4,
+        "vendorCreateRequestsDelta": 1,
+        "status": "running",
+        "approvalStatus": "stale",
+        "approvalStatusNote": "被断言的是 character:linwan@base：它的批准随 generationRevision 提升转为 stale（runtime-semantics.md:376 T4：approved → stale）。character:qiao@base 与 scene:temple@night 保持 approved，故 gate 是逐 itemKey 的混合态；首版的 partial 已废弃。",
+        "approvedAssetRefs": 2,
+        "retainedApprovedItemKeys": ["character:qiao@base", "scene:temple@night"],
+        "invalidatedApprovedItemKeys": ["character:linwan@base"],
+        "invalidatedPanels": ["panel:p1_1", "panel:p1_3"],
+        "preservedPanels": ["panel:p1_2", "panel:p1_4"],
+        "preservedStepRuns": ["s1_premise", "s2_script", "s3_panel_plan", "s3_asset_manifest", "g_story"],
+        "canvasNodes": { "newNodes": 0, "nodeKeys": ["character:linwan@base"], "total": 4, "note": "重画复用同一稳定节点（mode=stable_node_per_item，:719-722）；历史进 run_and_artifact_list（:723）" },
+        "exportFiles": [],
+        "issueCodes": ["WF_REPLAY_GENERATION_REVISION_REQUIRED"],
+        "issueCodesByEvent": { "t0": [], "t4": ["WF_REPLAY_GENERATION_REVISION_REQUIRED"] }
+      },
+      "mustNot": [
+        "使 character:qiao@base / scene:temple@night 的批准失效（preserveOtherItemApprovals=true，:328）",
+        "使与 character:linwan@base 无关的 panel:p1_2 / panel:p1_4 的已产出结果失效",
+        "重跑 s1_premise / s2_script / s3_panel_plan / s3_asset_manifest（它们不依赖该 itemKey 的批准版本，preserveCompletedRunsOfUnaffectedSteps）",
+        "为 generationRevision=2 新建第二个画布节点（stableAcrossRetries + mustNotCreateNodePerAttempt，:721-722）",
+        "在 generationRevision 未提升时接受\u201c再画一张\u201d（必须以 WF_REPLAY_GENERATION_REVISION_REQUIRED 拒绝）",
+        "把用户发起的重画表达为网络重试（mustNotBeExpressedAsNetworkRetry=true，:480）",
+        "就地改写已冻结 Run 的 snapshot 来\u201c换掉\u201d那张图（审批与指纹都绑定到冻结快照）",
+        "在 t0 就把整个 s5_render_specs 与 s6_panel_render 全部作废（失效范围必须按 itemKey 收窄）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:326-329",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:474-483",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:644-645",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:718-723",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:162",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:97"
+      ]
+    },
+
+    {
+      "caseId": "rc_budget_exhausted",
+      "title": "预算耗尽：停止新派发、保留已有结果、返回 WF_BUDGET_EXCEEDED",
+      "severity": "medium",
+      "phase": "P3",
+      "stance": "\u201c纯文本步骤不花钱\u201d不能作为计划前提：s1/s2/s3 都是 vendorCall=true 的付费文本步骤，必须照样预留与结算额度；只有不调用付费模型的 fixture / mock 验证才可以这样承诺。",
+      "preconditions": [
+        "brief：budget.maxVendorRequests=10、maxImageGenerations=4、maxTextGenerations=10、maxVisionReviews=0",
+        "brief.modelBindings 不含 vision（s7_quality 直接跳过评审，visionScore 为 null，:486-488）",
+        "已完成 7 次付费 vendor.create：s1_premise / s2_script / s3_panel_plan / s3_asset_manifest 各 1 次文本（4 次），s4_asset_candidates 3 个 itemKey 各 1 次图像（3 次）",
+        "已用额度 7/10，剩余 3",
+        "budgetPolicy.reservation=atomic_reserve_before_dispatch、settlement=on_terminal（workflow-definition.v1.json:688-690）"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "budget.snapshot",
+          "detail": { "vendorRequests": { "used": 7, "limit": 10 }, "imageGenerations": { "used": 3, "limit": 4 }, "textGenerations": { "used": 4, "limit": 10 } },
+          "expectedReaction": "计数与已发生的付费请求一致"
+        },
+        {
+          "at": "t1",
+          "action": "step.fanout_expand",
+          "detail": { "stepId": "s6_panel_render", "expandedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "generationRevision": 1 },
+          "expectedReaction": "4 个子项尝试各自预留额度（不得并发读到同一笔剩余额度）"
+        },
+        {
+          "at": "t2",
+          "action": "budget.reserve",
+          "detail": { "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3"], "granted": 3, "vendorRequestsAfter": 10 },
+          "expectedReaction": "前 3 格预留成功，额度用满"
+        },
+        {
+          "at": "t3",
+          "action": "vendor.create",
+          "detail": { "count": 3, "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3"], "paid": true, "budgetClass": "image" },
+          "expectedReaction": "恰好 3 次付费请求；不得出现第 4 次"
+        },
+        {
+          "at": "t4",
+          "action": "budget.reserve",
+          "detail": { "itemKey": "panel:p1_4", "granted": false, "reason": "insufficient_remaining" },
+          "expectedReaction": "拒绝预留，返回 WF_BUDGET_EXCEEDED"
+        },
+        {
+          "at": "t5",
+          "action": "budget.exhaustion_behavior",
+          "detail": { "stopNewDispatch": true, "preserveInFlightAndCompleted": true, "source": "workflow-definition.v1.json:706-710" },
+          "expectedReaction": "停止一切新派发；已完成产物原样保留；不再建节点、不再派发"
+        },
+        {
+          "at": "t6",
+          "action": "step.dispatch",
+          "detail": { "stepId": "s7_quality", "note": "上游 3 格已成功，链路试图继续" },
+          "expectedReaction": "同样被拒（无论 vision 是否绑定），WorkflowRun 保持 blocked"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 11,
+        "runCount": 10,
+        "runCountDelta": 3,
+        "vendorCreateRequests": 10,
+        "vendorCreateRequestsDelta": 3,
+        "status": "failed",
+        "undispatchedItemKeys": ["panel:p1_4"],
+        "preservedStepRunCount": 10,
+        "budgetCounters": { "vendorRequests": "10/10", "imageGenerations": "6/4 -> 超额前已停止派发", "textGenerations": "4/10" },
+        "approvalStatus": "approved",
+        "canvasNodes": {
+          "newNodes": 11,
+          "nodeKeys": ["brief", "step:s1_premise", "step:s2_script", "step:s3_panel_plan", "step:s3_asset_manifest", "character:linwan@base", "character:qiao@base", "scene:temple@night", "panel:p1_1", "panel:p1_2", "panel:p1_3"],
+          "total": 11
+        },
+        "exportFiles": [],
+        "issueCodes": ["WF_BUDGET_EXCEEDED"],
+        "openQuestion": "未获得预留的 panel:p1_4 是否已存在 WorkflowStepRun 行（stepRunCount 11）取决于\u201c先预留还是先建行\u201d；runtime-semantics.md 必须定死这个顺序。但无论哪种顺序，它都不得出现 succeeded/failed 终态，也不得新建画布节点。"
+      },
+      "mustNot": [
+        "在额度不足时仍然发出第 11 次供应商创建请求（必须先原子预留再派发）",
+        "删除、回滚或作废已成功的 3 格与 7 个上游产物（preserveInFlightAndCompleted=true）",
+        "把额度\u201c退回\u201d后重新派发（settlement 只在终态发生，退额会变成无限重试）",
+        "让并发子项读到同一笔剩余额度（atomic_reserve_before_dispatch 明确禁止；否则 4 格都会认为自己有 3 个名额）",
+        "把 amountBudget=null 显示或记账为 0 成本（contracts.ts:284-287 要求显式表达\u201c不知道价格\u201d，由 maxVendorRequests 等硬上限兜底，对应 WF_BUDGET_UNKNOWN_PRICE）",
+        "为未获预留的 panel:p1_4 新建画布节点（stopNewDispatch 之后不得产生投影）",
+        "把预算耗尽表达成某个 Run 失败（第 4 格的 Run 从未创建）",
+        "把\u201c纯文本步骤不花钱\u201d当作计划前提从而不为 s1/s2/s3 预留 textGenerations 额度；只有不调用付费模型的 fixture / mock 验证才可以这样承诺",
+        "在 budgetClass=text 的步骤上跳过预留（:74、:103、:133、:172 都是 vendorCall=true 且 budgetClass=text）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:686-716",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:700-710",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:270-289",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:166",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:167"
+      ]
+    },
+
+    {
+      "caseId": "rc_cancel_late_result",
+      "title": "取消后迟到结果到达，必须给出明确处置",
+      "severity": "medium",
+      "phase": "P3",
+      "stance": "取消只承诺\u201c停止新派发 + 保留已产出结果\u201d，绝不承诺在途请求已取消或已退款；迟到结果必须被明确记账，而不是丢弃，也不是变成批准版本。",
+      "preconditions": [
+        "WorkflowRun WFR-1 处于 s6_panel_render，4 格展开（panel:p1_1..panel:p1_4）",
+        "panel:p1_1 与 panel:p1_2 已成功并归档；panel:p1_3 与 panel:p1_4 在途",
+        "g_final 尚未到达；s7/s8/s9 未派发",
+        "预算已为 4 格全部预留"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "workflow.cancel",
+          "detail": { "workflowRunId": "WFR-1", "requestedBy": "u_1", "reason": "用户改主意" },
+          "expectedReaction": "WorkflowRun 进入 cancelled；停止新派发"
+        },
+        {
+          "at": "t1",
+          "action": "step.dispatch_blocked",
+          "detail": { "blockedStepIds": ["s7_quality", "s8_layout", "s8_render_pages", "g_final", "s9_export"] },
+          "expectedReaction": "全部拒绝，零新增付费请求"
+        },
+        {
+          "at": "t2",
+          "action": "result.preserve_check",
+          "detail": { "preservedItemKeys": ["panel:p1_1", "panel:p1_2"], "preservedAssetVersions": 2 },
+          "expectedReaction": "已产出结果原样保留（preserveProducedResults=true，:713）"
+        },
+        {
+          "at": "t3",
+          "action": "vendor.late_result",
+          "detail": { "itemKey": "panel:p1_3", "runId": "R-inflight-3", "externalRunId": "ext-77", "httpStatus": 200, "platformJobId": "J-9", "contentDigest": "$digest:candidateLinwanA", "arrivedAfterCancel": true },
+          "expectedReaction": "必须按外部 Run ID → 数据库 UUID 的映射（packages/execution/src/index.ts:68）定位回原 stepRun，并记录为迟到产物"
+        },
+        {
+          "at": "t4",
+          "action": "late_result.dispose",
+          "detail": { "disposition": "recorded_not_approved", "recordedInto": "run_and_artifact_list", "approvedAssetRefsUnchanged": true },
+          "expectedReaction": "迟到产物进入运行/产物历史；不得进入 approvedAssetRefs、不得进入 g_final 的批准页集合、不得改变 WorkflowRun 状态"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 4,
+        "runCount": 4,
+        "runCountDelta": 4,
+        "vendorCreateRequests": 4,
+        "vendorCreateRequestsDelta": 4,
+        "status": "cancelled",
+        "approvalStatus": "pending",
+        "preservedItemKeys": ["panel:p1_1", "panel:p1_2"],
+        "lateResultDisposition": "recorded_not_approved",
+        "approvedAssetRefs": 0,
+        "approvedPageRenderRefs": 0,
+        "canvasNodes": { "newNodes": 4, "nodeKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "total": 4 },
+        "exportFiles": [],
+        "issueCodes": [],
+        "openQuestion": "迟到结果的权威处置必须由 runtime-semantics.md 的\u201c迟到\u201d一节定死；本 case 断言的是三条底线：不丢弃、不批准、不改变已取消状态。"
+      },
+      "mustNot": [
+        "承诺所有在途请求已取消或已退款（mustNotPromiseAllInFlightCancelledOrRefunded=true，:714）",
+        "删除已成功的 panel:p1_1 / panel:p1_2 结果",
+        "把迟到的 panel:p1_3 结果写入 approvedAssetRefs 或 g_final 的批准页集合（未审批就不是批准版本）",
+        "因迟到结果把 WorkflowRun 从 cancelled 改回 running",
+        "为迟到结果提升 generationRevision 或补发新的付费请求",
+        "静默丢弃迟到结果（既无历史记录也无审计线索）",
+        "取消后继续派发 s7_quality / s8_layout / s8_render_pages / s9_export",
+        "把 ext-77 这样的外部 Run ID 直接当数据库 UUID 使用（packages/execution/src/index.ts:68 的映射必须生效）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:711-715",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:706-710",
+        "packages/execution/src/index.ts:68",
+        "packages/execution/src/index.ts:737",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:436-441"
+      ]
+    },
+
+    {
+      "caseId": "rc_concurrent_canvas_write",
+      "title": "前端自动保存与后台 AI 建图并发写画布，不得丢节点",
+      "severity": "blocker",
+      "phase": "P2",
+      "stance": "画布写入必须是带 expectedRevision 的批量命令；409 之后刷新 revision 再重发旧整图快照，会直接覆盖后台新建的节点。",
+      "preconditions": [
+        "画布 C 存在，revision=41，已有节点 N1..N5",
+        "前端 App.tsx 的自动保存持有基于 revision=41 的整图快照 S（内容是 N1..N5）",
+        "后台工作流投影准备以 expectedRevision=41 提交批量命令，创建步骤节点 step:s2_script 与节点 N6、N7、N8",
+        "投影走 canvasProjectionPolicy.writePath（workflow-definition.v1.json:724-730），不走覆盖式写入"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "canvas.autosave_send",
+          "detail": { "client": "apps/web/src/App.tsx", "body": "整图快照 S", "baseRevision": 41, "basedOnNodes": ["N1", "N2", "N3", "N4", "N5"] },
+          "expectedReaction": "请求在途；此时后端 revision 仍为 41"
+        },
+        {
+          "at": "t1",
+          "action": "canvas.projection_write",
+          "detail": { "mode": "batch_canvas_command_with_expectedRevision", "expectedRevision": 41, "commands": ["create_node:step:s2_script", "create_node:N6", "create_node:N7", "create_node:N8"] },
+          "expectedReaction": "成功，revision 变为 42"
+        },
+        {
+          "at": "t2",
+          "action": "canvas.autosave_response",
+          "detail": { "httpStatus": 409, "reason": "revision_mismatch", "currentRevision": 42 },
+          "expectedReaction": "前端必须识别为冲突，而不是自动重发"
+        },
+        {
+          "at": "t3",
+          "action": "canvas.conflict_resolve",
+          "detail": { "policy": "remerge_commands_or_require_user_resolution", "source": "workflow-definition.v1.json:727", "mustNotResendWholeStaleDocument": true },
+          "expectedReaction": "只重发前端自己的增量命令（带 expectedRevision=42），或要求用户解决；不得重发整图快照"
+        },
+        {
+          "at": "t4",
+          "action": "canvas.node_set_assert",
+          "detail": { "expectedKeys": ["N1", "N2", "N3", "N4", "N5", "step:s2_script", "N6", "N7", "N8"] },
+          "expectedReaction": "9 个节点全部存在，一个不丢"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 0,
+        "runCountDelta": 0,
+        "vendorCreateRequests": 0,
+        "vendorCreateRequestsDelta": 0,
+        "status": "running",
+        "approvalStatus": "pending",
+        "canvasRevisionAtT1": 42,
+        "canvasRevisionFinal": 42,
+        "canvasRevisionNote": "若前端走\u201c重发合并后的增量命令\u201d则终值可为 43；本 case 断言的是节点集合不丢，不是具体 revision 数值。",
+        "canvasNodes": { "newNodes": 4, "nodeKeys": ["step:s2_script", "N6", "N7", "N8"], "total": 9 },
+        "exportFiles": [],
+        "issueCodes": []
+      },
+      "mustNot": [
+        "在 409 之后刷新服务器 revision 并重发同一份旧整图快照（apps/web/src/App.tsx:1895 的现状，会覆盖 N6/N7/N8）",
+        "丢失任何后台新建节点（N6、N7、N8、step:s2_script 必须全部存在）",
+        "走覆盖式写入路径（apps/api/src/projects.ts:794 的 canvasEdge.deleteMany + :795 canvasNode.deleteMany 后整体重建）",
+        "让前端自动保存与投影写入共用\u201c整图快照\u201d语义（writePath.required 是 batch_canvas_command_with_expectedRevision，:725）",
+        "在冲突时静默丢弃其中一方的写入",
+        "为画布写冲突重跑任何上游生成（写冲突不是生成失败，不得触发付费重试）",
+        "自建一套端口兼容白名单而不是复用 isPortConnectionAllowed（:731-734，定义在 packages/domain/src/index.ts:2009）"
+      ],
+      "relevantCodeRefs": [
+        "apps/web/src/App.tsx:1877",
+        "apps/web/src/App.tsx:1895",
+        "apps/api/src/projects.ts:794",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:718-734",
+        "packages/domain/src/index.ts:1074",
+        "packages/domain/src/index.ts:2009"
+      ]
+    },
+
+    {
+      "caseId": "rc_restart_recovery",
+      "title": "进程重启后恢复原 Run，已成功子项不重发",
+      "severity": "high",
+      "phase": "P2",
+      "stance": "步骤身份是 (workflowRunId, stepId, itemKey, generationRevision) 四元组；重启后按四元组认领已有工作，在途 Run 必须恢复而不是重建。",
+      "preconditions": [
+        "WorkflowRun WFR-1 已通过 g_story 与 g_assets，处于 s6_panel_render",
+        "已成功：s1_premise、s2_script、s3_panel_plan、s3_asset_manifest（4 次文本付费请求）、s4_asset_candidates 的 3 个 itemKey（3 次图像付费请求）、s6_panel_render 的 panel:p1_1（1 次图像付费请求）",
+        "在途：panel:p1_2 的 Run R-p12 已发出 POST，status=pending，尚未收到结果",
+        "未开始：panel:p1_3、panel:p1_4",
+        "全部 stepRun / Run / AssetVersion 已落库（persistThenReleaseWorker 的持久化已生效）",
+        "budget 已为 4 格全部预留"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "process.crash",
+          "detail": { "component": "worker", "phase": "s6_panel_render", "inFlightRunId": "R-p12", "note": "Worker 进程被杀，未做任何清理" },
+          "expectedReaction": "无新派发；数据库状态即唯一事实"
+        },
+        {
+          "at": "t1",
+          "action": "worker.restart",
+          "detail": { "recoveryScope": "workflowRunId=WFR-1" },
+          "expectedReaction": "按 (workflowRunId, stepId, itemKey, generationRevision) 读取已有 WorkflowStepRun"
+        },
+        {
+          "at": "t2",
+          "action": "recovery.skip_succeeded",
+          "detail": { "skippedCount": 8, "skippedStepRuns": ["s1_premise", "s2_script", "s3_panel_plan", "s3_asset_manifest", "character:linwan@base", "character:qiao@base", "scene:temple@night", "panel:p1_1"] },
+          "expectedReaction": "8 个 succeeded 步骤零付费调用"
+        },
+        {
+          "at": "t3",
+          "action": "recovery.resume_inflight",
+          "detail": { "itemKey": "panel:p1_2", "runId": "R-p12", "action": "resume_original_run" },
+          "expectedReaction": "恢复原 Run（不新建、不重发）；本轮 vendorCreateRequests 增量为 0"
+        },
+        {
+          "at": "t4",
+          "action": "step.dispatch",
+          "detail": { "stepId": "s6_panel_render", "itemKeys": ["panel:p1_3", "panel:p1_4"], "generationRevision": 1 },
+          "expectedReaction": "只有这两个未开始子项派发，新增 2 次付费请求"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 12,
+        "runCount": 11,
+        "runCountDelta": 2,
+        "runCountCreatedAfterRestart": 2,
+        "runCountCreatedAfterRestartForInFlightItem": 0,
+        "vendorCreateRequests": 11,
+        "vendorCreateRequestsDelta": 2,
+        "vendorCreateRequestsDuringRecovery": 0,
+        "status": "running",
+        "approvalStatus": "approved",
+        "approvalRows": 4,
+        "resumedRunIds": ["R-p12"],
+        "skippedSucceededItemKeys": ["character:linwan@base", "character:qiao@base", "scene:temple@night", "panel:p1_1", "panel:p1_2"],
+        "canvasNodes": { "newNodes": 0, "total": 12, "note": "重启只复用既有稳定节点；恢复过程不得新建任何画布节点" },
+        "exportFiles": [],
+        "issueCodes": []
+      },
+      "mustNot": [
+        "重发已成功子项（8 个 succeeded stepRun 不得产生任何新的 vendor.create）",
+        "为在途的 panel:p1_2 新建第二个 Run（必须恢复原 Run R-p12；Run.retryOf 只用于真正的技术重试）",
+        "更换 panel:p1_2 的 idempotencyKey 或 generationRevision",
+        "按 (workflowRunId, stepId) 两元组去重（会因 foreach 展开而误判，必须用四元组）",
+        "因为\u201c刚才有一次超时\u201d就把在途 Run 归类为可重发（WF_STATE_SEND_UNKNOWN 的立场：禁止自动重发、禁止换键）",
+        "要求人工重新批准已通过的 gate（g_story/g_assets 的决定已持久化）",
+        "在重启时为同一次投影新建重复画布节点（stable_node_per_item）",
+        "在恢复过程中重新读取 brief 并重新计算指纹（指纹材料必须与冻结时逐字一致，否则历史幂等键全部失效）",
+        "把\u201c重启\u201d实现为从 s0_brief 重跑整条链路"
+      ],
+      "relevantCodeRefs": [
+        "packages/execution/src/index.ts:184",
+        "packages/execution/src/index.ts:297",
+        "packages/execution/src/index.ts:68",
+        "packages/execution/src/index.ts:737",
+        "prisma/schema.prisma:382",
+        "prisma/schema.prisma:370",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:644"
+      ]
+    },
+
+    {
+      "caseId": "rc_prompt_too_long",
+      "title": "编译出的提示词超过 20000 字符上限",
+      "severity": "medium",
+      "phase": "P2",
+      "stance": "上限是内容输入的一部分：截断提示词等于换了另一个请求，宁可拒绝也不许截断后付费。",
+      "preconditions": [
+        "g_assets 已通过，s5_render_specs 开始为 panel:p1_2 编译请求",
+        "compilationRules.promptCharLimit=20000，引用 packages/domain/src/index.ts:330（workflow-definition.v1.json:372-373）",
+        "contextTrimming 未生效（把整份剧本灌进了单格请求），编译后 promptText.length=20841",
+        "s5_render_specs.vendorCall=false，retryPolicy.mode=none（:348-349, :378）"
+      ],
+      "events": [
+        {
+          "at": "t0",
+          "action": "render_spec.compile",
+          "detail": { "stepId": "s5_render_specs", "panelId": "p1_2", "inputs": ["panelPlan", "approvedAssetRefs", "script"], "contextTrimming": false },
+          "expectedReaction": "开始编译"
+        },
+        {
+          "at": "t1",
+          "action": "render_spec.compiled",
+          "detail": { "panelId": "p1_2", "promptTextLength": 20841, "limit": 20000, "digest": "$digest:promptTooLong" },
+          "expectedReaction": "超限被检出"
+        },
+        {
+          "at": "t2",
+          "action": "render_spec.reject",
+          "detail": { "issueCode": "WF_LIMIT_PROMPT_CHARS", "action": "block" },
+          "expectedReaction": "拒绝产出该 spec；不得派发任何付费请求"
+        },
+        {
+          "at": "t3",
+          "action": "step.fail",
+          "detail": { "stepId": "s5_render_specs", "retry": "none", "downstreamBlocked": ["s6_panel_render", "s7_quality", "s8_layout", "s8_render_pages", "g_final", "s9_export"] },
+          "expectedReaction": "步骤失败且不重试；下游全部阻断"
+        }
+      ],
+      "expectedState": {
+        "stepRunCount": 1,
+        "runCount": 0,
+        "runCountDelta": 0,
+        "vendorCreateRequests": 0,
+        "vendorCreateRequestsDelta": 0,
+        "status": "failed",
+        "stepStatus": "failed",
+        "approvalStatus": "approved",
+        "compiledPromptLength": 20841,
+        "promptCharLimit": 20000,
+        "canvasNodes": { "newNodes": 0, "nodeKeys": [], "total": 0, "note": "s5_render_specs.canvasProjection.creates = none（:379）" },
+        "exportFiles": [],
+        "issueCodes": ["WF_LIMIT_PROMPT_CHARS"]
+      },
+      "mustNot": [
+        "截断提示词后继续出图（截断改变了内容输入，等于发了另一个请求，指纹也随之失真）",
+        "为超长提示词派发任何付费请求（vendorCreateRequests 必须为 0）",
+        "把超限静默降级为警告日志并放行",
+        "为 s5 的编译产物新建画布节点（creates=none）",
+        "把上限改成大于 20000 来绕开（该上限与 promptDocumentSchema 的正文上限是同一条，contracts.ts:625、packages/domain/src/index.ts:330）",
+        "在 s5 失败时自动重试（s5_render_specs.retryPolicy.mode=none，:378）",
+        "以\u201cs5 是 transform 不花钱\u201d为由跳过预算记账并继续派发下游付费请求；只有不调用付费模型的 fixture / mock 验证才可以这样承诺",
+        "只在单格上判长度而忽略跨对象总量（WF_LIMIT_PROMPT_CHARS 约束的是编译后的正文总量）"
+      ],
+      "relevantCodeRefs": [
+        "docs/workflows/topic-to-comic-v1/contracts.ts:959",
+        "docs/workflows/topic-to-comic-v1/contracts.ts:144",
+        "packages/domain/src/index.ts:330",
+        "packages/domain/src/index.ts:300",
+        "docs/workflows/topic-to-comic-v1/workflow-definition.v1.json:370-379"
+      ]
+    }
+  ]
+}

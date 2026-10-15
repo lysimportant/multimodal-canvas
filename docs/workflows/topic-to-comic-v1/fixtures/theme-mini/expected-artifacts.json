@@ -1,0 +1,755 @@
+{
+  "_fixture": {
+    "kind": "theme-mini",
+    "purpose": "topic-to-comic@0.1.0 首版验收规模的人工校订期望产物：1 页、4 格、2 个主要角色、1 个主要场景、0 个道具。入口是用户原创的一句现代都市主题（见 input.json 的 theme），不是已有剧本改编。",
+    "expectedValidation": "validateComicArtifacts 返回空数组（expectedIssueCodes = []）",
+    "pairedWith": "input.json",
+    "stepsCovered": [
+      "s0_brief",
+      "s1_premise",
+      "s2_script",
+      "s3_panel_plan",
+      "s3_asset_manifest",
+      "g_story",
+      "s4_asset_candidates",
+      "g_assets",
+      "s5_render_specs",
+      "s6_panel_render",
+      "s7_quality",
+      "s8_layout",
+      "s8_render_pages",
+      "g_final",
+      "s9_export"
+    ],
+    "briefConsistencyNote": "artifacts.brief 必须与 input.json 剥离顶层 _fixture 之后的内容逐字一致；本文件不含 _fixture 键，因此 artifacts.brief 可以整体直接交给 comicBriefSchema.parse()。",
+    "howToValidate": "以 zod 解析 artifacts 中每个带 schemaVersion 的产物（comicBriefSchema / storyPremiseSchema / comicScriptSchema / panelPlanSchema / assetManifestSchema / panelRenderSpecSchema / qualityReportSchema / pageLayoutSchema / comicExportManifestSchema），再把 brief、premise、script、panelPlan、assetManifest、approvedRefs、renderSpecs、layouts、exportManifest 交给 validateComicArtifacts()，期望返回 []。",
+    "idPolicyNote": "所有稳定 ID（itemKey / entityId / variantId / panelId / pageId / beatId / dialogueId / characterId / assetId / approvalId / actorId）都只用 [A-Za-z][A-Za-z0-9_-]，不含中文与空格；中文只出现在 displayName、text、summary、visualDirection、promptText、requirementPrompt、variantDelta、notes 这类展示/正文/提示词字段。",
+    "digestNote": "本文件所有 contentDigest / candidateSetDigest / definitionDigest / briefDigest / imageDigest 都是 64 位小写十六进制的**形状占位值**，不是真实 sha256（夹具不含二进制产物）。它们的作用是让 version + contentDigest 的一致性校验可被真实执行。"
+  },
+
+  "_provenance": "hand_authored_fixture",
+
+  "_approvalDisclaimer": "本夹具中的审批记录为夹具专用合成数据，不代表任何真实用户审批；落地时必须由真实 ApprovalDecision 产生",
+
+  "artifacts": {
+    "brief": {
+      "schemaVersion": 1,
+      "theme": "暴雨夜，外卖骑手林晚在最后一单的备注栏里认出三年前不告而别的妹妹的字迹：「哥，我在楼下，别淋雨。」",
+      "genre": "现代都市温情",
+      "artStyle": {
+        "preset": "color-anime",
+        "notes": "雨夜冷蓝主调，暖色只留给门厅声控灯与手机屏幕；线条干净、色块克制，淋雨状态用贴头发的发丝与肩部水痕表现，不使用写实伤口或任何超现实特效。"
+      },
+      "pageShape": {
+        "pageCount": 1,
+        "panelsPerPage": 4,
+        "readingDirection": "rtl"
+      },
+      "language": "zh-CN",
+      "audienceRating": "general",
+      "budget": {
+        "maxTextGenerations": 12,
+        "maxImageGenerations": 20,
+        "maxVisionReviews": 8,
+        "maxVendorRequests": 64,
+        "maxRegenerationsPerItem": 2,
+        "maxCandidatesPerItem": 2,
+        "maxPromptOptimizations": 0,
+        "amountBudget": null
+      },
+      "limits": {
+        "maxCharacters": 2,
+        "maxScenes": 1,
+        "maxProps": 0,
+        "maxPages": 1,
+        "maxPanelsPerPage": 4,
+        "maxReferencesPerPanel": 3,
+        "maxProfileVariantsPerEntity": 2
+      },
+      "modelBindings": {
+        "text": "text-standard",
+        "image": "image-standard",
+        "vision": "vision-review"
+      },
+      "allowPromptOptimization": false
+    },
+
+    "premise": {
+      "schemaVersion": 1,
+      "logline": "暴雨夜的最后一单外卖，把骑手林晚送到了三年前不告而别的妹妹林星面前。",
+      "synopsis": "凌晨一点，暴雨。二十六岁的外卖骑手林晚接下今天最后一单，配送地址是一栋没有电梯的旧居民楼。他在门厅外熄了火，手机备注栏里只有一句话：「哥，我在楼下，别淋雨。」那字迹他认得，是三年前不告而别的妹妹林星。他抬头，门厅的声控灯亮起，湿透的林星从楼梯间的阴影里走出来。两个人隔着一小步站着，谁都没有先动，雨水从各自的衣角往下滴。",
+      "toneTags": ["都市", "雨夜", "重逢", "克制", "温情"],
+      "characters": [
+        {
+          "characterId": "linwan",
+          "displayName": "林晚",
+          "storyRole": "protagonist",
+          "oneLine": "二十六岁外卖骑手，把妹妹三年前的离开归咎于自己，习惯用忙碌堵住所有话头。"
+        },
+        {
+          "characterId": "linxing",
+          "displayName": "林星",
+          "storyRole": "supporting",
+          "oneLine": "十九岁，三年前不告而别，在暴雨里等到最后一单才敢写下那句备注。"
+        }
+      ]
+    },
+
+    "script": {
+      "schemaVersion": 1,
+      "dialogues": [
+        {
+          "dialogueId": "dlg01",
+          "speakerCharacterId": "linwan",
+          "text": "这字迹……是她。",
+          "intent": "inner"
+        },
+        {
+          "dialogueId": "dlg02",
+          "speakerCharacterId": "linwan",
+          "text": "林星？你在这儿吗——",
+          "intent": "speech"
+        },
+        {
+          "dialogueId": "dlg03",
+          "speakerCharacterId": "linxing",
+          "text": "哥，我说了别淋雨。",
+          "intent": "whisper"
+        }
+      ],
+      "beats": [
+        {
+          "beatId": "beat01",
+          "sceneId": "raingate",
+          "summary": "暴雨如注。林晚在旧居民楼门厅外熄火，摘下头盔，手机上显示今天最后一单的配送地址。",
+          "participantCharacterIds": ["linwan"],
+          "dialogueIds": []
+        },
+        {
+          "beatId": "beat02",
+          "sceneId": "raingate",
+          "summary": "他抹开屏幕上的雨水查看备注栏，认出三年前林星的字迹：「哥，我在楼下，别淋雨。」",
+          "participantCharacterIds": ["linwan"],
+          "dialogueIds": ["dlg01"]
+        },
+        {
+          "beatId": "beat03",
+          "sceneId": "raingate",
+          "summary": "门厅声控灯亮起。湿透的林星从楼梯间的阴影里走出来，站定在雨帘另一侧。",
+          "participantCharacterIds": ["linwan", "linxing"],
+          "dialogueIds": ["dlg02"]
+        },
+        {
+          "beatId": "beat04",
+          "sceneId": "raingate",
+          "summary": "两人隔着一小步距离对视，雨水沿衣角滴落，谁都没有先开口。",
+          "participantCharacterIds": ["linwan", "linxing"],
+          "dialogueIds": ["dlg03"]
+        }
+      ]
+    },
+
+    "panelPlan": {
+      "schemaVersion": 1,
+      "pages": [
+        {
+          "pageId": "page01",
+          "ordinal": 0,
+          "panels": [
+            {
+              "panelId": "panel01",
+              "ordinal": 0,
+              "beatId": "beat01",
+              "sceneId": "raingate",
+              "shotIntent": "establishing",
+              "visualDirection": "全景：暴雨夜的旧居民楼门厅外。画面右侧是亮着冷白灯管的门厅入口与楼梯间，左侧停着一辆熄火的外卖电动车，车把上挂着深色头盔。林晚背对镜头站在雨里，雨水顺着雨衣下摆连成细线。手机屏幕的光从下方打在他侧脸上。",
+              "characterIds": ["linwan"],
+              "dialogueIds": [],
+              "captionText": "凌晨一点，最后一单。"
+            },
+            {
+              "panelId": "panel02",
+              "ordinal": 1,
+              "beatId": "beat02",
+              "sceneId": "raingate",
+              "shotIntent": "close-up",
+              "visualDirection": "近景：被雨水打湿的手机屏幕占据画面中部偏左，屏幕上是一行手写体短句所在的浅色备注区域（具体文案由排版层合成，画面中只需留出干净可读的文字区）。戴着手套的手指停在屏幕上方。雨滴落在玻璃上形成水痕，把门厅的暖黄灯光折射成光斑。人物只露出下巴与雨衣领口。",
+              "characterIds": ["linwan"],
+              "dialogueIds": ["dlg01"]
+            },
+            {
+              "panelId": "panel03",
+              "ordinal": 2,
+              "beatId": "beat03",
+              "sceneId": "raingate",
+              "shotIntent": "medium",
+              "visualDirection": "中景：门厅顶部的声控灯刚刚亮起，暖黄光把楼梯间入口切成明暗两半。林星站在阴影与光线的交界处，湿透的齐肩黑发贴在脸颊两侧，怀里抱着旧帆布双肩包，裤脚与帆布鞋全是雨水。画面左下前景是林晚被雨水虚化的肩线。",
+              "characterIds": ["linwan", "linxing"],
+              "dialogueIds": ["dlg02"]
+            },
+            {
+              "panelId": "panel04",
+              "ordinal": 3,
+              "beatId": "beat04",
+              "sceneId": "raingate",
+              "shotIntent": "reaction",
+              "visualDirection": "反应镜头：两人隔着一小步距离正面对视，林晚在画面左、林星在画面右，雨水沿各自衣角滴落在同一片反光的水泥地上。背景门厅的暖黄灯把两人的轮廓勾出暖边，画面大面积留白，情绪克制。",
+              "characterIds": ["linwan", "linxing"],
+              "dialogueIds": ["dlg03"]
+            }
+          ]
+        }
+      ]
+    },
+
+    "assetManifest": {
+      "schemaVersion": 1,
+      "items": [
+        {
+          "itemKey": "character:linwan@base",
+          "kind": "character",
+          "entityId": "linwan",
+          "variantId": "base",
+          "displayName": "林晚·基础形象",
+          "requirementPrompt": "二十六岁男性外卖骑手，短发被雨打湿后向后贴，眉骨偏高、下颌线条清晰，身穿深蓝色外卖平台雨衣与黑色长裤，胸前挂工牌绳，脚穿防水短靴，表情疲惫但克制。三视图式角色设定，纯色背景，日式动画赛璐璐上色，干净线稿，便于后续多格复用。",
+          "referenceItemKeys": []
+        },
+        {
+          "itemKey": "character:linwan@rain-soaked",
+          "kind": "character",
+          "entityId": "linwan",
+          "variantId": "rain-soaked",
+          "displayName": "林晚·淋雨状态",
+          "variantDelta": "与 base 的差异：雨衣与头发完全湿透，发丝贴额，雨衣表面出现高光水痕与深色湿痕，脸颊与下巴挂水珠，工牌绳因吸水下垂；服装款式、发型轮廓与体型比例与 base 完全一致。",
+          "requirementPrompt": "同一角色的淋雨状态：深蓝色外卖雨衣被雨水浸透、表面形成明显高光水痕，短发贴额、脸颊滴水，神情比 base 更疲惫；除湿透效果外，服装款式、发型轮廓、体型比例必须与 base 形象完全一致，不得改变脸型与五官。",
+          "referenceItemKeys": ["character:linwan@base"]
+        },
+        {
+          "itemKey": "character:linxing@base",
+          "kind": "character",
+          "entityId": "linxing",
+          "variantId": "base",
+          "displayName": "林星·基础形象",
+          "requirementPrompt": "十九岁少女，齐肩黑发被雨淋湿后贴在脸颊两侧，圆脸、眼睛偏大，身穿米白色连帽卫衣与深色牛仔裤，怀里抱着一只旧帆布双肩包，脚穿帆布鞋，神态疲惫、迟疑、带一点逞强。三视图式角色设定，纯色背景，日式动画赛璐璐上色，画风与林晚保持一致。",
+          "referenceItemKeys": []
+        },
+        {
+          "itemKey": "scene:raingate@night-rain",
+          "kind": "scene",
+          "entityId": "raingate",
+          "variantId": "night-rain",
+          "displayName": "旧居民楼门厅·暴雨夜",
+          "variantDelta": "夜间暴雨状态：门厅外雨帘密集、地面为反光积水，顶部声控灯是唯一暖色光源，楼梯间深处为冷调阴影。",
+          "requirementPrompt": "中国城市旧居民楼的一层门厅：右侧是贴着小广告的瓷砖墙与一排铁皮信箱，中间是通往二层的楼梯间入口，顶部一盏声控灯管发出暖黄光；门厅外是密集雨帘与反光积水的水泥地。空间纵深清楚，光线对比强烈，画面中无人物。日式动画背景美术，冷蓝雨夜基调配局部暖光。",
+          "referenceItemKeys": []
+        }
+      ]
+    },
+
+    "approvedRefs": [
+      {
+        "itemKey": "character:linwan@base",
+        "entityId": "linwan",
+        "variantId": "base",
+        "assetId": "asset-linwan-base",
+        "version": 1,
+        "contentDigest": "3f1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f800a1b2c3d4e5f6071",
+        "digestSource": "asset_version_sha256",
+        "approvalId": "approval-asset-linwan-base",
+        "approvedBy": "user-fixture-owner",
+        "approvedAt": "2026-03-14T21:10:00.000Z",
+        "candidateSetDigest": "1a2b3c4d5e6f70819a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f607"
+      },
+      {
+        "itemKey": "character:linwan@rain-soaked",
+        "entityId": "linwan",
+        "variantId": "rain-soaked",
+        "assetId": "asset-linwan-rain-soaked",
+        "version": 2,
+        "contentDigest": "7c4d9e01a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+        "digestSource": "asset_version_sha256",
+        "approvalId": "approval-asset-linwan-rain-soaked",
+        "approvedBy": "user-fixture-owner",
+        "approvedAt": "2026-03-14T21:12:00.000Z",
+        "candidateSetDigest": "2b3c4d5e6f708192a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f7081"
+      },
+      {
+        "itemKey": "character:linxing@base",
+        "entityId": "linxing",
+        "variantId": "base",
+        "assetId": "asset-linxing-base",
+        "version": 1,
+        "contentDigest": "b8e2f4a6c0d19375482a6c8e0f1b3d579a0c2e4f6b8d1a3c5e7f9012a4b6c8d0",
+        "digestSource": "asset_version_sha256",
+        "approvalId": "approval-asset-linxing-base",
+        "approvedBy": "user-fixture-owner",
+        "approvedAt": "2026-03-14T21:14:00.000Z",
+        "candidateSetDigest": "3c4d5e6f708192a3b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f80918"
+      },
+      {
+        "itemKey": "scene:raingate@night-rain",
+        "entityId": "raingate",
+        "variantId": "night-rain",
+        "assetId": "asset-raingate-night-rain",
+        "version": 1,
+        "contentDigest": "d0c1b2a39485766f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7",
+        "digestSource": "content_key",
+        "approvalId": "approval-asset-raingate-night-rain",
+        "approvedBy": "user-fixture-owner",
+        "approvedAt": "2026-03-14T21:16:00.000Z",
+        "candidateSetDigest": "4d5e6f708192a3b4c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091827"
+      }
+    ],
+
+    "renderSpecs": [
+      {
+        "panelId": "panel01",
+        "pageId": "page01",
+        "generationRevision": 1,
+        "promptText": "日式动画赛璐璐风格，单幅漫画分镜，纵向 3:4 构图。中国城市旧居民楼的一层门厅外，暴雨夜的密集雨帘，地面是反光的积水水泥地，水面映出冷蓝色霓虹。画面右侧是亮着暖黄声控灯的门厅入口与楼梯间，左侧停着一辆熄火的外卖电动车，车把上挂着一只深色头盔。主要角色林晚背对镜头站在雨中，身穿深蓝色平台雨衣、黑色长裤、防水短靴，全身被雨水浸透，雨衣下摆的水线连成细流，短发贴额。冷蓝主色调，暖色只保留门厅灯与远处窗户；干净线稿，克制的色块，画面中不出现任何文字，无水印，无超现实特效。参考图：林晚·淋雨状态、旧居民楼门厅·暴雨夜。",
+        "negativePrompt": "写实照片风格，血腥，伤口，恐怖表情，多余的手指，畸变脸，水印，签名，商标，平台标志，乱码文字，低分辨率，模糊，超现实特效，多余人影",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "scene:raingate@night-rain",
+            "entityId": "raingate",
+            "variantId": "night-rain",
+            "assetId": "asset-raingate-night-rain",
+            "version": 1,
+            "contentDigest": "d0c1b2a39485766f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7",
+            "digestSource": "content_key",
+            "approvalId": "approval-asset-raingate-night-rain",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:16:00.000Z",
+            "candidateSetDigest": "4d5e6f708192a3b4c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091827"
+          },
+          {
+            "itemKey": "character:linwan@rain-soaked",
+            "entityId": "linwan",
+            "variantId": "rain-soaked",
+            "assetId": "asset-linwan-rain-soaked",
+            "version": 2,
+            "contentDigest": "7c4d9e01a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+            "digestSource": "asset_version_sha256",
+            "approvalId": "approval-asset-linwan-rain-soaked",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:12:00.000Z",
+            "candidateSetDigest": "2b3c4d5e6f708192a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f7081"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "resolution": "1024x1536",
+          "steps": 28,
+          "guidance": 6.5,
+          "enableSafetyChecker": true
+        },
+        "seed": 771001
+      },
+      {
+        "panelId": "panel02",
+        "pageId": "page01",
+        "generationRevision": 1,
+        "promptText": "日式动画赛璐璐风格，单幅漫画分镜，纵向 3:4 构图，近景。画面中部偏左是一只被雨水打湿的手机屏幕，屏幕上留出一块干净、浅色、可读的手写文字区域（具体文案由排版层合成，画面中不预先绘制任何字形）。一只戴着深色防水手套的手指停在屏幕上方尚未按下。雨滴落在玻璃上形成水痕，把门厅的暖黄灯光折射成柔和光斑；背景是高度虚化的雨夜街道与冷蓝霓虹。人物只露出下巴与雨衣领口，短发贴额、下巴挂水珠。冷蓝主调配局部暖色，干净线稿，克制的色块，画面中除留白文字区外不出现任何文字，无水印。参考图：林晚·淋雨状态、旧居民楼门厅·暴雨夜。",
+        "negativePrompt": "写实照片风格，过多文字，乱码文字，商标，平台标志，多余的手指，畸变手，水印，签名，低分辨率，模糊，超现实特效",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:linwan@rain-soaked",
+            "entityId": "linwan",
+            "variantId": "rain-soaked",
+            "assetId": "asset-linwan-rain-soaked",
+            "version": 2,
+            "contentDigest": "7c4d9e01a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+            "digestSource": "asset_version_sha256",
+            "approvalId": "approval-asset-linwan-rain-soaked",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:12:00.000Z",
+            "candidateSetDigest": "2b3c4d5e6f708192a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f7081"
+          },
+          {
+            "itemKey": "scene:raingate@night-rain",
+            "entityId": "raingate",
+            "variantId": "night-rain",
+            "assetId": "asset-raingate-night-rain",
+            "version": 1,
+            "contentDigest": "d0c1b2a39485766f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7",
+            "digestSource": "content_key",
+            "approvalId": "approval-asset-raingate-night-rain",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:16:00.000Z",
+            "candidateSetDigest": "4d5e6f708192a3b4c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091827"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "resolution": "1024x1536",
+          "steps": 30,
+          "guidance": 7,
+          "enableSafetyChecker": true
+        },
+        "seed": 771002
+      },
+      {
+        "panelId": "panel03",
+        "pageId": "page01",
+        "generationRevision": 1,
+        "promptText": "日式动画赛璐璐风格，单幅漫画分镜，纵向 3:4 构图，中景。中国城市旧居民楼的一层门厅内，顶部的声控灯刚刚亮起，暖黄光从上方打下来，把通往二层的楼梯间入口切成明暗两半。十九岁少女林星站在阴影与光线的交界处，湿透的齐肩黑发贴在脸颊两侧，身穿米白色连帽卫衣与深色牛仔裤，怀里抱着一只旧帆布双肩包，裤脚与帆布鞋全是雨水；她的神态疲惫、迟疑，带一点逞强。画面左下前景是林晚被雨水虚化的深蓝色肩线。冷蓝环境光与暖黄灯光的强对比，干净线稿，克制的色块，画面中不出现任何文字，无水印，无超现实特效。参考图：林星·基础形象、林晚·淋雨状态、旧居民楼门厅·暴雨夜。",
+        "negativePrompt": "写实照片风格，血腥，伤口，恐怖表情，多余的手指，畸变脸，水印，签名，商标，乱码文字，低分辨率，模糊，超现实特效，多余人影",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:linxing@base",
+            "entityId": "linxing",
+            "variantId": "base",
+            "assetId": "asset-linxing-base",
+            "version": 1,
+            "contentDigest": "b8e2f4a6c0d19375482a6c8e0f1b3d579a0c2e4f6b8d1a3c5e7f9012a4b6c8d0",
+            "digestSource": "asset_version_sha256",
+            "approvalId": "approval-asset-linxing-base",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:14:00.000Z",
+            "candidateSetDigest": "3c4d5e6f708192a3b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f80918"
+          },
+          {
+            "itemKey": "scene:raingate@night-rain",
+            "entityId": "raingate",
+            "variantId": "night-rain",
+            "assetId": "asset-raingate-night-rain",
+            "version": 1,
+            "contentDigest": "d0c1b2a39485766f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7",
+            "digestSource": "content_key",
+            "approvalId": "approval-asset-raingate-night-rain",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:16:00.000Z",
+            "candidateSetDigest": "4d5e6f708192a3b4c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091827"
+          },
+          {
+            "itemKey": "character:linwan@rain-soaked",
+            "entityId": "linwan",
+            "variantId": "rain-soaked",
+            "assetId": "asset-linwan-rain-soaked",
+            "version": 2,
+            "contentDigest": "7c4d9e01a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+            "digestSource": "asset_version_sha256",
+            "approvalId": "approval-asset-linwan-rain-soaked",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:12:00.000Z",
+            "candidateSetDigest": "2b3c4d5e6f708192a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f7081"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "resolution": "1024x1536",
+          "steps": 30,
+          "guidance": 7,
+          "enableSafetyChecker": true
+        },
+        "seed": 771003
+      },
+      {
+        "panelId": "panel04",
+        "pageId": "page01",
+        "generationRevision": 1,
+        "promptText": "日式动画赛璐璐风格，单幅漫画分镜，纵向 3:4 构图，双人正面反应镜头。中国城市旧居民楼门厅外，两人隔着一小步距离正面对视：画面左侧是淋透的骑手林晚，深蓝雨衣与短发贴额，下颌滴水；画面右侧是同样湿透的少女林星，米白色连帽卫衣、怀里抱着旧帆布包，发丝贴颊。两人都微微前倾但没有靠近，雨水沿各自的衣角滴落在同一片反光的水泥地上，溅起细小水花。背景门厅的暖黄灯把两人的轮廓勾出暖边，画面大面积留白，情绪克制。冷蓝与暖黄对比，干净线稿，克制的色块，画面中不出现任何文字，无水印，无超现实特效。参考图：林晚·淋雨状态、林星·基础形象。",
+        "negativePrompt": "写实照片风格，血腥，伤口，恐怖表情，多余的手指，畸变脸，水印，签名，商标，乱码文字，低分辨率，模糊，超现实特效，多余人影，两人重叠",
+        "aspectRatio": "3:4",
+        "referenceAssetRefs": [
+          {
+            "itemKey": "character:linwan@rain-soaked",
+            "entityId": "linwan",
+            "variantId": "rain-soaked",
+            "assetId": "asset-linwan-rain-soaked",
+            "version": 2,
+            "contentDigest": "7c4d9e01a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+            "digestSource": "asset_version_sha256",
+            "approvalId": "approval-asset-linwan-rain-soaked",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:12:00.000Z",
+            "candidateSetDigest": "2b3c4d5e6f708192a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f7081"
+          },
+          {
+            "itemKey": "character:linxing@base",
+            "entityId": "linxing",
+            "variantId": "base",
+            "assetId": "asset-linxing-base",
+            "version": 1,
+            "contentDigest": "b8e2f4a6c0d19375482a6c8e0f1b3d579a0c2e4f6b8d1a3c5e7f9012a4b6c8d0",
+            "digestSource": "asset_version_sha256",
+            "approvalId": "approval-asset-linxing-base",
+            "approvedBy": "user-fixture-owner",
+            "approvedAt": "2026-03-14T21:14:00.000Z",
+            "candidateSetDigest": "3c4d5e6f708192a3b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f80918"
+          }
+        ],
+        "modelAlias": "image-standard",
+        "resolvedParameters": {
+          "resolution": "1024x1536",
+          "steps": 28,
+          "guidance": 6.5,
+          "enableSafetyChecker": true
+        },
+        "seed": 771004
+      }
+    ],
+
+    "qualityReport": {
+      "schemaVersion": 1,
+      "panels": [
+        {
+          "panelId": "panel01",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": 0.86,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "门厅灯与雨帘的光比正确，电动车未抢主体。",
+            "reviewedBy": "reviewer-fixture",
+            "reviewedAt": "2026-03-14T21:22:00.000Z"
+          }
+        },
+        {
+          "panelId": "panel02",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": 0.79,
+            "visionFindings": [
+              "手机屏幕文字的留白区域偏小，排版时气泡与旁白字号不得低于 28px",
+              "手套手指与屏幕边缘接触处有轻微黏连"
+            ]
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "认可画面；文字留白偏小的问题交由 s8_layout 用字号下限处理，不触发返工。",
+            "reviewedBy": "reviewer-fixture",
+            "reviewedAt": "2026-03-14T21:23:00.000Z"
+          }
+        },
+        {
+          "panelId": "panel03",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": 0.91,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "林星与资产 base 形象一致，声控灯明暗分割线位置合适。",
+            "reviewedBy": "reviewer-fixture",
+            "reviewedAt": "2026-03-14T21:24:00.000Z"
+          }
+        },
+        {
+          "panelId": "panel04",
+          "structural": {
+            "hasImage": true,
+            "aspectRatioMatches": true,
+            "referenceCountWithinLimit": true,
+            "visionScore": 0.88,
+            "visionFindings": []
+          },
+          "manual": {
+            "verdict": "accepted",
+            "notes": "双人比例与留白可接受，情绪克制符合预期。",
+            "reviewedBy": "reviewer-fixture",
+            "reviewedAt": "2026-03-14T21:25:00.000Z"
+          }
+        }
+      ]
+    },
+
+    "layouts": [
+      {
+        "schemaVersion": 1,
+        "pageId": "page01",
+        "ordinal": 0,
+        "canvas": {
+          "width": 1200,
+          "height": 1800,
+          "unit": "px"
+        },
+        "panels": [
+          {
+            "panelId": "panel01",
+            "rect": { "x": 620, "y": 240, "width": 480, "height": 640 },
+            "cropMode": "cover",
+            "zIndex": 0
+          },
+          {
+            "panelId": "panel02",
+            "rect": { "x": 100, "y": 240, "width": 480, "height": 640 },
+            "cropMode": "cover",
+            "zIndex": 1
+          },
+          {
+            "panelId": "panel03",
+            "rect": { "x": 620, "y": 920, "width": 480, "height": 640 },
+            "cropMode": "cover",
+            "zIndex": 2
+          },
+          {
+            "panelId": "panel04",
+            "rect": { "x": 100, "y": 920, "width": 480, "height": 640 },
+            "cropMode": "cover",
+            "zIndex": 3
+          }
+        ],
+        "balloons": [
+          {
+            "balloonId": "balloon01",
+            "dialogueId": "dlg01",
+            "panelId": "panel02",
+            "shape": "thought",
+            "anchor": { "x": 240, "y": 380 },
+            "tailTarget": { "x": 300, "y": 540 },
+            "text": "这字迹……是她。",
+            "fontSize": 30,
+            "readingIndex": 0
+          },
+          {
+            "balloonId": "balloon02",
+            "dialogueId": "dlg02",
+            "panelId": "panel03",
+            "shape": "speech",
+            "anchor": { "x": 780, "y": 1060 },
+            "tailTarget": { "x": 860, "y": 1220 },
+            "text": "林星？你在这儿吗——",
+            "fontSize": 30,
+            "readingIndex": 1
+          },
+          {
+            "balloonId": "balloon03",
+            "dialogueId": "dlg03",
+            "panelId": "panel04",
+            "shape": "whisper",
+            "anchor": { "x": 180, "y": 1040 },
+            "tailTarget": { "x": 260, "y": 1200 },
+            "text": "哥，我说了别淋雨。",
+            "fontSize": 28,
+            "readingIndex": 2
+          }
+        ]
+      }
+    ],
+
+    "exportManifest": {
+      "schemaVersion": 1,
+      "workflowRunId": "run-theme-mini-001",
+      "definitionId": "topic-to-comic",
+      "definitionVersion": "0.1.0",
+      "definitionDigest": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0",
+      "briefDigest": "aa11bb22cc33dd44ee55ff6600778899a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "pages": [
+        {
+          "pageId": "page01",
+          "ordinal": 0,
+          "imageAssetId": "asset-page01-render",
+          "imageVersion": 1,
+          "imageDigest": "5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b",
+          "panelCandidates": [
+            {
+              "panelId": "panel01",
+              "assetId": "asset-panel01-c1",
+              "version": 1,
+              "contentDigest": "11aa22bb33cc44dd55ee66ff7700881199aa22bb33cc44dd55ee66ff77008811"
+            },
+            {
+              "panelId": "panel02",
+              "assetId": "asset-panel02-c1",
+              "version": 1,
+              "contentDigest": "22bb33cc44dd55ee66ff7700881199aa22bb33cc44dd55ee66ff7700881199aa"
+            },
+            {
+              "panelId": "panel03",
+              "assetId": "asset-panel03-c1",
+              "version": 1,
+              "contentDigest": "33cc44dd55ee66ff7700881199aa22bb33cc44dd55ee66ff7700881199aa22bb"
+            },
+            {
+              "panelId": "panel04",
+              "assetId": "asset-panel04-c1",
+              "version": 1,
+              "contentDigest": "44dd55ee66ff7700881199aa22bb33cc44dd55ee66ff7700881199aa22bb33cc"
+            }
+          ]
+        }
+      ],
+      "excludedPanels": [],
+      "generatedAt": "2026-03-14T21:26:00.000Z",
+      "approvedAt": "2026-03-14T21:34:00.000Z"
+    }
+  },
+
+  "expectedIssueCodes": [],
+
+  "negativeCases": [
+    {
+      "name": "对白说话人指向不存在的角色",
+      "mutation": "把 artifacts.script.dialogues[0].speakerCharacterId 由 \"linwan\" 改为 \"linwei\"（premise.characters 中不存在 linwei，且 dlg01 仍被 panel02.dialogueIds 引用，因此不会顺带触发 WF_REF_DANGLING）",
+      "expectedIssueCode": "WF_REF_UNKNOWN_SPEAKER"
+    },
+    {
+      "name": "资产需求缺少对应的已批准引用",
+      "mutation": "从 artifacts.approvedRefs 中删除 itemKey 为 \"character:linxing@base\" 的那一项（artifacts.assetManifest.items 中仍保留该 itemKey）",
+      "expectedIssueCode": "WF_REF_ASSET_NOT_APPROVED"
+    },
+    {
+      "name": "已批准引用指向资产清单之外的 itemKey",
+      "mutation": "向 artifacts.approvedRefs 追加一项 itemKey 为 \"scene:rooftop@night-rain\"、entityId 为 \"rooftop\"、variantId 为 \"night-rain\" 的引用（artifacts.assetManifest.items 中没有该 itemKey）",
+      "expectedIssueCode": "WF_REF_ITEM_KEY_INVALID"
+    },
+    {
+      "name": "渲染规格引用了已被替换的资产版本",
+      "mutation": "把 artifacts.renderSpecs[0].referenceAssetRefs 中 itemKey 为 \"character:linwan@rain-soaked\" 的那一项的 version 由 2 改为 3（artifacts.approvedRefs 中该 itemKey 的 version 仍为 2，contentDigest 不变）",
+      "expectedIssueCode": "WF_REF_ASSET_VERSION_STALE"
+    },
+    {
+      "name": "单格参考图数量超过 maxReferencesPerPanel",
+      "mutation": "把 artifacts.renderSpecs[0].referenceAssetRefs 从 2 项扩到 4 项：在末尾追加 itemKey 为 \"character:linwan@rain-soaked\" 与 \"scene:raingate@night-rain\" 的两个副本（内容与被批准引用完全一致，因此不会触发 WF_REF_ASSET_VERSION_STALE），4 > brief.limits.maxReferencesPerPanel = 3",
+      "expectedIssueCode": "WF_LIMIT_REFERENCES"
+    },
+    {
+      "name": "绘图提示词超过 20000 字符上限",
+      "mutation": "把 artifacts.renderSpecs[0].promptText 替换为长度 20001 的字符串（原文后补 \"雨\" 字补足），超过 packages/domain/src/index.ts:330 的 20000 字符上限",
+      "expectedIssueCode": "WF_LIMIT_PROMPT_CHARS"
+    },
+    {
+      "name": "稳定 ID 重复",
+      "mutation": "向 artifacts.premise.characters 追加第 3 个角色条目，其 characterId 复制为 \"linwan\"（与现有主角重复；premise.characters 的 characterId 集合大小仍为 2，因此不会触发 WF_LIMIT_CHARACTERS）",
+      "expectedIssueCode": "WF_DUPLICATE_STABLE_ID"
+    },
+    {
+      "name": "剧本场景数超过 maxScenes",
+      "mutation": "把 artifacts.script.beats[1].sceneId 由 \"raingate\" 改为 \"rooftop\"（artifacts.script.beats 的 sceneId 集合变为 2 个，超过 brief.limits.maxScenes = 1；panel.sceneId 仍为 \"raingate\"，因此不会触发 WF_REF_DANGLING）",
+      "expectedIssueCode": "WF_LIMIT_SCENES"
+    },
+    {
+      "name": "排版漏掉一个格",
+      "mutation": "从 artifacts.layouts[0].panels 中删除 panelId 为 \"panel04\" 的那一项（renderSpecs 与 exportManifest 仍覆盖 panel04）",
+      "expectedIssueCode": "WF_LAYOUT_PANEL_MISSING"
+    },
+    {
+      "name": "气泡锚点跑出画布",
+      "mutation": "把 artifacts.layouts[0].balloons[0].anchor.x 由 240 改为 1400（画布 width 为 1200，anchor.x > canvas.width）",
+      "expectedIssueCode": "WF_LAYOUT_BALLOON_OVERFLOW"
+    },
+    {
+      "name": "格矩形超出画布右边界",
+      "mutation": "把 artifacts.layouts[0].panels 中 panelId 为 \"panel01\" 的 rect.x 由 620 改为 900（rect.width 仍为 480，900 + 480 = 1380 > canvas.width 1200 + 0.5 容差）",
+      "expectedIssueCode": "WF_LAYOUT_RECT_INVALID"
+    },
+    {
+      "name": "导出清单缺少该页",
+      "mutation": "把 artifacts.exportManifest.pages[0].pageId 由 \"page01\" 改为 \"page02\"（artifacts.panelPlan.pages[0].pageId 仍为 \"page01\"）",
+      "expectedIssueCode": "WF_EXPORT_INCOMPLETE"
+    }
+  ]
+}

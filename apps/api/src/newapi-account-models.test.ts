@@ -4,6 +4,44 @@ import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 
 describe('New API 本人缓存模型目录', () => {
+  it.each(['unavailable', 'missing', 'pending'])(
+    '分组 %s 时保留同步失败原因，不把有效凭据误报为模型不存在',
+    async (status) => {
+      const findFirst = vi.fn().mockResolvedValue({
+        status,
+        error: '分组授权与令牌状态不一致，请重新连接 New API 账号后同步分组',
+        credential: { ownerId: 'user-current', version: 3 },
+      });
+      const service = new NewApiAccountService({
+        prisma: { newApiGroupBinding: { findFirst } },
+        webUrl: 'http://localhost:5173',
+      } as unknown as ConstructorParameters<typeof NewApiAccountService>[0]);
+      vi.spyOn(service, 'identity').mockResolvedValue({
+        id: 'identity-current',
+        userId: 'user-current',
+      } as Awaited<ReturnType<typeof service.identity>>);
+      const settings = new NewApiAccountSettings(service);
+      await expect(
+        newApiRequestUser.run('user-current', () =>
+          settings.getCredentialReference('credential-video'),
+        ),
+      ).rejects.toMatchObject({
+        code: 'group_unavailable',
+        status: 409,
+        message: '分组授权与令牌状态不一致，请重新连接 New API 账号后同步分组',
+      });
+      expect(findFirst).toHaveBeenCalledWith({
+        where: {
+          identityId: 'identity-current',
+          credentialId: 'credential-video',
+          group: { not: '神秘分组' },
+          status: { not: 'removed' },
+        },
+        include: { credential: true },
+      });
+    },
+  );
+
   it.each([
     ['gemini-3-pro-image-preview', 'openai-images', 'openai-chat-completions'],
     ['gemini-nano-banana-2.1', undefined, 'openai-chat-completions'],

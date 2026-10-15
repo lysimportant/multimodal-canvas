@@ -1,0 +1,815 @@
+{
+  "schemaVersion": 1,
+  "id": "topic-to-comic",
+  "version": "0.1.0",
+  "title": "一句主题 → 分页漫画",
+  "form": "paged-comic",
+  "formNonGoals": [
+    "条漫 / 竖屏滚动漫画",
+    "动画或视频输出",
+    "跨作品连续剧集",
+    "多语言本地化排版"
+  ],
+  "inputSchema": "comic_brief",
+  "outputSchema": "comic_export_manifest",
+  "inputSchemaRef": "contracts.ts#comicBriefSchema",
+  "contractModule": "contracts.ts",
+  "contractSchemaVersion": 1,
+
+  "definitionDigestInputs": [
+    "schemaVersion",
+    "id",
+    "version",
+    "inputSchema",
+    "outputSchema",
+    "steps",
+    "taskTemplates",
+    "retryPolicy",
+    "budgetPolicy",
+    "canvasProjectionPolicy",
+    "exportPolicy"
+  ],
+
+  "taskTemplates": {
+    "module": "task-templates.v1.json",
+    "requiredForStepTypes": ["generate"],
+    "digestRule": "每个被 generate 步骤引用的模板正文单独取 sha256，作为 inputFingerprintMaterial.taskTemplateDigest",
+    "contractChangeRule": "模板可以改措辞，但不得改变其声明输出的字段集合；改变字段集合必须提升 outputSchemaVersion"
+  },
+
+  "steps": [
+    {
+      "stepId": "s0_brief",
+      "sIndex": "S0",
+      "type": "transform",
+      "title": "范围与预检",
+      "dependsOn": [],
+      "vendorCall": false,
+      "outputSchema": "comic_brief",
+      "inputBindings": [
+        {
+          "to": "brief",
+          "from": "workflow.input",
+          "semantics": "literal_text",
+          "note": "用户给的一句话主题 + 题材/画风/篇幅/预算"
+        }
+      ],
+      "preflight": {
+        "requireModelBindings": ["text", "image"],
+        "rejectIfBudgetAbsent": true,
+        "rejectIfLimitsAboveHardCaps": true,
+        "issueCodes": ["WF_INPUT_INVALID", "WF_MODEL_BINDING_MISSING", "WF_LIMIT_CHARACTERS"]
+      },
+      "retryPolicy": { "mode": "none" },
+      "canvasProjection": { "creates": "single_brief_note_node" }
+    },
+
+    {
+      "stepId": "s1_premise",
+      "sIndex": "S1",
+      "type": "generate",
+      "title": "故事构思",
+      "dependsOn": ["s0_brief"],
+      "vendorCall": true,
+      "budgetClass": "text",
+      "outputSchema": "story_premise",
+      "taskTemplate": "comic-premise.v1",
+      "optionalPromptSkill": "novel-premise",
+      "optionalPromptSkillDefault": "off",
+      "inputBindings": [
+        { "to": "theme", "from": "s0_brief.theme", "semantics": "literal_text" },
+        { "to": "genre", "from": "s0_brief.genre", "semantics": "literal_text" },
+        {
+          "to": "characterLimit",
+          "from": "s0_brief.limits.maxCharacters",
+          "semantics": "literal_text"
+        }
+      ],
+      "outputContract": {
+        "mustProduceStory": true,
+        "forbidden": ["返回给下游使用的写作指令", "返回纯 JSON 以外的解释性前后缀"]
+      },
+      "retryPolicy": { "mode": "bounded", "maxAttempts": 2, "backoff": "exponential" },
+      "canvasProjection": { "creates": "one_text_node", "keyedBy": "step:s1_premise" }
+    },
+
+    {
+      "stepId": "s2_script",
+      "sIndex": "S2",
+      "type": "generate",
+      "title": "漫画剧本",
+      "dependsOn": ["s1_premise"],
+      "vendorCall": true,
+      "budgetClass": "text",
+      "outputSchema": "comic_script",
+      "taskTemplate": "comic-script.v1",
+      "optionalPromptSkill": "screenplay",
+      "optionalPromptSkillDefault": "off",
+      "inputBindings": [
+      {
+          "to": "premise",
+          "from": "s1_premise",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        { "to": "pageShape", "from": "s0_brief.pageShape", "semantics": "literal_text" }
+      ],
+      "outputContract": {
+        "stableIdsRequired": ["characterId", "dialogueId", "beatId", "sceneId"],
+        "genreSpecificSkillRule": "screenplay-xianxia 仅在 brief.genre 明确为仙侠且用户选择时使用"
+      },
+      "retryPolicy": { "mode": "bounded", "maxAttempts": 2, "backoff": "exponential" },
+      "canvasProjection": { "creates": "one_text_node", "keyedBy": "step:s2_script" }
+    },
+
+    {
+      "stepId": "s3_panel_plan",
+      "sIndex": "S3",
+      "type": "generate",
+      "title": "页格规划",
+      "dependsOn": ["s2_script"],
+      "vendorCall": true,
+      "budgetClass": "text",
+      "outputSchema": "panel_plan",
+      "taskTemplate": "comic-panel-plan.v1",
+      "inputBindings": [
+        {
+          "to": "script",
+          "from": "s2_script",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        { "to": "pageCount", "from": "s0_brief.pageShape.pageCount", "semantics": "literal_text" },
+        {
+          "to": "panelsPerPage",
+          "from": "s0_brief.pageShape.panelsPerPage",
+          "semantics": "literal_text"
+        },
+        {
+          "to": "readingDirection",
+          "from": "s0_brief.pageShape.readingDirection",
+          "semantics": "literal_text"
+        }
+      ],
+      "outputContract": {
+        "notVideoStoryboard": true,
+        "forbiddenFields": ["时间码", "时长", "运镜速度", "声音字段"],
+        "note": "现有 storyboard / storyboard-10s / storyboard-15s 是视频分镜契约，不是漫画页格契约"
+      },
+      "retryPolicy": { "mode": "bounded", "maxAttempts": 2, "backoff": "exponential" },
+      "canvasProjection": { "creates": "one_text_node", "keyedBy": "step:s3_panel_plan" }
+    },
+
+    {
+      "stepId": "s3_asset_manifest",
+      "sIndex": "S3",
+      "type": "generate",
+      "title": "资产需求清单",
+      "dependsOn": ["s3_panel_plan"],
+      "vendorCall": true,
+      "budgetClass": "text",
+      "outputSchema": "asset_manifest",
+      "taskTemplate": "comic-asset-manifest.v1",
+      "optionalPromptSkill": "extract-assets",
+      "optionalPromptSkillDefault": "off",
+      "inputBindings": [
+        {
+          "to": "panelPlan",
+          "from": "s3_panel_plan",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "script",
+          "from": "s2_script",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        }
+      ],
+      "outputContract": {
+        "itemKeyFormat": "<kind>:<entityId>@<variantId>",
+        "variantRule": "年龄 / 服装 / 损伤状态各自成为独立 variantId，不得靠描述字符串区分",
+        "forbidden": ["数组下标作为身份", "中文或空格出现在 itemKey 中"]
+      },
+      "retryPolicy": { "mode": "bounded", "maxAttempts": 2, "backoff": "exponential" },
+      "canvasProjection": { "creates": "one_text_node", "keyedBy": "step:s3_asset_manifest" }
+    },
+
+    {
+      "stepId": "g_story",
+      "sIndex": "S3",
+      "type": "gate",
+      "title": "G_story：确认故事、页格、对白与生产范围",
+      "dependsOn": ["s2_script", "s3_panel_plan", "s3_asset_manifest"],
+      "vendorCall": false,
+      "gate": {
+        "artifactBindings": [
+          { "artifactSchema": "comic_script", "from": "s2_script" },
+          { "artifactSchema": "panel_plan", "from": "s3_panel_plan" },
+          { "artifactSchema": "asset_manifest", "from": "s3_asset_manifest" }
+        ],
+        "approvalPolicy": {
+          "targetKind": "story_scope",
+          "allowCandidateSelection": false,
+          "requiredFields": [
+            "expectedStepRevision",
+            "targetArtifactDigest",
+            "actorId",
+            "decidedAt",
+            "decisionIdempotencyKey"
+          ]
+        },
+        "stalePolicy": {
+          "onUpstreamRevisionChange": "invalidate_this_gate_and_dependents_only",
+          "invalidateScope": "steps_depending_on_changed_step",
+          "preserveCompletedRunsOfUnaffectedSteps": true
+        },
+        "replaySemantics": {
+          "duplicateApprovalIsNoop": true,
+          "staleApprovalIssueCode": "WF_STATE_APPROVAL_STALE",
+          "targetMismatchIssueCode": "WF_STATE_APPROVAL_TARGET_MISMATCH"
+        },
+        "waitingBehavior": {
+          "persistThenReleaseWorker": true,
+          "mustNotHoldPromiseWhileWaiting": true,
+          "noNewVendorCallsWhileWaiting": true,
+          "approvalEventEffect": "idempotent_wakeup_only",
+          "mustNotMutateFrozenRuns": true
+        },
+        "optionalEarlyConfirmation": {
+          "afterStep": "s1_premise",
+          "enabledWhen": "brief 标记主题复杂",
+          "default": false
+        }
+      }
+    },
+
+    {
+      "stepId": "s4_asset_candidates",
+      "sIndex": "S4",
+      "type": "fanout",
+      "title": "视觉资产候选出图",
+      "dependsOn": ["g_story"],
+      "vendorCall": true,
+      "budgetClass": "image",
+      "outputSchema": "asset_candidate_set",
+      "taskTemplate": "comic-asset-render.v1",
+      "foreach": {
+        "itemsFrom": "s3_asset_manifest.items",
+        "itemKeyTemplate": "{itemKey}",
+        "itemKeyKind": "asset",
+        "perItemOutputSchema": "asset_candidate_set",
+        "maxItemsFrom": "s0_brief.limits.maxCharacters + maxScenes + maxProps",
+        "hardCap": 500,
+        "maxCandidatesFrom": "s0_brief.budget.maxCandidatesPerItem",
+        "maxConcurrency": 4,
+        "joinPolicy": "all_required",
+        "failFast": false,
+        "independentCheckpointPerItem": true,
+        "note": "重跑一个角色不得重跑其他角色"
+      },
+      "inputBindings": [
+        {
+          "to": "requirementPrompt",
+          "from": "s3_asset_manifest.items[].requirementPrompt",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "referenceItemKeys",
+          "from": "s3_asset_manifest.items[].referenceItemKeys",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        { "to": "artStyle", "from": "s0_brief.artStyle", "semantics": "literal_text" }
+      ],
+      "referenceRule": {
+        "mayReference": "同一次 workflow run 内先前已批准且已锁定版本的 asset",
+        "mayNotReference": "尚未审批的任何候选",
+        "withinStepReferences": "仅允许引用 dependencyOrder 更早的 itemKey"
+      },
+      "retryPolicy": {
+        "mode": "bounded",
+        "maxAttempts": 2,
+        "backoff": "exponential",
+        "technicalRetryKeepsGenerationRevision": true,
+        "failureIsolation": "per_item"
+      },
+      "canvasProjection": {
+        "creates": "one_image_node_per_itemKey",
+        "keyedBy": "itemKey",
+        "stableAcrossRetries": true,
+        "historyLocation": "run_and_artifact_list",
+        "mustNotCreateNodePerAttempt": true
+      }
+    },
+
+    {
+      "stepId": "g_assets",
+      "sIndex": "S4",
+      "type": "gate",
+      "title": "G_assets：逐项选定明确资产版本",
+      "dependsOn": ["s4_asset_candidates"],
+      "vendorCall": false,
+      "gate": {
+        "artifactBindings": [{ "artifactSchema": "asset_candidate_set", "from": "s4_asset_candidates" }],
+        "approvalPolicy": {
+          "targetKind": "asset_candidate",
+          "allowCandidateSelection": true,
+          "selectedCandidateKeyRequired": true,
+          "perItemApproval": true,
+          "produces": "approved_asset_ref",
+          "recordsInto": "approvedAssetRefs[]",
+          "approvalBindsTo": "assetId + version + contentDigest",
+          "mustNotBindTo": "画布上该节点当前显示的结果"
+        },
+        "stalePolicy": {
+          "onUpstreamRevisionChange": "invalidate_only_dependents_of_changed_itemKey",
+          "preserveOtherItemApprovals": true
+        },
+        "replaySemantics": {
+          "duplicateApprovalIsNoop": true,
+          "staleApprovalIssueCode": "WF_STATE_APPROVAL_STALE"
+        },
+        "waitingBehavior": {
+          "persistThenReleaseWorker": true,
+          "noNewVendorCallsWhileWaiting": true,
+          "approvalEventEffect": "idempotent_wakeup_only"
+        },
+        "criticality": "本步骤是角色一致性的唯一可信来源，不可省略、不可自动通过"
+      }
+    },
+
+    {
+      "stepId": "s5_render_specs",
+      "sIndex": "S5",
+      "type": "transform",
+      "title": "分格请求编译",
+      "dependsOn": ["g_assets", "s3_panel_plan"],
+      "vendorCall": false,
+      "outputSchema": "panel_render_spec_set",
+      "inputBindings": [
+        {
+          "to": "panelPlan",
+          "from": "s3_panel_plan",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "approvedAssetRefs",
+          "from": "g_assets",
+          "semantics": "approved_artifact"
+        },
+        {
+          "to": "script",
+          "from": "s2_script",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        }
+      ],
+      "compilationRules": {
+        "contextTrimming": "按场景 / 角色 / 单格裁剪，禁止把整份剧本或整份资产包灌进每个请求",
+        "promptCharLimit": 20000,
+        "promptCharLimitRef": "packages/domain/src/index.ts:330",
+        "referencesOnlyApproved": true,
+        "referenceCountLimitFrom": "s0_brief.limits.maxReferencesPerPanel",
+        "issueCodes": ["WF_LIMIT_PROMPT_CHARS", "WF_LIMIT_REFERENCES", "WF_REF_ASSET_NOT_APPROVED"]
+      },
+      "retryPolicy": { "mode": "none" },
+      "canvasProjection": { "creates": "none", "note": "编译产物不投影到画布" }
+    },
+
+    {
+      "stepId": "s6_panel_render",
+      "sIndex": "S6",
+      "type": "fanout",
+      "title": "分格出图",
+      "dependsOn": ["s5_render_specs"],
+      "vendorCall": true,
+      "budgetClass": "image",
+      "outputSchema": "panel_candidate_set",
+      "taskTemplate": "comic-panel-render.v1",
+      "foreach": {
+        "itemsFrom": "s3_panel_plan.pages[].panels",
+        "itemKeyTemplate": "panel:{panelId}",
+        "itemKeyKind": "panel",
+        "perItemOutputSchema": "panel_candidate_set",
+        "maxItemsFrom": "s0_brief.limits.maxPages * s0_brief.limits.maxPanelsPerPage",
+        "hardCap": 2000,
+        "maxCandidatesFrom": "s0_brief.budget.maxCandidatesPerItem",
+        "maxConcurrency": 4,
+        "joinPolicy": "all_required",
+        "failFast": false,
+        "independentCheckpointPerItem": true,
+        "serializationRule": "仅当某格确实依赖前一格的定稿图时才串行；其余走有界并行",
+        "note": "单格失败不得触发整篇重画"
+      },
+      "inputBindings": [
+        {
+          "to": "renderSpec",
+          "from": "s5_render_specs.specs[]",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        }
+      ],
+      "retryPolicy": {
+        "mode": "bounded",
+        "maxAttempts": 2,
+        "backoff": "exponential",
+        "technicalRetryKeepsGenerationRevision": true,
+        "failureIsolation": "per_item",
+        "sendUnknownPolicy": {
+          "status": "needs_review",
+          "mustNotAutoResubmit": true,
+          "mustNotChangeIdempotencyKey": true,
+          "issueCode": "WF_STATE_SEND_UNKNOWN",
+          "ref": "packages/execution/src/index.ts:737"
+        }
+      },
+      "concurrency": {
+        "reuseExistingScheduler": true,
+        "ref": "apps/worker/src/generation-concurrency.ts:21",
+        "mustNotAddSecondUnboundedScheduler": true,
+        "workflowLevelCeiling": true,
+        "fairnessAcrossWorkflowRuns": true
+      },
+      "canvasProjection": {
+        "creates": "one_image_node_per_panelId",
+        "keyedBy": "panel:{panelId}",
+        "stableAcrossRetries": true,
+        "mustNotCreateNodePerAttempt": true
+      }
+    },
+
+    {
+      "stepId": "s7_quality",
+      "sIndex": "S7",
+      "type": "generate",
+      "title": "质检与局部返工",
+      "dependsOn": ["s6_panel_render"],
+      "vendorCall": true,
+      "budgetClass": "vision",
+      "visionOptional": true,
+      "outputSchema": "quality_report",
+      "taskTemplate": "comic-quality-review.v1",
+      "inputBindings": [
+        {
+          "to": "panelCandidates",
+          "from": "s6_panel_render",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "renderSpecs",
+          "from": "s5_render_specs",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        }
+      ],
+      "threeDistinctFacts": [
+        "生成成功（Run.status === succeeded）",
+        "结构校验通过（schema 解析 + 跨对象引用校验）",
+        "人工批准（ApprovalDecision）"
+      ],
+      "reworkPolicy": {
+        "targetsStep": "s6_panel_render",
+        "mechanism": "increment_generation_revision_for_itemKey",
+        "mustPreserveOldArtifacts": true,
+        "countsAgainstBudget": true,
+        "maxReworkRoundsFrom": "s0_brief.budget.maxRegenerationsPerItem",
+        "mustNotBeExpressedAsNetworkRetry": true,
+        "userInitiatedRegenerationRequiresNewRevision": true,
+        "issueCode": "WF_REPLAY_GENERATION_REVISION_REQUIRED"
+      },
+      "budgetRule": {
+        "visionReviewCountsTowardBudget": true,
+        "skipWhenNoVisionBinding": true,
+        "visionScoreNullWhenSkipped": true
+      },
+      "retryPolicy": { "mode": "bounded", "maxAttempts": 2, "backoff": "exponential" },
+      "canvasProjection": { "creates": "none", "note": "质检结论进运行记录，不建画布节点" }
+    },
+
+    {
+      "stepId": "s8_layout",
+      "sIndex": "S8",
+      "type": "fanout",
+      "title": "排版与文字合成",
+      "dependsOn": ["s7_quality"],
+      "vendorCall": false,
+      "outputSchema": "page_layout",
+      "foreach": {
+        "itemsFrom": "s3_panel_plan.pages",
+        "itemKeyTemplate": "page:{pageId}",
+        "itemKeyKind": "page",
+        "perItemOutputSchema": "page_layout",
+        "maxItemsFrom": "s0_brief.limits.maxPages",
+        "hardCap": 200,
+        "maxConcurrency": 2,
+        "joinPolicy": "all_required",
+        "failFast": false,
+        "independentCheckpointPerItem": true
+      },
+      "inputBindings": [
+        {
+          "to": "panelPlan",
+          "from": "s3_panel_plan",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "dialogueTexts",
+          "from": "s2_script.dialogues",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "selectedPanels",
+          "from": "s7_quality",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        }
+      ],
+      "determinism": {
+        "isDeterministic": true,
+        "sameInputsMustProduceSameLayout": true,
+        "layoutCoordinatesAreContentInput": true,
+        "layoutCoordinatesParticipateInFingerprint": true
+      },
+      "retryPolicy": { "mode": "none" },
+      "canvasProjection": { "creates": "none" }
+    },
+
+    {
+      "stepId": "s8_render_pages",
+      "sIndex": "S8",
+      "type": "fanout",
+      "title": "页图渲染",
+      "dependsOn": ["s8_layout"],
+      "vendorCall": true,
+      "budgetClass": "image",
+      "outputSchema": "rendered_page_set",
+      "taskTemplate": "comic-page-compose.v1",
+      "foreach": {
+        "itemsFrom": "s8_layout",
+        "itemKeyTemplate": "page:{pageId}",
+        "itemKeyKind": "page",
+        "perItemOutputSchema": "rendered_page_set",
+        "maxItemsFrom": "s0_brief.limits.maxPages",
+        "hardCap": 200,
+        "maxConcurrency": 2,
+        "joinPolicy": "all_required",
+        "failFast": false,
+        "independentCheckpointPerItem": true
+      },
+      "inputBindings": [
+        {
+          "to": "layout",
+          "from": "s8_layout",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        },
+        {
+          "to": "panelCandidates",
+          "from": "s6_panel_render",
+          "semantics": "generated_artifact",
+          "requiresStructuralValidation": true
+        }
+      ],
+      "retryPolicy": {
+        "mode": "bounded",
+        "maxAttempts": 2,
+        "backoff": "exponential",
+        "sendUnknownPolicy": { "status": "needs_review", "mustNotAutoResubmit": true }
+      },
+      "canvasProjection": {
+        "creates": "one_image_node_per_pageId",
+        "keyedBy": "page:{pageId}",
+        "stableAcrossRetries": true
+      }
+    },
+
+    {
+      "stepId": "g_final",
+      "sIndex": "S8",
+      "type": "gate",
+      "title": "G_final：确认页图与文字效果",
+      "dependsOn": ["s8_render_pages"],
+      "vendorCall": false,
+      "gate": {
+        "artifactBindings": [{ "artifactSchema": "rendered_page_set", "from": "s8_render_pages" }],
+        "approvalPolicy": {
+          "targetKind": "page_render",
+          "allowCandidateSelection": true,
+          "perPageApproval": true,
+          "approvalBindsTo": "assetId + version + contentDigest"
+        },
+        "stalePolicy": {
+          "onUpstreamRevisionChange": "invalidate_this_gate_and_export_only",
+          "preservePanelApprovals": true
+        },
+        "replaySemantics": { "duplicateApprovalIsNoop": true },
+        "waitingBehavior": { "persistThenReleaseWorker": true, "noNewVendorCallsWhileWaiting": true }
+      }
+    },
+
+    {
+      "stepId": "s9_export",
+      "sIndex": "S9",
+      "type": "transform",
+      "title": "成品导出",
+      "dependsOn": ["g_final"],
+      "vendorCall": false,
+      "outputSchema": "comic_export_manifest",
+      "inputBindings": [
+        { "to": "approvedPages", "from": "g_final", "semantics": "approved_artifact" },
+        { "to": "panelPlan", "from": "s3_panel_plan", "semantics": "generated_artifact" }
+      ],
+      "exportPolicy": {
+        "formats": ["png", "zip"],
+        "manifestSchema": "comic_export_manifest",
+        "includesOnlyApprovedVersions": true,
+        "mustNotIncludeSupersededVersions": true,
+        "mustListExcludedPanels": true,
+        "rejectOnIncomplete": true,
+        "issueCodes": ["WF_EXPORT_INCOMPLETE", "WF_EXPORT_VERSION_MISMATCH"]
+      },
+      "retryPolicy": { "mode": "bounded", "maxAttempts": 2, "backoff": "fixed" },
+      "canvasProjection": { "creates": "none" }
+    }
+  ],
+
+  "retryPolicy": {
+    "dimensions": {
+      "technicalRetry": "保留原 itemKey 与 generationRevision，恢复原 Run 或走 Run.retryOf 链（prisma/schema.prisma:370）",
+      "userRegeneration": "提升 generationRevision，即使提示词未变"
+    },
+    "classification": [
+      {
+        "condition": "参数 / 引用 / 权限错误",
+        "action": "block",
+        "requiresNewRevisionAfterFix": true,
+        "issueCodes": ["WF_INPUT_INVALID", "WF_REF_DANGLING", "WF_REF_ASSET_NOT_APPROVED"]
+      },
+      {
+        "condition": "已有结果但归档失败",
+        "action": "recover_existing_result",
+        "mustNotRegenerate": true
+      },
+      {
+        "condition": "发送结果不确定",
+        "action": "needs_review",
+        "mustNotAutoResubmit": true,
+        "mustNotChangeIdempotencyKey": true,
+        "issueCodes": ["WF_STATE_SEND_UNKNOWN"]
+      },
+      {
+        "condition": "输出结构 / 业务校验失败",
+        "action": "bounded_repair_then_fail",
+        "note": "Run 成功不等于步骤成功",
+        "issueCodes": ["WF_SCHEMA_VERSION_UNSUPPORTED", "WF_DUPLICATE_STABLE_ID"]
+      },
+      {
+        "condition": "人工认为画面不合格",
+        "action": "explicit_new_candidate",
+        "mustNotMasqueradeAsNetworkRetry": true
+      },
+      {
+        "condition": "部分子项失败",
+        "action": "keep_succeeded_items_process_failed_only",
+        "fullDeliveryStillBlocked": true,
+        "joinPolicy": "all_required"
+      }
+    ]
+  },
+
+  "budgetPolicy": {
+    "source": "s0_brief.budget",
+    "reservation": "atomic_reserve_before_dispatch",
+    "settlement": "on_terminal",
+    "note": "禁止并发子项读到同一笔剩余额度",
+    "counters": [
+      "textGenerations",
+      "imageGenerations",
+      "visionReviews",
+      "promptOptimizations",
+      "vendorRequests",
+      "regenerationsPerItem",
+      "candidatesPerItem"
+    ],
+    "unknownPrice": {
+      "representation": "amountBudget = null",
+      "mustNotDisplayAsZeroCost": true,
+      "enforcedBy": "maxVendorRequests 等硬上限",
+      "issueCode": "WF_BUDGET_UNKNOWN_PRICE"
+    },
+    "exhaustionBehavior": {
+      "stopNewDispatch": true,
+      "preserveInFlightAndCompleted": true,
+      "issueCode": "WF_BUDGET_EXCEEDED"
+    },
+    "cancellationBehavior": {
+      "stopNewDispatch": true,
+      "preserveProducedResults": true,
+      "mustNotPromiseAllInFlightCancelledOrRefunded": true
+    }
+  },
+
+  "canvasProjectionPolicy": {
+    "mode": "stable_node_per_item",
+    "keyedBy": ["step:{stepId}", "itemKey", "panel:{panelId}", "page:{pageId}"],
+    "stableAcrossRetries": true,
+    "mustNotCreateNodePerAttempt": true,
+    "historyLocation": "run_and_artifact_list",
+    "writePath": {
+      "required": "batch_canvas_command_with_expectedRevision",
+      "mustNotResendWholeStaleDocument": true,
+      "conflictResolution": "remerge_commands_or_require_user_resolution",
+      "reason": "apps/web/src/App.tsx:1877 / :1895 当前在 409 后换 revision 重发旧整图快照，会覆盖后台新建节点",
+      "ref": "apps/api/src/projects.ts:794"
+    },
+    "portCompatibility": {
+      "mustReuse": "isPortConnectionAllowed",
+      "ref": "packages/domain/src/index.ts:1127"
+    },
+    "paidGenerationPath": {
+      "mustGoThroughExistingAcceptance": true,
+      "mustRespectExecutionAuthorization": true,
+      "mustRespectRunSendIntent": true,
+      "mustNotBypassIdempotency": true,
+      "refs": [
+        "packages/execution/src/index.ts:184",
+        "packages/execution/src/index.ts:297",
+        "packages/execution/src/index.ts:737"
+      ]
+    }
+  },
+
+  "exportPolicy": {
+    "formats": ["png", "zip"],
+    "manifestSchema": "comic_export_manifest",
+    "manifestSchemaVersion": 1,
+    "distinctFrom": {
+      "constant": "EXPORT_SCHEMA_VERSION",
+      "value": 1,
+      "ref": "apps/api/src/export.ts:7",
+      "reason": "那是工作流搬运格式版本，语义不同，混用会让回滚互相牵连"
+    },
+    "mustExpressWhichPagesWereApproved": true,
+    "notSufficientForDelivery": [
+      "工作流 JSON",
+      "结果文件列表",
+      "manifest.json",
+      "资产 ZIP"
+    ],
+    "requiredForDelivery": [
+      "稳定 pageId / panelId",
+      "阅读顺序",
+      "格矩形与裁切规则",
+      "对白 / 说话人 / 气泡 / 旁白排版",
+      "最终入选图片版本清单",
+      "只含本次批准版本的 manifest"
+    ]
+  },
+
+  "runtimeReferences": {
+    "existingTopologicalExecution": {
+      "note": "Run 已包含目标节点及其上游依赖闭包；不要重写底层执行器",
+      "refs": [
+        "apps/api/src/runs.ts:182",
+        "apps/worker/src/workflow-dag.ts:30",
+        "apps/worker/src/index.ts:1554",
+        "apps/worker/src/index.ts:1043"
+      ]
+    },
+    "notAnExecutor": {
+      "symbol": "executableNodeIds",
+      "ref": "packages/execution/src/index.ts:75",
+      "note": "只过滤禁用与来源节点并返回授权 ID"
+    },
+    "idempotencyReuse": {
+      "runProjectUnique": "prisma/schema.prisma:382",
+      "runIdempotencyKeyMaxLength": 200,
+      "runIdempotencyKeyMaxLengthRef": "packages/domain/src/index.ts:1651"
+    },
+    "fingerprintReuse": {
+      "note": "可借鉴递归键排序与数组保序实现，但不要改动其授权身份语义",
+      "ref": "packages/domain/src/index.ts:1537"
+    },
+    "externalRunIdMapping": {
+      "note": "外部 Run ID 与数据库 UUID 不总相同",
+      "ref": "packages/execution/src/index.ts:68"
+    },
+    "promptSkillRole": {
+      "note": "PromptSkill 是提示词优化器，不是内容生成器；不得当作步骤执行器",
+      "refs": [
+        "packages/domain/src/prompt-skills.ts:62",
+        "packages/domain/src/prompt-skills.ts:532"
+      ]
+    },
+    "videoRecreationIsSeparateTemplate": {
+      "note": "短视频复刻保留为另一份模板，复用其来源追溯与版本绑定机制",
+      "ref": "packages/domain/src/video-recreation.ts:169"
+    }
+  }
+}
