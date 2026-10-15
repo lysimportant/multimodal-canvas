@@ -72,11 +72,12 @@ describe('CanvasEdgeEffectOverlay', () => {
   it.each([
     [0, 0],
     [-10, 0],
-    [40, 0.275],
-    [100, 0.6875],
+    [10, 0.5],
+    [40, 1],
+    [100, 1],
     [1000, 1],
     [10000, 1],
-  ])('路径长 %s 时尾迹缩放为 %s，最长保持 32 个画布单位', (length, ratio) => {
+  ])('路径长 %s 时尾迹缩放为 %s，最长保持 20 个画布单位', (length, ratio) => {
     const measure = mockPathLength(length);
     const { container } = render(
       <svg>
@@ -121,7 +122,7 @@ describe('CanvasEdgeEffectOverlay', () => {
     expect(
       container.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
     ).toBe('path("M 100,0 L 0,0")');
-    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale')).toBe('0.6875');
+    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale')).toBe('1');
   });
 
   it('没有 SVG 布局接口时仍可渲染光束并使用 CSS 默认短尾', () => {

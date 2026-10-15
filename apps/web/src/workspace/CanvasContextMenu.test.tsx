@@ -91,6 +91,38 @@ describe('CanvasContextMenu', () => {
     expect(onStopNode).toHaveBeenCalledOnce();
   });
 
+  it('上游已受理的视频任务只显示禁用的运行中状态，不再提供停止入口', () => {
+    const asset = node({
+      mediaType: 'video',
+      runStatus: 'running',
+      upstreamTaskId: 'platform-original',
+    });
+    const onStopNode = vi.fn();
+    const runControlStore = createNodeRunControlStore();
+    runControlStore.set(asset.id, { stoppable: false, stopRequested: false });
+    render(
+      <CanvasContextMenu
+        {...props({
+          target: {
+            kind: 'node',
+            node: asset,
+            clientPosition: { x: 40, y: 80 },
+            returnFocusTo: null,
+          },
+          onStopNode,
+          runControlStore,
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole('menuitem', { name: '停止生成' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '运行中' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(onStopNode).not.toHaveBeenCalled();
+  });
+
   it('整行悬停显示功能简述，移开后关闭且不触发动作', async () => {
     const user = userEvent.setup();
     const inputs = props();
@@ -240,6 +272,10 @@ describe('CanvasContextMenu', () => {
       const user = userEvent.setup();
       const asset = node({ runStatus });
       const runControlStore = createNodeRunControlStore();
+      runControlStore.set(asset.id, {
+        stoppable: true,
+        stopRequested: runStatus === 'cancel_requested',
+      });
       const onStopNode = vi.fn((nodeId: string) => {
         runControlStore.set(nodeId, { stoppable: true, stopRequested: true });
       });

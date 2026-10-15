@@ -7,7 +7,7 @@ import { createCredentialEncryptionKeyringFromEnvironment } from '@multimodal-ca
 import { NewApiAccountClient } from './newapi-account-client';
 import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings } from './newapi-account-settings';
-import { AuthService } from './auth-service';
+import { AuthService, PERSISTENT_SESSION_TTL_SECONDS } from './auth-service';
 import type { NewApiVideoContract } from '@multimodal-canvas/providers';
 import { FileSystemBlobStore, MemoryAssetStore, PrismaAssetStore, S3BlobStore } from './assets';
 import { FileProjectStore, PrismaProjectStore } from './projects';
@@ -49,7 +49,7 @@ const authStore = new PrismaAuthStore(prisma);
 const authService = new AuthService({
   store: authStore,
   jwtSecret: process.env.API_JWT_SECRET,
-  maxSessionTtlSeconds: 30 * 86400,
+  maxSessionTtlSeconds: PERSISTENT_SESSION_TTL_SECONDS,
 });
 const newApiAccount = new NewApiAccountService({
   prisma,

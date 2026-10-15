@@ -280,7 +280,12 @@ describe('独立 Skill 提示词优化 API', () => {
       instruction:
         'Refine the supplied novel writing prompt while preserving all explicit constraints.',
     });
-    const payload = { ...ctx.payload, skillId: skill.id, skillVersion: skill.version };
+    const payload = {
+      ...ctx.payload,
+      skillId: skill.id,
+      skillVersion: skill.version,
+      guidance: '保留节奏感，同时让输出更适合短篇小说',
+    };
     const first = await ctx.app.inject({
       method: 'POST',
       url: ctx.url,
@@ -296,7 +301,16 @@ describe('独立 Skill 提示词优化 API', () => {
       skillId: skill.id,
       skillVersion: skill.version,
       instruction: skill.instruction,
+      guidance: payload.guidance,
     });
+    const changedGuidance = await ctx.app.inject({
+      method: 'POST',
+      url: ctx.url,
+      payload: { ...payload, guidance: '换一个优化方向' },
+      headers: ctx.headers,
+    });
+    expect(changedGuidance.statusCode).toBe(409);
+    expect(changedGuidance.json().code).toBe('idempotency_conflict');
     const updated = await ctx.promptSkillStore.update(ownerId, skill.id, {
       revision: skill.revision!,
       instruction: 'Refine a chapter outline.',

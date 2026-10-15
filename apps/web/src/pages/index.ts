@@ -1,6 +1,7 @@
 export { ContactPage, type ContactPageProps } from './ContactPage';
 export { HomePage, type HomePageProps } from './HomePage';
 export { NotFoundPage } from './NotFoundPage';
+export { OperationLogPage } from './OperationLogPage';
 export { PageFrame, type PageFrameProps } from './PageFrame';
 export { ProjectCanvasPage, type ProjectCanvasPageProps } from './ProjectCanvasPage';
 export { SettingsPage, type SettingsPageProps } from './SettingsPage';

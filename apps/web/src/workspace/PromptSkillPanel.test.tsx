@@ -413,7 +413,7 @@ describe('PromptSkillPanel', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('优化按钮禁用后点击浮卡预览，配置和可编辑结果仍在同一浮卡', async () => {
+  it('生成预览后仍可再次优化，配置和可编辑结果仍在同一浮卡', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(result()));
     render(<PromptSkillPanel {...props()} />);
@@ -421,12 +421,59 @@ describe('PromptSkillPanel', () => {
     await user.click(within(settings).getByRole('button', { name: '优化提示词' }));
     const preview = await within(settings).findByRole('textbox', { name: '优化文字 1' });
     await user.click(preview);
-    expect(within(settings).getByRole('button', { name: '优化提示词' })).toBeDisabled();
+    expect(within(settings).getByRole('button', { name: '再次优化提示词' })).toBeEnabled();
     expect(screen.getByRole('group', { name: 'Skill 配置' })).toBeVisible();
     expect(within(settings).getByRole('group', { name: '优化预览' })).toBeVisible();
     expect(within(settings).getByRole('textbox', { name: '优化文字 1' })).toHaveValue(
       '优化后的角色 ',
     );
+  });
+
+  it('把 Skill 优化方向加入本次请求，并允许同一节点连续创建新任务', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
+    vi.stubGlobal('fetch', fetcher);
+    render(<PromptSkillPanel {...props()} />);
+    const settings = await openSkillSettings(user);
+    await user.type(
+      within(settings).getByRole('textbox', { name: 'Skill 优化方向' }),
+      '突出电影感，并保留原有角色约束',
+    );
+    await user.click(within(settings).getByRole('button', { name: '优化提示词' }));
+    await within(settings).findByRole('button', { name: '再次优化提示词' });
+    const firstBody = JSON.parse(String(fetcher.mock.calls[0]![1]?.body));
+    expect(firstBody.guidance).toBe('突出电影感，并保留原有角色约束');
+    const firstKey = firstBody.idempotencyKey;
+
+    await user.click(within(settings).getByRole('button', { name: '再次优化提示词' }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1]![1]?.body));
+    expect(secondBody.guidance).toBe(firstBody.guidance);
+    expect(secondBody.idempotencyKey).not.toBe(firstKey);
+  });
+
+  it('优化方向改变后使旧预览失效，再次优化采用新的方向和幂等键', async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(result());
+    vi.stubGlobal('fetch', fetcher);
+    render(<PromptSkillPanel {...props()} />);
+    const settings = await openSkillSettings(user);
+    const guidanceField = within(settings).getByRole('textbox', { name: 'Skill 优化方向' });
+    await user.type(guidanceField, '强调电影光影');
+    await user.click(within(settings).getByRole('button', { name: '优化提示词' }));
+    await within(settings).findByRole('button', { name: '再次优化提示词' });
+    const firstKey = JSON.parse(String(fetcher.mock.calls[0]![1]?.body)).idempotencyKey;
+
+    await user.clear(guidanceField);
+    await user.type(guidanceField, '强调轻松明快的色彩');
+    expect(within(settings).getByRole('button', { name: '应用' })).toBeDisabled();
+    expect(within(settings).getByRole('status')).toHaveTextContent('无法应用此预览');
+    await user.click(within(settings).getByRole('button', { name: '再次优化提示词' }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(String(fetcher.mock.calls[1]![1]?.body))).toMatchObject({
+      guidance: '强调轻松明快的色彩',
+    });
+    expect(JSON.parse(String(fetcher.mock.calls[1]![1]?.body)).idempotencyKey).not.toBe(firstKey);
   });
 
   it('节点直写模式把完整结果回填并只允许撤销最近一次回填', async () => {

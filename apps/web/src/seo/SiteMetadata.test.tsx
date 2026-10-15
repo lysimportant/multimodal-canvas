@@ -66,6 +66,7 @@ describe('LoveTV 搜索元数据', () => {
   it.each([
     '/workspace',
     '/settings',
+    '/logs',
     '/projects/private-project',
     '/admin',
     '/resources',

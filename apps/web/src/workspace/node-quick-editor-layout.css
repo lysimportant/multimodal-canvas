@@ -95,13 +95,19 @@
   }
 }
 
-.ant-modal-wrap.ant-modal-centered:has(> .node-quick-editor-recreation-dialog) {
+.ant-modal-wrap.ant-modal-centered:has(.node-quick-editor-dialog) {
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.ant-modal-wrap.ant-modal-centered:has(> .node-quick-editor-recreation-dialog)::before {
+/* Modal 中还有一层 ui-dialog-content；三类编辑窗口的滚动都留在窗口内部。 */
+.ant-modal-wrap.ant-modal-centered:has(.node-quick-editor-dialog) {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.ant-modal-wrap.ant-modal-centered:has(.node-quick-editor-dialog)::before {
   display: none;
 }
 
@@ -249,16 +255,6 @@
   width: min(960px, calc(100vw - 40px));
   max-height: calc(100dvh - 40px);
   overflow: hidden;
-}
-
-.ant-modal-wrap.ant-modal-centered:has(> .node-quick-editor-prompt-dialog) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.ant-modal-wrap.ant-modal-centered:has(> .node-quick-editor-prompt-dialog)::before {
-  display: none;
 }
 
 .node-quick-editor-prompt-dialog-body {

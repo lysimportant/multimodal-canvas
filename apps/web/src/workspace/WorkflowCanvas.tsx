@@ -295,6 +295,8 @@ export type WorkflowCanvasProps = {
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
   onRunNode: (node: AssetFlowNode, target?: NodeRunTarget) => void;
+  /** 带入口标记的生成回调；缺省时保持旧的 onRunNode 参数契约。 */
+  onRunNodeWithTrigger?: (node: AssetFlowNode, target?: NodeRunTarget, trigger?: string) => void;
   onStopNode?: NodeStopHandler;
   /** App owns graph history and persistence, so deletion is handed back to it. */
   onDeleteNode?: (nodeId: string) => void;
@@ -425,6 +427,7 @@ export function WorkflowCanvas({
   onModelChange,
   onInferenceStrengthChange,
   onRunNode,
+  onRunNodeWithTrigger,
   onStopNode,
   onDeleteNode,
   nodeContentHandlers,
@@ -467,6 +470,14 @@ export function WorkflowCanvas({
   canRedo,
   onOpenProjectHub,
 }: WorkflowCanvasProps) {
+  const runNodeWithTrigger = useCallback(
+    (node: AssetFlowNode, target?: NodeRunTarget, trigger?: string) => {
+      if (onRunNodeWithTrigger) onRunNodeWithTrigger(node, target, trigger);
+      else if (target === undefined) onRunNode(node);
+      else onRunNode(node, target);
+    },
+    [onRunNode, onRunNodeWithTrigger],
+  );
   useCanvasPageZoomLock();
   const { screenToFlowPosition, getNodesBounds, getZoom, setCenter, fitView } = useReactFlow();
   const flowStore = useStoreApi();
@@ -655,6 +666,15 @@ export function WorkflowCanvas({
   const batchProjection = useMemo(
     () => projectBatches(nodes, dragDisplayEdges),
     [nodes, dragDisplayEdges, projectBatches],
+  );
+  /** 选区签名在拖动或其他节点更新时保持稳定，避免向所有边广播无关变化。 */
+  const selectedNodeIdsSignature = JSON.stringify(
+    batchProjection.nodes.filter((node) => node.selected && !node.hidden).map((node) => node.id),
+  );
+  /** 选中节点的集合只用于边的视觉强调，不写回持久化边数据。 */
+  const selectedNodeIds = useMemo(
+    () => new Set(JSON.parse(selectedNodeIdsSignature) as string[]),
+    [selectedNodeIdsSignature],
   );
   /** 事件读取最近提交的节点和回调，位置变化不向所有节点广播选择上下文。 */
   const nodeActionsRef = useRef({
@@ -1455,14 +1475,14 @@ export function WorkflowCanvas({
           const current = nodeActionsRef.current.nodes.find(
             (candidate) => candidate.id === editorNode.id,
           );
-          if (current) onRunNode(current, 'sameNode');
+          if (current) runNodeWithTrigger(current, 'sameNode', 'quick-editor');
         }}
         onStop={onStopNode ? () => onStopNode(editorNode.id) : undefined}
         onRunNewNode={() => {
           const current = nodeActionsRef.current.nodes.find(
             (candidate) => candidate.id === editorNode.id,
           );
-          if (current) onRunNode(current, 'newNode');
+          if (current) runNodeWithTrigger(current, 'newNode', 'quick-editor-new-node');
         }}
       />
     );
@@ -1502,7 +1522,7 @@ export function WorkflowCanvas({
     onVideoModeChange,
     onModelChange,
     onInferenceStrengthChange,
-    onRunNode,
+    runNodeWithTrigger,
     onStopNode,
     handleCenterNode,
   ]);
@@ -1606,7 +1626,10 @@ export function WorkflowCanvas({
                                         value={nodes.length >= LARGE_CANVAS_NODE_COUNT}
                                       >
                                         <GenerationBatchViewContext.Provider value={batchContext}>
-                                          <CanvasEdgeAppearanceProvider appearance={edgeAppearance}>
+                                          <CanvasEdgeAppearanceProvider
+                                            appearance={edgeAppearance}
+                                            selectedNodeIds={selectedNodeIds}
+                                          >
                                             {/* 组背景接受空白拖动，标题和外框在节点之上，正文仍保留节点与端口交互。 */}
                                             <ViewportGroupLayer
                                               groups={groups}
@@ -1770,7 +1793,7 @@ export function WorkflowCanvas({
           target={currentContextMenu}
           busy={currentContextMenu.kind === 'node' && isNodeBusy(currentContextMenu.node)}
           canDeleteNode={Boolean(onDeleteNode)}
-          onRunNode={onRunNode}
+          onRunNode={(node, target) => runNodeWithTrigger(node, target, 'context-menu')}
           onStopNode={onStopNode}
           runControlStore={nodeRunControlStore}
           onCenterNode={handleCenterNode}

@@ -276,7 +276,7 @@ describe('NodeQuickEditor', () => {
       expect(stop).toBeEnabled();
       expect(stop).toHaveAttribute(
         'title',
-        '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款',
+        '仅在请求尚未发送到上游时停止；已受理的视频会继续等待终态',
       );
       await user.click(stop);
       expect(onStop).toHaveBeenCalledOnce();

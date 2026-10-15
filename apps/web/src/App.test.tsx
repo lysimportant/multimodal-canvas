@@ -60,6 +60,7 @@ vi.mock('./workspace/ResourcePanel', () => ({
 import { App } from './App';
 import * as auth from './auth-client';
 import * as exports from './export-utils';
+import { readOperationLogs } from './operation-log';
 import {
   RESOURCE_PANEL_DRAWER_VERSION_KEY,
   useWorkspacePreferences,
@@ -174,19 +175,25 @@ function runRecord(overrides: Partial<RunRecord>): RunRecord {
     ...overrides,
   };
 }
-/** 保持视频 Run 的目标节点与冻结快照一致。 */
-function videoRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
-  return runRecord({
-    id: 'run-video-failed',
-    targetNodeId: 'video-node',
-    modelAlias: 'video-old',
-    snapshot: {
-      ...imageRunSnapshot(1, 'video-old'),
+type PublicRunRecord = RunRecord & { platformJobId?: string };
+
+/** 保持视频 Run 的目标节点与冻结快照一致，并允许模拟公开的上游任务 ID。 */
+function videoRunRecord(overrides: Partial<PublicRunRecord> = {}): PublicRunRecord {
+  const { platformJobId, ...runOverrides } = overrides;
+  return {
+    ...runRecord({
+      id: 'run-video-failed',
       targetNodeId: 'video-node',
-      nodes: [videoNode('video-node', 'video-old')],
-    },
-    ...overrides,
-  });
+      modelAlias: 'video-old',
+      snapshot: {
+        ...imageRunSnapshot(1, 'video-old'),
+        targetNodeId: 'video-node',
+        nodes: [videoNode('video-node', 'video-old')],
+      },
+      ...runOverrides,
+    }),
+    ...(platformJobId ? { platformJobId } : {}),
+  };
 }
 /** 返回 JSON 响应并保留 HTTP 状态，供 App 的真实错误处理消费。 */
 function json(body: unknown, status = 200) {
@@ -764,6 +771,16 @@ describe('App 组件库迁移', () => {
       stoppable: true,
     });
     await waitFor(() => expect(pending.posts).toEqual(['a']));
+    const entries = readOperationLogs(session.user.id);
+    const attempts = entries.filter(
+      (entry) => entry.action === '用户触发生成' && entry.nodeId === 'a',
+    );
+    const requests = entries.filter(
+      (entry) => entry.action === '请求已发出' && entry.path === '/v1/nodes/a/runs',
+    );
+    expect(attempts).toHaveLength(3);
+    expect(requests).toHaveLength(1);
+    expect(attempts.some((entry) => entry.operationId === requests[0]?.operationId)).toBe(true);
     expect(view.canvas!.busyNodeIds).toEqual(new Set(['a']));
     expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();
     await userEvent.click(screen.getByRole('button', { name: '打开命令面板' }));
@@ -1061,7 +1078,7 @@ describe('App 组件库迁移', () => {
     });
     await act(async () => create.resolve(json({ run: createdRun }, 202)));
 
-    await screen.findByText(/合成取消失败；可重试停止/);
+    await screen.findByText('合成取消失败');
     expect(cancelCalls).toBe(1);
     expect(posts).toHaveLength(1);
     expect(view.canvas!.nodeRunControlStore?.getSnapshot('a').stopRequested).toBe(false);
@@ -1653,7 +1670,7 @@ describe('App 组件库迁移', () => {
 
   it('失败视频节点只通过原 Run 获取资源，轮询期间同节点不重复请求或创建新运行', async () => {
     canvas = { revision: 1, nodes: [videoNode('video-node', 'video-new')], edges: [] };
-    const previousRun = videoRunRecord();
+    const previousRun = videoRunRecord({ platformJobId: 'platform-original' });
     projectRuns = [previousRun];
     const recover = pendingResponse();
     const poll = pendingResponse();
@@ -1755,14 +1772,14 @@ describe('App 组件库迁移', () => {
     await renderCanvas(node.data.mediaType === 'image' ? 1 : 0);
     await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe(run.status));
     await expect(view.canvas!.onRecoverNode!(node.id)).rejects.toThrow(
-      '仅失败的视频任务可获取原资源',
+      '仅有上游任务 ID 的失败视频可查询原资源',
     );
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/recover'))).toBe(false);
   });
 
   it('轮询响应来自其他 Run 时不覆盖节点结果', async () => {
     canvas = { revision: 1, nodes: [videoNode('video-node', 'video-new')], edges: [] };
-    const previousRun = videoRunRecord();
+    const previousRun = videoRunRecord({ platformJobId: 'platform-original' });
     projectRuns = [previousRun];
     const poll = pendingResponse();
     const originalApi = fetchMock.getMockImplementation()!;

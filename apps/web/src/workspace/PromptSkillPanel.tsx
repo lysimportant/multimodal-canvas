@@ -150,6 +150,8 @@ function PromptSkillPanelSession({
   const selectId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [modelKey, setModelKey] = useState('default');
+  /** 本次优化的额外方向；只进入当前请求，不修改已保存的 Skill。 */
+  const [guidance, setGuidance] = useState('');
   const [pending, setPending] = useState<PendingPromptOptimization>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -204,7 +206,14 @@ function PromptSkillPanelSession({
     ((!skillsLoading && (!skillAvailable || pending.request.skillVersion !== skill?.version)) ||
       !inputDocument.success ||
       requestBaseline(pending.request) !==
-        JSON.stringify([projectId, nodeId, mediaType, skillId, inputDocument.data]));
+        JSON.stringify([
+          projectId,
+          nodeId,
+          mediaType,
+          skillId,
+          guidance.trim() || undefined,
+          inputDocument.data,
+        ]));
   let draftIssue: string | undefined;
   if (draft && pending) {
     try {
@@ -333,6 +342,7 @@ function PromptSkillPanelSession({
         throw new Error('待确认优化记录与当前节点不一致');
       pendingRef.current = saved;
       setPending(saved);
+      setGuidance(saved?.request.guidance ?? '');
       if (saved?.runId && saved.result?.status !== 'succeeded') void execute(saved);
     } catch (cause) {
       setStorageBlocked(true);
@@ -360,10 +370,12 @@ function PromptSkillPanelSession({
       return;
     try {
       const saved = pendingRef.current ?? readPendingPromptOptimization(storageKey);
-      if (saved) {
+      if (saved && !saved.draft) {
         void execute(saved);
         return;
       }
+      // 成功预览只是一次结果；点击再次优化时释放旧结果，创建新的幂等身份。
+      if (saved?.draft) release(saved);
       const modelIdentity = modelKey === 'default' ? undefined : (JSON.parse(modelKey) as unknown);
       if (
         modelIdentity !== undefined &&
@@ -379,6 +391,7 @@ function PromptSkillPanelSession({
         mediaType,
         skillId: skill.id,
         skillVersion: skill.version,
+        ...(guidance.trim() ? { guidance: guidance.trim() } : {}),
         promptDocument: inputDocument.data,
         idempotencyKey: crypto.randomUUID(),
         ...(chosenModel
@@ -654,6 +667,20 @@ function PromptSkillPanelSession({
           )}
         </div>
       )}
+      {!isAuthoring && (
+        <label className="prompt-skill-guidance">
+          <span>优化方向</span>
+          <Textarea
+            aria-label="Skill 优化方向"
+            value={guidance}
+            rows={3}
+            maxLength={4_000}
+            placeholder="补充这次优化想强调的风格、受众或约束（可选）"
+            disabled={disabled || busy}
+            onChange={(event) => setGuidance(event.target.value)}
+          />
+        </label>
+      )}
       {(textModels.length > 0 || isAuthoring) && (
         <label className="prompt-skill-select">
           <span>优化模型</span>
@@ -675,7 +702,7 @@ function PromptSkillPanelSession({
               })),
             ]}
             onChange={setModelKey}
-            disabled={disabled || busy || !!pending}
+            disabled={disabled || busy || Boolean(pending && !draft)}
             virtual={false}
             styles={{ popup: { root: { pointerEvents: 'auto' } } }}
             placement="topLeft"
@@ -694,7 +721,7 @@ function PromptSkillPanelSession({
           disabled ||
           skillsLoading ||
           busy ||
-          !!pending ||
+          Boolean(pending && !draft) ||
           storageBlocked ||
           !projectId ||
           !skillAvailable ||
@@ -707,7 +734,17 @@ function PromptSkillPanelSession({
         ) : (
           <WandSparkles size={14} aria-hidden="true" />
         )}
-        {busy ? (isAuthoring ? '升级中' : '优化中') : isAuthoring ? '生成升级预览' : '优化提示词'}
+        {busy
+          ? isAuthoring
+            ? '升级中'
+            : '优化中'
+          : isAuthoring
+            ? draft
+              ? '再次生成升级预览'
+              : '生成升级预览'
+            : draft
+              ? '再次优化提示词'
+              : '优化提示词'}
       </Button>
       {canUndoAppliedPrompt && lastApplied && onUndo && (
         <Button
@@ -867,6 +904,7 @@ function requestBaseline(request: PromptOptimizationRequest): string {
     request.nodeId,
     request.mediaType,
     request.skillId,
+    request.guidance?.trim() || undefined,
     request.promptDocument,
   ]);
 }

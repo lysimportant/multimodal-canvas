@@ -1,6 +1,6 @@
 import { createContext, useSyncExternalStore } from 'react';
 
-/** 节点生成入口的本地停止状态；不代表 Provider 已终止或退款。 */
+/** 节点生成入口的本地停止状态；上游视频受理后不再开放停止。 */
 export type NodeRunControlState = {
   /** 当前节点有关联的创建窗口或已知活动 Run，可发起停止。 */
   stoppable: boolean;

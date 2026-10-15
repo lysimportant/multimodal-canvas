@@ -1,4 +1,5 @@
-export type VideoRefundReason = 'user_cancelled' | 'task_not_found' | 'task_failed';
+/** 只有上游明确失败后才允许请求退款；用户取消不能终止已受理的视频任务。 */
+export type VideoRefundReason = 'task_not_found' | 'task_failed';
 export type VideoRefundStatus = 'refunded' | 'pending' | 'not_charged';
 
 /** Call the gateway's task-scoped cancellation/refund bridge with the original credential. */

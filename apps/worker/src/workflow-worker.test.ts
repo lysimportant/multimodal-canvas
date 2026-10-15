@@ -1279,8 +1279,8 @@ describe('worker workflow DAG execution', () => {
     'wrong-contract',
     'refresh-fails',
     'still-expired',
-    'cancelled',
-    'cancelled-during-refresh',
+    'cancel-requested',
+    'cancel-requested-during-refresh',
   ] as const)('视频只读刷新 %s 时明确失败，不扩大为重新生成', async (failure) => {
     bullmqState.jobs.clear();
     const runId = '123e4567-e89b-42d3-a456-426614174214';
@@ -1296,7 +1296,7 @@ describe('worker workflow DAG execution', () => {
     let job: StubJob;
     const execute = vi.fn(async (request: WorkerProviderRequest) => {
       if (!request.resumeOnly) creations++;
-      if (request.resumeOnly && failure === 'cancelled-during-refresh')
+      if (request.resumeOnly && failure === 'cancel-requested-during-refresh')
         job.data.cancelRequested = true;
       if (request.resumeOnly && failure === 'refresh-fails')
         throw new Error('synthetic poll unavailable');
@@ -1334,7 +1334,7 @@ describe('worker workflow DAG execution', () => {
       archives++;
       if (failure === 'storage-error') throw new Error('synthetic storage failure');
       if (failure === 'unsafe-url') throw new Error('provider URL host must be public');
-      if (failure === 'cancelled') job.data.cancelRequested = true;
+      if (failure === 'cancel-requested') job.data.cancelRequested = true;
       throw new ResultUrlUnavailableError(403);
     });
     const options: Parameters<typeof createRunWorker>[0] = {
@@ -1359,9 +1359,7 @@ describe('worker workflow DAG execution', () => {
       frozen.executionBindings![frozen.targetNodeId]!.contract = 'unconfirmed-contract';
     }
     createRunWorker(options);
-    if (failure === 'cancelled' || failure === 'cancelled-during-refresh')
-      await expect(bullmqState.processor?.(job)).resolves.toMatchObject({ status: 'cancelled' });
-    else await expect(bullmqState.processor?.(job)).rejects.toThrow();
+    await expect(bullmqState.processor?.(job)).rejects.toThrow();
     expect(creations).toBe(1);
     const refresh = [
       'wrong-id',
@@ -1369,10 +1367,15 @@ describe('worker workflow DAG execution', () => {
       'wrong-contract',
       'refresh-fails',
       'still-expired',
-      'cancelled-during-refresh',
+      'cancel-requested',
+      'cancel-requested-during-refresh',
     ].includes(failure);
     expect(execute).toHaveBeenCalledTimes(refresh ? 2 : 1);
-    expect(archives).toBe(failure === 'still-expired' ? 2 : 1);
+    expect(archives).toBe(
+      ['still-expired', 'cancel-requested', 'cancel-requested-during-refresh'].includes(failure)
+        ? 2
+        : 1,
+    );
     expect(staging.values.size).toBe(1);
   });
 

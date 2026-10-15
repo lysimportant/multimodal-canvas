@@ -1787,6 +1787,11 @@ export const openApiDocument = {
                     description:
                       '选择时的版本；新任务不匹配则返回 409/PROMPT_SKILL_VERSION_CONFLICT，已有任务不匹配返回 409/idempotency_conflict。省略时使用提交时的版本。',
                   },
+                  guidance: {
+                    type: 'string',
+                    maxLength: 4_000,
+                    description: '仅作用于本次优化的额外方向，不会修改已保存的 Skill 定义。',
+                  },
                   mediaType: mediaTypeSchema,
                   promptDocument: { $ref: '#/components/schemas/PromptDocument' },
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },

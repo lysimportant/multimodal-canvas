@@ -592,7 +592,7 @@ describe('Worker 中性执行授权', () => {
 
       await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'succeeded' });
 
-      expect(isCancellationRequested).toHaveBeenCalledWith(f.job.id, true);
+      expect(isCancellationRequested).not.toHaveBeenCalled();
       expect(execution.beginSend).toHaveBeenCalledWith(
         expect.objectContaining({ resumePlatformJobId: 'accepted-platform-task' }),
       );
@@ -613,7 +613,7 @@ describe('Worker 中性执行授权', () => {
     },
   );
 
-  it.each(['user_cancelled', 'task_not_found', 'task_failed'] as const)(
+  it.each(['task_not_found', 'task_failed'] as const)(
     '视频 %s 标记失败并按原平台身份退款，终态失败不重复生成',
     async (reason) => {
       const providerJob: ProviderJob = {
@@ -638,22 +638,15 @@ describe('Worker 中性执行授权', () => {
         ),
       );
       vi.stubGlobal('fetch', refundFetch);
-      if (reason === 'user_cancelled') f.job.data.cancelRequested = true;
-      else
-        f.execute.mockRejectedValue(
-          new NewApiProviderError('合成视频失败', {
-            code: reason === 'task_not_found' ? 'VIDEO_TASK_NOT_FOUND' : 'VIDEO_GENERATION_FAILED',
-            platformJobId: providerJob.platformJobId,
-            retryable: false,
-          }),
-        );
+      f.execute.mockRejectedValue(
+        new NewApiProviderError('合成视频失败', {
+          code: reason === 'task_not_found' ? 'VIDEO_TASK_NOT_FOUND' : 'VIDEO_GENERATION_FAILED',
+          platformJobId: providerJob.platformJobId,
+          retryable: false,
+        }),
+      );
       createRunWorker({ ...f.options, execution: singleSendAuthorization().execution });
-      if (reason === 'user_cancelled')
-        await expect(queueState.processor?.(f.job)).resolves.toMatchObject({
-          status: 'failed',
-          error: expect.stringContaining('NewAPI 费用已退还'),
-        });
-      else await expect(queueState.processor?.(f.job)).rejects.toBeInstanceOf(UnrecoverableError);
+      await expect(queueState.processor?.(f.job)).rejects.toBeInstanceOf(UnrecoverableError);
       expect(refundFetch).toHaveBeenCalledOnce();
       expect(refundFetch).toHaveBeenCalledWith(
         'https://provider.example/v1/canvas/tasks/accepted-platform-task/cancel',
@@ -671,21 +664,38 @@ describe('Worker 中性执行授权', () => {
     },
   );
 
-  it('视频创建中取消保留迟到的平台 ID 并退款，禁止后续查询与归档', async () => {
+  it('视频创建开始后忽略迟到取消，继续查询并归档结果且不退款', async () => {
     const f = fixture(snapshot('video', true));
     let resolveCreate!: (response: Response) => void;
     let creationSent!: () => void;
     const sent = new Promise<void>((resolve) => {
       creationSent = resolve;
     });
-    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      const requestUrl = String(url);
       if (init?.method === 'POST') {
         creationSent();
         return new Promise<Response>((resolve) => {
           resolveCreate = resolve;
         });
       }
-      throw new Error('取消后不允许查询');
+      if (requestUrl.endsWith('/video/generations/late-platform-task')) {
+        return new Response(
+          JSON.stringify({
+            task_id: 'late-platform-task',
+            status: 'completed',
+            url: 'https://provider.example/result.mp4',
+            format: 'mp4',
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (requestUrl.endsWith('/result.mp4')) {
+        return new Response(new Uint8Array([0, 1, 2, 3]), {
+          headers: { 'content-type': 'video/mp4' },
+        });
+      }
+      throw new Error(`unexpected request: ${requestUrl}`);
     });
     f.options.videoProvider = new NewApiVideoProvider({
       baseUrl: 'https://provider.example/v1',
@@ -725,13 +735,12 @@ describe('Worker 中性执行授权', () => {
       }),
     );
     await expect(processing).resolves.toMatchObject({
-      status: 'failed',
-      error: expect.stringContaining('费用已退还'),
-      providerJob: { platformJobId: 'late-platform-task', payload: { refundStatus: 'refunded' } },
+      status: 'succeeded',
+      providerJob: { platformJobId: 'late-platform-task', status: 'succeeded' },
     });
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(refundFetch).toHaveBeenCalledOnce();
-    expect(archive).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(refundFetch).not.toHaveBeenCalled();
+    expect(archive).toHaveBeenCalledOnce();
   });
 
   it('已处理退款的视频只读恢复不能复活，零 Provider 调用', async () => {
@@ -784,11 +793,7 @@ describe('Worker 中性执行授权', () => {
     f.options.persistence!.isCancellationRequested = isCancellationRequested;
     createRunWorker({ ...f.options, execution: singleSendAuthorization().execution });
 
-    await expect(queueState.processor?.(f.job)).resolves.toMatchObject({
-      status: 'failed',
-      error: expect.stringContaining('未产生 NewAPI 费用'),
-      providerJob: { payload: { refundStatus: 'not_charged' } },
-    });
+    await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'cancelled' });
 
     expect(isCancellationRequested).toHaveBeenCalledWith(f.job.id, retrieveOnly);
     expect(f.execute).not.toHaveBeenCalled();

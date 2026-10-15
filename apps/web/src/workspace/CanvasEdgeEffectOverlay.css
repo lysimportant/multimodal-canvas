@@ -1,4 +1,6 @@
 .canvas-edge-effect-shooting-star {
+  /* The SVG trail geometry is 20 units long; the runtime scale keeps it
+     proportional on very short edges while preserving a compact streak. */
   --canvas-edge-star-tail-scale: 0.5;
   color: var(--canvas-edge-flow-color, var(--mc-accent-strong));
   pointer-events: none;
@@ -7,7 +9,8 @@
 .canvas-edge-shooting-star-fallback {
   fill: none;
   stroke: currentColor;
-  stroke-dasharray: 0 2;
+  /* `pathLength=1` makes the fallback a compact 20% streak instead of a dot. */
+  stroke-dasharray: 0.2 0.8;
   stroke-dashoffset: -0.5;
   stroke-linecap: round;
   stroke-width: 6;

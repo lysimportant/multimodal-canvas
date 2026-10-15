@@ -10,7 +10,7 @@ import './CanvasEdgeEffectOverlay.css';
  * @param props.path 从源节点到目标节点的 SVG 路径。
  * @returns 不参与命中的光束；减少动态效果时停在中点，不支持运动路径时显示静态亮点。
  */
-function ShootingStarEdgeEffect({ path }: { path: string }) {
+function ShootingStarEdgeEffect({ path, emphasized }: { path: string; emphasized: boolean }) {
   const gradientId = useId();
   const overlayRef = useRef<SVGGElement>(null);
   const pathRef = useRef<SVGPathElement>(null);
@@ -19,9 +19,9 @@ function ShootingStarEdgeEffect({ path }: { path: string }) {
     /** 仅几何变化时测长，同帧更新合并；缩放与动画进度不触发测量。 */
     const frame = requestAnimationFrame(() => {
       const length = pathRef.current?.getTotalLength?.();
-      // 无几何接口时保留 16 单位短尾；正常路径最长 32 单位且不超过路径的 22%。
+      // 无几何接口时保留 10 单位短尾；正常路径使用 20 单位流光，短路径按自身长度缩放。
       if (length === undefined || !Number.isFinite(length)) return;
-      const tailScale = Math.min(1, (Math.max(0, length) * 0.22) / 32);
+      const tailScale = Math.min(1, Math.max(0, length) / 20);
       overlayRef.current?.style.setProperty('--canvas-edge-star-tail-scale', String(tailScale));
     });
     return () => cancelAnimationFrame(frame);
@@ -30,7 +30,7 @@ function ShootingStarEdgeEffect({ path }: { path: string }) {
   return (
     <g
       ref={overlayRef}
-      className="canvas-edge-effect-shooting-star"
+      className={`canvas-edge-effect-shooting-star${emphasized ? ' is-connected-selected' : ''}`}
       data-testid="edge-effect-overlay"
       aria-hidden="true"
       pointerEvents="none"
@@ -47,7 +47,8 @@ function ShootingStarEdgeEffect({ path }: { path: string }) {
         style={{ offsetPath: `path(${JSON.stringify(path)})` }}
       >
         <path
-          d="M -32 0 Q -12 -0.6 0 -3 L 0 3 Q -12 0.6 -32 0 Z"
+          /* Keep the moving streak close to 20px at normal canvas zoom. */
+          d="M -20 0 Q -8 -0.6 0 -3 L 0 3 Q -8 0.6 -20 0 Z"
           className="canvas-edge-shooting-star-trail"
           fill={`url(#${gradientId})`}
         />
@@ -66,14 +67,24 @@ function ShootingStarEdgeEffect({ path }: { path: string }) {
 export function CanvasEdgeEffectOverlay({
   path,
   effect,
+  emphasized = false,
 }: {
   path: string;
   effect: CanvasEdgeEffect;
+  /** 连接到选中节点时加速并放大鎏光。 */
+  emphasized?: boolean;
 }) {
-  if (effect === 'shooting-star') return <ShootingStarEdgeEffect path={path} />;
+  if (effect === 'shooting-star') {
+    return <ShootingStarEdgeEffect path={path} emphasized={emphasized} />;
+  }
   const className = edgeEffectOverlayClassName(effect);
   if (!className) return null;
   return (
-    <path d={path} aria-hidden="true" data-testid="edge-effect-overlay" className={className} />
+    <path
+      d={path}
+      aria-hidden="true"
+      data-testid="edge-effect-overlay"
+      className={`${className}${emphasized ? ' is-connected-selected' : ''}`}
+    />
   );
 }

@@ -4,7 +4,8 @@ import { signHs256Jwt, verifyHs256Jwt, type AuthRole, type JwtClaims } from './a
 import { type AuthSessionRecord, type AuthStore, type AuthUserRecord } from './auth-store';
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const DEFAULT_SESSION_TTL_SECONDS = 7 * 86400;
-const MAX_SESSION_TTL_SECONDS = 30 * 86400;
+/** 浏览器持久 Cookie 的通用上限；活跃会话随已验证的上游授权持续向后续期。 */
+export const PERSISTENT_SESSION_TTL_SECONDS = 400 * 86400;
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -54,6 +55,8 @@ export class AuthServiceError extends Error {
       | 'email_taken'
       | 'invalid_credentials'
       | 'invalid_token'
+      | 'access_token_expired'
+      | 'session_expired'
       | 'session_revoked'
       | 'account_disabled',
     message: string,
@@ -78,15 +81,19 @@ export class AuthService {
     if (
       !Number.isSafeInteger(sessionTtl) ||
       sessionTtl < 60 ||
-      sessionTtl > MAX_SESSION_TTL_SECONDS
+      sessionTtl > PERSISTENT_SESSION_TTL_SECONDS
     )
-      throw new Error('session TTL must be between 60 and 2592000 seconds');
+      throw new Error(
+        `session TTL must be between 60 and ${PERSISTENT_SESSION_TTL_SECONDS} seconds`,
+      );
     this.maxSessionTtlSeconds = sessionTtl;
     this.now = options.now ?? (() => Date.now());
   }
 
   async verifyAccessToken(accessToken: string): Promise<AuthenticatedSession> {
     const result = verifyHs256Jwt(accessToken, this.options.jwtSecret, this.now, true);
+    if (!result.ok && result.reason === 'expired')
+      throw new AuthServiceError('access_token_expired', 'access token has expired');
     if (!result.ok || !result.claims.sid || !SESSION_ID_PATTERN.test(result.claims.sid)) {
       throw new AuthServiceError('invalid_token', 'invalid access token');
     }
@@ -107,8 +114,9 @@ export class AuthService {
     }
 
     const user = await this.options.store.findUserById(session.userId);
-    if (!user || user.status !== 'active')
-      throw new AuthServiceError('invalid_token', 'invalid access token');
+    if (!user) throw new AuthServiceError('invalid_token', 'invalid access token');
+    if (user.status !== 'active')
+      throw new AuthServiceError('account_disabled', 'account is not active');
     await this.options.store.touchSession(session.id, now);
     return { user: toPublicUser(user), session, claims: result.claims };
   }
@@ -144,7 +152,7 @@ export class AuthService {
       current.session.absoluteExpiresAt ??
       new Date(current.session.createdAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000);
     if (absoluteExpiresAt.getTime() <= this.now() + 60_000)
-      throw new AuthServiceError('invalid_token', 'session absolute expiry reached');
+      throw new AuthServiceError('session_expired', 'session absolute expiry reached');
     const user = await this.options.store.findUserById(current.user.id);
     if (!user) throw new AuthServiceError('invalid_token', 'invalid access token');
     return this.options.store.transaction(async (store) => {
@@ -171,8 +179,6 @@ export class AuthService {
       !session ||
       session.userId !== result.claims.sub ||
       session.revokedAt ||
-      (session.absoluteExpiresAt?.getTime() ??
-        session.createdAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000) <= this.now() ||
       !equalHash(session.tokenHash, sha256(accessToken))
     ) {
       throw new AuthServiceError(
@@ -180,9 +186,15 @@ export class AuthService {
         session?.revokedAt ? 'session has been revoked' : 'invalid access token',
       );
     }
+    if (
+      (session.absoluteExpiresAt?.getTime() ??
+        session.createdAt.getTime() + DEFAULT_SESSION_TTL_SECONDS * 1000) <= this.now()
+    )
+      throw new AuthServiceError('session_expired', 'session absolute expiry reached');
     const user = await this.options.store.findUserById(session.userId);
-    if (!user || user.status !== 'active')
-      throw new AuthServiceError('invalid_token', 'invalid access token');
+    if (!user) throw new AuthServiceError('invalid_token', 'invalid access token');
+    if (user.status !== 'active')
+      throw new AuthServiceError('account_disabled', 'account is not active');
     return { user: toPublicUser(user), session, claims: result.claims };
   }
 
@@ -193,13 +205,13 @@ export class AuthService {
     store = this.options.store,
   ): Promise<AuthTokenResponse> {
     if (user.status !== 'active')
-      throw new AuthServiceError('invalid_token', 'account is not active');
+      throw new AuthServiceError('account_disabled', 'account is not active');
     const issuedAt = this.now();
     absoluteExpiresAt = new Date(
       Math.min(absoluteExpiresAt.getTime(), issuedAt + this.maxSessionTtlSeconds * 1000),
     );
     if (!Number.isFinite(absoluteExpiresAt.getTime()) || absoluteExpiresAt.getTime() <= issuedAt)
-      throw new AuthServiceError('invalid_token', 'session absolute expiry reached');
+      throw new AuthServiceError('session_expired', 'session absolute expiry reached');
     const expiresAt = new Date(
       Math.min(issuedAt + this.accessTokenTtlSeconds * 1000, absoluteExpiresAt.getTime()),
     );

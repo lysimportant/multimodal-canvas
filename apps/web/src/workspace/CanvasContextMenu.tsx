@@ -3,6 +3,7 @@ import {
   Eraser,
   FileText,
   Group,
+  LoaderCircle,
   LocateFixed,
   Maximize2,
   Play,
@@ -302,7 +303,8 @@ function nodeMenuItems(
     node.data.runStatus ?? '',
   );
   const unavailable = !enabled || props.busy || running;
-  const stoppable = runControl.stoppable || running;
+  const stoppable = runControl.stoppable || (running && !props.runControlStore);
+  const waitingForUpstream = running && !stoppable;
   const stopRequested = runControl.stopRequested || node.data.runStatus === 'cancel_requested';
   return [
     {
@@ -311,16 +313,24 @@ function nodeMenuItems(
       label: '节点操作',
       children: [
         menuItem(
-          stoppable ? 'stop' : 'run',
-          stoppable ? Square : Play,
-          stopRequested ? '停止中' : stoppable ? '停止生成' : '开始生成',
+          stoppable ? 'stop' : waitingForUpstream ? 'running' : 'run',
+          stoppable ? Square : waitingForUpstream ? LoaderCircle : Play,
+          stopRequested
+            ? '停止中'
+            : stoppable
+              ? '停止生成'
+              : waitingForUpstream
+                ? '运行中'
+                : '开始生成',
           stoppable
-            ? '停止本地后续提交并取消已知运行；不保证远端任务终止或退款'
-            : '使用当前配置生成，结果保留在此节点',
+            ? '仅在请求尚未发送到上游时停止；已受理的视频会继续等待终态'
+            : waitingForUpstream
+              ? '上游任务已受理，等待成功回传或明确失败'
+              : '使用当前配置生成，结果保留在此节点',
           () => run(() => (stoppable ? void props.onStopNode?.(node.id) : props.onRunNode(node))),
           stoppable ? !props.onStopNode || stopRequested : unavailable,
         ),
-        ...(stoppable
+        ...(stoppable || running
           ? []
           : [
               menuItem(

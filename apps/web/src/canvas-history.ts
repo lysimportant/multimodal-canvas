@@ -29,6 +29,7 @@ function restoreSnapshot(
           runId: live.data.runId,
           runProgress: live.data.runProgress,
           runError: live.data.runError,
+          upstreamTaskId: live.data.upstreamTaskId,
           nodeTiming: live.data.nodeTiming,
           resultAsset: live.data.resultAsset,
           resultTiming: live.data.resultTiming,

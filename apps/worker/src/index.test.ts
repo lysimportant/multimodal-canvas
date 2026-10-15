@@ -752,12 +752,13 @@ describe('worker provider job boundary', () => {
     });
   });
 
-  it('aborts built-in video polling on worker cancellation without inventing a cancel request', async () => {
+  it('continues built-in video polling after a late worker cancellation', async () => {
     const runId = '123e4567-e89b-12d3-a456-426614174020';
     const credentialId = '123e4567-e89b-12d3-a456-426614174021';
     const persistedPlatformIds: string[] = [];
     let pollSignal: AbortSignal | undefined;
     let markPollStarted: (() => void) | undefined;
+    let finishPoll: ((response: Response) => void) | undefined;
     const pollStarted = new Promise<void>((resolve) => {
       markPollStarted = resolve;
     });
@@ -773,12 +774,8 @@ describe('worker provider job boundary', () => {
         expect(persistedPlatformIds).toContain('platform-video-cancel');
         pollSignal = init?.signal ?? undefined;
         markPollStarted?.();
-        return new Promise<Response>((_resolve, reject) => {
-          pollSignal?.addEventListener(
-            'abort',
-            () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-            { once: true },
-          );
+        return new Promise<Response>((resolve) => {
+          finishPoll = resolve;
         });
       }
       throw new Error(`unexpected New API request: ${requestUrl}`);
@@ -826,7 +823,11 @@ describe('worker provider job boundary', () => {
       async updateProgress() {},
     };
     bullmqState.job = job;
-    const resultArchiver = vi.fn();
+    const resultArchiver = vi.fn(async () => ({
+      assetId: 'asset-video-cancel',
+      version: 1,
+      mimeType: 'video/mp4',
+    }));
 
     try {
       createRunWorker({
@@ -855,11 +856,21 @@ describe('worker provider job boundary', () => {
         }),
       ]);
       job.data.cancelRequested = true;
+      finishPoll?.(
+        new Response(
+          JSON.stringify({
+            id: 'platform-video-cancel',
+            status: 'completed',
+            video: { url: 'https://cdn.example/video.mp4' },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
 
-      await expect(processing).resolves.toMatchObject({ status: 'cancelled' });
-      expect(pollSignal?.aborted).toBe(true);
+      await expect(processing).resolves.toMatchObject({ status: 'succeeded' });
+      expect(pollSignal?.aborted).toBe(false);
       expect(persistedPlatformIds).toContain('platform-video-cancel');
-      expect(resultArchiver).not.toHaveBeenCalled();
+      expect(resultArchiver).toHaveBeenCalledOnce();
       expect(fetchImpl).toHaveBeenCalledTimes(2);
       expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/content'))).toBe(false);
     } finally {

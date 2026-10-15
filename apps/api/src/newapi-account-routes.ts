@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { NewApiAccountError } from './newapi-account-client';
 import { AUTH_SYNC_INTERVAL_MS, NewApiAccountService } from './newapi-account-service';
 import type { AuthenticatedSession } from './auth-service';
+import { PERSISTENT_SESSION_TTL_SECONDS } from './auth-service';
 
 /** HttpOnly 会话名，仅同源 API 读取，浏览器脚本不会接触 bearer。 */
 export const NEWAPI_SESSION_COOKIE = 'canvas_session';
@@ -30,7 +31,8 @@ export function sessionCookie(
   seconds: number,
   secure: boolean,
 ): string {
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(0, Math.floor(seconds))}${secure ? '; Secure' : ''}`;
+  const maxAge = Math.max(0, Math.min(PERSISTENT_SESSION_TTL_SECONDS, Math.floor(seconds)));
+  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
 }
 
 /** 注册唯一登录与本人分组同步；旧账号/手工凭据入口由 app 的退役边界拒绝。 */

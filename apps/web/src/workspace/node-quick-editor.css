@@ -701,6 +701,14 @@
   max-height: calc(100dvh - 40px);
 }
 
+.ant-modal.node-quick-editor-dialog:not(.node-quick-editor-recreation-dialog):not(
+    .node-quick-editor-prompt-dialog
+  ) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .node-quick-editor-dialog-header {
   align-items: flex-start;
 }
@@ -733,6 +741,17 @@
   gap: 16px;
   margin-top: 14px;
   padding-bottom: 16px;
+}
+
+.node-quick-editor-dialog:not(.node-quick-editor-recreation-dialog):not(
+    .node-quick-editor-prompt-dialog
+  )
+  .node-quick-editor-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-content: start;
 }
 
 .node-quick-editor-dialog .node-quick-editor-prompt :is(textarea, .resource-mention-input) {

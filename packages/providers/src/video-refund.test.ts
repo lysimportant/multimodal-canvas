@@ -5,7 +5,7 @@ const input = {
   baseUrl: 'https://newapi.example/v1/',
   apiKey: 'synthetic-key',
   platformJobId: 'task/1',
-  reason: 'user_cancelled' as const,
+  reason: 'task_failed' as const,
 };
 const response = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -24,7 +24,7 @@ describe('NewAPI 视频退款回执', () => {
         method: 'POST',
         redirect: 'error',
         headers: expect.objectContaining({ authorization: 'Bearer synthetic-key' }),
-        body: JSON.stringify({ reason: 'user_cancelled' }),
+        body: JSON.stringify({ reason: 'task_failed' }),
       }),
     );
   });

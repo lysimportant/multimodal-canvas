@@ -525,15 +525,23 @@ export function createRunWorker(options: {
       const runExecution = usesExecutionAuthorization ? options.execution : undefined;
       const legacyNewApiRecovery = initialData.provider === 'newapi' && !usesExecutionAuthorization;
       let durableCancellationRequested = false;
+      /** 上游视频 POST 开始后锁住本地取消，继续等待供应商终态。 */
+      let videoSubmissionProtected = hasSubmittedVideoWork(initialData);
       /** 取消一经观察永久生效，后续 Worker 状态写入不能抹去该意图。 */
       const cancellationRequested = async () => {
-        if (!durableCancellationRequested)
-          durableCancellationRequested =
+        if (videoSubmissionProtected) return false;
+        if (!durableCancellationRequested) {
+          const persistedCancellation =
             (await options.persistence?.isCancellationRequested?.(
               initialData.runId,
               retrieveOnlyObserved,
             )) ?? false;
-        return durableCancellationRequested || isCancellationRequested(queue, job.id);
+          if (videoSubmissionProtected) return false;
+          durableCancellationRequested = persistedCancellation;
+        }
+        if (durableCancellationRequested) return !videoSubmissionProtected;
+        const queuedCancellation = await isCancellationRequested(queue, job.id);
+        return videoSubmissionProtected ? false : queuedCancellation;
       };
       await cancellationRequested();
       const readJobData = () => {
@@ -1428,50 +1436,14 @@ export function createRunWorker(options: {
         cancellationFinalized = true;
         const data = readJobData();
         const updatedAt = new Date().toISOString();
-        const videoCancellation = executionSnapshot.nodes.some(
-          (node) => node.data.mediaType === 'video' && node.data.mode !== 'source',
-        );
-        const terminalStatus = videoCancellation ? 'failed' : 'cancelled';
-        const refundOutcomes: VideoRefundStatus[] = [];
-        if (videoCancellation) {
-          const states = data.workflowState?.nodes ?? [];
-          for (const node of executionSnapshot.nodes) {
-            if (node.data.mediaType !== 'video' || node.data.mode === 'source') continue;
-            const state = states.find((entry) => entry.nodeId === node.id);
-            if (state?.status === 'succeeded') continue;
-            const originalJob =
-              (activeNodeId === node.id ? activeNodeProviderJob : undefined) ??
-              (state?.providerJob?.platformJobId
-                ? state.providerJob
-                : recoveredWorkflowProviderJobs.get(node.id)) ??
-              state?.providerJob ??
-              (node.id === executionSnapshot.targetNodeId ? data.providerJob : undefined);
-            const outcome = await refundVideoJob(node.id, originalJob, 'user_cancelled');
-            refundOutcomes.push(outcome);
-            if (originalJob) {
-              originalJob.payload = { ...originalJob.payload, refundStatus: outcome };
-              if (node.id === executionSnapshot.targetNodeId) data.providerJob = originalJob;
-            }
-          }
-        }
-        const refundStatus = refundOutcomes.includes('pending')
-          ? 'pending'
-          : refundOutcomes.includes('refunded')
-            ? 'refunded'
-            : 'not_charged';
-        const cancellationMessage = videoCancellation
-          ? `视频生成已取消，任务已标记失败；${videoRefundMessage(refundStatus)}`
-          : undefined;
+        const terminalStatus = 'cancelled' as const;
         const providerJob: ProviderJob = {
           ...(data.providerJob ?? createProviderJobRecord(data.runId, data.provider)),
           status: terminalStatus,
           progress,
           payload: workflowProviderPayload(
             executionSnapshot.targetNodeId,
-            {
-              ...data.providerJob?.payload,
-              ...(videoCancellation ? { refundStatus, error: cancellationMessage } : {}),
-            },
+            data.providerJob?.payload,
             snapshotFingerprint,
           ),
           updatedAt,
@@ -1532,7 +1504,7 @@ export function createRunWorker(options: {
           terminalStatus,
           providerJob,
           undefined,
-          cancellationMessage,
+          undefined,
           false,
           flushNodeTimings(),
         );
@@ -1542,12 +1514,11 @@ export function createRunWorker(options: {
           updatedAt,
         } satisfies WorkerProgress);
         runLogger.info({ status: terminalStatus, progress }, 'run cancelled');
-        finishRunSpan(videoCancellation ? 'error' : 'ok', terminalStatus);
+        finishRunSpan('ok', terminalStatus);
         return {
           status: terminalStatus,
           progress,
           providerJob,
-          ...(cancellationMessage ? { error: cancellationMessage } : {}),
         };
       };
 
@@ -1795,6 +1766,9 @@ export function createRunWorker(options: {
               if (!resumeSubmittedVideo)
                 throw new UnrecoverableError('只读获取禁止创建新的 Provider 请求');
             }
+            const protectVideoSubmission =
+              currentData.provider === 'newapi' && node.data.mediaType === 'video';
+            if (protectVideoSubmission) videoSubmissionProtected = true;
             if (!runExecution) return;
             if (!resumeSubmittedVideo && currentData.retryOf) {
               if (!runExecution.assertRetrySafe)
@@ -1919,47 +1893,7 @@ export function createRunWorker(options: {
                 onProviderJob: async (update) => {
                   if (cancellationSignal.aborted && node.data.mediaType !== 'video') return;
                   if (cancellationFinalized) {
-                    // Extensions may return an identity after they were detached.
-                    // Refund that original task while preserving the failed state.
-                    if (node.data.mediaType !== 'video' || !update.platformJobId) return;
-                    const cancelledData = readJobData();
-                    const previous =
-                      workflowNodeState(cancelledData.workflowState!, node.id)?.providerJob ??
-                      providerJob;
-                    const lateJob: ProviderJob = {
-                      ...previous,
-                      platformJobId: update.platformJobId,
-                      status: 'failed',
-                      updatedAt: new Date().toISOString(),
-                    };
-                    const refundStatus = await refundVideoJob(node.id, lateJob, 'user_cancelled');
-                    const message = `视频生成已取消，任务已标记失败；${videoRefundMessage(refundStatus)}`;
-                    lateJob.payload = { ...lateJob.payload, refundStatus, error: message };
-                    const lateState = replaceWorkflowNodeState(cancelledData.workflowState!, {
-                      nodeId: node.id,
-                      status: 'failed',
-                      providerJob: lateJob,
-                    });
-                    const rootJob =
-                      node.id === executionSnapshot.targetNodeId
-                        ? lateJob
-                        : {
-                            ...cancelledData.providerJob!,
-                            payload: {
-                              ...cancelledData.providerJob?.payload,
-                              refundStatus,
-                              error: message,
-                            },
-                            updatedAt: lateJob.updatedAt,
-                          };
-                    await job.updateData({
-                      ...cancelledData,
-                      providerJob: rootJob,
-                      workflowState: lateState,
-                    });
-                    await persistProviderJob(lateJob);
-                    if (rootJob.id !== lateJob.id) await persistProviderJob(rootJob);
-                    await persistRun('failed', rootJob, undefined, message);
+                    // 只有发送前取消才能来到这里；绝不把迟到的上游身份用于用户取消退款。
                     return;
                   }
                   const callbackData = readJobData();
@@ -2039,8 +1973,7 @@ export function createRunWorker(options: {
                       status: 'sent',
                       platformJobId: merged.platformJobId,
                     });
-                  // Preserve a create response received after stop, but keep the
-                  // durable cancellation intent until the refund completes.
+                  // 上游视频受理后取消被锁住；此分支只兼容非视频 Provider 的协作取消。
                   if (cancellationSignal.aborted) {
                     Object.assign(providerJob, merged);
                     return;
@@ -3070,14 +3003,36 @@ function createArchiveKey(
   return `workflow-archive:v1:${workflowSnapshotFingerprint(snapshot)}:${nodeId}:${identity}`;
 }
 
+/** 已有平台 ID、创建中的视频回执都表示上游可能已经开始计费，不能再本地取消。 */
+function hasSubmittedVideoWork(data: RunJobData): boolean {
+  if (data.provider !== 'newapi') return false;
+  const videoNodeIds = new Set(
+    data.snapshot.nodes
+      .filter((node) => node.data.mediaType === 'video' && node.data.mode !== 'source')
+      .map((node) => node.id),
+  );
+  const submitted = (providerJob: ProviderJob | undefined) =>
+    Boolean(
+      providerJob?.platformJobId?.trim() ||
+      providerJob?.payload?.phase === 'submitting' ||
+      providerJob?.payload?.sendStatus === 'unknown',
+    );
+  if (videoNodeIds.has(data.snapshot.targetNodeId) && submitted(data.providerJob)) return true;
+  return Boolean(
+    data.workflowState?.nodes.some(
+      (state) => videoNodeIds.has(state.nodeId) && submitted(state.providerJob),
+    ),
+  );
+}
+
 async function executeProviderWithCancellation(
   provider: ProviderExecutor,
   request: WorkerProviderRequest,
   signal: AbortSignal,
   awaitVideoSubmission = false,
 ): Promise<RunResult | ProviderExecution> {
-  // Built-in video GETs abort promptly. Keep an already-sent POST alive until
-  // its original task identity is received, so cancellation can refund it.
+  // Built-in video GETs abort promptly before submission. Keep an already-started
+  // POST alive until its task identity is received; accepted video work is not cancellable.
   if (awaitVideoSubmission && provider instanceof NewApiVideoProvider) {
     if (signal.aborted) throw workerCancellationError();
     return provider.execute(request);

@@ -1337,6 +1337,8 @@ export const runSnapshotSchema = z
         skillVersion: z.string().min(1),
         /** 冻结实际执行的技能规则；后续编辑或删除不改变历史任务。 */
         instruction: z.string().min(1).max(12_000).optional(),
+        /** 本次优化的额外方向，和用户输入一起冻结以支持安全恢复。 */
+        guidance: z.string().max(4_000).optional(),
         input: promptDocumentSchema,
       })
       .optional(),

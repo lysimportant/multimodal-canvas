@@ -62,6 +62,21 @@ describe('提示词 Skill 契约', () => {
     }
   });
 
+  it('把本次优化方向加入任务上下文，但不改变 Skill 定义', () => {
+    const skill = PROMPT_SKILLS[0]!;
+    const guidance = '突出电影感，保留原有角色约束';
+    const canvas = createPromptOptimizationCanvas({
+      skillId: skill.id,
+      input,
+      mediaType: 'image',
+      guidance,
+    });
+    const block = canvas.nodes[0]!.data.promptDocument!.blocks[0]!;
+    if (block.type !== 'text') throw new Error('优化任务必须只包含文字');
+    expect(block.text).toContain(guidance);
+    expect(skill.instruction).not.toContain(guidance);
+  });
+
   it('保留原始文字语言以及资源版本和语义身份', () => {
     const result = parsePromptOptimizationOutput(
       JSON.stringify({ prompt: '保持构图：[[SKILL_REF_1]] 在 [[SKILL_REF_2]]，柔和侧光。' }),

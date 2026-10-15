@@ -1,4 +1,6 @@
 import { synchronizeServerClock } from './server-clock';
+import { createOperationLogId, recordOperationLog } from './operation-log';
+import { AUTH_ERROR_MESSAGES, isAuthErrorCode, type AuthErrorCode } from './auth-errors';
 
 /** 当前会话可公开的用户资料；不包含密码、验证码或密钥。 */
 export type AuthUser = {
@@ -201,6 +203,105 @@ function withAuthHeaders(init?: RequestInit): RequestInit {
   return { ...init, headers, credentials: init?.credentials ?? 'include' };
 }
 
+/** Keep HTTP failures recognizable without persisting arbitrary response bodies. */
+async function responseErrorLogDetails(response: Response): Promise<{
+  errorCode?: string;
+  errorMessage?: string;
+}> {
+  const statusCode = response.status;
+  if ([401, 403, 503].includes(statusCode)) {
+    try {
+      const payload: unknown = await response.clone().json();
+      if (
+        payload &&
+        typeof payload === 'object' &&
+        'code' in payload &&
+        isAuthErrorCode(payload.code)
+      )
+        return { errorCode: payload.code, errorMessage: AUTH_ERROR_MESSAGES[payload.code] };
+    } catch {
+      // Empty, non-JSON and legacy errors retain a safe status-based explanation.
+    }
+  }
+  if (statusCode === 401)
+    return {
+      errorCode: 'authentication_required',
+      errorMessage: AUTH_ERROR_MESSAGES.authentication_required,
+    };
+  if (statusCode === 403) return { errorCode: 'forbidden' };
+  if (statusCode === 429) return { errorCode: 'rate_limited' };
+  if (statusCode >= 500) return { errorCode: 'server_error' };
+  return {};
+}
+
+/**
+ * Keep authentication failures visible after the session is cleared. The
+ * account bucket remains the primary record while the anonymous bucket keeps
+ * the request metadata available on the login/logs route.
+ */
+function recordRequestLog(
+  userId: string | null | undefined,
+  entry: Parameters<typeof recordOperationLog>[1],
+): void {
+  recordOperationLog(userId, entry);
+  if (entry.statusCode === 401 && userId) recordOperationLog(null, entry);
+}
+
+/** 认证探测也进入浏览器操作日志；只记录可诊断的请求元数据，不读取请求正文。 */
+async function fetchAuthRequest(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+): Promise<Response> {
+  const requestUrl = new URL(
+    typeof input === 'string' || input instanceof URL ? input : input.url,
+    window.location.href,
+  );
+  const method = (
+    init?.method ??
+    (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')
+  ).toUpperCase();
+  const path = requestUrl.pathname;
+  const requestId = createOperationLogId('request');
+  const logUserId = readStoredAuthSession()?.user.id;
+  const startedAt = performance.now();
+  recordRequestLog(logUserId, {
+    category: 'request',
+    action: '请求已发出',
+    requestId,
+    method,
+    path,
+    outcome: 'pending',
+  });
+  try {
+    const response = await fetch(input, init);
+    recordRequestLog(logUserId, {
+      category: 'request',
+      action: response.ok ? '请求收到响应' : '请求返回错误',
+      requestId,
+      method,
+      path,
+      statusCode: response.status,
+      ...(!response.ok ? await responseErrorLogDetails(response) : {}),
+      durationMs: performance.now() - startedAt,
+      outcome: response.ok ? 'success' : 'error',
+    });
+    return response;
+  } catch (error) {
+    const errorType = error instanceof Error ? error.name : 'UnknownError';
+    recordRequestLog(logUserId, {
+      category: 'request',
+      action: '请求未收到响应',
+      requestId,
+      method,
+      path,
+      durationMs: performance.now() - startedAt,
+      outcome: errorType === 'AbortError' ? 'aborted' : 'network_error',
+      errorType,
+    });
+    throw error;
+  }
+}
+
 /** 请求所属账户已改变；调用方不得把该请求重放到当前账户或接纳旧响应。 */
 export class AuthSessionChangedError extends Error {
   /** 不包含账户资料或令牌；消息可直接展示。 */
@@ -222,6 +323,16 @@ export async function apiFetch(
     skipUnauthorized?: boolean;
     /** 发起操作时的 getAuthSessionGeneration()；正常令牌续期不改变此代次。 */
     expectedAuthGeneration?: number;
+    /** 可选画布操作身份，用来把用户触发与实际请求及返回状态关联起来。 */
+    logContext?: {
+      requestId?: string;
+      operationId?: string;
+      projectId?: string;
+      nodeId?: string;
+      mediaType?: string;
+      target?: string;
+      trigger?: string;
+    };
   } = {},
 ): Promise<Response> {
   const generation = options.expectedAuthGeneration ?? getAuthSessionGeneration();
@@ -230,54 +341,138 @@ export async function apiFetch(
     if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
   }
   assertRequestSession();
-  const cached = readStoredAuthSession();
-  if (
-    cached?.expiresAt &&
-    Date.parse(cached.expiresAt) - Date.now() < 60_000 &&
-    !options.skipUnauthorized
-  ) {
-    const url = new URL(
-      typeof input === 'string' || input instanceof URL ? input : input.url,
-      window.location.href,
-    );
-    const prefix = url.pathname.indexOf('/v1/');
-    if (prefix >= 0 && !url.pathname.includes('/auth/')) {
-      await refreshAuthSession(`${url.origin}${url.pathname.slice(0, prefix)}`);
-      assertRequestSession();
-    }
+  const requestUrl = new URL(
+    typeof input === 'string' || input instanceof URL ? input : input.url,
+    window.location.href,
+  );
+  const prefix = requestUrl.pathname.indexOf('/v1/');
+  const canRecover =
+    !options.skipUnauthorized && prefix >= 0 && !requestUrl.pathname.includes('/auth/');
+  const baseUrl = `${requestUrl.origin}${requestUrl.pathname.slice(0, prefix)}`;
+  // A foreground request must not race a background Cookie rotation already in progress.
+  if (canRecover && pendingRefresh) {
+    await pendingRefresh;
+    assertRequestSession();
+  }
+  let cached = readStoredAuthSession();
+  if (cached?.expiresAt && Date.parse(cached.expiresAt) - Date.now() < 120_000 && canRecover) {
+    await refreshAuthSession(baseUrl);
+    assertRequestSession();
+    cached = readStoredAuthSession();
   }
   const requestInit = withAuthHeaders(init);
-  const requestStartedAt = performance.now();
-  const controller = new AbortController();
-  inFlightRequests.add(controller);
-  let response: Response;
-  try {
-    response = await fetch(input, {
-      ...requestInit,
-      signal: init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal,
-    });
-  } catch (error) {
+  const request = typeof Request !== 'undefined' && input instanceof Request ? input : undefined;
+  const method = (requestInit.method ?? request?.method ?? 'GET').toUpperCase();
+  const signal = init?.signal ?? request?.signal;
+  const path = requestUrl.pathname;
+  const logUserId = readStoredAuthSession()?.user.id;
+  const logContext = options.logContext;
+  const send = async (retry = false): Promise<Response> => {
     assertRequestSession();
-    throw error;
-  } finally {
-    inFlightRequests.delete(controller);
-  }
-  assertRequestSession();
-  synchronizeServerClock(response.headers?.get('x-server-time') ?? null, requestStartedAt);
-  if (response.status === 401 && !options.skipUnauthorized && cached) {
-    const url = new URL(
-      typeof input === 'string' || input instanceof URL ? input : input.url,
-      window.location.href,
-    );
-    const prefix = url.pathname.indexOf('/v1/');
-    if (prefix >= 0 && !url.pathname.includes('/auth/')) {
-      await verifyUnauthorized(
-        `${url.origin}${url.pathname.slice(0, prefix)}`,
-        generation,
-        cached.expiresAt,
-      );
-      assertRequestSession();
+    if (signal?.aborted) throw abortError(signal, '请求已取消');
+    const shouldLogStart = method !== 'GET' || retry;
+    const requestId = shouldLogStart
+      ? (logContext?.requestId ?? createOperationLogId('request'))
+      : undefined;
+    if (requestId) {
+      recordRequestLog(logUserId, {
+        category: 'request',
+        action: '请求已发出',
+        requestId,
+        ...(logContext?.operationId ? { operationId: logContext.operationId } : {}),
+        ...(logContext?.projectId ? { projectId: logContext.projectId } : {}),
+        ...(logContext?.nodeId ? { nodeId: logContext.nodeId } : {}),
+        ...(logContext?.mediaType ? { mediaType: logContext.mediaType } : {}),
+        ...(logContext?.target ? { target: logContext.target } : {}),
+        ...(logContext?.trigger ? { trigger: logContext.trigger } : {}),
+        method,
+        path,
+        outcome: 'pending',
+      });
     }
+    const requestStartedAt = performance.now();
+    const controller = new AbortController();
+    inFlightRequests.add(controller);
+    let response: Response;
+    try {
+      response = await fetch(input, {
+        ...requestInit,
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+      });
+    } catch (error) {
+      const errorType = error instanceof Error ? error.name : 'UnknownError';
+      const shouldLogFailure = Boolean(requestId) || errorType !== 'AbortError';
+      if (shouldLogFailure) {
+        recordRequestLog(logUserId, {
+          category: 'request',
+          action: '请求未收到响应',
+          ...(requestId ? { requestId } : { requestId: createOperationLogId('request') }),
+          ...(logContext?.operationId ? { operationId: logContext.operationId } : {}),
+          ...(logContext?.projectId ? { projectId: logContext.projectId } : {}),
+          ...(logContext?.nodeId ? { nodeId: logContext.nodeId } : {}),
+          method,
+          path,
+          durationMs: performance.now() - requestStartedAt,
+          outcome: errorType === 'AbortError' ? 'aborted' : 'network_error',
+          errorType,
+        });
+      }
+      assertRequestSession();
+      throw error;
+    } finally {
+      inFlightRequests.delete(controller);
+    }
+    assertRequestSession();
+    if (requestId || response.status >= 400) {
+      recordRequestLog(logUserId, {
+        category: 'request',
+        action: response.ok ? '请求收到响应' : '请求返回错误',
+        ...(requestId ? { requestId } : { requestId: createOperationLogId('request') }),
+        ...(logContext?.operationId ? { operationId: logContext.operationId } : {}),
+        ...(logContext?.projectId ? { projectId: logContext.projectId } : {}),
+        ...(logContext?.nodeId ? { nodeId: logContext.nodeId } : {}),
+        ...(logContext?.mediaType ? { mediaType: logContext.mediaType } : {}),
+        ...(logContext?.target ? { target: logContext.target } : {}),
+        ...(logContext?.trigger ? { trigger: logContext.trigger } : {}),
+        method,
+        path,
+        statusCode: response.status,
+        ...(response.status >= 400 ? await responseErrorLogDetails(response) : {}),
+        durationMs: performance.now() - requestStartedAt,
+        outcome: response.ok ? 'success' : 'error',
+      });
+    }
+    assertRequestSession();
+    synchronizeServerClock(response.headers?.get('x-server-time') ?? null, requestStartedAt);
+    return response;
+  };
+  let response = await send();
+  let recoveryCode: AuthErrorCode | undefined;
+  if (response.status === 401 && canRecover && cached) {
+    const recovery = await verifyUnauthorized(baseUrl, generation, cached.expiresAt);
+    assertRequestSession();
+    if (recovery === 'restored') {
+      if (method === 'GET' || method === 'HEAD') {
+        response = await send(true);
+      } else {
+        // Generations and other mutations must only be submitted again by the user.
+        recoveryCode = 'auth_session_restored';
+      }
+    } else if (recovery === 'unavailable') {
+      recoveryCode = 'authentication_unavailable';
+    }
+  }
+  if (response.status === 401) {
+    const details = await responseErrorLogDetails(response);
+    assertRequestSession();
+    const code =
+      recoveryCode ??
+      (isAuthErrorCode(details.errorCode) ? details.errorCode : 'authentication_required');
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    headers.set('content-type', 'application/json');
+    return Response.json({ code, error: AUTH_ERROR_MESSAGES[code] }, { status: 401, headers });
   }
   return response;
 }
@@ -288,21 +483,24 @@ export async function apiFetch(
  * @param baseUrl Canvas API 地址。
  * @param expectedGeneration 请求发起时的账户代次；换号后不处理旧响应。
  * @param expectedExpiresAt 请求发起时缓存的到期时间；已续期则忽略旧 401。
- * @returns 校验完成后返回；不返回业务请求的结果。
+ * @returns 恢复结果；调用方可重试一次只读请求，写操作必须由用户重试。
  */
 export async function verifyUnauthorized(
   baseUrl: string,
   expectedGeneration: number,
   expectedExpiresAt?: string,
-): Promise<void> {
-  if (expectedGeneration !== getAuthSessionGeneration()) return;
+): Promise<'restored' | 'unavailable' | 'invalid'> {
+  if (expectedGeneration !== getAuthSessionGeneration()) return 'invalid';
   const current = readStoredAuthSession();
-  if (!current || current.expiresAt !== expectedExpiresAt) return;
+  if (!current) return 'invalid';
+  if (current.expiresAt !== expectedExpiresAt && isSessionUnexpired(current)) return 'restored';
   try {
-    await refreshAuthSession(baseUrl);
+    const restored = await refreshAuthSession(baseUrl);
+    return restored && expectedGeneration === getAuthSessionGeneration() ? 'restored' : 'invalid';
   } catch (error) {
-    if (error instanceof AuthSessionChangedError) return;
+    if (error instanceof AuthSessionChangedError) return 'invalid';
     // 上游或网络暂时不可用不等于注销；下一次焦点恢复会继续验证。
+    return 'unavailable';
   }
 }
 
@@ -327,7 +525,7 @@ export function fetchCurrentSession(baseUrl: string): Promise<StoredAuthSession 
     return pendingCurrentSession.promise;
 
   const promise = (async () => {
-    const response = await fetch(`${normalizedBaseUrl}/v1/auth/me`, {
+    const response = await fetchAuthRequest(`${normalizedBaseUrl}/v1/auth/me`, {
       credentials: 'include',
       signal: AbortSignal.timeout(AUTH_SESSION_TIMEOUT_MS),
     });
@@ -337,9 +535,16 @@ export function fetchCurrentSession(baseUrl: string): Promise<StoredAuthSession 
       user?: AuthUser;
       expiresAt?: string;
       error?: string;
+      code?: string;
     };
     if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
-    if (!response.ok || !payload.user) throw new Error(payload.error ?? '登录状态加载失败');
+    if (!response.ok || !payload.user) {
+      throw new Error(
+        isAuthErrorCode(payload.code)
+          ? AUTH_ERROR_MESSAGES[payload.code]
+          : (payload.error ?? '登录状态加载失败'),
+      );
+    }
     return persistAuthSession(
       { user: payload.user, expiresAt: payload.expiresAt },
       { renewal: true },
@@ -426,7 +631,7 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
     ) {
       return persistAuthSession(stored, { renewal: true });
     }
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/refresh`, {
+    const response = await fetchAuthRequest(`${baseUrl.replace(/\/$/, '')}/v1/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
       signal: AbortSignal.timeout(AUTH_SESSION_TIMEOUT_MS),
@@ -434,7 +639,7 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
     if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
     if (response.status === 401) {
       // 不支持 Web Locks 的环境也只重读当前 Cookie，绝不重发生成或其它业务写请求。
-      const restored = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/auth/me`, {
+      const restored = await fetchAuthRequest(`${baseUrl.replace(/\/$/, '')}/v1/auth/me`, {
         credentials: 'include',
         signal: AbortSignal.timeout(AUTH_SESSION_TIMEOUT_MS),
       });
@@ -449,13 +654,19 @@ export async function refreshAuthSession(baseUrl: string): Promise<StoredAuthSes
       notifyUnauthorized();
       return null;
     }
-    const payload = (await response.json()) as {
+    const payload = (await response.json().catch(() => ({}))) as {
       user?: AuthUser;
       expiresAt?: string;
       error?: string;
+      code?: string;
     };
     if (generation !== getAuthSessionGeneration()) throw new AuthSessionChangedError();
-    if (!response.ok || !payload.user) throw new Error(payload.error ?? '会话续期失败');
+    if (!response.ok || !payload.user)
+      throw new Error(
+        isAuthErrorCode(payload.code)
+          ? AUTH_ERROR_MESSAGES[payload.code]
+          : AUTH_ERROR_MESSAGES.authentication_unavailable,
+      );
     return persistAuthSession(
       { user: payload.user, expiresAt: payload.expiresAt },
       { renewal: true },

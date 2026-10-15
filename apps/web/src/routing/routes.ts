@@ -4,6 +4,7 @@ export type AppRoute = (
   | { id: 'workspace'; pathname: '/workspace'; createProject?: boolean }
   | { id: 'contact'; pathname: '/contact' }
   | { id: 'share'; pathname: '/share' }
+  | { id: 'logs'; pathname: '/logs' }
   | { id: 'settings'; pathname: '/settings'; projectId?: string }
   | { id: 'project'; pathname: string; projectId: string }
   | { id: 'management'; pathname: string }
@@ -21,6 +22,7 @@ export const appPaths = {
   admin: '/admin',
   resources: '/resources',
   runs: '/runs',
+  logs: '/logs',
   login: '/auth/login',
   register: '/auth/register',
   forgotPassword: '/auth/forgot-password',
@@ -112,6 +114,7 @@ function parseRoutePath(input: Pick<Location, 'pathname' | 'search'>): AppRoute 
       ...(new URLSearchParams(search).get('create') === '1' ? { createProject: true } : {}),
     };
   if (pathname === '/contact') return { id: 'contact', pathname };
+  if (pathname === appPaths.logs) return { id: 'logs', pathname };
   if (pathname === '/share') return { id: 'share', pathname };
   if (pathname === '/models') return { id: 'not-found', pathname };
   if (
@@ -157,6 +160,7 @@ export function getNavigationSection(route: AppRoute): AppNavigationSection | nu
   if (
     route.id === 'contact' ||
     route.id === 'share' ||
+    route.id === 'logs' ||
     route.id === 'not-found' ||
     route.id === 'management' ||
     route.id === 'authentication'

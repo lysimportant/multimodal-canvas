@@ -664,6 +664,7 @@ describe('AssetNode result presentation', () => {
       makeNode({
         mediaType: 'video',
         runStatus: 'failed',
+        upstreamTaskId: 'platform-original',
         runError: '供应商超时，未重发请求',
         resultAsset: {
           assetId: 'old-video',
@@ -689,6 +690,33 @@ describe('AssetNode result presentation', () => {
     await userEvent.click(screen.getByRole('button', { name: '获取资源' }));
     await waitFor(() => expect(onRecover).toHaveBeenCalledExactlyOnceWith('node_1'));
     expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('节点信息显示上游任务 ID，并允许失败视频按原任务查询资源', async () => {
+    const onRecover = vi.fn().mockResolvedValue(undefined);
+    renderNode(
+      makeNode({
+        mediaType: 'video',
+        runStatus: 'failed',
+        upstreamTaskId: 'platform-original',
+      }),
+      vi.fn(),
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      {},
+      onRecover,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const dialog = within(screen.getByRole('dialog', { name: '节点信息' }));
+    expect(dialog.getByText('上游任务 ID').nextElementSibling).toHaveTextContent(
+      'platform-original',
+    );
+    await userEvent.click(dialog.getByRole('button', { name: '查询上游任务' }));
+    await waitFor(() => expect(onRecover).toHaveBeenCalledExactlyOnceWith('node_1'));
   });
 
   it('取消视频任务但保留旧预览时只显示重试生成', () => {
@@ -764,7 +792,7 @@ describe('AssetNode result presentation', () => {
     );
     const onRetry = vi.fn();
     renderNode(
-      makeNode({ mediaType: 'video', ...overrides }),
+      makeNode({ mediaType: 'video', upstreamTaskId: 'platform-original', ...overrides }),
       onRetry,
       undefined,
       undefined,
@@ -793,6 +821,7 @@ describe('AssetNode result presentation', () => {
       makeNode({
         mediaType: 'video',
         runStatus: 'failed',
+        upstreamTaskId: 'platform-original',
         resultAsset: {
           assetId: 'old-video',
           version: 1,
@@ -1814,10 +1843,7 @@ describe('AssetNode result presentation', () => {
 
     const stop = screen.getByRole('button', { name: '停止' });
     expect(stop).toBeEnabled();
-    expect(stop).toHaveAttribute(
-      'title',
-      '停止本地后续提交并取消已知运行；不保证远端任务终止或退款',
-    );
+    expect(stop).toHaveAttribute('title', '仅在请求尚未发送到上游时停止');
     await userEvent.click(stop);
     expect(onStop).toHaveBeenCalledExactlyOnceWith(node.id);
 
@@ -2290,9 +2316,9 @@ describe('画布选区模式', () => {
     expect(within(info).getByText('运行', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
       '运行中',
     );
-    expect(within(info).getByText('任务 ID', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
-      'run-node-1',
-    );
+    expect(
+      within(info).getByText('任务 ID', { selector: 'dt' }).nextElementSibling,
+    ).toHaveTextContent('run-node-1');
     expect(interval).not.toHaveBeenCalled();
     expect(clearInterval).not.toHaveBeenCalled();
     expect(screen.queryByRole('group')).not.toBeInTheDocument();

@@ -1,0 +1,210 @@
+.mc-operation-log-page {
+  color: var(--mc-text, #18212f);
+  margin: 0 auto;
+  max-width: 1120px;
+  padding: 36px 28px 72px;
+}
+
+.mc-operation-log-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+}
+
+.mc-operation-log-heading h1 {
+  font-size: clamp(26px, 4vw, 36px);
+  letter-spacing: -0.035em;
+  margin: 4px 0 8px;
+}
+
+.mc-operation-log-heading p:last-child {
+  color: var(--mc-text-muted, #687386);
+  line-height: 1.6;
+  margin: 0;
+  max-width: 690px;
+}
+
+.mc-operation-log-heading > button,
+.mc-operation-log-toolbar button {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+}
+
+.mc-operation-log-kicker {
+  color: var(--mc-accent, #18794e);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  margin: 0;
+}
+
+.mc-operation-log-privacy {
+  background: var(--mc-surface-muted, #f0f3f2);
+  border: 1px solid var(--mc-border, #dce2e0);
+  border-radius: 10px;
+  color: var(--mc-text-muted, #687386);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 24px;
+  padding: 12px 14px;
+}
+
+.mc-operation-log-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 22px 0 12px;
+}
+
+.mc-operation-log-toolbar button.is-active {
+  background: var(--mc-accent, #18794e);
+  border-color: var(--mc-accent, #18794e);
+  color: white;
+}
+
+.mc-operation-log-count {
+  color: var(--mc-text-muted, #687386);
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.mc-operation-log-toolbar .mc-operation-log-clear {
+  color: var(--mc-danger, #b42318);
+}
+
+.mc-operation-log-list {
+  background: var(--mc-surface, white);
+  border: 1px solid var(--mc-border, #dce2e0);
+  border-radius: 14px;
+  list-style: none;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.mc-operation-log-entry {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--mc-border, #e7ebe9);
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.mc-operation-log-entry:last-child {
+  border-bottom: 0;
+}
+
+.mc-operation-log-icon {
+  align-items: center;
+  background: var(--mc-surface-muted, #f0f3f2);
+  border-radius: 9px;
+  color: var(--mc-accent, #18794e);
+  display: inline-flex;
+  flex: 0 0 32px;
+  height: 32px;
+  justify-content: center;
+}
+
+.mc-operation-log-entry.is-system .mc-operation-log-icon,
+.mc-operation-log-entry.is-system .mc-operation-log-title-row strong {
+  color: var(--mc-danger, #b42318);
+}
+
+.mc-operation-log-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-operation-log-title-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mc-operation-log-title-row strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.mc-operation-log-category {
+  color: var(--mc-text-muted, #687386);
+  font-size: 11px;
+}
+
+.mc-operation-log-copy p {
+  color: var(--mc-text-muted, #687386);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.mc-operation-log-entry time {
+  color: var(--mc-text-muted, #687386);
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.mc-operation-log-empty {
+  align-items: center;
+  background: var(--mc-surface, white);
+  border: 1px dashed var(--mc-border, #dce2e0);
+  border-radius: 14px;
+  color: var(--mc-text-muted, #687386);
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  justify-content: center;
+  text-align: center;
+}
+
+.mc-operation-log-empty p {
+  color: var(--mc-text, #18212f);
+  font-size: 15px;
+  font-weight: 650;
+  margin: 12px 0 5px;
+}
+
+.mc-operation-log-empty span {
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .mc-operation-log-page {
+    padding: 26px 18px 52px;
+  }
+
+  .mc-operation-log-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .mc-operation-log-heading > div:first-child {
+    flex: 1 1 100%;
+  }
+
+  .mc-operation-log-heading > button {
+    flex: 0 0 auto;
+  }
+
+  .mc-operation-log-entry {
+    gap: 9px;
+    padding: 12px;
+  }
+
+  .mc-operation-log-entry time {
+    font-size: 10px;
+    max-width: 95px;
+    text-align: right;
+  }
+
+  .mc-operation-log-toolbar .mc-operation-log-clear {
+    margin-left: auto;
+  }
+}

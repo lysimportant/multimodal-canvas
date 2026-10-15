@@ -2684,6 +2684,18 @@ describe('webhook and run idempotency boundaries', () => {
         snapshot: { canvasRevision: 1, inputCount: 0, inputs: [] },
       });
       expect(current.json().run.providerJob).toBeUndefined();
+      const history = await webhookApp.inject({
+        method: 'GET',
+        url: `/v1/projects/${projectId}/runs`,
+      });
+      expect(history.statusCode).toBe(200);
+      expect(history.json().runs).toEqual([
+        expect.objectContaining({
+          id: created.json().run.id,
+          platformJobId: 'platform-webhook-app',
+        }),
+      ]);
+      expect(history.json().runs[0].providerJob).toBeUndefined();
       const internalCurrent = await runService.get(created.json().run.id);
       expect(internalCurrent).toBeDefined();
       expect(internalCurrent!).toMatchObject({

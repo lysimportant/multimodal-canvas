@@ -499,7 +499,10 @@ describe.skipIf(!configuration)('隔离 HTTPS 代理到真实生产模式 API', 
         headers: authorization ? { authorization } : {},
       });
       expect(response.status).toBe(401);
-      expect(JSON.parse(response.body)).toEqual({ error: 'authentication required' });
+      expect(JSON.parse(response.body)).toEqual({
+        error: 'authentication required',
+        code: authorization ? 'invalid_token' : 'authentication_missing',
+      });
     },
   );
 

@@ -26,6 +26,9 @@ describe('短视频复刻弹窗布局', () => {
     expect(layoutCss).toMatch(
       /\.node-quick-editor-recreation-source, \.node-quick-editor-recreation-pending, \.node-quick-editor-recreation-generate \{[^}]*overflow-y: auto;/,
     );
+    expect(layoutCss).toMatch(
+      /\.ant-modal-wrap\.ant-modal-centered:has\(\.node-quick-editor-dialog\) \{[^}]*overflow: hidden;/,
+    );
   });
 
   it('窄视口退回到视口内宽度', () => {

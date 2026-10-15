@@ -1,9 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryAuthStore } from './auth-store';
-import { AuthService } from './auth-service';
+import { AuthService, PERSISTENT_SESSION_TTL_SECONDS } from './auth-service';
 import { verifyHs256Jwt } from './auth';
 
 describe('已验证身份的 Canvas 会话', () => {
+  it('长期会话隔月可恢复，多次续期跨越原有效期，手动退出后立即失效', async () => {
+    let now = Date.now();
+    const store = new MemoryAuthStore();
+    const user = await store.createUser({ email: 'persistent@example.test' });
+    const options = {
+      store,
+      jwtSecret: 'synthetic-secret',
+      now: () => now,
+      maxSessionTtlSeconds: PERSISTENT_SESSION_TTL_SECONDS,
+    };
+    let auth = new AuthService(options);
+    const grantExpiry = () => new Date(now + PERSISTENT_SESSION_TTL_SECONDS * 1000);
+    let current = await auth.issueToken(user, grantExpiry());
+    const firstExpiry = Date.parse(current.refreshExpiresAt);
+    expect(current.expiresIn).toBe(900);
+    for (let renewal = 0; renewal < 3; renewal++) {
+      now += 200 * 86400000;
+      // 重启实例并保留原数据库，不依赖标签页一直打开。
+      auth = new AuthService(options);
+      const previous = current;
+      current = await auth.refresh(previous.accessToken, grantExpiry());
+      expect(Date.parse(current.refreshExpiresAt)).toBe(grantExpiry().getTime());
+      await expect(auth.refresh(previous.accessToken, grantExpiry())).rejects.toMatchObject({
+        code: 'session_revoked',
+      });
+    }
+    expect(now).toBeGreaterThan(firstExpiry);
+    expect(await auth.logout(current.accessToken)).toBe(true);
+    await expect(auth.refresh(current.accessToken, grantExpiry())).rejects.toMatchObject({
+      code: 'session_revoked',
+    });
+  });
   it('New API 会话以已验证授权为上限，旧 7 天会话续期后可延长但不能绕过撤销', async () => {
     let now = Date.now();
     const store = new MemoryAuthStore();
@@ -28,12 +60,12 @@ describe('已验证身份的 Canvas 会话', () => {
     });
     await store.updateUser(user.id, { status: 'disabled' });
     await expect(auth.refresh(renewed.accessToken, grant)).rejects.toMatchObject({
-      code: 'invalid_token',
+      code: 'account_disabled',
     });
     await store.updateUser(user.id, { status: 'active' });
     now = grant.getTime();
     await expect(auth.refresh(renewed.accessToken, grant)).rejects.toMatchObject({
-      code: 'invalid_token',
+      code: 'session_expired',
     });
   });
   it('签发短期会话、服务端角色及最晚期限，不公开会话材料', async () => {
@@ -67,7 +99,7 @@ describe('已验证身份的 Canvas 会话', () => {
     const first = await auth.issueToken(user, new Date(now + 300_000));
     now += 61_000;
     await expect(auth.verifyAccessToken(first.accessToken)).rejects.toMatchObject({
-      code: 'invalid_token',
+      code: 'access_token_expired',
     });
     const renewed = await auth.refresh(first.accessToken);
     expect(renewed.refreshExpiresAt).toBe(first.refreshExpiresAt);
@@ -76,7 +108,7 @@ describe('已验证身份的 Canvas 会话', () => {
     });
     now += 300_000;
     await expect(auth.refresh(renewed.accessToken)).rejects.toMatchObject({
-      code: 'invalid_token',
+      code: 'session_expired',
     });
   });
 

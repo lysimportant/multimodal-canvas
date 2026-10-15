@@ -305,6 +305,7 @@ const promptOptimizationBodySchema = z
     nodeId: z.string().trim().min(1).max(512),
     skillId: z.string().trim().min(1).max(160),
     skillVersion: z.string().trim().min(1).max(160).optional(),
+    guidance: z.string().trim().max(4_000).optional(),
     mediaType: z.enum(['text', 'image', 'audio', 'video']),
     promptDocument: z.unknown(),
     idempotencyKey: z.string().trim().min(1).max(200),
@@ -399,6 +400,8 @@ type PublicRunFields = {
   result?: PublicRunResult;
   error?: string;
   retryOf?: string;
+  /** 可供用户核对和只读查询的上游任务身份，不包含 Provider 请求载荷。 */
+  platformJobId?: string;
   /** 按节点记录的服务端 UTC 生命周期时间；旧运行缺省，界面显示“未记录”。 */
   nodeTimings?: NonNullable<RunRecord['nodeTimings']>;
   createdAt: string;
@@ -1193,6 +1196,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AuthServiceError)
+      return reply.code(error.code === 'invalid_input' ? 400 : 401).send({
+        code: error.code,
+        error: 'authentication required',
+      });
     if (error instanceof ExecutionError) {
       const status =
         error.code === 'authorization_required' || error.code === 'authorization_revoked'
@@ -1232,6 +1240,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       { err: sanitizeExceptionForObservability(error), requestId: request.id },
       'unhandled request error',
     );
+    if (statusCode >= 500 && request.url.split('?', 1)[0] === '/v1/auth/refresh')
+      return reply.code(503).send({
+        error: 'authentication service unavailable',
+        code: 'authentication_unavailable',
+        requestId: request.id,
+      });
     return reply.code(statusCode).send({
       error: 'internal server error',
       code: 'internal_error',
@@ -1555,8 +1569,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (options.newApiAccount && pathname === '/v1/auth/refresh' && cookieToken && authService) {
       try {
         refreshSession = await authService.verifySessionForRefresh(cookieToken);
-      } catch {
-        return reply.code(401).send({ error: 'authentication required' });
+      } catch (error) {
+        if (error instanceof AuthServiceError)
+          return reply.code(401).send({ error: 'authentication required', code: error.code });
+        request.log.error(
+          { err: sanitizeExceptionForObservability(error) },
+          'authentication refresh lookup failed',
+        );
+        return reply.code(503).send({
+          error: 'authentication service unavailable',
+          code: 'authentication_unavailable',
+        });
       }
     }
     const result: AuthenticationResult = refreshSession
@@ -1574,11 +1597,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requireExpiration: requireJwtExpiration,
         });
     if (!result.ok) {
-      return reply.code(401).send({ error: 'authentication required' });
+      const codes = {
+        missing: 'authentication_missing',
+        invalid: 'invalid_token',
+        expired: 'access_token_expired',
+        'not-yet-valid': 'token_not_yet_valid',
+      };
+      return reply.code(401).send({ error: 'authentication required', code: codes[result.reason] });
     }
     if (result.principal.method === 'jwt' && result.principal.sessionId && authService) {
       const accessToken = extractBearerToken(request.headers.authorization);
-      if (!accessToken) return reply.code(401).send({ error: 'authentication required' });
+      if (!accessToken)
+        return reply
+          .code(401)
+          .send({ error: 'authentication required', code: 'authentication_missing' });
       try {
         const session = refreshSession ?? (await authService.verifyAccessToken(accessToken));
         if (options.newApiAccount) {
@@ -1606,17 +1638,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (error instanceof NewApiAccountError)
           return reply.code(error.status).send({ code: error.code, error: error.message });
         if (error instanceof AuthServiceError) {
-          return reply.code(401).send({ error: 'authentication required' });
+          return reply.code(401).send({ error: 'authentication required', code: error.code });
         }
         request.log.error(
           { err: sanitizeExceptionForObservability(error) },
           'authentication session lookup failed',
         );
-        return reply.code(503).send({ error: 'authentication service unavailable' });
+        return reply.code(503).send({
+          error: 'authentication service unavailable',
+          code: 'authentication_unavailable',
+        });
       }
     } else if (result.principal.method === 'jwt' && result.principal.sessionId && !authService) {
       request.log.error('stateful JWT authentication requires an authentication service');
-      return reply.code(503).send({ error: 'authentication service unavailable' });
+      return reply
+        .code(503)
+        .send({ error: 'authentication service unavailable', code: 'authentication_unavailable' });
     }
     // The implicit in-memory store exists to make local auth route tests and
     // development convenient; it must not count as a production backing store
@@ -1633,7 +1670,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       process.env.NODE_ENV === 'production'
     ) {
       request.log.error('JWT authentication requires a production user store');
-      return reply.code(503).send({ error: 'authentication service unavailable' });
+      return reply
+        .code(503)
+        .send({ error: 'authentication service unavailable', code: 'authentication_unavailable' });
     }
     // 自带账户存储只接受可撤销会话；无 sid 兼容仅保留给显式外部身份适配器。
     if (
@@ -1646,14 +1685,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (result.principal.userId && effectiveUserExists && !requestSessions.has(request)) {
       try {
         if (!(await effectiveUserExists(result.principal.userId))) {
-          return reply.code(401).send({ error: 'authentication required' });
+          return reply.code(401).send({ error: 'authentication required', code: 'invalid_token' });
         }
       } catch (error) {
         request.log.error(
           { err: sanitizeExceptionForObservability(error) },
           'authentication user lookup failed',
         );
-        return reply.code(503).send({ error: 'authentication service unavailable' });
+        return reply
+          .code(503)
+          .send({
+            error: 'authentication service unavailable',
+            code: 'authentication_unavailable',
+          });
       }
     }
     requestPrincipals.set(request, result.principal);
@@ -1745,7 +1789,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get('/v1/auth/me', async (request, reply) => {
     const session = requestSessions.get(request);
-    if (!session) return reply.code(401).send({ error: 'authentication required' });
+    if (!session)
+      return reply.code(401).send({ error: 'authentication required', code: 'session_required' });
     if (options.newApiAccount) {
       try {
         // 每次复核上游授权，逐组全量同步按间隔节流，避免刷新页面阻塞数十秒。
@@ -1759,7 +1804,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post('/v1/auth/logout', async (request, reply) => {
     if (!authService) {
-      return reply.code(503).send({ error: 'authentication service unavailable' });
+      return reply
+        .code(503)
+        .send({ error: 'authentication service unavailable', code: 'authentication_unavailable' });
     }
     if (options.newApiAccount) {
       const cookieToken = requestCookie(request, NEWAPI_SESSION_COOKIE);
@@ -1779,7 +1826,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const principal = requestPrincipals.get(request);
     const accessToken = extractBearerToken(request.headers.authorization);
     if (!session || principal?.method !== 'jwt' || !accessToken) {
-      return reply.code(401).send({ error: 'authentication required' });
+      return reply.code(401).send({ error: 'authentication required', code: 'session_required' });
     }
     await authService.logout(accessToken);
     return { loggedOut: true };
@@ -1787,10 +1834,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post('/v1/auth/logout-all', async (request, reply) => {
     if (!authService) {
-      return reply.code(503).send({ error: 'authentication service unavailable' });
+      return reply
+        .code(503)
+        .send({ error: 'authentication service unavailable', code: 'authentication_unavailable' });
     }
     const session = requestSessions.get(request);
-    if (!session) return reply.code(401).send({ error: 'authentication required' });
+    if (!session)
+      return reply.code(401).send({ error: 'authentication required', code: 'session_required' });
     const revokedSessions = await authService.logoutAll(session.user.id);
     return { revokedSessions };
   });
@@ -2898,6 +2948,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (!prompt.success)
         return reply.code(400).send({ error: 'invalid prompt optimization document' });
       const body = { ...parsed.data, promptDocument: prompt.data };
+      const guidance = body.guidance || undefined;
       const { projectId } = request.params;
       const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
       if (!project) return reply.code(404).send({ error: 'project not found' });
@@ -2933,6 +2984,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
                     },
                     input: body.promptDocument,
                     mediaType: body.mediaType,
+                    guidance: source.guidance,
                   }),
                   body.promptDocument,
                 ).nodes[0]?.data.promptDocument;
@@ -2948,6 +3000,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               !source ||
               source.nodeId !== body.nodeId ||
               source.skillId !== body.skillId ||
+              source.guidance !== guidance ||
               JSON.stringify(source.input) !== JSON.stringify(body.promptDocument) ||
               (expectedPrompt && JSON.stringify(frozenPrompt) !== JSON.stringify(expectedPrompt)) ||
               (body.modelAlias && body.modelAlias !== existing.modelAlias) ||
@@ -2989,6 +3042,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
                 skill,
                 input: body.promptDocument,
                 mediaType: body.mediaType,
+                guidance,
               }),
               body.promptDocument,
             );
@@ -3076,6 +3130,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
               skillId: skill.id,
               skillVersion: skill.version,
               instruction: skill.instruction,
+              ...(guidance ? { guidance } : {}),
               input: body.promptDocument,
             },
           });
@@ -3552,12 +3607,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!(await projectStore.get(run.projectId, projectScope(requestPrincipals, request)))) {
       return reply.code(404).send({ error: 'run not found' });
     }
-    return {
-      run: {
-        ...toPublicRunRecord(run),
-        ...(run.providerJob?.platformJobId ? { platformJobId: run.providerJob.platformJobId } : {}),
-      },
-    };
+    return { run: toPublicRunRecord(run) };
   });
 
   /**
@@ -5041,6 +5091,9 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
       : {}),
     ...(run.error ? { error: toPublicRunError(run.error) } : {}),
     ...(run.retryOf ? { retryOf: run.retryOf } : {}),
+    ...(run.providerJob?.platformJobId?.trim()
+      ? { platformJobId: run.providerJob.platformJobId }
+      : {}),
     ...(run.nodeTimings ? { nodeTimings: run.nodeTimings } : {}),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,

@@ -1,18 +1,21 @@
 import type { RunRecord } from '@multimodal-canvas/domain';
 
+/** Public run DTO adds the safe upstream identity without exposing Provider payloads. */
+export type ClientRunRecord = RunRecord & { platformJobId?: string };
+
 /** Lifecycle updates from SSE intentionally omit the immutable input snapshot. */
-export type RunUpdate = Omit<RunRecord, 'snapshot'> & {
+export type RunUpdate = Omit<ClientRunRecord, 'snapshot'> & {
   snapshot?: RunRecord['snapshot'];
 };
 
 /** Preserve the last complete snapshot when a public lifecycle event omits it. */
 export function mergeRunUpdate(
-  current: RunRecord | undefined,
+  current: ClientRunRecord | undefined,
   incoming: RunUpdate,
-): RunRecord | undefined {
-  if (!current) return incoming.snapshot ? (incoming as RunRecord) : undefined;
+): ClientRunRecord | undefined {
+  if (!current) return incoming.snapshot ? (incoming as ClientRunRecord) : undefined;
   if (current.id !== incoming.id) {
-    return incoming.snapshot ? (incoming as RunRecord) : undefined;
+    return incoming.snapshot ? (incoming as ClientRunRecord) : undefined;
   }
 
   let result: RunRecord['result'];

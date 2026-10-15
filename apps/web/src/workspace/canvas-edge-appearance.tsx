@@ -127,6 +127,7 @@ export function canvasEdgePreviewPath(pathStyle: CanvasEdgePathStyle): string {
 const CanvasEdgeAppearanceContext = createContext<CanvasEdgeAppearance>(
   canvasEdgeAppearanceDefaults,
 );
+const CanvasEdgeSelectedNodesContext = createContext<ReadonlySet<string>>(new Set());
 
 /**
  * 向画布内所有边提供当前路径形态与动态特效。
@@ -135,17 +136,24 @@ const CanvasEdgeAppearanceContext = createContext<CanvasEdgeAppearance>(
  */
 export function CanvasEdgeAppearanceProvider({
   appearance,
+  selectedNodeIds,
   children,
 }: {
   appearance: CanvasEdgeAppearance;
+  /** 已选节点的 ID，用于突出显示直接相连的边。 */
+  selectedNodeIds?: ReadonlySet<string>;
   children: ReactNode;
 }) {
   return (
     <CanvasEdgeAppearanceContext.Provider value={appearance}>
-      {children}
+      <CanvasEdgeSelectedNodesContext.Provider value={selectedNodeIds ?? EMPTY_SELECTED_NODE_IDS}>
+        {children}
+      </CanvasEdgeSelectedNodesContext.Provider>
     </CanvasEdgeAppearanceContext.Provider>
   );
 }
+
+const EMPTY_SELECTED_NODE_IDS: ReadonlySet<string> = new Set();
 
 /**
  * 读取当前连接线外观。没有 Provider 时返回默认值，便于单独渲染与测试边组件。
@@ -153,4 +161,15 @@ export function CanvasEdgeAppearanceProvider({
  */
 export function useCanvasEdgeAppearance(): CanvasEdgeAppearance {
   return useContext(CanvasEdgeAppearanceContext);
+}
+
+/**
+ * 检查连接线是否接到已选节点上；边本身的选择仍由 React Flow 单独处理。
+ * @param source 起点节点 ID。
+ * @param target 终点节点 ID。
+ * @returns 是否应强调该连接线。
+ */
+export function useCanvasEdgeSelectionEmphasis(source: string, target: string): boolean {
+  const selectedNodeIds = useContext(CanvasEdgeSelectedNodesContext);
+  return selectedNodeIds.has(source) || selectedNodeIds.has(target);
 }

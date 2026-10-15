@@ -279,6 +279,27 @@ describe('连接线路径与特效的独立性', () => {
     expect([...paths][0]).toBe(settledPath('smoothstep'));
   });
 
+  it('选中节点的相邻边获得独立强调态，未相邻边保持普通样式', () => {
+    const { container } = render(
+      <CanvasEdgeAppearanceProvider
+        appearance={{ pathStyle: 'bezier', effect: 'shooting-star' }}
+        selectedNodeIds={new Set(['a'])}
+      >
+        <svg>
+          <FlowingCanvasEdge id="connected-edge" source="a" target="b" {...edgeParams} />
+          <FlowingCanvasEdge id="unconnected-edge" source="b" target="c" {...edgeParams} />
+        </svg>
+      </CanvasEdgeAppearanceProvider>,
+    );
+
+    const bases = container.querySelectorAll<SVGPathElement>('.canvas-flow-edge-path');
+    const overlays = container.querySelectorAll<SVGGElement>('.canvas-edge-effect-shooting-star');
+    expect(bases[0]).toHaveClass('is-connected-selected');
+    expect(bases[1]).not.toHaveClass('is-connected-selected');
+    expect(overlays[0]).toHaveClass('is-connected-selected');
+    expect(overlays[1]).not.toHaveClass('is-connected-selected');
+  });
+
   it('流星光束保留基础边的状态颜色、选中态、终点标记和透明命中区域', () => {
     const { container } = render(
       <CanvasEdgeAppearanceProvider appearance={{ pathStyle: 'step', effect: 'shooting-star' }}>

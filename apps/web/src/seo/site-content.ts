@@ -55,15 +55,17 @@ export function sitePageMetadata(pathname: string): SitePageMetadata {
       ? '工作台'
       : path === '/settings'
         ? '设置'
-        : path === '/share'
-          ? '共享资源'
-          : path.startsWith('/projects/')
-            ? '创作画布'
-            : path.startsWith('/auth/')
-              ? '账号登录'
-              : path.startsWith('/admin') || ['/resources', '/runs'].includes(path)
-                ? '管理工作区'
-                : '页面未找到';
+        : path === '/logs'
+          ? '操作日志'
+          : path === '/share'
+            ? '共享资源'
+            : path.startsWith('/projects/')
+              ? '创作画布'
+              : path.startsWith('/auth/')
+                ? '账号登录'
+                : path.startsWith('/admin') || ['/resources', '/runs'].includes(path)
+                  ? '管理工作区'
+                  : '页面未找到';
   return {
     title: `${title} · ${SITE_NAME}`,
     description: path === '/share' ? SHARE_DESCRIPTION : SITE_DESCRIPTION,

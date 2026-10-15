@@ -543,7 +543,8 @@ export function AssetNode({
     Boolean(recoverNode) &&
     data.mode !== 'source' &&
     data.mediaType === 'video' &&
-    effectiveRunStatus === 'failed';
+    Boolean(data.upstreamTaskId) &&
+    (effectiveRunStatus === 'failed' || effectiveRunStatus === 'cancelled');
   const handlePreviewLoadState = useCallback((state: AssetPreviewLoadState) => {
     setPreviewLoadState(state);
   }, []);
@@ -708,7 +709,11 @@ export function AssetNode({
       isRecovering={isRecovering}
       recoverError={recoverError}
       onRecover={() => void handleRecover()}
-      stoppable={Boolean(stopNode) && (runControl.stoppable || isNodeRunning(effectiveRunStatus))}
+      stoppable={
+        Boolean(stopNode) &&
+        !data.upstreamTaskId &&
+        (runControl.stoppable || isNodeRunning(effectiveRunStatus))
+      }
       stopRequested={runControl.stopRequested || effectiveRunStatus === 'cancel_requested'}
       onStop={stopNode ? () => stopNode(id) : undefined}
       emptyLabel={data.mode === 'source' ? '资源内容不可用' : '尚未生成'}
@@ -1215,6 +1220,32 @@ export function AssetNode({
                 <dt>任务 ID</dt>
                 <dd>{data.runId ?? '未记录'}</dd>
               </div>
+              {data.mediaType === 'video' && data.mode !== 'source' ? (
+                <div>
+                  <dt>上游任务 ID</dt>
+                  <dd>{data.upstreamTaskId ? <code>{data.upstreamTaskId}</code> : '尚未返回'}</dd>
+                </div>
+              ) : null}
+              {canRecover ? (
+                <div>
+                  <dt>手动查询</dt>
+                  <dd>
+                    <Button
+                      type="button"
+                      className="flow-node-prompt-link"
+                      onClick={() => void handleRecover()}
+                      disabled={isRecovering || isRetrying}
+                    >
+                      {isRecovering ? (
+                        <LoaderCircle className="spin" size={13} aria-hidden="true" />
+                      ) : (
+                        <RefreshCw size={13} aria-hidden="true" />
+                      )}
+                      {isRecovering ? '查询中' : '查询上游任务'}
+                    </Button>
+                  </dd>
+                </div>
+              ) : null}
               <div>
                 <dt>节点创建时间</dt>
                 <dd>
@@ -1458,7 +1489,7 @@ function NodeStateContent({
             className="button button-secondary flow-node-stop nodrag nopan"
             onClick={() => void onStop?.()}
             disabled={stopRequested}
-            title="停止本地后续提交并取消已知运行；不保证远端任务终止或退款"
+            title="仅在请求尚未发送到上游时停止"
           >
             {stopRequested ? (
               <LoaderCircle className="spin" size={13} aria-hidden="true" />

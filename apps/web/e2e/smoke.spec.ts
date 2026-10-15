@@ -2579,7 +2579,7 @@ test('生成按钮在创建中与运行中都能停止，停止后可重新生�
   await stop.click();
   let confirmation = page.getByRole('dialog', { name: '取消当前生成？' });
   await expect(confirmation).toBeVisible();
-  await expect(confirmation).toContainText('远端任务不一定会终止，也不保证退款');
+  await expect(confirmation).toContainText('视频任务一旦被上游受理，将继续等待成功回传或明确失败');
   await page.waitForTimeout(350);
   await page.screenshot({
     path: info.outputPath('node-stop-confirmation.png'),
@@ -3419,15 +3419,30 @@ for (const viewport of [
       const geometry = await dialog.evaluate((el) => ({
         left: el.getBoundingClientRect().left,
         right: el.getBoundingClientRect().right,
+        top: el.getBoundingClientRect().top,
+        bottom: el.getBoundingClientRect().bottom,
         width: el.clientWidth,
         contentWidth: el.scrollWidth,
         background: getComputedStyle(el).backgroundColor,
         inputBackground: getComputedStyle(el.querySelector('textarea')!).backgroundColor,
+        wrapOverflow: getComputedStyle(el.closest('.ant-modal-wrap')!).overflowY,
+        wrapScrollHeight: el.closest('.ant-modal-wrap')!.scrollHeight,
+        wrapHeight: el.closest('.ant-modal-wrap')!.clientHeight,
+        dialogScrollHeight: el.scrollHeight,
+        dialogHeight: el.clientHeight,
+        bodyOverflow: getComputedStyle(el.querySelector('.node-quick-editor-dialog-body')!)
+          .overflowY,
       }));
       expect(geometry.left).toBeGreaterThanOrEqual(0);
       expect(geometry.right).toBeLessThanOrEqual(viewport.width);
+      expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(viewport.height);
       expect(geometry.contentWidth).toBeLessThanOrEqual(geometry.width);
       expect(geometry.inputBackground).toBe('rgba(0, 0, 0, 0)');
+      expect(geometry.wrapOverflow).toBe('hidden');
+      expect(geometry.wrapScrollHeight).toBeLessThanOrEqual(geometry.wrapHeight);
+      expect(geometry.dialogScrollHeight).toBeLessThanOrEqual(geometry.dialogHeight);
+      expect(geometry.bodyOverflow).toBe('auto');
       await dialog.getByRole('textbox', { name: '提示词' }).fill('Dialog 编辑后仍保留最新提示词。');
       await page.screenshot({
         path: testInfo.outputPath(`dialog-${theme}.png`),
@@ -3442,6 +3457,49 @@ for (const viewport of [
     expect(errors).toEqual([]);
   });
 }
+
+test('普通输入节点放大编辑器将滚动限制在窗口内部', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(projectPath);
+  await page.getByRole('button', { name: '新建文字生成节点' }).click();
+
+  const editor = page.locator('.node-quick-editor');
+  await editor
+    .getByRole('textbox', { name: '提示词' })
+    .fill('一段足够长的提示词，用于确认普通输入节点的放大窗口不会把滚动传递给外层。'.repeat(20));
+  await editor.getByRole('button', { name: '打开完整编辑器' }).click();
+
+  const dialog = page.getByRole('dialog', { name: /文字生成节点 · 编辑设置/ });
+  await expect(dialog).toBeVisible();
+  const geometry = await dialog.evaluate((element) => {
+    const wrap = element.closest('.ant-modal-wrap')!;
+    const body = element.querySelector('.node-quick-editor-dialog-body')!;
+    const rect = element.getBoundingClientRect();
+    return {
+      top: rect.top,
+      bottom: rect.bottom,
+      left: rect.left,
+      right: rect.right,
+      dialogHeight: element.clientHeight,
+      dialogScrollHeight: element.scrollHeight,
+      wrapHeight: wrap.clientHeight,
+      wrapScrollHeight: wrap.scrollHeight,
+      wrapOverflow: getComputedStyle(wrap).overflowY,
+      bodyOverflow: getComputedStyle(body).overflowY,
+      bodyScrollHeight: body.scrollHeight,
+      bodyHeight: body.clientHeight,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(1440);
+  expect(geometry.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.bottom).toBeLessThanOrEqual(900);
+  expect(geometry.wrapOverflow).toBe('hidden');
+  expect(geometry.wrapScrollHeight).toBeLessThanOrEqual(geometry.wrapHeight);
+  expect(geometry.dialogScrollHeight).toBeLessThanOrEqual(geometry.dialogHeight);
+  expect(geometry.bodyOverflow).toBe('auto');
+  expect(geometry.bodyScrollHeight).toBeGreaterThan(geometry.bodyHeight);
+});
 
 test('设置展示 New API 分组和四类默认模型，节点按显式所选模型运行', async ({ page }) => {
   await page.goto(projectPath);

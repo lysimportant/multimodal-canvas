@@ -72,7 +72,15 @@
 .react-flow__node .flow-asset-node.is-selected,
 .react-flow__node .flow-asset-node.is-selected:hover {
   border-color: var(--mc-accent-strong);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+  /* Keep the outline outside the measured shell so selection does not move
+     neighboring nodes or change the React Flow hit box. */
+  outline: 2px solid color-mix(in srgb, var(--mc-accent-strong) 88%, transparent);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--mc-accent) 22%, transparent),
+    0 0 18px color-mix(in srgb, var(--mc-accent-strong) 34%, transparent),
+    0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+  z-index: 2;
 }
 
 .flow-asset-node > .flow-node-placeholder,

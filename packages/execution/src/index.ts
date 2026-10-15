@@ -357,7 +357,8 @@ export class PrismaExecutionService {
    *
    * 历史任务可能早于 ExecutionAuthorization，但取消不是执行授权。此路径允许它们
    * 按稳定 Run 身份停止本地投递，同时仍由 Worker 的只读恢复规则禁止新建请求。
-   * 已提交视频也接受取消意图，由 Worker 按原身份标记失败并向 NewAPI 申请退款。
+   * 视频创建请求一旦开始发送便不能取消：上游没有可靠的远端取消能力，Worker
+   * 必须继续等待成功结果或明确失败，后者再按原平台身份处理退款。
    */
   async requestCancellation(runId: string): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
@@ -395,6 +396,37 @@ export class PrismaExecutionService {
           'send_requires_review',
           '无法核对原任务媒体类型，且请求已发送或状态不明，请核实原任务后再操作',
         );
+      }
+      if (frozen.success) {
+        const videoNodeIds = new Set(
+          frozen.data.nodes
+            .filter((node) => node.data.mediaType === 'video' && node.data.mode !== 'source')
+            .map((node) => node.id),
+        );
+        const frozenNodeIds = new Set(frozen.data.nodes.map((node) => node.id));
+        const targetIsVideo = videoNodeIds.has(frozen.data.targetNodeId);
+        const videoSendStarted = submittedIntents.some(
+          (intent) =>
+            videoNodeIds.has(intent.nodeId) || (targetIsVideo && !frozenNodeIds.has(intent.nodeId)),
+        );
+        const videoPlatformJobRecorded = providerJobs.some((job) => {
+          if (!job.platformJobId?.trim()) return false;
+          const evidence = job.payload;
+          const workflowNodeId =
+            evidence !== null &&
+            typeof evidence === 'object' &&
+            !Array.isArray(evidence) &&
+            typeof evidence.workflowNodeId === 'string'
+              ? evidence.workflowNodeId
+              : undefined;
+          return workflowNodeId ? videoNodeIds.has(workflowNodeId) : targetIsVideo;
+        });
+        if (videoSendStarted || videoPlatformJobRecorded) {
+          throw new ExecutionError(
+            'send_requires_review',
+            '上游视频任务已开始，无法取消或因用户取消退款；系统会继续等待成功回传或明确失败',
+          );
+        }
       }
       if (outbox && payload) {
         await transaction.runOutbox.update({

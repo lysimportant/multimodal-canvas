@@ -151,7 +151,7 @@ export type NodeQuickEditorProps = {
   onModelChange: (value: ModelSelection) => void;
   onInferenceStrengthChange: (value: InferenceStrength) => void;
   onRun: () => void;
-  /** 停止当前节点关联的本次操作，不保证 Provider 远端任务终止或退款。 */
+  /** 停止当前节点关联且尚未发送到 Provider 的本次操作。 */
   onStop?: () => void | Promise<void>;
   /** 有回显时把修改结果写到新建子节点并立刻运行。 */
   onRunNewNode?: () => void;
@@ -1132,8 +1132,8 @@ export function NodeQuickEditor({
             aria-label={runControl.stopRequested ? '停止中' : '停止生成'}
             title={
               runControl.stopRequested
-                ? '正在停止；视频取消与 NewAPI 退款处理中'
-                : '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款'
+                ? '正在停止尚未发送到上游的任务'
+                : '仅在请求尚未发送到上游时停止；已受理的视频会继续等待终态'
             }
             onClick={() => void onStop?.()}
             disabled={runControl.stopRequested}

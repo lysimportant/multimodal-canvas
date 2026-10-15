@@ -60,6 +60,8 @@ export const newApiLoginResultSchema = z.object({
 export const newApiAccountStateSchema = z.object({
   user: newApiAccountUserSchema,
   grant_id: z.string().min(1),
+  /** 新版上游返回滚动续期后的权威期限；旧上游省略时保持原期限。 */
+  expires_at: z.string().datetime().optional(),
   groups: z.array(z.string().min(1)).max(1024),
 });
 

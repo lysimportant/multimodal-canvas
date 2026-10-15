@@ -21,6 +21,7 @@ const optimizationRequestSchema = z.object({
   nodeId: z.string().min(1),
   skillId: z.string().min(1),
   skillVersion: skillVersionSchema,
+  guidance: z.string().max(4_000).optional(),
   mediaType: z.enum(['text', 'image', 'audio', 'video']),
   promptDocument: documentSchema,
   idempotencyKey: z.string().min(1),

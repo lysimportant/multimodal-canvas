@@ -10,7 +10,15 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import { FolderOpen, LogIn, LogOut, ShieldCheck, UserCircle, Activity } from 'lucide-react';
+import {
+  Activity,
+  ClipboardList,
+  FolderOpen,
+  LogIn,
+  LogOut,
+  ShieldCheck,
+  UserCircle,
+} from 'lucide-react';
 import type { AuthUser } from '../auth-client';
 import { AppLink, appPaths, shouldInterceptAppLink } from '../routing';
 import './account-menu.css';
@@ -98,6 +106,7 @@ export function AccountMenu({
   const links = [
     { href: appPaths.resources, label: '我的资源', icon: FolderOpen },
     { href: appPaths.runs, label: '我的任务', icon: Activity },
+    { href: appPaths.logs, label: '操作日志', icon: ClipboardList },
     ...(user.role === 'admin'
       ? [{ href: appPaths.admin, label: '管理后台', icon: ShieldCheck }]
       : []),

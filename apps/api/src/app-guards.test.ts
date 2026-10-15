@@ -32,7 +32,7 @@ describe('API authentication guard', () => {
         headers: { authorization },
       });
       expect(response.statusCode).toBe(401);
-      expect(response.json()).toEqual({ error: 'authentication required' });
+      expect(response.json()).toEqual({ error: 'authentication required', code: 'invalid_token' });
     } finally {
       await app.close();
     }
@@ -147,7 +147,10 @@ describe('API authentication guard', () => {
         headers: { authorization: `Bearer ${header}.${body}.${signature}` },
       });
       expect(response.statusCode).toBe(503);
-      expect(response.json()).toEqual({ error: 'authentication service unavailable' });
+      expect(response.json()).toEqual({
+        error: 'authentication service unavailable',
+        code: 'authentication_unavailable',
+      });
     } finally {
       await app.close();
     }

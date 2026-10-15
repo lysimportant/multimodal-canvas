@@ -69,6 +69,54 @@ describe('New API 登录检查节流同步', () => {
     expect(synchronize).not.toHaveBeenCalled();
   });
 
+  it('接纳上游滚动期限，但只更新仍属于同一授权和同步轮次的记录', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const expiresAt = new Date(now + 400 * 86400000);
+    const { service, updateMany } = createService({
+      account: async () => ({
+        user: { id: 'external-1' },
+        grant_id: 'grant-1',
+        groups: ['default', 'GPT_Image'],
+        expires_at: expiresAt.toISOString(),
+      }),
+    });
+    await service.synchronizeIfStale('user-1', maxAge);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'identity-1',
+        grantId: 'grant-1',
+        encryptedGrant: 'cipher',
+        status: { notIn: ['revoked', 'disabled'] },
+        syncedAt: new Date(now - 1000),
+        expiresAt: { lt: expiresAt },
+      },
+      data: { expiresAt },
+    });
+  });
+
+  it('旧上游未给出续期期限时不自行延长授权', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const { service, updateMany } = createService({});
+    await service.synchronizeIfStale('user-1', maxAge);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('拒绝过期的上游续期结果', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const { service, updateMany } = createService({
+      account: async () => ({
+        user: { id: 'external-1' },
+        grant_id: 'grant-1',
+        groups: [],
+        expires_at: new Date(now - 1000).toISOString(),
+      }),
+    });
+    await expect(service.synchronizeIfStale('user-1', maxAge)).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['同步已过期', { syncedAt: new Date(now - maxAge) }],
     ['从未同步', { syncedAt: null }],

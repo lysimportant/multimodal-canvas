@@ -230,6 +230,7 @@ export class NewApiAccountService {
     }
     if (state.user.id !== identity.externalUserId || state.grant_id !== identity.grantId)
       throw new NewApiAccountError('identity_changed', 'New API 账号已变化，请重新登录', 401);
+    await this.persistVerifiedGrantExpiry(identity, state.expires_at);
     const upstream = new Set(state.groups.filter((group) => group !== '神秘分组'));
     const local = await this.options.prisma.newApiGroupBinding.findMany({
       where: { identityId: identity.id, group: { not: '神秘分组' }, status: { not: 'removed' } },
@@ -256,6 +257,7 @@ export class NewApiAccountService {
       throw new NewApiAccountError('identity_changed', 'New API 账号已变化，请重新登录', 401);
     if (!(await this.isSynchronizationCurrent(identity, synchronizedAt)))
       return this.status(userId);
+    await this.persistVerifiedGrantExpiry(identity, state.expires_at, synchronizedAt);
     await this.retireObsoleteRepairs(identity, synchronizedAt);
     if (!(await this.isSynchronizationCurrent(identity, synchronizedAt)))
       return this.status(userId);
@@ -390,6 +392,29 @@ export class NewApiAccountService {
       data: { status: 'active', syncError: null },
     });
     return this.status(userId);
+  }
+
+  /** 只接纳本次已验证授权的期限；迟到回包不能恢复撤销、覆盖换号或缩短新期限。 */
+  private async persistVerifiedGrantExpiry(
+    identity: NewApiIdentity,
+    expiresAt: string | undefined,
+    synchronizedAt = identity.syncedAt,
+  ): Promise<void> {
+    if (!expiresAt) return;
+    const expiry = new Date(expiresAt);
+    if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now())
+      throw new NewApiAccountError('authorization_revoked', 'New API 授权已到期，请重新登录', 401);
+    await this.options.prisma.newApiIdentity.updateMany({
+      where: {
+        id: identity.id,
+        grantId: identity.grantId,
+        encryptedGrant: identity.encryptedGrant,
+        status: { notIn: ['revoked', 'disabled'] },
+        syncedAt: synchronizedAt,
+        expiresAt: { lt: expiry },
+      },
+      data: { expiresAt: expiry },
+    });
   }
 
   /** 同步尝试先领取单调轮次；较新的请求使迟到账号或分组回包失去写权限。 */

@@ -1579,7 +1579,14 @@ h2 {
 }
 
 .flow-asset-node.is-selected {
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
+  /* The more specific React Flow selector in asset-node.css owns the same
+     visual state; keep this fallback strong for standalone node previews. */
+  outline: 2px solid color-mix(in srgb, var(--mc-accent-strong) 88%, transparent);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--mc-accent) 22%, transparent),
+    0 0 18px color-mix(in srgb, var(--mc-accent-strong) 34%, transparent),
+    0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .flow-generate-node {
@@ -1762,6 +1769,22 @@ h2 {
   stroke-width: 4px;
 }
 
+/* Edges touching a selected node remain visually connected to that selection.
+   The class is separate from React Flow's edge selection so multi-select can
+   emphasize every adjacent edge without changing edge interaction semantics. */
+.canvas-flow-edge-path.is-connected-selected {
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, var(--mc-accent-strong) 88%, transparent))
+    drop-shadow(0 0 10px color-mix(in srgb, var(--mc-accent) 46%, transparent));
+  stroke: var(--mc-accent-strong) !important;
+  stroke-width: 4.5px !important;
+}
+
+.canvas-flow-edge-path.canvas-edge-effect-marching.is-connected-selected {
+  animation-duration: 0.55s;
+  stroke-dasharray: 20 9;
+}
+
 /* 特效叠加层：统一不接收指针事件，选择命中与删除始终由基础边负责。 */
 .canvas-edge-effect-meteor,
 .canvas-edge-effect-cruiser,
@@ -1774,7 +1797,7 @@ h2 {
 
 .canvas-edge-effect-meteor {
   stroke: var(--canvas-edge-flow-color);
-  stroke-dasharray: 10 72;
+  stroke-dasharray: 20 72;
   stroke-width: 2;
   animation: canvas-flow-meteor 1.6s linear infinite;
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent) 80%, #ffffff));
@@ -1788,7 +1811,8 @@ h2 {
 
 .canvas-edge-effect-cruiser {
   stroke: var(--canvas-edge-flow-color);
-  stroke-dasharray: 2 120;
+  /* A short luminous streak reads as motion better than a single dot. */
+  stroke-dasharray: 20 120;
   stroke-width: 3;
   animation: canvas-flow-meteor 2.6s linear infinite;
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent) 80%, #ffffff));
@@ -1796,7 +1820,7 @@ h2 {
 
 .canvas-edge-effect-multi {
   stroke: var(--canvas-edge-flow-color);
-  stroke-dasharray: 6 22;
+  stroke-dasharray: 20 22;
   stroke-width: 2.5;
   animation: canvas-flow-meteor 2.4s linear infinite;
   filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-accent) 70%, #ffffff));
@@ -1806,6 +1830,43 @@ h2 {
   stroke: color-mix(in srgb, var(--mc-accent-strong) 74%, #ffffff);
   stroke-width: 5;
   animation: canvas-edge-breathe 2.4s ease-in-out infinite;
+}
+
+/* Accelerate and brighten every decorative layer adjacent to a selected node.
+   The base edge remains the hit target and keeps its own selection state. */
+.canvas-edge-effect-meteor.is-connected-selected,
+.canvas-edge-effect-cruiser.is-connected-selected,
+.canvas-edge-effect-multi.is-connected-selected,
+.canvas-edge-effect-breathe.is-connected-selected {
+  filter:
+    drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent-strong) 94%, transparent))
+    drop-shadow(0 0 12px color-mix(in srgb, var(--mc-accent) 55%, transparent));
+  stroke: color-mix(in srgb, var(--mc-accent-strong) 86%, #ffffff);
+  stroke-width: 5px;
+  animation-duration: 0.65s;
+}
+
+.canvas-edge-effect-shooting-star.is-connected-selected {
+  color: var(--mc-accent-strong);
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, var(--mc-accent-strong) 90%, transparent))
+    drop-shadow(0 0 10px color-mix(in srgb, var(--mc-accent) 48%, transparent));
+}
+
+.canvas-edge-effect-shooting-star.is-connected-selected .canvas-edge-shooting-star-motion {
+  animation-duration: 0.65s;
+}
+
+.canvas-edge-effect-meteor.is-connected-selected {
+  stroke-dasharray: 20 72;
+}
+
+.canvas-edge-effect-cruiser.is-connected-selected {
+  stroke-dasharray: 20 120;
+}
+
+.canvas-edge-effect-multi.is-connected-selected {
+  stroke-dasharray: 20 22;
 }
 
 @keyframes canvas-flow-meteor {
@@ -1841,17 +1902,17 @@ h2 {
 
   /* 关闭动画后仍用静态线型与亮度区分特效，选中态继续由 is-selected 提供。 */
   .canvas-edge-effect-meteor {
-    stroke-dasharray: 10 72;
+    stroke-dasharray: 20 72;
     opacity: 0.5;
   }
 
   .canvas-edge-effect-cruiser {
-    stroke-dasharray: 2 120;
+    stroke-dasharray: 20 120;
     opacity: 0.6;
   }
 
   .canvas-edge-effect-multi {
-    stroke-dasharray: 6 22;
+    stroke-dasharray: 20 22;
     opacity: 0.55;
   }
 

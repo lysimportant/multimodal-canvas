@@ -57,9 +57,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type DragEvent,
   type InputHTMLAttributes,
   type MouseEvent,
+  type SetStateAction,
 } from 'react';
 
 import {
@@ -188,6 +190,7 @@ import {
   ContactPage,
   HomePage,
   NotFoundPage,
+  OperationLogPage,
   PageFrame,
   ProjectCanvasPage,
   SettingsPage,
@@ -228,6 +231,7 @@ import {
   type InferenceStrength,
 } from './workspace/NodeQuickEditor';
 import { AppQueryProvider } from './query/client';
+import { createOperationLogId, recordOperationLog } from './operation-log';
 import { SessionLoading } from './startup/SessionLoading';
 import { usePlatformModelCatalogQuery, useCustomGroupsModelQuery } from './query/models';
 import {
@@ -298,6 +302,25 @@ type NodeRunOperation = {
   authGeneration: number;
   projectId: string;
 };
+
+/** Public run responses expose only the upstream task ID, while internal records may include it in providerJob. */
+function upstreamTaskIdForRun(run: RunRecord | undefined): string | undefined {
+  const publicId = (run as (RunRecord & { platformJobId?: string }) | undefined)?.platformJobId;
+  const value = publicId ?? run?.providerJob?.platformJobId;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function videoRunCanStillStop(
+  run: RunRecord | undefined,
+  node: AssetFlowNode | undefined,
+): boolean {
+  if (!run) return true;
+  return !(
+    node?.data.mediaType === 'video' &&
+    isActiveRunStatus(run.status) &&
+    upstreamTaskIdForRun(run)
+  );
+}
 
 /** 本地草稿按当前用户与项目隔离，旧版无归属草稿不自动导入其他账户。 */
 function canvasDraftKey(projectId: string, userId?: string) {
@@ -700,7 +723,23 @@ function WorkspaceApp({
   );
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [notice, setNotice] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
+  const [notice, setNoticeState] = useState<{ kind: 'error' | 'success'; message: string } | null>(
+    null,
+  );
+  const setNotice: Dispatch<SetStateAction<{ kind: 'error' | 'success'; message: string } | null>> =
+    useCallback(
+      (value) => {
+        if (typeof value !== 'function' && value?.kind === 'error')
+          recordOperationLog(authUser?.id, {
+            category: 'system',
+            action: '画布操作提示错误',
+            projectId: initialProject.id,
+            errorType: 'UI_OPERATION_FAILED',
+          });
+        setNoticeState(value);
+      },
+      [authUser?.id, initialProject.id],
+    );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   /** Skill 库以用户隔离并由所有节点共用，目录读取不会触发模型。 */
   const [showSkillWorkbench, setShowSkillWorkbench] = useState(false);
@@ -1042,13 +1081,43 @@ function WorkspaceApp({
 
   /** 撤销用户编辑，运行状态从当前会话合并而非从历史回滚。 */
   const undoCanvas = useCallback(() => {
-    applyHistorySnapshot(historyRef.current.undo(currentCanvasSnapshot(), runRecordsRef.current));
-  }, [applyHistorySnapshot, currentCanvasSnapshot]);
+    const previous = currentCanvasSnapshot();
+    const next = historyRef.current.undo(previous, runRecordsRef.current);
+    if (!next) return;
+    const nextIds = new Set(next.nodes.map((node) => node.id));
+    const changedNodes = previous.nodes.filter((node) => !nextIds.has(node.id));
+    const previousIds = new Set(previous.nodes.map((node) => node.id));
+    changedNodes.push(...next.nodes.filter((node) => !previousIds.has(node.id)));
+    recordOperationLog(authUser?.id, {
+      category: 'canvas',
+      action: '撤销画布操作',
+      projectId: initialProject.id,
+      nodeIds: changedNodes.map((node) => node.id),
+      nodeTypes: changedNodes.map((node) => node.data.mediaType),
+      count: changedNodes.length,
+    });
+    applyHistorySnapshot(next);
+  }, [applyHistorySnapshot, authUser?.id, currentCanvasSnapshot, initialProject.id]);
 
   /** 重做布局与配置，仍保留异步更新后的最新运行展示。 */
   const redoCanvas = useCallback(() => {
-    applyHistorySnapshot(historyRef.current.redo(currentCanvasSnapshot(), runRecordsRef.current));
-  }, [applyHistorySnapshot, currentCanvasSnapshot]);
+    const previous = currentCanvasSnapshot();
+    const next = historyRef.current.redo(previous, runRecordsRef.current);
+    if (!next) return;
+    const nextIds = new Set(next.nodes.map((node) => node.id));
+    const changedNodes = previous.nodes.filter((node) => !nextIds.has(node.id));
+    const previousIds = new Set(previous.nodes.map((node) => node.id));
+    changedNodes.push(...next.nodes.filter((node) => !previousIds.has(node.id)));
+    recordOperationLog(authUser?.id, {
+      category: 'canvas',
+      action: '重做画布操作',
+      projectId: initialProject.id,
+      nodeIds: changedNodes.map((node) => node.id),
+      nodeTypes: changedNodes.map((node) => node.data.mediaType),
+      count: changedNodes.length,
+    });
+    applyHistorySnapshot(next);
+  }, [applyHistorySnapshot, authUser?.id, currentCanvasSnapshot, initialProject.id]);
 
   /**
    * 清空当前画布中的节点、连线与组。
@@ -1110,6 +1179,14 @@ function WorkspaceApp({
       }
       if (!lifecycle.active) return;
       rememberHistory();
+      recordOperationLog(authUser?.id, {
+        category: 'canvas',
+        action: '清空画布',
+        projectId: initialProject.id,
+        nodeIds: nodesRef.current.map((node) => node.id),
+        nodeTypes: nodesRef.current.map((node) => node.data.mediaType),
+        count: nodesRef.current.length,
+      });
       nodesRef.current = [];
       edgesRef.current = [];
       groupsRef.current = [];
@@ -1126,7 +1203,7 @@ function WorkspaceApp({
     } finally {
       clearActionPendingRef.current = false;
     }
-  }, [modal, rememberHistory, setEdges, setNodes]);
+  }, [authUser?.id, initialProject.id, modal, rememberHistory, setEdges, setNodes]);
 
   /**
    * 只清理内容为空的提示词节点。
@@ -1192,6 +1269,15 @@ function WorkspaceApp({
       }
       rememberHistory();
       const remainingNodes = nodesRef.current.filter((node) => !removable.has(node.id));
+      const removedNodes = nodesRef.current.filter((node) => removable.has(node.id));
+      recordOperationLog(authUser?.id, {
+        category: 'canvas',
+        action: '清理空节点',
+        projectId: initialProject.id,
+        nodeIds: removedNodes.map((node) => node.id),
+        nodeTypes: removedNodes.map((node) => node.data.mediaType),
+        count: removedNodes.length,
+      });
       const remainingEdges = edgesRef.current.filter(
         (edge) => !removable.has(edge.source) && !removable.has(edge.target),
       );
@@ -1218,7 +1304,7 @@ function WorkspaceApp({
     } finally {
       clearActionPendingRef.current = false;
     }
-  }, [modal, rememberHistory, setEdges, setNodes]);
+  }, [authUser?.id, initialProject.id, modal, rememberHistory, setEdges, setNodes]);
 
   /**
    * 清空菜单的候选数量。
@@ -2225,6 +2311,14 @@ function WorkspaceApp({
   const appendNodesAndSelect = useCallback(
     (newNodes: AssetFlowNode[]) => {
       if (newNodes.length === 0) return;
+      recordOperationLog(authUser?.id, {
+        category: 'canvas',
+        action: '添加节点',
+        projectId: initialProject.id,
+        nodeIds: newNodes.map((node) => node.id),
+        nodeTypes: newNodes.map((node) => node.data.mediaType),
+        count: newNodes.length,
+      });
       setSelectedGroupId(null);
       const selectedId = newNodes[newNodes.length - 1].id;
       setNodes((current) => [
@@ -2233,7 +2327,7 @@ function WorkspaceApp({
       ]);
       setSelectedNodeId(selectedId);
     },
-    [setNodes],
+    [authUser?.id, initialProject.id, setNodes],
   );
 
   /** 把本地文件收成项目资源，不在画布上新建节点，供提示词资源条引用。 */
@@ -2529,6 +2623,15 @@ function WorkspaceApp({
         }
         rememberHistory();
         // 不调用独占选择的 appendNodesAndSelect，来源的选择和所有数据保持原样。
+        recordOperationLog(authUser?.id, {
+          category: 'canvas',
+          action: '添加引用生成节点',
+          projectId: initialProject.id,
+          nodeId: node.id,
+          nodeIds: [node.id],
+          nodeTypes: [node.data.mediaType],
+          count: 1,
+        });
         nodesRef.current = next;
         edgesRef.current = nextEdges;
         setNodes(next);
@@ -2550,7 +2653,15 @@ function WorkspaceApp({
         });
       }
     },
-    [assets, createGenerateNode, rememberHistory, setEdges, setNodes],
+    [
+      assets,
+      authUser?.id,
+      createGenerateNode,
+      initialProject.id,
+      rememberHistory,
+      setEdges,
+      setNodes,
+    ],
   );
 
   /**
@@ -2618,6 +2729,15 @@ function WorkspaceApp({
       rememberHistory();
       setSelectedGroupId(null);
       const elevatedChild = { ...child, selected: true, zIndex: FORK_NODE_Z_INDEX };
+      recordOperationLog(authUser?.id, {
+        category: 'canvas',
+        action: '添加分叉节点',
+        projectId: initialProject.id,
+        nodeId: child.id,
+        nodeIds: [child.id],
+        nodeTypes: [child.data.mediaType],
+        count: 1,
+      });
       const nextNodes = [
         ...nodesRef.current.map((node) => (node.selected ? { ...node, selected: false } : node)),
         elevatedChild,
@@ -2653,7 +2773,7 @@ function WorkspaceApp({
       }, FORK_NODE_ELEVATION_MS);
       forkElevationTimersRef.current.set(child.id, timer);
     },
-    [rememberHistory, setEdges, setNodes],
+    [authUser?.id, initialProject.id, rememberHistory, setEdges, setNodes],
   );
 
   const handleConnect = useCallback(
@@ -3334,6 +3454,16 @@ function WorkspaceApp({
         nodeIds ? [] : edgesRef.current.filter((edge) => edge.selected).map((edge) => edge.id),
       );
       if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return false;
+      const removedNodes = nodesRef.current.filter((node) => selectedNodeIds.has(node.id));
+      if (removedNodes.length > 0)
+        recordOperationLog(authUser?.id, {
+          category: 'canvas',
+          action: '删除节点',
+          projectId: initialProject.id,
+          nodeIds: removedNodes.map((node) => node.id),
+          nodeTypes: removedNodes.map((node) => node.data.mediaType),
+          count: removedNodes.length,
+        });
       rememberHistory();
       const remainingNodes = nodesRef.current.filter((node) => !selectedNodeIds.has(node.id));
       const remainingEdges = edgesRef.current.filter(
@@ -3356,7 +3486,7 @@ function WorkspaceApp({
       canvasDirtyRef.current = true;
       return true;
     },
-    [rememberHistory, setEdges, setNodes],
+    [authUser?.id, initialProject.id, rememberHistory, setEdges, setNodes],
   );
 
   useEffect(() => {
@@ -3468,6 +3598,14 @@ function WorkspaceApp({
               data: { ...node.data, contentUrl: asset.contentUrl, mimeType: asset.mimeType },
             };
           });
+          recordOperationLog(authUser?.id, {
+            category: 'canvas',
+            action: '粘贴节点',
+            projectId: initialProject.id,
+            nodeIds: hydratedNodes.map((node) => node.id),
+            nodeTypes: hydratedNodes.map((node) => node.data.mediaType),
+            count: hydratedNodes.length,
+          });
           setNodes((current) => {
             const next = [
               ...current.map((node) => ({ ...node, selected: false })),
@@ -3499,7 +3637,9 @@ function WorkspaceApp({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     deleteCanvasSelection,
+    authUser?.id,
     assets,
+    initialProject.id,
     redoCanvas,
     rememberHistory,
     saveCanvas,
@@ -3516,6 +3656,7 @@ function WorkspaceApp({
       if (!shouldApplyRunUpdate(currentRun, incoming)) return;
       const run = mergeRunUpdate(currentRun, incoming);
       if (!run) return;
+      const upstreamTaskId = upstreamTaskIdForRun(run);
       runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
       pendingRunUpdateRef.current.delete(nodeId);
       setRunRecords(runRecordsRef.current);
@@ -3530,7 +3671,10 @@ function WorkspaceApp({
       if (isActiveRunStatus(run.status)) {
         const currentControl = nodeRunControlStore.getSnapshot(nodeId);
         nodeRunControlStore.set(nodeId, {
-          stoppable: true,
+          stoppable: videoRunCanStillStop(
+            run,
+            nodesRef.current.find((candidate) => candidate.id === nodeId),
+          ),
           stopRequested: currentControl.stopRequested || run.status === 'cancel_requested',
           submitting: false,
         });
@@ -3562,6 +3706,7 @@ function WorkspaceApp({
                   runId: run.id,
                   runProgress: run.progress,
                   runError: run.error,
+                  upstreamTaskId,
                   nodeTiming: run.nodeTimings?.[nodeId],
                   resultAsset: resultAsset ?? node.data.resultAsset,
                   resultTiming: resultAsset ? run.nodeTimings?.[nodeId] : node.data.resultTiming,
@@ -3681,7 +3826,7 @@ function WorkspaceApp({
         }
         setNotice({
           kind: 'success',
-          message: '已请求停止：未发起的生成不会继续，视频任务正在取消并申请 NewAPI 退款',
+          message: '已请求停止：仅尚未发送到上游的任务会取消',
         });
         try {
           await cancelOperationRuns(operation);
@@ -3692,7 +3837,7 @@ function WorkspaceApp({
           }
           setNotice({
             kind: 'error',
-            message: `${error instanceof Error ? error.message : '停止运行失败'}；取消与退款尚未确认`,
+            message: error instanceof Error ? error.message : '停止运行失败',
           });
         }
         return;
@@ -3718,7 +3863,7 @@ function WorkspaceApp({
       nodeRunControlStore.set(nodeId, { stoppable: true, stopRequested: true });
       setNotice({
         kind: 'success',
-        message: '已请求停止运行；视频任务正在取消并申请 NewAPI 退款',
+        message: '已请求停止：仅尚未发送到上游的任务会取消',
       });
       try {
         await cancelKnownRun(run, nodeId, standaloneOperation);
@@ -3727,7 +3872,7 @@ function WorkspaceApp({
         nodeRunControlStore.set(nodeId, { stoppable: true, stopRequested: false });
         setNotice({
           kind: 'error',
-          message: `${error instanceof Error ? error.message : '停止运行失败'}；取消与退款尚未确认`,
+          message: error instanceof Error ? error.message : '停止运行失败',
         });
       }
     },
@@ -3934,8 +4079,27 @@ function WorkspaceApp({
       target: NodeRunTarget = 'sameNode',
       promptOverride?: NodeRunPromptOverride,
       existingOperation?: NodeRunOperation,
+      trigger = 'canvas-control',
     ) => {
       const currentNode = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
+      const operationId = existingOperation?.id ?? createOperationLogId('operation');
+      if (!existingOperation) {
+        const requestedCount = currentNode.data.generationCount;
+        recordOperationLog(authUser?.id, {
+          category: 'generation',
+          action: '用户触发生成',
+          operationId,
+          ...(projectId ? { projectId } : {}),
+          nodeId: currentNode.id,
+          mediaType: currentNode.data.mediaType,
+          target,
+          trigger,
+          ...(typeof requestedCount === 'number' && Number.isFinite(requestedCount)
+            ? { generationCount: requestedCount }
+            : {}),
+          outcome: 'pending',
+        });
+      }
       try {
         const recreationIssue = recreationGenerationIssue(currentNode.data);
         if (recreationIssue) throw new Error(recreationIssue);
@@ -3980,7 +4144,7 @@ function WorkspaceApp({
         }
 
         const operation: NodeRunOperation = {
-          id: `node-run-${Date.now()}-${source.id}`,
+          id: operationId,
           sourceNodeId: source.id,
           nodeIds: new Set([source.id]),
           runs: new Map(),
@@ -4196,7 +4360,7 @@ function WorkspaceApp({
         return;
       }
       const operation: NodeRunOperation = existingOperation ?? {
-        id: `node-run-${Date.now()}-${node.id}`,
+        id: operationId,
         sourceNodeId: node.id,
         nodeIds: new Set([node.id]),
         runs: new Map(),
@@ -4224,6 +4388,14 @@ function WorkspaceApp({
         const batch = createGenerationBatch(nodeSnapshot, nodesRef.current, edgesRef.current);
         targets = batch.targets;
         if (targets.length > 1) {
+          recordOperationLog(authUser?.id, {
+            category: 'canvas',
+            action: '按生成数量创建节点',
+            projectId: operation.projectId,
+            nodeIds: targets.slice(1).map((targetNode) => targetNode.id),
+            nodeTypes: targets.slice(1).map((targetNode) => targetNode.data.mediaType),
+            count: targets.length - 1,
+          });
           rememberHistory();
           nodesRef.current = batch.nodes;
           edgesRef.current = batch.edges;
@@ -4317,6 +4489,7 @@ function WorkspaceApp({
             }
             nodeSnapshot = currentTarget;
             const confirmed = confirmedRequests[targetIndex]!;
+            const requestId = createOperationLogId('request');
             const response = await apiFetch(
               `${API_BASE_URL}${confirmed.path}`,
               {
@@ -4326,7 +4499,18 @@ function WorkspaceApp({
                   ...confirmed.body,
                 }),
               },
-              { expectedAuthGeneration: confirmed.authGeneration },
+              {
+                expectedAuthGeneration: confirmed.authGeneration,
+                logContext: {
+                  requestId,
+                  operationId: operation.id,
+                  projectId: operation.projectId,
+                  nodeId: nodeSnapshot.id,
+                  mediaType: nodeSnapshot.data.mediaType,
+                  target,
+                  trigger,
+                },
+              },
             );
             const result = (await response.json().catch(() => ({}))) as {
               run?: RunRecord;
@@ -4341,6 +4525,18 @@ function WorkspaceApp({
               throw new Error('运行提交响应目标与节点不一致');
             }
             submitted.push({ node: nodeSnapshot, run: result.run });
+            recordOperationLog(authUser?.id, {
+              category: 'generation',
+              action: '运行已受理',
+              operationId: operation.id,
+              requestId,
+              projectId: operation.projectId,
+              nodeId: nodeSnapshot.id,
+              runId: result.run.id,
+              mediaType: nodeSnapshot.data.mediaType,
+              target,
+              outcome: 'success',
+            });
             operation.runs.set(nodeSnapshot.id, result.run);
             if (nodeSnapshot.data.manualOutput) {
               nodesRef.current = nodesRef.current.map((candidate) =>
@@ -4362,14 +4558,17 @@ function WorkspaceApp({
                 for (const operationNodeId of operation.nodeIds) {
                   if (nodeRunOperationByNodeRef.current.get(operationNodeId) === operation) {
                     nodeRunControlStore.set(operationNodeId, {
-                      stoppable: true,
+                      stoppable: videoRunCanStillStop(
+                        runRecordsRef.current[operationNodeId],
+                        nodesRef.current.find((candidate) => candidate.id === operationNodeId),
+                      ),
                       stopRequested: false,
                     });
                   }
                 }
                 setNotice({
                   kind: 'error',
-                  message: `${error instanceof Error ? error.message : '停止运行失败'}；可重试停止，取消与退款尚未确认`,
+                  message: error instanceof Error ? error.message : '停止运行失败',
                 });
                 submissionError = error instanceof Error ? error.message : '停止运行失败';
                 break;
@@ -4378,6 +4577,15 @@ function WorkspaceApp({
           } catch (error) {
             if (!isOperationCurrent(operation)) return;
             submissionError = error instanceof Error ? error.message : '运行提交失败';
+            recordOperationLog(authUser?.id, {
+              category: 'system',
+              action: '运行提交失败',
+              operationId: operation.id,
+              projectId: operation.projectId,
+              nodeId: targetNode.id,
+              mediaType: targetNode.data.mediaType,
+              errorType: error instanceof Error ? error.name : 'UnknownError',
+            });
             break;
           }
         }
@@ -4385,6 +4593,22 @@ function WorkspaceApp({
           submitted.map((entry) => pollRun(entry.run.id, entry.node.id, operation)),
         );
         if (!isOperationCurrent(operation)) return;
+        completed.forEach((entry, index) => {
+          const submittedRun = submitted[index];
+          if (!submittedRun) return;
+          const succeeded = entry.status === 'fulfilled' && entry.value.status === 'succeeded';
+          recordOperationLog(authUser?.id, {
+            category: succeeded ? 'generation' : 'system',
+            action: succeeded ? '生成完成' : '生成未成功',
+            operationId: operation.id,
+            projectId: operation.projectId,
+            nodeId: submittedRun.node.id,
+            runId: submittedRun.run.id,
+            mediaType: submittedRun.node.data.mediaType,
+            outcome: succeeded ? 'success' : 'error',
+            ...(entry.status === 'rejected' ? { errorType: 'RUN_STATUS_UNAVAILABLE' } : {}),
+          });
+        });
         const succeeded = completed.filter(
           (entry) => entry.status === 'fulfilled' && entry.value.status === 'succeeded',
         ).length;
@@ -4426,7 +4650,10 @@ function WorkspaceApp({
           const currentRun = runRecordsRef.current[operationNodeId];
           if (currentRun && isActiveRunStatus(currentRun.status)) {
             nodeRunControlStore.set(operationNodeId, {
-              stoppable: true,
+              stoppable: videoRunCanStillStop(
+                currentRun,
+                nodesRef.current.find((candidate) => candidate.id === operationNodeId),
+              ),
               stopRequested: currentRun.status === 'cancel_requested',
               submitting: false,
             });
@@ -4439,6 +4666,7 @@ function WorkspaceApp({
     },
     [
       commitForkGraph,
+      authUser?.id,
       cancelOperationRuns,
       createGenerateNode,
       isOperationCurrent,
@@ -4458,7 +4686,8 @@ function WorkspaceApp({
 
   /** 画布运行入口跟随 runNode 的实际依赖，节点内容仍由 runNode 读取最新快照。 */
   const handleRunNode = useCallback(
-    (node: AssetFlowNode, target?: NodeRunTarget) => void runNode(node, target),
+    (node: AssetFlowNode, target?: NodeRunTarget, trigger?: string) =>
+      void runNode(node, target, undefined, undefined, trigger),
     [runNode],
   );
 
@@ -4668,19 +4897,24 @@ function WorkspaceApp({
 
       // 配置修改后不能继续复用旧 Run 的冻结绑定；重新走当前节点入口，
       // 让服务端基于最新画布、模型和凭据创建新的不可变快照。
-      await runNode(node, 'sameNode');
+      await runNode(node, 'sameNode', undefined, undefined, 'retry');
     },
     [runNode],
   );
 
-  /** 只读查询失败视频节点的原上游任务；复用原 Run，锁住该节点直到查询结束。 */
+  /** 只读查询失败或历史取消视频节点的原上游任务；复用原 Run，不创建新任务。 */
   const recoverNodeRun = useCallback(
     async (nodeId: string) => {
       const run = runRecordsRef.current[nodeId];
       const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
       if (!run || !node) throw new Error('没有可获取资源的运行记录');
-      if (node.data.mode === 'source' || node.data.mediaType !== 'video' || run.status !== 'failed')
-        throw new Error('仅失败的视频任务可获取原资源');
+      if (
+        node.data.mode === 'source' ||
+        node.data.mediaType !== 'video' ||
+        !['failed', 'cancelled'].includes(run.status) ||
+        !upstreamTaskIdForRun(run)
+      )
+        throw new Error('仅有上游任务 ID 的失败视频可查询原资源');
       if (run.targetNodeId !== nodeId || run.projectId !== projectIdRef.current)
         throw new Error('原运行记录与当前节点不一致');
       if (isNodeBusy(nodeId)) throw new Error('该节点正在处理任务，请稍后再试');
@@ -4742,7 +4976,10 @@ function WorkspaceApp({
           const current = runRecordsRef.current[nodeId];
           if (current && isActiveRunStatus(current.status))
             nodeRunControlStore.set(nodeId, {
-              stoppable: true,
+              stoppable: videoRunCanStillStop(
+                current,
+                nodesRef.current.find((candidate) => candidate.id === nodeId),
+              ),
               stopRequested: current.status === 'cancel_requested',
               submitting: false,
             });
@@ -4891,7 +5128,7 @@ function WorkspaceApp({
         label: `${stopping ? '停止中' : stoppable ? '停止' : '运行'}「${selectedNode.data.label}」`,
         category: '运行',
         description: stoppable
-          ? '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款'
+          ? '仅在请求尚未发送到上游时停止；已受理的视频会继续等待终态'
           : '使用当前提示词、模型和推理强度',
         shortcut: 'R',
         icon: stoppable ? (
@@ -4901,7 +5138,10 @@ function WorkspaceApp({
         ),
         disabled:
           stopping || (!stoppable && (selectedNodeBusy || selectedNode.data.enabled === false)),
-        onSelect: () => (stoppable ? requestStopNode(selectedNode.id) : runNode(selectedNode)),
+        onSelect: () =>
+          stoppable
+            ? requestStopNode(selectedNode.id)
+            : runNode(selectedNode, 'sameNode', undefined, undefined, 'command-palette'),
       });
     }
     return commands;
@@ -4944,8 +5184,8 @@ function WorkspaceApp({
         onOk={confirmStopNode}
       >
         <p>
-          将停止后续提交并取消已知运行。视频任务会标记为失败，并向 NewAPI
-          申请退还费用；处理结果会在完成后提示。
+          仅当请求尚未发送到上游时可以取消。视频任务一旦被上游受理，将继续等待成功回传或明确失败，
+          不能因用户取消退款；上游明确失败时系统会处理退款。
         </p>
       </Modal>
       <AssetRenameDialog
@@ -5241,11 +5481,18 @@ function WorkspaceApp({
                   if (!selectedNode) return;
                   if (selectedNodeBusy && selectedRunControl.stoppable)
                     requestStopNode(selectedNode.id);
-                  else void runNode(selectedNode);
+                  else
+                    void runNode(
+                      selectedNode,
+                      'sameNode',
+                      undefined,
+                      undefined,
+                      'keyboard-shortcut',
+                    );
                 }}
                 title={
                   selectedNodeBusy && selectedRunControl.stoppable
-                    ? '停止后续提交并取消运行；视频任务会标记失败并申请 NewAPI 退款'
+                    ? '仅在请求尚未发送到上游时停止；已受理的视频会继续等待终态'
                     : selectedNode
                       ? '运行选中的节点'
                       : '先选择要运行的节点'
@@ -5468,6 +5715,7 @@ function WorkspaceApp({
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}
             onRunNode={handleRunNode}
+            onRunNodeWithTrigger={handleRunNode}
             onStopNode={requestStopNode}
             onDeleteNode={(nodeId) => deleteCanvasSelection([nodeId])}
             nodeContentHandlers={nodeContentHandlers}
@@ -5684,6 +5932,8 @@ function RoutedApplication({
     );
   } else if (route.id === 'contact') {
     content = <ContactPage />;
+  } else if (route.id === 'logs') {
+    content = <OperationLogPage route={route} user={authUser} />;
   } else if (!isAuthenticated && (route.id === 'project' || route.id === 'settings')) {
     content = (
       <PageFrame route={route}>
@@ -5803,6 +6053,7 @@ function AppContent() {
   const isPrivateRoute =
     route.id === 'project' ||
     route.id === 'settings' ||
+    route.id === 'logs' ||
     (route.id === 'management' && route.pathname !== '/admin');
   const [authSession, setAuthSession] = useState<StoredAuthSession | null>(() =>
     readStoredAuthSession(),
@@ -5812,6 +6063,58 @@ function AppContent() {
   /** 监听回调使用最新身份，续期/资料变更不清空同一用户的项目缓存。 */
   const authSessionRef = useRef(authSession);
   authSessionRef.current = authSession;
+  const pageVisitRef = useRef<{ userId: string; pathname: string } | null>(null);
+
+  useEffect(() => {
+    if (!authSession) return;
+    const pathname = window.location.pathname;
+    const previous = pageVisitRef.current;
+    const navigation = performance.getEntriesByType('navigation')[0] as
+      PerformanceNavigationTiming | undefined;
+    const action =
+      previous?.userId === authSession.user.id
+        ? previous.pathname === pathname
+          ? null
+          : '页面内导航'
+        : navigation?.type === 'reload'
+          ? '页面刷新'
+          : '页面打开';
+    pageVisitRef.current = { userId: authSession.user.id, pathname };
+    if (action)
+      recordOperationLog(authSession.user.id, {
+        category: 'canvas',
+        action,
+        path: pathname,
+      });
+  }, [authSession?.user.id, route.pathname]);
+
+  useEffect(() => {
+    const onError = (event: ErrorEvent) => {
+      recordOperationLog(authSessionRef.current?.user.id, {
+        category: 'system',
+        action: '未捕获的前端错误',
+        errorType: event.error instanceof Error ? event.error.name : 'WindowError',
+      });
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (
+        event.reason instanceof Error &&
+        (event.reason.name === 'AbortError' || event.reason.name === 'AuthSessionChangedError')
+      )
+        return;
+      recordOperationLog(authSessionRef.current?.user.id, {
+        category: 'system',
+        action: '未处理的异步错误',
+        errorType: event.reason instanceof Error ? event.reason.name : 'UnhandledRejection',
+      });
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
 
   useEffect(
     () =>

@@ -10,6 +10,7 @@ import {
 import {
   resolveEdgePath,
   useCanvasEdgeAppearance,
+  useCanvasEdgeSelectionEmphasis,
   type CanvasEdgeEffect,
   type CanvasEdgePathStyle,
 } from './canvas-edge-appearance';
@@ -69,9 +70,14 @@ export function centerHandlePoint(x: number, y: number, position: Position) {
 }
 
 /** 基础路径的类名；`marching` 直接改造基础路径，因此把动画类名挂在同一元素上。 */
-function baseEdgeClassName(effect: CanvasEdgeEffect, selected: boolean): string {
+function baseEdgeClassName(
+  effect: CanvasEdgeEffect,
+  selected: boolean,
+  connectedSelected = false,
+): string {
   const marching = effect === 'marching' ? ' canvas-edge-effect-marching' : '';
-  return `canvas-flow-edge-path${marching}${selected ? ' is-selected' : ''}`;
+  const emphasis = connectedSelected ? ' is-connected-selected' : '';
+  return `canvas-flow-edge-path${marching}${selected ? ' is-selected' : ''}${emphasis}`;
 }
 
 /**
@@ -82,6 +88,8 @@ function baseEdgeClassName(effect: CanvasEdgeEffect, selected: boolean): string 
  */
 export function FlowingCanvasEdge({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -93,6 +101,7 @@ export function FlowingCanvasEdge({
   selected,
 }: EdgeProps) {
   const { pathStyle, effect } = useCanvasEdgeAppearance();
+  const connectedSelected = useCanvasEdgeSelectionEmphasis(source, target);
   /** 选择、颜色或特效改变不影响几何，只在端点或路径形态改变时重新求解。 */
   const path = useMemo(() => {
     const source = centerHandlePoint(sourceX, sourceY, sourcePosition);
@@ -114,9 +123,9 @@ export function FlowingCanvasEdge({
         path={path}
         style={style}
         markerEnd={markerEnd}
-        className={baseEdgeClassName(effect, Boolean(selected))}
+        className={baseEdgeClassName(effect, Boolean(selected), connectedSelected)}
       />
-      <CanvasEdgeEffectOverlay path={path} effect={effect} />
+      <CanvasEdgeEffectOverlay path={path} effect={effect} emphasized={connectedSelected} />
     </>
   );
 }

@@ -23,6 +23,8 @@ export type FlowNodeData = CanvasDocument['nodes'][number]['data'] & {
   runStatus?: RunStatus;
   runProgress?: number;
   runError?: string;
+  /** 当前视频运行的公开上游任务身份；仅供状态提示和手动只读查询。 */
+  upstreamTaskId?: string;
   /**
    * 本节点最近一次执行的生命周期时间。
    *
@@ -245,6 +247,7 @@ export function toCanvasDocument(
         runId: _runId,
         runProgress: _runProgress,
         runError: _runError,
+        upstreamTaskId: _upstreamTaskId,
         nodeTiming: _nodeTiming,
         resultTiming: _resultTiming,
         resultAsset: _resultAsset,
@@ -937,6 +940,7 @@ function cloneNodeForClipboard(node: AssetFlowNode): AssetFlowNode {
     runId: _runId,
     runProgress: _runProgress,
     runError: _runError,
+    upstreamTaskId: _upstreamTaskId,
     nodeTiming: _nodeTiming,
     resultTiming: _resultTiming,
     resultAsset: _resultAsset,
