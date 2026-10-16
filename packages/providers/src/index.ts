@@ -40,7 +40,9 @@ import {
   type MoonVideoModelContract,
 } from '@multimodal-canvas/domain';
 
-export type ProviderName = 'mock' | 'newapi';
+export type ProviderName = 'mock' | 'newapi' | 'globalstore';
+export { GlobalStoreImageProvider, normalizeGlobalStoreBaseUrl } from './globalstore-image.js';
+export type { GlobalStoreImageProviderOptions } from './globalstore-image.js';
 export { verifyNewApiExecutionAuthority } from './newapi-authority';
 
 /** 服务端冻结权限按 New API 受理合同传递；上游在预扣与供应商 POST 前比对。 */
@@ -209,7 +211,7 @@ type RequestPromptPayload = {
 export type RequestPromptCaptureInput = RequestPromptPayload & {
   snapshot: RunSnapshot;
   /** 实际发起请求的 Provider 标识。 */
-  provider: 'newapi';
+  provider: 'newapi' | 'globalstore';
   mediaType: MediaType;
   /** 同一 attempt 内的请求身份，由请求路径与序号组成。 */
   requestIdentity: string;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunSnapshot } from '@multimodal-canvas/domain';
+import { GLOBALSTORE_IMAGE_CONTRACT, type RunSnapshot } from '@multimodal-canvas/domain';
 import { PrismaWorkerExecutionAuthorization } from './execution-authorization';
 
 const userId = '33333333-3333-4333-a333-333333333333';
@@ -222,6 +222,61 @@ describe('PrismaWorkerExecutionAuthorization', () => {
       code: 'binding_changed',
     });
     expect(verifyUpstream).not.toHaveBeenCalled();
+  });
+});
+
+describe('GlobalStore 节点执行授权', () => {
+  function globalstoreFixture() {
+    const { frozen, execution } = fixture();
+    frozen.executionBindings!.target = {
+      credentialId,
+      credentialVersion: 3,
+      provider: 'globalstore',
+      modelAlias: 'seedream-5.0',
+      mediaType: 'image',
+      contract: GLOBALSTORE_IMAGE_CONTRACT,
+    };
+    const credential = {
+      id: credentialId,
+      ownerId: userId,
+      projectId: null,
+      version: 3,
+      provider: 'globalstore',
+      modelCatalog: [{ id: 'seedream-5.0', mediaType: 'image' }],
+    };
+    const prisma = {
+      aiCredential: { findUnique: vi.fn().mockResolvedValue(credential) },
+      newApiGroupBinding: { findFirst: vi.fn() },
+    };
+    const verifyUpstream = vi.fn();
+    const authorization = new PrismaWorkerExecutionAuthorization(
+      execution as never,
+      prisma as never,
+      verifyUpstream,
+    );
+    return { frozen, credential, prisma, verifyUpstream, authorization };
+  }
+
+  it('验证本人冻结的图片凭据，不调用 New API 分组或授权接口', async () => {
+    const f = globalstoreFixture();
+    await f.authorization.authorizeNode('run-1', 'target', f.frozen);
+    expect(f.prisma.newApiGroupBinding.findFirst).not.toHaveBeenCalled();
+    expect(f.verifyUpstream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ownerId: 'other-user' },
+    { version: 4 },
+    { provider: 'newapi' },
+    { modelCatalog: [] },
+    { modelCatalog: [{ id: 'seedream-5.0', mediaType: 'video' }] },
+  ])('拒绝归属、版本、供应商或目录不匹配 %j', async (change) => {
+    const f = globalstoreFixture();
+    f.prisma.aiCredential.findUnique.mockResolvedValue({ ...f.credential, ...change });
+    await expect(f.authorization.authorizeNode('run-1', 'target', f.frozen)).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    expect(f.verifyUpstream).not.toHaveBeenCalled();
   });
 });
 

@@ -83,6 +83,7 @@ integrationDescribe('中性执行授权与 outbox（隔离 PostgreSQL + Redis）
       },
     });
     const frozen = executionSnapshot().executionBindings!.target!;
+    if (!frozen.authority) throw new Error('New API fixture requires authority');
     await prisma.newApiIdentity.create({
       data: {
         userId,

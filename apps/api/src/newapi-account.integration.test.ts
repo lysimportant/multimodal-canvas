@@ -1913,8 +1913,8 @@ describe.skipIf(!databaseUrl)('New API 本人身份与分组隔离', () => {
       const fresh = structuredClone(snapshot);
       fresh.credentialVersion = 2;
       fresh.executionBindings!.target!.credentialVersion = 2;
-      fresh.executionBindings!.target!.authority.credentialRevision = '2';
-      fresh.executionBindings!.target!.authority.permissionRevision = '2';
+      fresh.executionBindings!.target!.authority!.credentialRevision = '2';
+      fresh.executionBindings!.target!.authority!.permissionRevision = '2';
       await expect(
         execution.createSubmission(input(`rotation-fresh-${randomUUID()}`, fresh)),
       ).resolves.toMatchObject({ status: 'active' });

@@ -33,6 +33,7 @@ export type ModelCatalogEntry = {
   name: string;
   mediaTypes: MediaType[];
   credentialId?: string;
+  provider?: 'newapi' | 'globalstore';
   capabilities?: Record<string, unknown>;
   limitations?: Record<string, unknown>;
   refreshedAt: string;

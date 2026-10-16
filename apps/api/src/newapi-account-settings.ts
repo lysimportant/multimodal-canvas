@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 import { NewApiAccountService, authority } from './newapi-account-service';
 import { NewApiAccountError } from './newapi-account-client';
+import { globalStoreModels } from './globalstore-account';
 import {
   DEFAULT_PROVIDER_TIMEOUT_MS,
   normalizeProviderTimeout,
@@ -51,7 +52,7 @@ export class NewApiAccountSettings implements AiSettingsStoreLike {
       else if (selected) {
         if (typeof selected === 'string' || !selected.credentialId)
           throw new NewApiAccountError('model_unavailable', '请重新选择本人分组模型');
-        const models = await this.service.models(this.userId(), mediaType, selected.credentialId);
+        const models = await this.listModels(mediaType, selected.credentialId);
         if (!models.some((entry) => entry.id === selected.modelAlias && entry.available))
           throw new NewApiAccountError('model_unavailable', '默认模型不可调用');
         defaults[mediaType] = {
@@ -84,23 +85,40 @@ export class NewApiAccountSettings implements AiSettingsStoreLike {
       },
       include: { credential: true },
     });
-    return rows.map((row) => ({
-      id: row.credentialId!,
-      version: row.credential?.version,
-      active: row.status === 'active',
-      group: row.group,
-      status: row.status,
-      error: row.error ?? undefined,
-      updatedAt: row.updatedAt.toISOString(),
-    }));
+    const globalStoreCredentials = await this.service.globalStore.credentials(this.userId());
+    return [
+      ...globalStoreCredentials.map((credential) => ({
+        id: credential.id,
+        version: credential.version,
+        active: true,
+        group: 'GlobalStore Model Center',
+        status: 'active',
+        error: undefined,
+        updatedAt: credential.updatedAt.toISOString(),
+      })),
+      ...rows.map((row) => ({
+        id: row.credentialId!,
+        version: row.credential?.version,
+        active: row.status === 'active',
+        group: row.group,
+        status: row.status,
+        error: row.error ?? undefined,
+        updatedAt: row.updatedAt.toISOString(),
+      })),
+    ];
   }
 
   /** 检查管理引用只在当前用户纳入组内有效。 */
   async hasCredential(id: string) {
-    return (await this.listCredentials()).some((entry) => entry.id === id);
+    return (
+      Boolean(await this.service.globalStore.credential(this.userId(), id)) ||
+      (await this.listCredentials()).some((entry) => entry.id === id)
+    );
   }
   /** 刷新时复用所有原令牌，部分失败在账号状态中显示。 */
   async refreshModels(id?: string) {
+    if (id && (await this.service.globalStore.credential(this.userId(), id)))
+      return this.listModels(undefined, id);
     await this.service.synchronize(this.userId());
     return this.listModels(undefined, id);
   }
@@ -121,9 +139,15 @@ export class NewApiAccountSettings implements AiSettingsStoreLike {
   async getCredentialReference(
     id?: string,
   ): Promise<
-    CredentialReference & { newApi: import('@multimodal-canvas/domain').NewApiExecutionAuthority }
+    CredentialReference & { newApi?: import('@multimodal-canvas/domain').NewApiExecutionAuthority }
   > {
     if (!id) throw new NewApiAccountError('credential_required', '请明确选择分组模型');
+    const globalStoreCredential = await this.service.globalStore.credential(this.userId(), id);
+    if (globalStoreCredential) {
+      if (!globalStoreModels(globalStoreCredential).length)
+        throw new NewApiAccountError('model_unavailable', 'GlobalStore 图片目录无效', 409);
+      return { credentialId: id, credentialVersion: globalStoreCredential.version };
+    }
     const identity = await this.service.identity(this.userId());
     const row = await this.service.options.prisma.newApiGroupBinding.findFirst({
       where: {

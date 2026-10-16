@@ -13,6 +13,7 @@ import {
   type ResultStagingIdentity,
 } from './result-staging';
 import {
+  GLOBALSTORE_IMAGE_CONTRACT,
   requestPromptRecordSchema,
   parseReversePromptOutput,
   createMockPromptOptimizationOutput,
@@ -42,6 +43,7 @@ import {
   NewApiProvider,
   NewApiProviderError,
   NewApiVideoProvider,
+  GlobalStoreImageProvider,
   requestNewApiVideoRefund,
   videoRefundMessage,
   type VideoRefundReason,
@@ -151,6 +153,7 @@ export type RequestPromptResultBinding = {
 export type WorkerProviderCredentials = {
   baseUrl: string;
   apiKey: string;
+  provider?: string;
 };
 
 /**
@@ -492,11 +495,35 @@ export function createRunWorker(options: {
       }
       persistedCredentials = credentials;
     }
+    const binding = snapshot.executionBindings?.[snapshot.targetNodeId];
+    const globalstore = binding?.provider === 'globalstore';
+    if (
+      globalstore &&
+      (video || binding.mediaType !== 'image' || binding.contract !== GLOBALSTORE_IMAGE_CONTRACT)
+    ) {
+      throw new Error('GlobalStore execution requires a frozen image task contract');
+    }
+    if (
+      persistedCredentials &&
+      (persistedCredentials.provider ?? 'newapi') !== (globalstore ? 'globalstore' : 'newapi')
+    ) {
+      throw new Error('persisted credential provider differs from frozen execution binding');
+    }
     // Credential validation is deliberately before injected providers too:
     // tests and process adapters must not bypass the durable snapshot boundary.
     if (video && options.videoProvider) return options.videoProvider;
     if (options.provider) return options.provider;
     if (persistedCredentials) {
+      if (globalstore) {
+        return new GlobalStoreImageProvider({
+          baseUrl: persistedCredentials.baseUrl,
+          apiKey: persistedCredentials.apiKey,
+          timeoutMs: 900_000,
+          maxResponseBytes: 50 * 1024 * 1024,
+          maxContentBytes: 50 * 1024 * 1024,
+          requireHttps: process.env.NODE_ENV === 'production',
+        });
+      }
       const configuredTimeout =
         await options.persistence?.getProviderTimeoutMs?.(credentialReference);
       const providers = createNewApiProviders(
@@ -527,7 +554,7 @@ export function createRunWorker(options: {
       const legacyNewApiRecovery = initialData.provider === 'newapi' && !usesExecutionAuthorization;
       let durableCancellationRequested = false;
       /** 上游视频 POST 开始后锁住本地取消，继续等待供应商终态。 */
-      let videoSubmissionProtected = hasSubmittedVideoWork(initialData);
+      let videoSubmissionProtected = hasSubmittedAsyncWork(initialData);
       /** 取消一经观察永久生效，后续 Worker 状态写入不能抹去该意图。 */
       const cancellationRequested = async () => {
         if (videoSubmissionProtected) return false;
@@ -589,7 +616,12 @@ export function createRunWorker(options: {
       // unscoped platformJobId supplied on the new job.
       const immutableProviderJob =
         immutableData.providerJob &&
-        immutableData.providerJob.provider === initialData.provider &&
+        immutableData.providerJob.provider ===
+          nodeProviderName(
+            executionSnapshot,
+            executionSnapshot.targetNodeId,
+            initialData.provider,
+          ) &&
         providerJobMatchesSnapshot(
           immutableData.providerJob,
           snapshotFingerprints,
@@ -657,7 +689,8 @@ export function createRunWorker(options: {
             recoveredWorkflowState = predecessorData.data.workflowState;
             for (const state of recoveredWorkflowState?.nodes ?? []) {
               if (
-                state.providerJob?.provider === initialData.provider &&
+                state.providerJob?.provider ===
+                  nodeProviderName(executionSnapshot, state.nodeId, initialData.provider) &&
                 providerJobMatchesSnapshot(state.providerJob, snapshotFingerprints, true)
               ) {
                 recoveredWorkflowProviderJobs.set(state.nodeId, state.providerJob);
@@ -667,7 +700,12 @@ export function createRunWorker(options: {
             if (
               !immutableProviderJob?.platformJobId &&
               canResumeProviderJob(predecessorProviderJob) &&
-              predecessorProviderJob.provider === initialData.provider &&
+              predecessorProviderJob.provider ===
+                nodeProviderName(
+                  executionSnapshot,
+                  executionSnapshot.targetNodeId,
+                  initialData.provider,
+                ) &&
               providerJobMatchesSnapshot(predecessorProviderJob, snapshotFingerprints, true)
             ) {
               recoveredProviderJob = predecessorProviderJob;
@@ -696,11 +734,15 @@ export function createRunWorker(options: {
             }
             const snapshotNodeIds = new Set(executionSnapshot.nodes.map((node) => node.id));
             for (const persistedJob of persistedJobs) {
-              if (persistedJob.provider !== initialData.provider) continue;
               if (!providerJobMatchesSnapshot(persistedJob, snapshotFingerprints)) continue;
               const nodeId =
                 workflowNodeIdFromProviderJob(persistedJob) ?? executionSnapshot.targetNodeId;
               if (!snapshotNodeIds.has(nodeId)) continue;
+              if (
+                persistedJob.provider !==
+                nodeProviderName(executionSnapshot, nodeId, initialData.provider)
+              )
+                continue;
               const queuedCandidate = recoveredWorkflowProviderJobs.get(nodeId);
               if (
                 queuedCandidate &&
@@ -732,7 +774,12 @@ export function createRunWorker(options: {
             );
             if (
               canResumeProviderJob(persistedProviderJob) &&
-              persistedProviderJob.provider === initialData.provider &&
+              persistedProviderJob.provider ===
+                nodeProviderName(
+                  executionSnapshot,
+                  executionSnapshot.targetNodeId,
+                  initialData.provider,
+                ) &&
               providerJobMatchesSnapshot(persistedProviderJob, snapshotFingerprints)
             ) {
               recoveredProviderJob = persistedProviderJob;
@@ -993,6 +1040,8 @@ export function createRunWorker(options: {
           ].filter(
             (candidate): candidate is ProviderJob =>
               candidate !== undefined &&
+              candidate.provider ===
+                nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
               !(initialData.retryOf && candidate.payload?.refundStatus) &&
               providerJobMatchesSnapshot(candidate, snapshotFingerprints, !initialData.retryOf),
           );
@@ -1030,13 +1079,13 @@ export function createRunWorker(options: {
             initialData.runId,
             executionSnapshot.targetNodeId,
             node.id,
-            initialData.provider,
+            nodeProviderName(executionSnapshot, node.id, initialData.provider),
           );
           const requestProviderJobId = resolveWorkflowRequestProviderJobId({
             retryOf: initialData.retryOf,
             targetNodeId: executionSnapshot.targetNodeId,
             nodeId: node.id,
-            provider: initialData.provider,
+            provider: nodeProviderName(executionSnapshot, node.id, initialData.provider),
             current: currentState?.providerJob,
             recovered: recoveredForNode,
             fallback: localProviderJob,
@@ -1218,14 +1267,16 @@ export function createRunWorker(options: {
 
           const resumableProviderJob = providerCandidates.find(
             (candidate) =>
-              candidate.provider === initialData.provider &&
+              candidate.provider ===
+                nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
               canResumeProviderJob(candidate, { allowTerminalStatus: retrieveOnlyObserved }),
           );
           const rejectedCreation = !resumableProviderJob
             ? providerCandidates.find(
                 (candidate) =>
                   candidate.id === localProviderJob.id &&
-                  candidate.provider === initialData.provider &&
+                  candidate.provider ===
+                    nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
                   candidate.status === 'failed' &&
                   !candidate.platformJobId &&
                   candidate.payload?.sendStatus === 'failed',
@@ -1313,15 +1364,20 @@ export function createRunWorker(options: {
           const frozenContract = retainedContract ?? boundContract;
           if (
             initialData.provider === 'newapi' &&
-            node.data.mediaType === 'video' &&
+            (node.data.mediaType === 'video' ||
+              isGlobalStoreImageNode(executionSnapshot, node.id)) &&
             canResumeProviderJob(providerJob, { allowTerminalStatus: true }) &&
-            isNewApiVideoContract(frozenContract) &&
+            providerJob.provider ===
+              nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
+            (isNewApiVideoContract(frozenContract) ||
+              (isGlobalStoreImageNode(executionSnapshot, node.id) &&
+                frozenContract === GLOBALSTORE_IMAGE_CONTRACT)) &&
             (!retainedContract || !boundContract || retainedContract === boundContract) &&
             !unrecoverableDeliveryNodes.has(node.id)
           )
             continue;
           throw new UnrecoverableError(
-            `节点 ${node.id} 缺少可只读恢复的原结果或视频平台任务；请使用“重试生成”`,
+            `节点 ${node.id} 缺少可只读恢复的原结果或${node.data.mediaType === 'image' ? '图片' : '视频'}平台任务；请使用“重试生成”`,
           );
         }
       };
@@ -1403,6 +1459,7 @@ export function createRunWorker(options: {
         reason: VideoRefundReason,
       ): Promise<VideoRefundStatus> => {
         if (providerJob?.payload?.refundStatus === 'refunded') return 'refunded';
+        if (isGlobalStoreImageNode(executionSnapshot, nodeId)) return 'not_charged';
         if (initialData.provider !== 'newapi') return 'not_charged';
         if (!providerJob?.platformJobId) {
           return providerJob?.payload?.phase === 'submitting' ||
@@ -1633,7 +1690,7 @@ export function createRunWorker(options: {
             currentData.runId,
             executionSnapshot.targetNodeId,
             node.id,
-            currentData.provider,
+            nodeProviderName(executionSnapshot, node.id, currentData.provider),
           );
           const existingNodeProviderJob = nodeState.providerJob;
           const stagedResult = stagedResults.get(node.id);
@@ -1730,7 +1787,8 @@ export function createRunWorker(options: {
           // 已提交的视频任务只按已验证的平台 ID 继续查询；原素材水合与可访问性
           // 复核仅服务创建 POST，恢复时重复执行会让已付费任务因素材变化而无法收尾。
           const resumeSubmittedVideo =
-            node.data.mediaType === 'video' &&
+            (node.data.mediaType === 'video' ||
+              isGlobalStoreImageNode(executionSnapshot, node.id)) &&
             canResumeProviderJob(existingNodeProviderJob, {
               allowTerminalStatus: retrieveOnlyObserved,
             });
@@ -1768,7 +1826,9 @@ export function createRunWorker(options: {
                 throw new UnrecoverableError('只读获取禁止创建新的 Provider 请求');
             }
             const protectVideoSubmission =
-              currentData.provider === 'newapi' && node.data.mediaType === 'video';
+              currentData.provider === 'newapi' &&
+              (node.data.mediaType === 'video' ||
+                isGlobalStoreImageNode(executionSnapshot, node.id));
             if (protectVideoSubmission) videoSubmissionProtected = true;
             if (!runExecution) return;
             if (!resumeSubmittedVideo && currentData.retryOf) {
@@ -1892,7 +1952,12 @@ export function createRunWorker(options: {
                     }
                   : {}),
                 onProviderJob: async (update) => {
-                  if (cancellationSignal.aborted && node.data.mediaType !== 'video') return;
+                  if (
+                    cancellationSignal.aborted &&
+                    node.data.mediaType !== 'video' &&
+                    !isGlobalStoreImageNode(executionSnapshot, node.id)
+                  )
+                    return;
                   if (cancellationFinalized) {
                     // 只有发送前取消才能来到这里；绝不把迟到的上游身份用于用户取消退款。
                     return;
@@ -3021,11 +3086,28 @@ function createArchiveKey(
 }
 
 /** 已有平台 ID、创建中的视频回执都表示上游可能已经开始计费，不能再本地取消。 */
-function hasSubmittedVideoWork(data: RunJobData): boolean {
+function isGlobalStoreImageNode(snapshot: RunSnapshot, nodeId: string): boolean {
+  const binding = snapshot.executionBindings?.[nodeId];
+  return (
+    binding?.provider === 'globalstore' &&
+    binding.mediaType === 'image' &&
+    binding.contract === GLOBALSTORE_IMAGE_CONTRACT
+  );
+}
+
+function nodeProviderName(snapshot: RunSnapshot, nodeId: string, fallback: string): string {
+  return snapshot.executionBindings?.[nodeId]?.provider ?? fallback;
+}
+
+function hasSubmittedAsyncWork(data: RunJobData): boolean {
   if (data.provider !== 'newapi') return false;
   const videoNodeIds = new Set(
     data.snapshot.nodes
-      .filter((node) => node.data.mediaType === 'video' && node.data.mode !== 'source')
+      .filter(
+        (node) =>
+          node.data.mode !== 'source' &&
+          (node.data.mediaType === 'video' || isGlobalStoreImageNode(data.snapshot, node.id)),
+      )
       .map((node) => node.id),
   );
   const submitted = (providerJob: ProviderJob | undefined) =>
@@ -3051,6 +3133,12 @@ async function executeProviderWithCancellation(
   // Built-in video GETs abort promptly before submission. Keep an already-started
   // POST alive until its task identity is received; accepted video work is not cancellable.
   if (awaitVideoSubmission && provider instanceof NewApiVideoProvider) {
+    if (signal.aborted) throw workerCancellationError();
+    return provider.execute(request);
+  }
+  // Keep the submission response attached until its paid task ID is durable.
+  // The provider itself honours cancellation before POST and during polling.
+  if (provider instanceof GlobalStoreImageProvider) {
     if (signal.aborted) throw workerCancellationError();
     return provider.execute(request);
   }

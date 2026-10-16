@@ -4,6 +4,7 @@ import { NewApiAccountError } from './newapi-account-client';
 import { AUTH_SYNC_INTERVAL_MS, NewApiAccountService } from './newapi-account-service';
 import type { AuthenticatedSession } from './auth-service';
 import { PERSISTENT_SESSION_TTL_SECONDS } from './auth-service';
+import { globalStoreSettingsSchema } from './globalstore-account';
 
 /** HttpOnly 会话名，仅同源 API 读取，浏览器脚本不会接触 bearer。 */
 export const NEWAPI_SESSION_COOKIE = 'canvas_session';
@@ -108,6 +109,21 @@ export function registerNewApiAccountRoutes(
       .redirect(new URL(result.returnPath, service.options.webUrl).toString());
   });
   app.get('/v1/account/newapi', async (request) => service.status(userId(request)));
+  app.get('/v1/account/globalstore/models', async (request, reply) => {
+    reply.header('cache-control', 'no-store');
+    return service.globalStore.get(userId(request));
+  });
+  app.post('/v1/account/globalstore/models', async (request, reply) => {
+    const owner = userId(request);
+    reply.header('cache-control', 'no-store');
+    const input = globalStoreSettingsSchema.safeParse(request.body);
+    if (!input.success)
+      return reply.code(400).send({
+        code: 'invalid_globalstore_configuration',
+        error: '请填写有效的地址、Key 和图片模型 ID',
+      });
+    return service.globalStore.save(owner, input.data);
+  });
   app.post('/v1/account/newapi/sync', async (request) => service.synchronize(userId(request)));
   app.post('/v1/account/newapi/groups/:credentialId/rotate', async (request, reply) => {
     const owner = userId(request);

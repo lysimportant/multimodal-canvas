@@ -42,6 +42,8 @@ export type ModelEntry = {
   group?: string;
   name: string;
   mediaTypes: MediaType[];
+  /** Models directory provider identifier, for example GlobalStore Model Center. */
+  provider?: string;
   credentialId?: string;
   credentialLabel?: string;
   /** 平台商品公开的脱敏连接身份与标签，仅用于选模展示。 */

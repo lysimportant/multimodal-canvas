@@ -13,7 +13,10 @@ describe('New API 本人缓存模型目录', () => {
         credential: { ownerId: 'user-current', version: 3 },
       });
       const service = new NewApiAccountService({
-        prisma: { newApiGroupBinding: { findFirst } },
+        prisma: {
+          aiCredential: { findFirst: vi.fn().mockResolvedValue(null) },
+          newApiGroupBinding: { findFirst },
+        },
         webUrl: 'http://localhost:5173',
       } as unknown as ConstructorParameters<typeof NewApiAccountService>[0]);
       vi.spyOn(service, 'identity').mockResolvedValue({
@@ -48,7 +51,7 @@ describe('New API 本人缓存模型目录', () => {
     ['imagen-4.0-generate-001', 'openai-images', 'openai-images'],
   ] as const)('为 %s 冻结正确的图片执行协议', async (modelAlias, catalogContract, expected) => {
     const service = new NewApiAccountService({
-      prisma: {},
+      prisma: { aiCredential: { findFirst: vi.fn().mockResolvedValue(null) } },
       client: {},
       keyring: {},
       auth: {},
@@ -126,7 +129,10 @@ describe('New API 本人缓存模型目录', () => {
       },
     ]);
     const service = new NewApiAccountService({
-      prisma: { newApiGroupBinding: { findMany } },
+      prisma: {
+        aiCredential: { findFirst: vi.fn().mockResolvedValue(null) },
+        newApiGroupBinding: { findMany },
+      },
       client: {},
       keyring: {},
       auth: {},
@@ -178,7 +184,10 @@ describe('New API 本人缓存模型目录', () => {
         },
       ]);
       const service = new NewApiAccountService({
-        prisma: { newApiGroupBinding: { findMany } },
+        prisma: {
+          aiCredential: { findFirst: vi.fn().mockResolvedValue(null) },
+          newApiGroupBinding: { findMany },
+        },
         client: {},
         keyring: {},
         auth: {},

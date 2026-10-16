@@ -1707,6 +1707,24 @@ function WorkspaceApp({
       if (archived && project.id === projectId) {
         throw new Error('请先切换到其他项目，再归档当前项目');
       }
+      if (archived) {
+        const runsResponse = await apiFetch(
+          `${API_BASE_URL}/v1/projects/${encodeURIComponent(project.id)}/runs`,
+        );
+        const runsResult = (await runsResponse.json().catch(() => ({}))) as {
+          runs?: RunRecord[];
+          error?: string;
+        };
+        if (!runsResponse.ok || !Array.isArray(runsResult.runs)) {
+          throw new Error(runsResult.error ?? '无法确认项目运行状态，请稍后重试');
+        }
+        const activeRuns = runsResult.runs.filter((run) => isActiveRunStatus(run.status));
+        if (activeRuns.length > 0) {
+          throw new Error(
+            `项目仍有 ${activeRuns.length} 个未结束任务（排队、运行或取消处理中），请等待任务结束后再归档。`,
+          );
+        }
+      }
       const action = archived ? 'archive' : 'restore';
       const response = await apiFetch(
         `${API_BASE_URL}/v1/projects/${encodeURIComponent(project.id)}/${action}`,
@@ -3457,14 +3475,33 @@ function WorkspaceApp({
   /** 删除选区及关联边、组成员引用，保留空组；整个变更只占一条撤销记录。 */
   const deleteCanvasSelection = useCallback(
     (nodeIds?: readonly string[]) => {
-      const selectedNodeIds = new Set(
+      const requestedNodeIds = new Set(
         nodeIds ?? nodesRef.current.filter((node) => node.selected).map((node) => node.id),
+      );
+      const blockedNodes = nodesRef.current.filter(
+        (node) => requestedNodeIds.has(node.id) && isNodeBusy(node.id),
+      );
+      const selectedNodeIds = new Set(
+        [...requestedNodeIds].filter((nodeId) => !blockedNodes.some((node) => node.id === nodeId)),
       );
       const selectedEdgeIds = new Set(
         nodeIds ? [] : edgesRef.current.filter((edge) => edge.selected).map((edge) => edge.id),
       );
-      if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return false;
+      if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) {
+        if (blockedNodes.length === 0) return false;
+        setNotice({
+          kind: 'error',
+          message: `${blockedNodes.map((node) => `「${node.data.label || node.id}」`).join('、')}正在运行或保存，暂不能删除。`,
+        });
+        return true;
+      }
       const removedNodes = nodesRef.current.filter((node) => selectedNodeIds.has(node.id));
+      if (blockedNodes.length > 0) {
+        setNotice({
+          kind: 'error',
+          message: `${blockedNodes.map((node) => `「${node.data.label || node.id}」`).join('、')}正在运行或保存，已跳过这些节点。`,
+        });
+      }
       if (removedNodes.length > 0)
         recordOperationLog(authUser?.id, {
           category: 'canvas',
@@ -3496,7 +3533,7 @@ function WorkspaceApp({
       canvasDirtyRef.current = true;
       return true;
     },
-    [authUser?.id, initialProject.id, rememberHistory, setEdges, setNodes],
+    [authUser?.id, initialProject.id, isNodeBusy, rememberHistory, setEdges, setNodes, setNotice],
   );
 
   useEffect(() => {

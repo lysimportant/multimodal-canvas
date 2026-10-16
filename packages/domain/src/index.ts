@@ -1279,14 +1279,38 @@ export const runCredentialReferenceSchema = z.object({
 });
 
 /** 每个节点的中性执行合同；费用由 New API 处理，不含 Canvas 商品或报价。 */
-export const runExecutionBindingSchema = z.object({
-  credentialId: z.string().min(1),
-  credentialVersion: z.number().int().positive(),
-  modelAlias: z.string().min(1),
-  mediaType: z.enum(['text', 'image', 'audio', 'video']),
-  contract: z.string().min(1),
-  authority: newApiExecutionAuthoritySchema,
-});
+export const GLOBALSTORE_IMAGE_CONTRACT = 'globalstore-model-center-image-v2' as const;
+
+export const runExecutionBindingSchema = z
+  .object({
+    credentialId: z.string().min(1),
+    credentialVersion: z.number().int().positive(),
+    modelAlias: z.string().min(1),
+    mediaType: z.enum(['text', 'image', 'audio', 'video']),
+    contract: z.string().min(1),
+    /** 缺省为旧 New API 合同；不注入默认值，以保留历史快照指纹。 */
+    provider: z.enum(['newapi', 'globalstore']).optional(),
+    authority: newApiExecutionAuthoritySchema.optional(),
+  })
+  .superRefine((binding, context) => {
+    if (binding.provider === 'globalstore') {
+      if (
+        binding.authority ||
+        binding.mediaType !== 'image' ||
+        binding.contract !== GLOBALSTORE_IMAGE_CONTRACT
+      )
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'invalid GlobalStore image execution binding',
+        });
+    } else if (!binding.authority) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'New API execution authority is required',
+        path: ['authority'],
+      });
+    }
+  });
 
 /** 无密钥的上游身份及权限修订。 */
 export type NewApiExecutionAuthority = z.infer<typeof newApiExecutionAuthoritySchema>;

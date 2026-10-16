@@ -9,6 +9,7 @@ export async function verifyNewApiExecutionAuthority(input: {
   fetchImpl?: typeof fetch;
 }): Promise<void> {
   const { authority } = input.binding;
+  if (!authority) throw new Error('New API 执行缺少冻结授权');
   const issuer = new URL(authority.issuer);
   if (
     issuer.username ||

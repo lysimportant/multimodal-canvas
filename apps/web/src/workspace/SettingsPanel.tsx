@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Select, Tabs, Typography } from 'antd';
 import {
   AudioLines,
@@ -15,8 +16,19 @@ import { Button, Dialog, DialogContent, DialogTitle, Input } from '@multimodal-c
 import type { MediaType, ModelSelection } from '@multimodal-canvas/domain';
 import { GENERATION_COUNT_MAX, isValidGenerationCount } from '@multimodal-canvas/domain';
 
-import { apiFetch, getAuthSessionGeneration, startNewApiLogin } from '../auth-client';
-import { useModelCatalogQuery, fetchCustomGroupModels } from '../query/models';
+import {
+  apiFetch,
+  getAuthSessionGeneration,
+  startNewApiLogin,
+  readStoredAuthSession,
+} from '../auth-client';
+import {
+  useModelCatalogQuery,
+  fetchCustomGroupModels,
+  fetchGlobalStoreConfiguration,
+  saveGlobalStoreConfiguration,
+  modelCatalogQueryKey,
+} from '../query/models';
 import {
   useWorkspacePreferences,
   useCustomApiGroupsStore,
@@ -121,6 +133,23 @@ function parseModelOption(value: string): ModelSelection | undefined {
 function CustomApiSection() {
   const config = useCustomApiGroupsStore((s) => s.config);
   const updateGroup = useCustomApiGroupsStore((s) => s.updateGroup);
+  const queryClient = useQueryClient();
+  const globalStoreQuery = useQuery({
+    queryKey: ['globalstore-configuration', readStoredAuthSession()?.user.id],
+    queryFn: ({ signal }) => fetchGlobalStoreConfiguration(signal),
+    retry: false,
+  });
+  const [globalStoreBaseUrl, setGlobalStoreBaseUrl] = useState('');
+  const [globalStoreApiKey, setGlobalStoreApiKey] = useState('');
+  const [globalStoreModelId, setGlobalStoreModelId] = useState('');
+  const [globalStoreBusy, setGlobalStoreBusy] = useState(false);
+  const [globalStoreStatus, setGlobalStoreStatus] = useState<{
+    error: boolean;
+    message: string;
+  } | null>(null);
+  useEffect(() => {
+    if (globalStoreQuery.data?.baseUrl) setGlobalStoreBaseUrl(globalStoreQuery.data.baseUrl);
+  }, [globalStoreQuery.data?.baseUrl]);
 
   type MediaType = 'text' | 'image' | 'audio' | 'video';
   const rows: {
@@ -177,6 +206,45 @@ function CustomApiSection() {
     const allow = value === 'on';
     setAllowForUsers(allow);
     setCustomApiVisibleForUsers(allow);
+  };
+
+  const addConfiguredGlobalStoreModel = async () => {
+    const id = globalStoreModelId.trim();
+    if (
+      !id ||
+      !globalStoreBaseUrl.trim() ||
+      !globalStoreApiKey.trim() ||
+      globalStoreBusy ||
+      !globalStoreQuery.isSuccess
+    )
+      return;
+    setGlobalStoreBusy(true);
+    setGlobalStoreStatus(null);
+    try {
+      const ids = [
+        ...new Set([...(globalStoreQuery.data?.models ?? []).map((model) => model.id), id]),
+      ];
+      const result = await saveGlobalStoreConfiguration({
+        baseUrl: globalStoreBaseUrl.trim(),
+        apiKey: globalStoreApiKey,
+        models: ids.map((id) => ({ id, mediaType: 'image' })),
+      });
+      setGlobalStoreApiKey('');
+      setGlobalStoreModelId('');
+      queryClient.setQueryData(
+        ['globalstore-configuration', readStoredAuthSession()?.user.id],
+        result,
+      );
+      await queryClient.invalidateQueries({ queryKey: modelCatalogQueryKey });
+      setGlobalStoreStatus({ error: false, message: '已保存，图片模型已加入画布目录' });
+    } catch (error) {
+      setGlobalStoreStatus({
+        error: true,
+        message: error instanceof Error ? error.message : '保存失败',
+      });
+    } finally {
+      setGlobalStoreBusy(false);
+    }
   };
 
   return (
@@ -284,6 +352,81 @@ function CustomApiSection() {
           );
         })}
       </div>
+      <section
+        className="settings-custom-api-group"
+        aria-labelledby="globalstore-model-center-title"
+      >
+        <div className="settings-section-heading">
+          <h3 id="globalstore-model-center-title">GlobalStore Model Center</h3>
+          <p className="settings-status">
+            Model Center 没有标准 <code>/v1/models</code> 目录接口，请手工登记文档中的精确模型
+            ID。目前仅支持图片模型；密钥提交后由服务端保存，不写入浏览器存储。
+          </p>
+        </div>
+        <label className="settings-field">
+          <span>GlobalStore Model Center API Base URL</span>
+          <Input
+            aria-label="GlobalStore Model Center API Base URL"
+            value={globalStoreBaseUrl}
+            onChange={(event) => setGlobalStoreBaseUrl(event.target.value)}
+            placeholder="https://saas.globalstore.ai/kyyReactApiServer/v2/model-center"
+          />
+        </label>
+        <label className="settings-field">
+          <span>GlobalStore Model Center API Key</span>
+          <Input
+            aria-label="GlobalStore Model Center API Key"
+            type="password"
+            value={globalStoreApiKey}
+            onChange={(event) => setGlobalStoreApiKey(event.target.value)}
+            placeholder="Bearer token"
+          />
+        </label>
+        <div className="settings-custom-api-group-header">
+          <span className="settings-custom-api-media-label">登记模型</span>
+        </div>
+        <div className="settings-custom-api-grid">
+          <label className="settings-field">
+            <span>模型 ID</span>
+            <Input
+              aria-label="GlobalStore 模型 ID"
+              value={globalStoreModelId}
+              onChange={(event) => setGlobalStoreModelId(event.target.value)}
+              placeholder="例如 seedream-5.0"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void addConfiguredGlobalStoreModel();
+              }}
+            />
+          </label>
+          <p className="settings-status">媒体类型：图片</p>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={
+            globalStoreBusy ||
+            !globalStoreQuery.isSuccess ||
+            !globalStoreModelId.trim() ||
+            !globalStoreApiKey.trim() ||
+            !globalStoreBaseUrl.trim()
+          }
+          onClick={() => void addConfiguredGlobalStoreModel()}
+        >
+          {globalStoreBusy ? '正在保存 GlobalStore 模型' : '添加 GlobalStore 模型'}
+        </Button>
+        {globalStoreQuery.isLoading && <p role="status">正在加载 GlobalStore 配置</p>}
+        {globalStoreQuery.isError && <p role="alert">{globalStoreQuery.error.message}</p>}
+        {globalStoreStatus && (
+          <p role={globalStoreStatus.error ? 'alert' : 'status'}>{globalStoreStatus.message}</p>
+        )}
+        {(globalStoreQuery.data?.models.length ?? 0) > 0 && (
+          <ul aria-label="GlobalStore 已登记模型">
+            {globalStoreQuery.data?.models.map((model) => (
+              <li key={model.id}>{model.id} · 图片</li>
+            ))}
+          </ul>
+        )}
+      </section>
     </section>
   );
 }

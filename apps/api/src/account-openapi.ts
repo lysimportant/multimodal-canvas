@@ -289,6 +289,37 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
       },
     },
     '/v1/account/newapi': { get: operation('读取本人账号和全部纳入分组状态；不含 Key 或尾号') },
+    '/v1/account/globalstore/models': {
+      get: operation('读取本人最新 GlobalStore Model Center 图片目录及地址；不返回 Key'),
+      post: {
+        ...operation(
+          '加密保存本人 GlobalStore 图片凭据和精确模型目录；返回 credentialId 与统一模型目录，保留历史任务凭据',
+        ),
+        requestBody: body(
+          {
+            baseUrl: {
+              type: 'string',
+              format: 'uri',
+              description: '公网 HTTPS Model Center 地址，默认 https://saas.globalstore.ai',
+            },
+            apiKey: { type: 'string', minLength: 1, maxLength: 8192, writeOnly: true },
+            models: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 100,
+              items: object(
+                {
+                  id: { type: 'string', minLength: 1, maxLength: 200 },
+                  mediaType: { type: 'string', const: 'image' },
+                },
+                ['id', 'mediaType'],
+              ),
+            },
+          },
+          ['baseUrl', 'apiKey', 'models'],
+        ),
+      },
+    },
     '/v1/account/newapi/sync': {
       post: operation('用原操作身份同步本人全部纳入组，单组失败不影响成功组'),
     },

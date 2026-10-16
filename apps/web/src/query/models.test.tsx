@@ -6,6 +6,8 @@ import { apiFetch, clearAuthSession, persistAuthSession, type AuthUser } from '.
 import { createAppQueryClient } from './client';
 import {
   fetchModelCatalog,
+  fetchGlobalStoreConfiguration,
+  saveGlobalStoreConfiguration,
   modelCatalogQueryKeyFor,
   useModelCatalogQuery,
   usePlatformModelCatalogQuery,
@@ -184,5 +186,47 @@ describe('New API 模型目录', () => {
       ),
     );
     await expect(fetchModelCatalog()).rejects.toThrow('所选分组授权已失效');
+  });
+});
+
+describe('GlobalStore 服务端目录', () => {
+  it('保留服务端 UUID 和图片契约，不合成本机可用模型', async () => {
+    const model = {
+      id: 'seedream-5.0',
+      mediaTypes: ['image'],
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      provider: 'globalstore',
+      contract: 'globalstore-model-center-image-v2',
+    };
+    vi.mocked(apiFetch).mockResolvedValue(
+      Response.json({ credentialId: model.credentialId, models: [model] }),
+    );
+    const result = await fetchGlobalStoreConfiguration();
+    expect(result.models).toEqual([model]);
+    expect(JSON.stringify(result)).not.toContain('apiKey');
+  });
+  it('保存时通过后端接口发送精确图片 ID，且不写浏览器存储', async () => {
+    const input = {
+      baseUrl: 'https://saas.globalstore.ai/kyyReactApiServer/v2/model-center',
+      apiKey: 'synthetic-test-key',
+      models: [{ id: 'seedream-5.0', mediaType: 'image' as const }],
+    };
+    vi.mocked(apiFetch).mockResolvedValue(
+      Response.json({ credentialId: '11111111-1111-4111-8111-111111111111', models: [] }),
+    );
+    const storageSpy = vi.spyOn(Storage.prototype, 'setItem');
+    await saveGlobalStoreConfiguration(input);
+    expect(apiFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/account/globalstore/models'),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(input) }),
+    );
+    expect(storageSpy).not.toHaveBeenCalled();
+    storageSpy.mockRestore();
+  });
+  it('服务端拒绝保存时不返回可用目录', async () => {
+    vi.mocked(apiFetch).mockResolvedValue(Response.json({ error: '凭据无效' }, { status: 400 }));
+    await expect(
+      saveGlobalStoreConfiguration({ baseUrl: '', apiKey: '', models: [] }),
+    ).rejects.toThrow('凭据无效');
   });
 });

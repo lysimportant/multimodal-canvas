@@ -417,11 +417,36 @@ describe('WorkerPrismaRunPersistence credential snapshots', () => {
     });
     expect(findFirst).toHaveBeenCalledWith({
       where: { id: credentialId, version: 7, projectId: null },
-      select: { baseUrl: true, encryptedApiKey: true, encryptionKeyId: true, updatedAt: true },
+      select: {
+        baseUrl: true,
+        provider: true,
+        encryptedApiKey: true,
+        encryptionKeyId: true,
+        updatedAt: true,
+      },
     });
     expect(update).toHaveBeenCalledWith({
       where: expect.objectContaining({ id: credentialId, version: 7 }),
       data: expect.objectContaining({ encryptionKeyId: 'default' }),
+    });
+  });
+
+  it('解密 GlobalStore 冻结版本时同时返回供应商，防止误用 OpenAI 协议', async () => {
+    const findFirst = vi.fn(async () => ({
+      baseUrl: 'https://globalstore.example/kyyReactApiServer/v2/model-center',
+      provider: 'globalstore',
+      encryptedApiKey: encrypt('synthetic-globalstore-key'),
+    }));
+    const persistence = new WorkerPrismaRunPersistence(
+      { aiCredential: { findFirst, update: vi.fn(async () => undefined) } } as never,
+      encryptionSecret,
+    );
+    await expect(
+      persistence.getProviderCredentials({ credentialId, credentialVersion: 2 }),
+    ).resolves.toEqual({
+      baseUrl: 'https://globalstore.example/kyyReactApiServer/v2/model-center',
+      provider: 'globalstore',
+      apiKey: 'synthetic-globalstore-key',
     });
   });
 

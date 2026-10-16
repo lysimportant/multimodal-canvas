@@ -6,6 +6,39 @@ import { API_BASE_URL, type ModelEntry } from '../workspace/contracts';
 /** 模型目录缓存根键；实际查询必须追加用户身份和凭据范围。 */
 export const modelCatalogQueryKey = ['model-catalog'] as const;
 
+export type GlobalStoreConfiguration = {
+  credentialId?: string;
+  baseUrl?: string;
+  models: ModelEntry[];
+};
+
+/** 目录来自服务端保存的凭据，浏览器不存储密钥或合成可用模型。 */
+export async function fetchGlobalStoreConfiguration(
+  signal?: AbortSignal,
+): Promise<GlobalStoreConfiguration> {
+  const response = await apiFetch(`${API_BASE_URL}/v1/account/globalstore/models`, { signal });
+  const result = await response.json();
+  if (!response.ok || !Array.isArray(result.models))
+    throw new Error(result.error ?? 'GlobalStore 配置加载失败');
+  return result;
+}
+
+export async function saveGlobalStoreConfiguration(input: {
+  baseUrl: string;
+  apiKey: string;
+  models: Array<{ id: string; mediaType: 'image' }>;
+}): Promise<GlobalStoreConfiguration> {
+  const response = await apiFetch(`${API_BASE_URL}/v1/account/globalstore/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.credentialId || !Array.isArray(result.models))
+    throw new Error(result.error ?? 'GlobalStore 配置保存失败');
+  return result;
+}
+
 /** 返回当前浏览器公开会话的不可变用户 ID。 */
 function currentUserId(): string | undefined {
   return readStoredAuthSession()?.user.id;

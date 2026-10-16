@@ -1,5 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
-import type { RunExecutionBinding, RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  GLOBALSTORE_IMAGE_CONTRACT,
+  type RunExecutionBinding,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 import { verifyNewApiExecutionAuthority } from '@multimodal-canvas/providers';
 import { createCredentialEncryptionKeyringFromEnvironment } from '@multimodal-canvas/credential-crypto';
 import {
@@ -46,16 +50,18 @@ export class PrismaWorkerExecutionAuthorization implements WorkerExecutionAuthor
     if (!frozen) {
       throw new ExecutionError('binding_required', `执行节点 ${nodeId} 缺少持久授权绑定`);
     }
-    const [credential, groupBinding] = await Promise.all([
-      this.prisma.aiCredential.findUnique({
-        where: { id: frozen.credentialId },
-        select: { id: true, ownerId: true, projectId: true, version: true, encryptedApiKey: true },
-      }),
-      this.prisma.newApiGroupBinding.findFirst({
-        where: { credentialId: frozen.credentialId },
-        include: { identity: true },
-      }),
-    ]);
+    const credential = await this.prisma.aiCredential.findUnique({
+      where: { id: frozen.credentialId },
+      select: {
+        id: true,
+        ownerId: true,
+        projectId: true,
+        version: true,
+        provider: true,
+        modelCatalog: true,
+        encryptedApiKey: true,
+      },
+    });
     if (
       !credential ||
       credential.ownerId !== authorization.userId ||
@@ -64,6 +70,34 @@ export class PrismaWorkerExecutionAuthorization implements WorkerExecutionAuthor
     ) {
       throw new ExecutionError('binding_changed', '执行凭据不存在、归属错误或版本已变化');
     }
+    if (frozen.provider === 'globalstore') {
+      const catalog = credential.modelCatalog;
+      if (
+        credential.provider !== 'globalstore' ||
+        frozen.authority ||
+        frozen.mediaType !== 'image' ||
+        frozen.contract !== GLOBALSTORE_IMAGE_CONTRACT ||
+        !Array.isArray(catalog) ||
+        !catalog.some(
+          (entry) =>
+            entry &&
+            typeof entry === 'object' &&
+            !Array.isArray(entry) &&
+            entry.id === frozen.modelAlias &&
+            entry.mediaType === 'image',
+        )
+      ) {
+        throw new ExecutionError('binding_changed', 'GlobalStore 凭据、模型或图片协议已变化');
+      }
+      return;
+    }
+    if ((credential.provider ?? 'newapi') !== 'newapi' || !frozen.authority) {
+      throw new ExecutionError('binding_changed', '执行凭据与冻结供应商不一致');
+    }
+    const groupBinding = await this.prisma.newApiGroupBinding.findFirst({
+      where: { credentialId: frozen.credentialId },
+      include: { identity: true },
+    });
     if (
       !groupBinding ||
       groupBinding.status !== 'active' ||

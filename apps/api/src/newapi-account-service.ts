@@ -4,6 +4,7 @@ import { Prisma, PrismaClient, type NewApiIdentity, type NewApiGroupBinding } fr
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 import {
   isGeminiChatImageModel,
+  GLOBALSTORE_IMAGE_CONTRACT,
   runSnapshotSchema,
   type MediaType,
   type NewApiExecutionAuthority,
@@ -18,6 +19,7 @@ import {
   normalizeNewApiIssuer,
 } from './newapi-account-client';
 import type { ModelCatalogEntry } from './settings';
+import { GlobalStoreAccount, globalStoreModels } from './globalstore-account';
 
 /** 首次取得本地凭据前持久化的上游恢复目标，不包含 Key。 */
 const bootstrapRepairSchema = z.object({
@@ -32,6 +34,9 @@ export const AUTH_SYNC_INTERVAL_MS = 5 * 60 * 1_000;
 
 /** 稳定身份、加密授权与本人分组映射；所有远端操作限定在部署配置的单个实例。 */
 export class NewApiAccountService {
+  get globalStore() {
+    return new GlobalStoreAccount(this.options.prisma, this.options.keyring);
+  }
   constructor(
     readonly options: {
       prisma: PrismaClient;
@@ -787,7 +792,29 @@ export class NewApiAccountService {
     mediaType?: MediaType,
     credentialId?: string,
   ): Promise<ModelCatalogEntry[]> {
-    const identity = await this.identity(userId);
+    const globalStoreCredentials = credentialId
+      ? [await this.globalStore.credential(userId, credentialId)].filter(
+          (credential): credential is NonNullable<typeof credential> => Boolean(credential),
+        )
+      : await this.globalStore.credentials(userId);
+    const externalModels =
+      !mediaType || mediaType === 'image'
+        ? globalStoreCredentials.flatMap((credential) => globalStoreModels(credential))
+        : [];
+    if (credentialId && globalStoreCredentials.length > 0) return externalModels;
+    let identity: Awaited<ReturnType<NewApiAccountService['identity']>>;
+    try {
+      identity = await this.identity(userId);
+    } catch (error) {
+      // A standalone GlobalStore account has no New API identity to query.
+      if (
+        externalModels.length > 0 &&
+        error instanceof NewApiAccountError &&
+        error.code === 'authorization_revoked'
+      )
+        return externalModels;
+      throw error;
+    }
     const groups = await this.options.prisma.newApiGroupBinding.findMany({
       where: {
         identityId: identity.id,
@@ -798,37 +825,42 @@ export class NewApiAccountService {
     });
     if (credentialId && !groups.length)
       throw new NewApiAccountError('credential_not_found', '分组模型不存在或不属于当前账号', 404);
-    return groups.flatMap((group) =>
-      parseCatalog(group.catalog)
-        .filter(
-          (model) =>
-            !mediaType ||
-            model.media_type === mediaType ||
-            (mediaType === 'image' && isGeminiChatImageModel(model.id)),
-        )
-        .map((model) => ({
-          id: model.id,
-          name: model.name ?? model.id,
-          mediaTypes: [
-            ...new Set([
-              ...(model.media_type ? [model.media_type] : []),
-              ...(isGeminiChatImageModel(model.id) ? ['image' as const] : []),
-            ]),
-          ],
-          credentialId: group.credentialId ?? undefined,
-          group: group.group,
-          contract: model.contract,
-          available: group.status === 'active' && model.available,
-          unavailableReason:
-            group.status !== 'active' ? (group.error ?? '分组尚未同步') : model.unavailable_reason,
-          capabilities: {
-            ...model.capabilities,
-            ...(model.input_media_types ? { mentionMediaTypes: model.input_media_types } : {}),
-          },
-          limitations: model.limitations,
-          refreshedAt: group.syncedAt?.toISOString() ?? identity.updatedAt.toISOString(),
-        })),
-    );
+    return [
+      ...externalModels,
+      ...groups.flatMap((group) =>
+        parseCatalog(group.catalog)
+          .filter(
+            (model) =>
+              !mediaType ||
+              model.media_type === mediaType ||
+              (mediaType === 'image' && isGeminiChatImageModel(model.id)),
+          )
+          .map((model) => ({
+            id: model.id,
+            name: model.name ?? model.id,
+            mediaTypes: [
+              ...new Set([
+                ...(model.media_type ? [model.media_type] : []),
+                ...(isGeminiChatImageModel(model.id) ? ['image' as const] : []),
+              ]),
+            ],
+            credentialId: group.credentialId ?? undefined,
+            group: group.group,
+            contract: model.contract,
+            available: group.status === 'active' && model.available,
+            unavailableReason:
+              group.status !== 'active'
+                ? (group.error ?? '分组尚未同步')
+                : model.unavailable_reason,
+            capabilities: {
+              ...model.capabilities,
+              ...(model.input_media_types ? { mentionMediaTypes: model.input_media_types } : {}),
+            },
+            limitations: model.limitations,
+            refreshedAt: group.syncedAt?.toISOString() ?? identity.updatedAt.toISOString(),
+          })),
+      ),
+    ];
   }
 
   /** 生成前重新读取上游事实；目录缓存与本地已成功状态不能替代此检查。 */
@@ -889,6 +921,33 @@ export class NewApiAccountService {
     for (const [nodeId, reference] of Object.entries(snapshot.nodeCredentialReferences ?? {})) {
       const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
       if (!node || node.data.mode === 'source' || node.data.enabled === false) continue;
+      const globalStoreCredential = await this.globalStore.credential(
+        userId,
+        reference.credentialId,
+      );
+      if (globalStoreCredential) {
+        const modelAlias =
+          nodeId === snapshot.targetNodeId ? snapshot.modelAlias : node.data.modelAlias;
+        if (
+          globalStoreCredential.version !== reference.credentialVersion ||
+          node.data.mediaType !== 'image' ||
+          !globalStoreModels(globalStoreCredential).some((entry) => entry.id === modelAlias)
+        )
+          throw new NewApiAccountError(
+            'model_unavailable',
+            'GlobalStore 凭据版本或图片模型不匹配，请重新选择',
+            409,
+          );
+        executionBindings[nodeId] = {
+          credentialId: reference.credentialId,
+          credentialVersion: reference.credentialVersion,
+          modelAlias: modelAlias!,
+          mediaType: 'image',
+          provider: 'globalstore',
+          contract: GLOBALSTORE_IMAGE_CONTRACT,
+        };
+        continue;
+      }
       const binding = await this.validateGroup(userId, reference.credentialId);
       const modelAlias =
         nodeId === snapshot.targetNodeId ? snapshot.modelAlias : node.data.modelAlias;

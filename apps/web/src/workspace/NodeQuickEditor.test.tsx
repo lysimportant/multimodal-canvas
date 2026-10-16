@@ -543,6 +543,43 @@ describe('NodeQuickEditor', () => {
       credentialId: 'group-b',
     });
   });
+  it('GlobalStore Model Center 图片模型按精确 ID 出现在图片节点菜单且保留来源标识', async () => {
+    const actor = userEvent.setup();
+    const onModelChange = vi.fn();
+    const globalStoreImage = {
+      id: 'seedream-5.0',
+      name: 'seedream-5.0',
+      group: 'GlobalStore Model Center',
+      mediaTypes: ['image' as const],
+      credentialId: '11111111-1111-4111-8111-111111111111',
+      provider: 'globalstore',
+      contract: 'globalstore-model-center-image-v2',
+      available: true,
+      availability: 'available' as const,
+    };
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...imageNode,
+            data: { ...imageNode.data, modelAlias: undefined, credentialId: undefined },
+          },
+          models: [globalStoreImage],
+          onModelChange,
+        })}
+      />,
+    );
+
+    await actor.click(screen.getByRole('combobox', { name: /^模型：/ }));
+    const listbox = await screen.findByRole('listbox', { name: '模型选项' });
+    await actor.click(
+      within(listbox).getByRole('option', { name: 'seedream-5.0 GlobalStore Model Center' }),
+    );
+    expect(onModelChange).toHaveBeenCalledWith({
+      modelAlias: 'seedream-5.0',
+      credentialId: globalStoreImage.credentialId,
+    });
+  });
   it.each(['快捷', '完整'] as const)(
     '%s编辑器首次打开和重开都为真实模型 listbox 命名',
     async (presentation) => {

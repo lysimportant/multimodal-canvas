@@ -471,12 +471,16 @@ model AiCredential {
   id              String   @id @default(uuid()) @db.Uuid
   projectId       String?  @db.Uuid
   ownerId         String?  @db.Uuid
+  /// 凭据适配器；旧行默认为 newapi，GlobalStore Model Center 使用 globalstore。
+  provider        String   @default("newapi")
   label           String
   baseUrl         String
   encryptedApiKey String
   /// 密文包装所用的部署密钥标识；旧 AES-GCM 行可为空，不包含密钥材料。
   encryptionKeyId String?
   keyFingerprint  String
+  /// 外部目录的非敏感模型合同；不保存 API Key 或结果 URL。
+  modelCatalog    Json?
   version         Int      @default(1)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

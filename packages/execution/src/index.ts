@@ -4,6 +4,7 @@ import {
   runJobDataSchema,
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
+  GLOBALSTORE_IMAGE_CONTRACT,
   type RunExecutionBinding,
   type RunJobData,
   type RunSnapshot,
@@ -78,6 +79,20 @@ export function executableNodeIds(snapshot: RunSnapshot): string[] {
     .map((node) => node.id);
 }
 
+/** 已提交的异步图片与视频只能恢复原平台身份。 */
+function isAsyncTaskBinding(binding: RunExecutionBinding | undefined): boolean {
+  return (
+    binding?.mediaType === 'video' ||
+    (binding?.provider === 'globalstore' &&
+      binding.mediaType === 'image' &&
+      binding.contract === GLOBALSTORE_IMAGE_CONTRACT)
+  );
+}
+
+function taskProvider(binding: RunExecutionBinding | undefined): string {
+  return binding?.provider === 'globalstore' ? 'globalstore' : 'newapi';
+}
+
 /** 校验新模式逐节点绑定完整且与冻结节点一致。 */
 export function assertExecutionBindings(snapshot: RunSnapshot): void {
   for (const nodeId of executableNodeIds(snapshot)) {
@@ -92,7 +107,7 @@ export function assertExecutionBindings(snapshot: RunSnapshot): void {
     if (binding.mediaType !== node.data.mediaType) {
       throw new ExecutionError('binding_changed', `执行节点 ${nodeId} 的媒体类型与授权不一致`);
     }
-    if (binding.authority.group === '神秘分组') {
+    if (binding.authority?.group === '神秘分组') {
       throw new ExecutionError('binding_changed', '排除分组不能进入执行授权');
     }
   }
@@ -103,6 +118,25 @@ export function assertExecutionBindingCurrent(
   frozen: RunExecutionBinding,
   current: RunExecutionBinding,
 ): void {
+  if ((frozen.provider ?? 'newapi') !== (current.provider ?? 'newapi'))
+    throw new ExecutionError('binding_changed', '执行供应商已变化');
+  if (frozen.provider === 'globalstore') {
+    if (
+      frozen.credentialId !== current.credentialId ||
+      frozen.credentialVersion !== current.credentialVersion ||
+      frozen.modelAlias !== current.modelAlias ||
+      frozen.mediaType !== 'image' ||
+      current.mediaType !== 'image' ||
+      frozen.contract !== GLOBALSTORE_IMAGE_CONTRACT ||
+      current.contract !== GLOBALSTORE_IMAGE_CONTRACT ||
+      frozen.authority ||
+      current.authority
+    )
+      throw new ExecutionError('binding_changed', 'GlobalStore 凭据或图片合同已变化');
+    return;
+  }
+  if (!frozen.authority || !current.authority)
+    throw new ExecutionError('binding_changed', 'New API 授权缺失');
   if (
     frozen.credentialId !== current.credentialId ||
     frozen.credentialVersion !== current.credentialVersion ||
@@ -210,6 +244,42 @@ export class PrismaExecutionService {
         ),
       ].sort()) {
         await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${credentialId}, 0))`;
+        const credentialBindings = Object.values(snapshot.executionBindings ?? {}).filter(
+          (value) => value.credentialId === credentialId,
+        );
+        if (credentialBindings.some((value) => value.provider === 'globalstore')) {
+          const credential = await transaction.aiCredential.findFirst({
+            where: {
+              id: credentialId,
+              ownerId: input.userId,
+              projectId: null,
+              provider: 'globalstore',
+            },
+          });
+          if (!credential)
+            throw new ExecutionError('binding_changed', 'GlobalStore 凭据不属于当前账号');
+          for (const binding of credentialBindings) {
+            const catalog = credential.modelCatalog;
+            if (
+              binding.provider !== 'globalstore' ||
+              !Array.isArray(catalog) ||
+              !catalog.some(
+                (entry) =>
+                  entry &&
+                  typeof entry === 'object' &&
+                  !Array.isArray(entry) &&
+                  entry.id === binding.modelAlias &&
+                  entry.mediaType === 'image',
+              )
+            )
+              throw new ExecutionError('binding_changed', 'GlobalStore 图片模型不在冻结目录中');
+            assertExecutionBindingCurrent(binding, {
+              ...binding,
+              credentialVersion: credential.version,
+            });
+          }
+          continue;
+        }
         const group = await transaction.newApiGroupBinding.findUnique({
           where: { credentialId },
           include: { credential: true, identity: true },
@@ -400,7 +470,15 @@ export class PrismaExecutionService {
       if (frozen.success) {
         const videoNodeIds = new Set(
           frozen.data.nodes
-            .filter((node) => node.data.mediaType === 'video' && node.data.mode !== 'source')
+            .filter(
+              (node) =>
+                node.data.mode !== 'source' &&
+                (node.data.mediaType === 'video' ||
+                  (node.data.mediaType === 'image' &&
+                    frozen.data.executionBindings?.[node.id]?.provider === 'globalstore' &&
+                    frozen.data.executionBindings?.[node.id]?.contract ===
+                      GLOBALSTORE_IMAGE_CONTRACT)),
+            )
             .map((node) => node.id),
         );
         const frozenNodeIds = new Set(frozen.data.nodes.map((node) => node.id));
@@ -424,7 +502,7 @@ export class PrismaExecutionService {
         if (videoSendStarted || videoPlatformJobRecorded) {
           throw new ExecutionError(
             'send_requires_review',
-            '上游视频任务已开始，无法取消或因用户取消退款；系统会继续等待成功回传或明确失败',
+            '上游异步任务已开始，无法取消或因用户取消退款；系统会继续等待成功回传或明确失败',
           );
         }
       }
@@ -445,7 +523,7 @@ export class PrismaExecutionService {
    * 将丢失队列消息的原任务重新列入待投递 outbox，不创建 Run、授权或发送身份。
    * @param runId 原 API/BullMQ 运行编号。
    * @param queueName 当前部署队列；禁止把其他部署的任务转移进来。
-   * @param retrieveOnly 只恢复已有视频平台任务，不创建新的 Provider 请求。
+   * @param retrieveOnly 只恢复已有异步图片或视频平台任务，不创建新的 Provider 请求。
    * @returns 已成功或普通取消的任务返回 false；其余任务复核成功后返回 true。
    * @throws {ExecutionError} 授权、快照或归属不一致，以及原请求发送结果尚不明确。
    */
@@ -503,11 +581,14 @@ export class PrismaExecutionService {
         const targetNode = authorizedSnapshot.data.nodes.find((node) => node.id === targetNodeId);
         const targetBinding = authorizedSnapshot.data.executionBindings?.[targetNodeId];
         if (
-          targetNode?.data.mediaType !== 'video' ||
-          targetBinding?.mediaType !== 'video' ||
+          targetNode?.data.mediaType !== targetBinding?.mediaType ||
+          !isAsyncTaskBinding(targetBinding) ||
           payload.data.provider !== 'newapi'
         ) {
-          throw new ExecutionError('send_requires_review', '只读获取仅支持已有平台任务的视频节点');
+          throw new ExecutionError(
+            'send_requires_review',
+            '只读获取仅支持已有平台身份的异步图片或视频任务',
+          );
         }
         // ProviderJob.runId 关联数据库 Run.id，平台身份还必须属于目标节点和同一冻结合同。
         const providerJobs = await transaction.providerJob.findMany({
@@ -540,7 +621,8 @@ export class PrismaExecutionService {
               !providerJobs.some((job) => {
                 const evidence = job.payload;
                 return (
-                  job.provider === payload.data.provider &&
+                  job.provider ===
+                    taskProvider(authorizedSnapshot.data.executionBindings?.[intent.nodeId]) &&
                   Boolean(job.platformJobId?.trim()) &&
                   evidence !== null &&
                   typeof evidence === 'object' &&
@@ -561,7 +643,7 @@ export class PrismaExecutionService {
         const hasTargetPlatformTask = providerJobs.some((job) => {
           const evidence = job.payload;
           return (
-            job.provider === payload.data.provider &&
+            job.provider === taskProvider(targetBinding) &&
             typeof job.platformJobId === 'string' &&
             job.platformJobId.trim().length > 0 &&
             evidence !== null &&
@@ -569,13 +651,13 @@ export class PrismaExecutionService {
             !Array.isArray(evidence) &&
             evidence.workflowNodeId === targetNodeId &&
             evidence.snapshotFingerprint === authorization.snapshotFingerprint &&
-            evidence.contract === targetBinding.contract
+            evidence.contract === targetBinding?.contract
           );
         });
         if (!hasTargetPlatformTask) {
           throw new ExecutionError(
             'send_requires_review',
-            '原视频节点缺少匹配的平台任务身份，无法只读获取；请使用“重试生成”',
+            '原节点缺少匹配的平台任务身份，无法只读获取；请使用“重试生成”',
           );
         }
       }
@@ -687,7 +769,7 @@ export class PrismaExecutionService {
         const matches = jobs.some((job) => {
           const evidence = job.payload;
           return (
-            job.provider === 'newapi' &&
+            job.provider === taskProvider(binding) &&
             job.platformJobId === input.resumePlatformJobId &&
             evidence !== null &&
             typeof evidence === 'object' &&
@@ -697,7 +779,7 @@ export class PrismaExecutionService {
             evidence.contract === binding?.contract
           );
         });
-        if (input.attempt !== frozen.attempt || binding?.mediaType !== 'video' || !matches) {
+        if (input.attempt !== frozen.attempt || !isAsyncTaskBinding(binding) || !matches) {
           throw new ExecutionError(
             'send_requires_review',
             '只读获取的平台任务与冻结节点身份不一致',
@@ -1023,11 +1105,17 @@ export class PrismaExecutionService {
     const nodeJob = payload.data.workflowState?.nodes.find(
       (node) => node.nodeId === input.nodeId,
     )?.providerJob;
-    for (const [job, expected] of [
-      [targetJob, targetIdentity],
-      [nodeJob, requestIdentity],
+    for (const [job, expected, binding] of [
+      [targetJob, targetIdentity, snapshot.executionBindings?.[snapshot.targetNodeId]],
+      [nodeJob, requestIdentity, snapshot.executionBindings?.[input.nodeId]],
     ] as const) {
-      if (job && (job.provider !== 'newapi' || job.id !== expected)) {
+      const expectedProvider = taskProvider(binding);
+      const initialDispatchPlaceholder =
+        expectedProvider === 'globalstore' && job?.provider === 'newapi' && !job.platformJobId;
+      if (
+        job &&
+        ((job.provider !== expectedProvider && !initialDispatchPlaceholder) || job.id !== expected)
+      ) {
         throw new ExecutionError('authorization_conflict', 'outbox 中的原请求身份不一致');
       }
     }

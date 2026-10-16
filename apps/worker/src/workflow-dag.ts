@@ -227,7 +227,7 @@ export function createNodeRunSnapshot(
     ? {
         credentialId: executionBinding.credentialId,
         credentialVersion: executionBinding.credentialVersion,
-        newApi: executionBinding.authority,
+        ...(executionBinding.authority ? { newApi: executionBinding.authority } : {}),
       }
     : nodeCredentialReferences === undefined
       ? snapshot.credentialId && snapshot.credentialVersion

@@ -37,6 +37,7 @@ import {
   runJobDataSchema,
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
+  runExecutionBindingSchema,
   targetPortRolesForMediaType,
   imageEditCapability,
   imageEditSourceOf,
@@ -46,6 +47,41 @@ import {
 } from './index';
 
 describe('request prompt resource contract', () => {
+  it('GlobalStore 图片合同独立于 New API 权限且旧合同不注入 provider 默认值', () => {
+    const image = {
+      credentialId: 'fixture-credential',
+      credentialVersion: 1,
+      modelAlias: 'seedream-5.0',
+      mediaType: 'image',
+      provider: 'globalstore',
+      contract: 'globalstore-model-center-image-v2',
+    };
+    expect(runExecutionBindingSchema.parse(image)).toEqual(image);
+    expect(runExecutionBindingSchema.safeParse({ ...image, mediaType: 'video' }).success).toBe(
+      false,
+    );
+    expect(
+      runExecutionBindingSchema.safeParse({ ...image, contract: 'openai-images' }).success,
+    ).toBe(false);
+    expect(runExecutionBindingSchema.safeParse({ ...image, provider: 'newapi' }).success).toBe(
+      false,
+    );
+    const authority = {
+      issuer: 'https://newapi.fixture.org',
+      externalUserId: 'fixture-user',
+      instanceId: 'fixture-instance',
+      grantId: 'fixture-grant',
+      tokenId: 'fixture-token',
+      credentialRevision: '1',
+      group: 'default',
+      permissionRevision: '1',
+      autoGroups: [],
+    };
+    expect(runExecutionBindingSchema.safeParse({ ...image, authority }).success).toBe(false);
+    const { provider: _provider, ...legacy } = { ...image, authority, contract: 'openai-images' };
+    expect(runExecutionBindingSchema.parse(legacy)).not.toHaveProperty('provider');
+  });
+
   it('accepts a bounded frozen display name without making it an identity', () => {
     expect(
       requestPromptResourceSchema.parse({

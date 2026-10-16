@@ -124,7 +124,13 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
         version: reference.credentialVersion,
         projectId: null,
       },
-      select: { baseUrl: true, encryptedApiKey: true, encryptionKeyId: true, updatedAt: true },
+      select: {
+        baseUrl: true,
+        provider: true,
+        encryptedApiKey: true,
+        encryptionKeyId: true,
+        updatedAt: true,
+      },
     });
     if (!credential) {
       const previous = await this.prisma.newApiCredentialRotation.findUnique({
@@ -185,7 +191,11 @@ export class WorkerPrismaRunPersistence implements RunPersistence {
         throw new Error('AI credential rotation could not be persisted');
       }
     }
-    return { baseUrl: credential.baseUrl, apiKey: decrypted.plaintext };
+    return {
+      baseUrl: credential.baseUrl,
+      apiKey: decrypted.plaintext,
+      ...(credential.provider ? { provider: credential.provider } : {}),
+    };
   }
 
   async ensureRun(input: {

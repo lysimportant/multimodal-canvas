@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { UnrecoverableError } from 'bullmq';
 
-import type { ProviderJob, RunJobData, RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  GLOBALSTORE_IMAGE_CONTRACT,
+  type ProviderJob,
+  type RunJobData,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 import {
   NewApiProvider,
   NewApiProviderError,
   NewApiVideoProvider,
+  GlobalStoreImageProvider,
   reportRequestPrompt,
 } from '@multimodal-canvas/providers';
 import type { SendIntentStatus } from '@multimodal-canvas/execution';
@@ -131,7 +137,13 @@ function fixture(frozen: RunSnapshot, providerJob?: ProviderJob) {
   const persisted = new Map<string, ProviderJob>();
   const persistence: RunPersistence = {
     async getProviderCredentials() {
-      return { baseUrl: 'https://provider.example/v1', apiKey: 'synthetic-test-key' };
+      return {
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'synthetic-test-key',
+        ...(frozen.executionBindings?.target?.provider === 'globalstore'
+          ? { provider: 'globalstore' }
+          : {}),
+      };
     },
     async upsertProviderJob({ providerJob: current }) {
       persisted.set(current.id, structuredClone(current));
@@ -255,6 +267,109 @@ function rejectCreation(f: ReturnType<typeof fixture>, failure: Error) {
   });
   return post;
 }
+
+describe('GlobalStore 图片 Worker', () => {
+  function globalstoreSnapshot() {
+    const frozen = snapshot('image', true);
+    frozen.modelAlias = 'seedream-5.0';
+    frozen.executionBindings!.target = {
+      credentialId: frozen.credentialId!,
+      credentialVersion: frozen.credentialVersion!,
+      provider: 'globalstore',
+      modelAlias: frozen.modelAlias,
+      mediaType: 'image',
+      contract: GLOBALSTORE_IMAGE_CONTRACT,
+    };
+    return frozen;
+  }
+
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO2kAAAAASUVORK5CYII=',
+    'base64',
+  );
+
+  it.each([false, true])('图片提交/只读恢复后立即下载并归档，恢复=%s', async (resume) => {
+    const frozen = globalstoreSnapshot();
+    const task = resume
+      ? {
+          ...createProviderJobRecord(
+            '123e4567-e89b-42d3-a456-426614174215',
+            'globalstore',
+            'submitted',
+          ),
+          platformJobId: 'gs-image-1',
+          payload: { contract: GLOBALSTORE_IMAGE_CONTRACT, phase: 'polling' },
+        }
+      : undefined;
+    const f = fixture(frozen, task);
+    f.job.data.retrieveOnly = resume;
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url.endsWith('/tasks') && init?.method === 'POST') {
+        // The accepted task identity must be durable before any query/download.
+        expect(f.persisted.get(`provider_job_${f.job.id}`)?.payload?.phase).toBe('submitting');
+        return Response.json({ id: 'gs-image-1', status: 'queued' });
+      }
+      if (url.endsWith('/tasks/gs-image-1')) {
+        expect(f.persisted.get(`provider_job_${f.job.id}`)?.platformJobId).toBe('gs-image-1');
+        return Response.json({
+          id: 'gs-image-1',
+          status: 'completed',
+          result_url: 'https://images.example/image.png',
+        });
+      }
+      if (url === 'https://images.example/image.png') {
+        expect(init?.headers).toBeUndefined();
+        return new Response(png, { headers: { 'content-type': 'image/png' } });
+      }
+      throw new Error('unexpected fixture request');
+    });
+    const authorization = singleSendAuthorization();
+    const archive = vi.fn(f.options.resultArchiver!);
+    f.options.provider = new GlobalStoreImageProvider({
+      baseUrl: 'https://provider.example',
+      apiKey: 'synthetic-test-key',
+      pollIntervalMs: 1,
+      fetchImpl,
+    });
+    createRunWorker({ ...f.options, resultArchiver: archive, execution: authorization.execution });
+
+    await expect(queueState.processor!(f.job)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(calls.filter((call) => call.init?.method === 'POST')).toHaveLength(resume ? 0 : 1);
+    expect(authorization.execution.authorizeNode).toHaveBeenCalledTimes(resume ? 0 : 1);
+    expect(archive).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        output: expect.objectContaining({
+          kind: 'base64',
+          mediaType: 'image',
+          base64: png.toString('base64'),
+        }),
+      }),
+    );
+    expect(f.job.data.providerJob).toMatchObject({
+      provider: 'globalstore',
+      platformJobId: 'gs-image-1',
+      status: 'succeeded',
+      payload: { deliveryState: 'archived', contract: GLOBALSTORE_IMAGE_CONTRACT },
+    });
+    expect(JSON.stringify(f.job.data)).not.toContain('synthetic-test-key');
+    expect(JSON.stringify(f.job.data)).not.toContain('https://images.example');
+  });
+
+  it('凭据供应商与冻结绑定不匹配时拒绝执行', async () => {
+    const f = fixture(globalstoreSnapshot());
+    f.options.persistence!.getProviderCredentials = async () => ({
+      baseUrl: 'https://provider.example',
+      apiKey: 'synthetic-test-key',
+      provider: 'newapi',
+    });
+    createRunWorker({ ...f.options, execution: singleSendAuthorization().execution });
+    await expect(queueState.processor!(f.job)).rejects.toThrow('provider differs');
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+});
 
 describe('Worker 中性执行授权', () => {
   it.each([400, 422])('上游明确 HTTP %s 拒绝后停止队列重投，保留原始错误', async (status) => {

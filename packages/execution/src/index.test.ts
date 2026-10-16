@@ -94,6 +94,76 @@ describe('中性执行合同', () => {
 });
 
 describe('PrismaExecutionService', () => {
+  it('GlobalStore 受理在同一事务检查本人凭据、版本和图片目录，且不查询 New API 授权', async () => {
+    const f = fakeExecutionClient();
+    const service = new PrismaExecutionService(f.client as never);
+    let credential: Record<string, unknown> | null = {
+      id: '22222222-2222-4222-a222-222222222222',
+      version: 2,
+      modelCatalog: [{ id: 'model-1', mediaType: 'image' }],
+    };
+    let credentialQuery: unknown;
+    f.client.aiCredential = {
+      findFirst: async (query: unknown) => {
+        credentialQuery = query;
+        return credential;
+      },
+    };
+    f.client.newApiGroupBinding = {
+      findUnique: async () => {
+        throw new Error('must not query New API group');
+      },
+    };
+    const frozen = snapshot();
+    frozen.nodes[0]!.type = 'image';
+    frozen.nodes[0]!.data.mediaType = 'image';
+    frozen.executionBindings!.target = {
+      credentialId: '22222222-2222-4222-a222-222222222222',
+      credentialVersion: 2,
+      modelAlias: 'model-1',
+      mediaType: 'image',
+      provider: 'globalstore',
+      contract: 'globalstore-model-center-image-v2',
+    };
+    const input = (runId: string) => ({
+      runId,
+      userId: '33333333-3333-4333-a333-333333333333',
+      snapshot: frozen,
+      payload: {
+        runId,
+        userId: '33333333-3333-4333-a333-333333333333',
+        snapshot: frozen,
+        attempt: 1,
+        provider: 'newapi' as const,
+        cancelRequested: false,
+      },
+      queueName: 'runs-test',
+    });
+    await service.createSubmission(input('gs-valid'));
+    expect(credentialQuery).toEqual({
+      where: {
+        id: '22222222-2222-4222-a222-222222222222',
+        ownerId: input('unused').userId,
+        projectId: null,
+        provider: 'globalstore',
+      },
+    });
+    expect(f.rows.authorization.size).toBe(1);
+    credential = { ...credential, version: 3 };
+    await expect(service.createSubmission(input('gs-changed'))).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    credential = { ...credential, version: 2, modelCatalog: [{ id: 'other', mediaType: 'image' }] };
+    await expect(service.createSubmission(input('gs-unlisted'))).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    credential = null;
+    await expect(service.createSubmission(input('gs-foreign'))).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    expect(f.rows.authorization.size).toBe(1);
+  });
+
   it('在一次事务中写入 Run、授权和 outbox，并按原身份幂等恢复', async () => {
     const { client, rows, calls } = fakeExecutionClient();
     const service = new PrismaExecutionService(client as never);
@@ -600,13 +670,18 @@ function fakeExecutionClient() {
 }
 
 /** 建立只含合成冻结证据的请求链；不连接数据库、队列或 Provider。 */
-function recoveryFixture(mediaType: 'text' | 'video' = 'text') {
+function recoveryFixture(mediaType: 'text' | 'video' | 'image' = 'text') {
   const { client, rows, calls } = fakeExecutionClient();
   const service = new PrismaExecutionService(client as never);
   const userId = '33333333-3333-4333-a333-333333333333';
   const frozen = snapshot();
   frozen.nodes[0]!.data.mediaType = mediaType;
   frozen.executionBindings!.target!.mediaType = mediaType;
+  if (mediaType === 'image') {
+    frozen.executionBindings!.target!.provider = 'globalstore';
+    frozen.executionBindings!.target!.contract = 'globalstore-model-center-image-v2';
+    delete frozen.executionBindings!.target!.authority;
+  }
   frozen.nodes.push({ ...structuredClone(frozen.nodes[0]!), id: 'upstream' });
   frozen.executionBindings!.upstream = structuredClone(frozen.executionBindings!.target!);
 
@@ -680,6 +755,96 @@ function recoveryFixture(mediaType: 'text' | 'video' = 'text') {
 }
 
 describe('暂存回执与重试发送边界', () => {
+  it('GlobalStore 创建回执可幂等补账并按原平台身份恢复，阻止重试创建', async () => {
+    const f = recoveryFixture('image');
+    f.original.outbox.payload.providerJob = {
+      id: 'provider_job_run_receipt',
+      provider: 'globalstore',
+      platformJobId: 'gs-received',
+      status: 'running',
+      progress: 10,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    };
+    f.intent('sending');
+    const receipt = { ...f.input(), platformJobId: 'gs-received' };
+    await f.service.reconcileReceived(receipt);
+    await f.service.reconcileReceived(receipt);
+    expect([...f.rows.sendIntent.values()]).toContainEqual(
+      expect.objectContaining({ status: 'sent', platformJobId: 'gs-received' }),
+    );
+    await expect(
+      f.service.beginSend({ ...f.input(), resumePlatformJobId: 'gs-received' }),
+    ).resolves.toMatchObject({ status: 'sent', platformJobId: 'gs-received' });
+    await expect(f.service.beginSend(f.input())).rejects.toMatchObject({
+      code: 'send_requires_review',
+    });
+  });
+
+  it.each(['newapi', 'mock'])(
+    'GlobalStore 回执拒绝携带 %s 供应商平台身份的 outbox',
+    async (provider) => {
+      const f = recoveryFixture('image');
+      f.original.outbox.payload.providerJob = {
+        id: 'provider_job_run_receipt',
+        provider,
+        platformJobId: 'foreign-platform',
+        status: 'running',
+        progress: 10,
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      };
+      f.intent('sending');
+      await expect(
+        f.service.reconcileReceived({ ...f.input(), platformJobId: 'foreign-platform' }),
+      ).rejects.toMatchObject({ code: 'authorization_conflict' });
+      expect([...f.rows.sendIntent.values()][0]).toMatchObject({
+        status: 'sending',
+        platformJobId: null,
+      });
+    },
+  );
+
+  it('GlobalStore 图片只取回严格匹配原平台任务，禁止重新领取创建请求', async () => {
+    const f = recoveryFixture('image');
+    f.original.outbox.payload.providerJob = {
+      id: 'provider_job_run_receipt',
+      provider: 'globalstore',
+      platformJobId: 'gs-platform-existing',
+      status: 'running',
+      progress: 5,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    };
+    f.rows.providerJob.set('gs-job', {
+      runId: f.original.run.id,
+      provider: 'globalstore',
+      platformJobId: 'gs-platform-existing',
+      status: 'running',
+      payload: {
+        workflowNodeId: 'target',
+        snapshotFingerprint: f.original.authorization.snapshotFingerprint,
+        contract: 'globalstore-model-center-image-v2',
+      },
+    });
+    f.intent('sent', f.input(), 'gs-platform-existing');
+    await expect(f.service.requestCancellation('run_receipt')).rejects.toMatchObject({
+      code: 'send_requires_review',
+    });
+    await expect(f.service.requestRecovery('run_receipt', 'synthetic-review', true)).resolves.toBe(
+      true,
+    );
+    await expect(f.service.beginSend(f.input())).rejects.toMatchObject({
+      code: 'send_requires_review',
+    });
+    await expect(
+      f.service.beginSend({ ...f.input(), resumePlatformJobId: 'other-platform' }),
+    ).rejects.toMatchObject({ code: 'send_requires_review' });
+    await expect(
+      f.service.beginSend({ ...f.input(), resumePlatformJobId: 'gs-platform-existing' }),
+    ).resolves.toMatchObject({ platformJobId: 'gs-platform-existing' });
+  });
+
   it('只取回使用授权中的数据库 Run ID 查询 ProviderJob，而不是外部运行编号', async () => {
     const f = recoveryFixture('video');
     f.rows.providerJob.set('provider-job-1', {
