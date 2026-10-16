@@ -420,6 +420,11 @@ export const frozenImageEditCapabilitySchema = z
     parameters: z.array(z.string().trim().min(1)).min(1).optional(),
     /** 单次编辑允许的图片张数；旧快照缺省时按模型默认值解析。 */
     maxImages: z.number().int().positive().optional(),
+    /**
+     * 参考图传输方式。`public-url` 表示上游只接受服务端可达的公网地址，
+     * 拒绝 base64 与文件字节；缺省保持内联下发。
+     */
+    referenceImages: z.literal('public-url').optional(),
   })
   .strip();
 
@@ -811,6 +816,30 @@ export function resolveImageEditMaxImages(
   capability?: { maxImages?: number },
 ): number {
   return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * 判断已冻结的图片编辑限制是否要求参考图改用服务端可达的公网 URL。
+ *
+ * 上游明确拒绝 base64 与文件字节时，Worker 与 Provider 必须一致地停止内联下发，
+ * 否则参考图会被静默丢弃并退回文生图。按节点冻结值与旧的单项值同样兼容。
+ *
+ * @param snapshot 运行快照，或按节点导出的子快照。
+ * @param nodeId 消费参考图的节点。
+ * @returns 声明为 `public-url` 时为 true；缺省、旧快照与未声明模型均为 false。
+ */
+export function imageEditReferencesRequirePublicUrl(
+  snapshot: {
+    targetNodeId: string;
+    imageEditCapability?: FrozenImageEditCapability;
+    nodeImageEditCapabilities?: Record<string, FrozenImageEditCapability>;
+  },
+  nodeId: string,
+): boolean {
+  const capability =
+    snapshot.nodeImageEditCapabilities?.[nodeId] ??
+    (nodeId === snapshot.targetNodeId ? snapshot.imageEditCapability : undefined);
+  return capability?.referenceImages === 'public-url';
 }
 
 /** 目录中可用于解析图片编辑能力的字段名，兼容供应商的 snake_case 别名。 */

@@ -95,7 +95,7 @@
 }
 
 .asset-share-copy-row > button,
-.asset-share-error > button,
+.asset-share-error button,
 .asset-share-expired > button {
   align-items: center;
   background: var(--mc-surface, #ffffff);
@@ -112,7 +112,7 @@
 }
 
 .asset-share-copy-row > button:hover,
-.asset-share-error > button:hover,
+.asset-share-error button:hover,
 .asset-share-expired > button:hover,
 .asset-share-panel-close:hover {
   background: var(--mc-surface-muted, #f0f3f5);
@@ -148,11 +148,15 @@
   color: var(--mc-danger, #c43838);
 }
 
+/* `.asset-share-error` 现在是 antd Alert 的根节点，纵向排列只保留给仍未改造的过期提示。 */
 .asset-share-error,
+.asset-share-expired {
+  overflow-wrap: anywhere;
+}
+
 .asset-share-expired {
   align-items: flex-start;
   flex-direction: column;
-  overflow-wrap: anywhere;
 }
 
 .asset-share-panel :focus-visible {

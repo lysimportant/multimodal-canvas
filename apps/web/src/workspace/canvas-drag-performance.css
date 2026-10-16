@@ -1,9 +1,14 @@
 /* 拖动、平移与缩放只暂停装饰层，基础路径、命中区、端口和已保存外观不变；松手自动恢复。 */
 .canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-meteor,
-.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-cruiser,
-.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-multi,
-.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-breathe {
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-breathe,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-meteor-motion,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-meteor-fallback {
   animation-play-state: paused;
+}
+
+/* 拖动中隐藏装饰层，但基础连线与命中区保持可见，避免松手时出现视觉跳变。 */
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-meteor,
+.canvas-area:is(.is-node-dragging, .is-viewport-moving) .canvas-edge-effect-breathe {
   filter: none;
   visibility: hidden;
 }

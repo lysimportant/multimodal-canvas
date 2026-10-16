@@ -1,5 +1,5 @@
 import { Button } from '@multimodal-canvas/ui';
-import { Select } from 'antd';
+import { Alert, Select, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Loader2, RefreshCw, ScanText } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -201,21 +201,26 @@ export function ReversePromptPanel({ target, userId, models }: ReversePromptPane
         </p>
       ) : null}
       {analysisQuery.isError ? (
-        <div className="request-prompt-status" role="alert">
-          <span>{analysisQuery.error.message}</span>
-          <Button
-            type="button"
-            className="request-prompt-retry"
-            onClick={() => void analysisQuery.refetch()}
-          >
-            <RefreshCw size={13} /> 重新查询
-          </Button>
-        </div>
+        <Alert
+          className="request-prompt-status"
+          type="error"
+          showIcon
+          title={analysisQuery.error.message}
+          action={
+            <Button
+              type="button"
+              className="request-prompt-retry"
+              onClick={() => void analysisQuery.refetch()}
+            >
+              <RefreshCw size={13} /> 重新查询
+            </Button>
+          }
+        />
       ) : null}
       {error || analysis?.error ? (
-        <p className="request-prompt-summary-error" role="alert">
+        <Typography.Text type="danger" className="request-prompt-summary-error" role="alert">
           {error ?? analysis?.error}
-        </p>
+        </Typography.Text>
       ) : null}
       {analysis?.status === 'cancelled' ? <p role="status">反推已取消</p> : null}
       {analysis?.status === 'succeeded' ? (

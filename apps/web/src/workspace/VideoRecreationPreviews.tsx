@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Image } from 'antd';
+import { Image, Typography } from 'antd';
 import { Button } from '@multimodal-canvas/ui';
 import { getAuthSessionGeneration, subscribeAuthSession } from '../auth-client';
 import {
@@ -137,12 +137,13 @@ export function VideoRecreationPreview({ item, preview, onRetry }: VideoRecreati
         </>
       ) : (
         <>
-          <p
+          <Typography.Text
             className="video-recreation-preview-status"
+            type={state.status === 'error' ? 'danger' : 'secondary'}
             role={state.status === 'error' ? 'alert' : 'status'}
           >
             {state.status === 'loading' ? '正在截取原视频画面…' : state.error}
-          </p>
+          </Typography.Text>
           {state.status === 'error' && (
             <Button
               type="button"

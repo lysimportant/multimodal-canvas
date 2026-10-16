@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Alert } from 'antd';
 import { Download, LoaderCircle, LockKeyhole, RefreshCw } from 'lucide-react';
 import { z } from 'zod';
 
@@ -243,7 +244,7 @@ function PublicAssetShareContent({ token }: { token: string }) {
       {error ? (
         <section className="public-asset-share-state" aria-label="分享资源状态">
           <h1>暂时无法查看资源</h1>
-          <p role="alert">{error}</p>
+          <Alert type="error" showIcon title={error} />
           <Button type="button" onClick={() => setAttempt((current) => current + 1)}>
             <RefreshCw size={16} aria-hidden="true" />
             重新加载
@@ -276,9 +277,7 @@ function PublicAssetShareContent({ token }: { token: string }) {
               }}
             />
             {unlockError && (
-              <p id="share-unlock-error" role="alert">
-                {unlockError}
-              </p>
+              <Alert id="share-unlock-error" type="error" showIcon title={unlockError} />
             )}
             <Button type="submit" disabled={unlocking || !password}>
               {unlocking && <LoaderCircle className="spin" size={16} aria-hidden="true" />}

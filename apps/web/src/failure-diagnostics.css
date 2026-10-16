@@ -63,21 +63,6 @@
   color: var(--mc-text-muted, #687386);
 }
 
-.failure-diagnostics-error {
-  background: color-mix(in srgb, #fff1ef 74%, var(--mc-surface, #fff));
-  border-left: 3px solid #b0443f;
-  border-radius: 3px;
-  display: grid;
-  gap: 4px;
-  padding: 8px 9px;
-}
-
-.failure-diagnostics-error strong {
-  color: #8f3b35;
-  font-size: 11px;
-}
-
-.failure-diagnostics-error p,
 .failure-diagnostics-hint,
 .failure-diagnostics-retry-error {
   color: var(--mc-text-muted, #687386);
@@ -85,43 +70,6 @@
   line-height: 1.5;
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.failure-diagnostics-details {
-  border-top: 1px solid var(--mc-border, #e2e7eb);
-  margin: 0;
-}
-
-.failure-diagnostics-details > div {
-  align-items: baseline;
-  border-bottom: 1px solid var(--mc-border, #e2e7eb);
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  padding: 8px 0;
-}
-
-.failure-diagnostics-details dt {
-  color: var(--mc-text-muted, #687386);
-  font-size: 10px;
-}
-
-.failure-diagnostics-details dd {
-  color: var(--mc-text, #18212f);
-  font-size: 10px;
-  margin: 0;
-  max-width: 70%;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-.failure-diagnostics-details code {
-  background: var(--mc-surface-muted, #f0f3f5);
-  border-radius: 3px;
-  color: var(--mc-text-strong, #172033);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10px;
-  padding: 2px 4px;
 }
 
 .failure-diagnostics-retryability-yes {
@@ -151,8 +99,37 @@
   min-height: 32px;
 }
 
-@media (max-width: 560px) {
-  .failure-diagnostics-details dd {
-    max-width: 62%;
-  }
+/* Alert / Descriptions 都是这个 grid 的直接子项：默认 `min-width: auto` 会被
+   超长的错误串（无空格）撑破面板，必须显式允许收缩并允许任意处换行。 */
+.failure-diagnostics > .ant-alert,
+.failure-diagnostics > .ant-descriptions {
+  min-width: 0;
+}
+
+.failure-diagnostics > .ant-alert .ant-alert-title,
+.failure-diagnostics > .ant-alert .ant-alert-description {
+  overflow-wrap: anywhere;
+}
+
+/* 原来是手写的 dl/dt/dd（dd 有 max-width + 任意处换行，code 是等宽小胶囊）；
+   换成 antd Descriptions 后按它的内部结构补回同样的排版约束。 */
+.failure-diagnostics > .ant-descriptions .ant-descriptions-item-label {
+  color: var(--mc-text-muted, #687386);
+  font-size: 10px;
+}
+
+.failure-diagnostics > .ant-descriptions .ant-descriptions-item-content {
+  color: var(--mc-text, #18212f);
+  font-size: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.failure-diagnostics > .ant-descriptions .ant-descriptions-item-content code {
+  background: var(--mc-surface-muted, #f0f3f5);
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  padding: 2px 4px;
 }

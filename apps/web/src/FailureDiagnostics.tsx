@@ -1,6 +1,8 @@
-import { Button as UiButton } from '@multimodal-canvas/ui';
+import { Alert, Button, Descriptions, Typography } from 'antd';
 import { AlertTriangle, CheckCircle2, RotateCcw, ShieldAlert } from 'lucide-react';
 import { useState } from 'react';
+
+import type { DescriptionsProps } from 'antd';
 
 import type { RunRecord } from '@multimodal-canvas/domain';
 
@@ -182,6 +184,43 @@ export function FailureDiagnostics({
     }
   };
 
+  const detailItems: DescriptionsProps['items'] = [
+    {
+      key: 'retryable',
+      label: '可重试性',
+      children: (
+        <span
+          className={`failure-diagnostics-retryability failure-diagnostics-retryability-${
+            details.retryable === true ? 'yes' : details.retryable === false ? 'no' : 'unknown'
+          }`}
+        >
+          {retryLabel(details.retryable)}
+        </span>
+      ),
+    },
+  ];
+  if (details.errorCode) {
+    detailItems.push({
+      key: 'errorCode',
+      label: '错误代码',
+      children: <Typography.Text code>{details.errorCode}</Typography.Text>,
+    });
+  }
+  if (details.requestId) {
+    detailItems.push({
+      key: 'requestId',
+      label: '请求 ID',
+      children: <Typography.Text code>{details.requestId}</Typography.Text>,
+    });
+  }
+  if (details.platformJobId) {
+    detailItems.push({
+      key: 'platformJobId',
+      label: '平台任务 ID',
+      children: <Typography.Text code>{details.platformJobId}</Typography.Text>,
+    });
+  }
+
   return (
     <section className={rootClassName} aria-label="运行失败诊断" data-testid="failure-diagnostics">
       <div className="failure-diagnostics-heading">
@@ -205,67 +244,42 @@ export function FailureDiagnostics({
         </span>
       </div>
 
-      <div className="failure-diagnostics-error" role="alert">
-        <strong>错误信息</strong>
-        <p>{details.error ?? '运行未返回具体错误信息。'}</p>
-      </div>
+      <Alert
+        type="error"
+        showIcon
+        title="错误信息"
+        description={details.error ?? '运行未返回具体错误信息。'}
+      />
 
-      <dl className="failure-diagnostics-details">
-        <div>
-          <dt>可重试性</dt>
-          <dd
-            className={`failure-diagnostics-retryability failure-diagnostics-retryability-${
-              details.retryable === true ? 'yes' : details.retryable === false ? 'no' : 'unknown'
-            }`}
-          >
-            {retryLabel(details.retryable)}
-          </dd>
-        </div>
-        {details.errorCode && (
-          <div>
-            <dt>错误代码</dt>
-            <dd>
-              <code>{details.errorCode}</code>
-            </dd>
-          </div>
-        )}
-        {details.requestId && (
-          <div>
-            <dt>请求 ID</dt>
-            <dd>
-              <code>{details.requestId}</code>
-            </dd>
-          </div>
-        )}
-        {details.platformJobId && (
-          <div>
-            <dt>平台任务 ID</dt>
-            <dd>
-              <code>{details.platformJobId}</code>
-            </dd>
-          </div>
-        )}
-      </dl>
+      <Descriptions column={1} size="small" colon={false} items={detailItems} />
 
       {details.retryable === false && (
-        <p className="failure-diagnostics-hint">
+        <Typography.Text type="danger" className="failure-diagnostics-hint">
           {details.errorCode === 'UNSUPPORTED_INPUT_ROLE'
             ? '当前模型不接受该输入端口，请检查节点连线，或改用支持此媒体输入的模型。'
             : '服务端标记此任务不可重试，请检查模型和输入后重新运行。'}
-        </p>
+        </Typography.Text>
       )}
-      {retryError && <p className="failure-diagnostics-retry-error">{retryError}</p>}
+      {retryError && (
+        <Typography.Text type="danger" className="failure-diagnostics-retry-error">
+          {retryError}
+        </Typography.Text>
+      )}
       {canRetry && (
-        <UiButton
-          type="button"
+        <Button
           className="button button-secondary failure-diagnostics-retry"
-          onClick={() => void handleRetry()}
+          icon={<RotateCcw size={14} aria-hidden="true" />}
+          loading={
+            isRetrying
+              ? { icon: <CheckCircle2 className="spin" size={14} aria-hidden="true" /> }
+              : false
+          }
           disabled={isRetrying}
           aria-busy={isRetrying}
+          onClick={() => void handleRetry()}
         >
-          {isRetrying ? <CheckCircle2 className="spin" size={14} /> : <RotateCcw size={14} />}
           {isRetrying ? '重试中' : '重试'}
-        </UiButton>
+        </Button>
       )}
     </section>
   );

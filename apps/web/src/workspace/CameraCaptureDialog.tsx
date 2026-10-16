@@ -1,3 +1,4 @@
+import { Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { Camera, RotateCcw, X } from 'lucide-react';
 import {
@@ -301,9 +302,9 @@ export function CameraCaptureDialog({ onClose, onCapture }: CameraCaptureDialogP
             {stage === 'error' && '相机未开启，可检查设置后重试。'}
           </p>
           {error && (
-            <p className="camera-capture-dialog-error" role="alert">
+            <Typography.Text type="danger" role="alert" className="camera-capture-dialog-error">
               {error}
-            </p>
+            </Typography.Text>
           )}
         </div>
         <footer className="camera-capture-dialog-actions">

@@ -34,8 +34,12 @@
   padding: 0;
 }
 
+/* 紧凑资源卡只留图标：antd Alert 会把正文和操作包进 section/actions 两层，
+   原规则只命中直接子 span/button，因此要按新结构一起隐藏，40px 布局才不会撑开。 */
 .artifact-preview-state.asset-card-preview > span,
-.artifact-preview-state.asset-card-preview > button {
+.artifact-preview-state.asset-card-preview > button,
+.artifact-preview-state.asset-card-preview .ant-alert-section,
+.artifact-preview-state.asset-card-preview .ant-alert-actions {
   display: none;
 }
 
@@ -501,7 +505,8 @@
   text-align: center;
 }
 
-.artifact-preview-state > span {
+.artifact-preview-state > span,
+.artifact-preview-state .ant-alert-title {
   font-size: 11px;
   max-width: 100%;
   overflow-wrap: anywhere;

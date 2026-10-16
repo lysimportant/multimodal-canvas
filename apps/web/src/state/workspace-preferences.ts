@@ -68,22 +68,8 @@ export const workspacePreferenceDefaults: PreferenceValues = {
 
 const canvasBackgrounds: CanvasBackground[] = ['dots', 'lines', 'cross', 'blank'];
 const canvasThemes: CanvasTheme[] = ['eye-care', 'light', 'dark', 'sepia', 'contrast'];
-const canvasEdgePathStyles: CanvasEdgePathStyle[] = [
-  'bezier',
-  'gentle',
-  'smoothstep',
-  'step',
-  'straight',
-];
-const canvasEdgeEffects: CanvasEdgeEffect[] = [
-  'meteor',
-  'shooting-star',
-  'marching',
-  'cruiser',
-  'multi',
-  'breathe',
-  'none',
-];
+const canvasEdgePathStyles: CanvasEdgePathStyle[] = ['bezier', 'smoothstep', 'straight'];
+const canvasEdgeEffects: CanvasEdgeEffect[] = ['meteor', 'marching', 'breathe', 'none'];
 
 /**
  * 旧单一偏好的显式迁移映射。

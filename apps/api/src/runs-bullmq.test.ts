@@ -660,6 +660,224 @@ describe('BullMQ run result integrity', () => {
     await service.close();
   });
 
+  it('recovers the durable succeeded result when the completed envelope is invalid', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    state.job = {
+      id: 'run_reconcile',
+      data: {
+        runId: 'run_reconcile',
+        snapshot,
+        attempt: 1,
+        provider: 'mock',
+        cancelRequested: false,
+      },
+      progress: undefined,
+      // Worker 已经在返回前写入 `succeeded` 行；队列返回值却被截断成缺少必填字段。
+      returnvalue: { status: 'succeeded', progress: 100, result: { malformed: true } },
+      timestamp: Date.now(),
+      async getState() {
+        return 'completed';
+      },
+    };
+    const durableRun: RunRecord = {
+      id: 'run_reconcile',
+      userId: '123e4567-e89b-42d3-a456-426614174001',
+      projectId: snapshot.projectId,
+      targetNodeId: snapshot.targetNodeId,
+      status: 'succeeded',
+      progress: 100,
+      attempt: 1,
+      provider: 'mock',
+      modelAlias: snapshot.modelAlias,
+      snapshot,
+      result: {
+        provider: 'mock',
+        summary: 'durable result',
+        targetNodeId: snapshot.targetNodeId,
+        mediaType: 'text',
+        inputCount: 0,
+      },
+      createdAt: '2026-09-17T10:00:00.000Z',
+      updatedAt: '2026-09-17T10:00:05.000Z',
+    };
+    const persistence = {
+      ensureRun: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => durableRun),
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: persistence as never,
+    });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const record = await service.get('run_reconcile');
+
+    expect(record).toMatchObject({
+      id: 'run_reconcile',
+      status: 'succeeded',
+      progress: 100,
+      result: {
+        provider: 'mock',
+        summary: 'durable result',
+        targetNodeId: 'node_text',
+        mediaType: 'text',
+        inputCount: 0,
+      },
+      // 队列没有提供完成时间时必须采用持久化行的更新时间。
+      updatedAt: '2026-09-17T10:00:05.000Z',
+    });
+    expect(record?.error).toBeUndefined();
+    expect(persistence.getRun).toHaveBeenCalledWith('run_reconcile');
+    expect(JSON.stringify(warn.mock.calls)).toContain('run_reconcile');
+    warn.mockRestore();
+    await service.close();
+  });
+
+  it('recovers the durable result when a succeeded envelope omits it', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    state.job = {
+      id: 'run_reconcile_missing_result',
+      data: {
+        runId: 'run_reconcile_missing_result',
+        snapshot,
+        attempt: 1,
+        provider: 'mock',
+        cancelRequested: false,
+      },
+      progress: { status: 'processing', progress: 100, updatedAt: '2026-09-17T10:00:04.000Z' },
+      // 信封本身合法，但成功运行必须携带结果。
+      returnvalue: { status: 'succeeded', progress: 100 },
+      timestamp: Date.now(),
+      async getState() {
+        return 'completed';
+      },
+    };
+    const durableRun: RunRecord = {
+      id: 'run_reconcile_missing_result',
+      projectId: snapshot.projectId,
+      targetNodeId: snapshot.targetNodeId,
+      status: 'succeeded',
+      progress: 100,
+      attempt: 1,
+      provider: 'mock',
+      modelAlias: snapshot.modelAlias,
+      snapshot,
+      result: {
+        provider: 'mock',
+        summary: 'durable result',
+        targetNodeId: snapshot.targetNodeId,
+        mediaType: 'text',
+        inputCount: 0,
+      },
+      createdAt: '2026-09-17T10:00:00.000Z',
+      updatedAt: '2026-09-17T10:00:05.000Z',
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: { ensureRun: vi.fn(), getRun: vi.fn(async () => durableRun) } as never,
+    });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(service.get('run_reconcile_missing_result')).resolves.toMatchObject({
+      status: 'succeeded',
+      progress: 100,
+      result: { summary: 'durable result' },
+      // 队列进度给出了时间时仍然优先队列值。
+      updatedAt: '2026-09-17T10:00:04.000Z',
+    });
+    warn.mockRestore();
+    await service.close();
+  });
+
+  it('does not promote a durable failed run when the completed envelope is invalid', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 1,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    state.job = {
+      id: 'run_durable_failed',
+      data: {
+        runId: 'run_durable_failed',
+        snapshot,
+        attempt: 1,
+        provider: 'mock',
+        cancelRequested: false,
+      },
+      progress: undefined,
+      returnvalue: { status: 'succeeded', progress: 100, result: { malformed: true } },
+      timestamp: Date.now(),
+      async getState() {
+        return 'completed';
+      },
+    };
+    const durableRun: RunRecord = {
+      id: 'run_durable_failed',
+      projectId: snapshot.projectId,
+      targetNodeId: snapshot.targetNodeId,
+      status: 'failed',
+      progress: 100,
+      attempt: 1,
+      provider: 'mock',
+      modelAlias: snapshot.modelAlias,
+      snapshot,
+      error: 'provider rejected the request',
+      createdAt: '2026-09-17T10:00:00.000Z',
+      updatedAt: '2026-09-17T10:00:05.000Z',
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: { ensureRun: vi.fn(), getRun: vi.fn(async () => durableRun) } as never,
+    });
+
+    await expect(service.get('run_durable_failed')).resolves.toMatchObject({
+      status: 'failed',
+      error: 'worker returned an invalid run result',
+    });
+    await service.close();
+  });
+
   it('keeps the worker failedReason string as the run error', async () => {
     const snapshot = createRunSnapshot(
       'project_1',

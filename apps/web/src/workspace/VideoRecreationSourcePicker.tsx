@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Select } from 'antd';
+import { Select, Typography } from 'antd';
 import { Film, Upload } from 'lucide-react';
 import {
   videoRecreationConfigSchema,
@@ -139,8 +139,16 @@ export function VideoRecreationSourcePicker({
           </div>
         ) : null}
       </div>
-      {working ? <p role="status">正在保存参考视频…</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
+      {working ? (
+        <Typography.Text role="status" type="secondary">
+          正在保存参考视频…
+        </Typography.Text>
+      ) : null}
+      {error ? (
+        <Typography.Text role="alert" type="danger">
+          {error}
+        </Typography.Text>
+      ) : null}
     </section>
   );
 }

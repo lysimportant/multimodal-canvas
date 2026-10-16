@@ -65,7 +65,7 @@
   text-align: center;
 }
 
-.resource-page-error p {
+.resource-page-error .ant-alert-description {
   overflow-wrap: anywhere;
 }
 

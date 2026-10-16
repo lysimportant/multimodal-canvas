@@ -150,6 +150,48 @@ describe('图片修改运行边界', () => {
     expect(savedCanvas?.nodes[0].data.contentUrl).toBe(`/v1/assets/${source.id}/content`);
   });
 
+  it('上游只收公网参考图时把传输方式冻结进运行快照', async () => {
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const settingsStore = new MemoryAiSettingsStore('image-edit-public-url');
+    settingsStore.replaceModels([
+      imageModel('image-edit-v1', {
+        imageEdit: { supported: true },
+        referenceImages: 'public-url',
+      }),
+    ]);
+    const project = await projectStore.create({ name: '公网参考图' });
+    const source = await assetStore.create({
+      projectId: project.id,
+      name: 'source.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('image-bytes'),
+    });
+    await projectStore.updateCanvas(project.id, imageEditCanvas(source.id));
+    const runService = new MemoryRunService({ stepDelayMs: 0 });
+    const app = buildApp({ logger: false, assetStore, projectStore, settingsStore, runService });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/nodes/node_edit/runs',
+      payload: { projectId: project.id, parameters: { prompt: '换成夜景' } },
+    });
+
+    expect(response.statusCode).toBe(202);
+    const internalRun = await runService.get(response.json().run.id);
+    // 冻结后 Worker 才会签发公网地址，Provider 才会改用 JSON edits。
+    expect(internalRun?.snapshot.imageEditCapability).toEqual({
+      declared: true,
+      referenceImages: 'public-url',
+    });
+    expect(internalRun?.snapshot.nodeImageEditCapabilities?.node_edit).toEqual({
+      declared: true,
+      referenceImages: 'public-url',
+    });
+  });
+
   it('编辑节点冻结的来源版本优先于之后产生的新版本', async () => {
     const assetStore = new MemoryAssetStore();
     const projectStore = new MemoryProjectStore();

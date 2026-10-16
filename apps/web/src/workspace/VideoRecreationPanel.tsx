@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clapperboard } from 'lucide-react';
-import { Select, Tabs, Tooltip } from 'antd';
+import { Alert, Select, Tabs, Tooltip, Typography } from 'antd';
 import { Button, Textarea } from '@multimodal-canvas/ui';
 import {
   getVideoRecreationIssue,
@@ -733,35 +733,41 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           @ 搜索替换资源
         </Button>
         {duplicates.length > 1 ? (
-          <div role="alert">
-            <p>
-              该角色存在重复绑定：
-              {duplicates.map((entry) => `${entry.name} v${entry.assetVersion}`).join('、')}
-            </p>
-            <Button
-              type="button"
-              className="button button-secondary"
-              disabled={locked}
-              onClick={() =>
-                void saveEdit({
-                  ...latest.current.config,
-                  ...(target?.kind === 'role'
-                    ? {
-                        bindings: latest.current.config.bindings.filter(
-                          (entry) => entry.roleId !== target.id,
-                        ),
-                      }
-                    : {
-                        productBindings: latest.current.config.productBindings?.filter(
-                          (entry) => entry.productId !== target?.id,
-                        ),
-                      }),
-                })
-              }
-            >
-              清除{label}的重复绑定
-            </Button>
-          </div>
+          <Alert
+            type="warning"
+            showIcon
+            title={
+              <>
+                该角色存在重复绑定：
+                {duplicates.map((entry) => `${entry.name} v${entry.assetVersion}`).join('、')}
+              </>
+            }
+            action={
+              <Button
+                type="button"
+                className="button button-secondary"
+                disabled={locked}
+                onClick={() =>
+                  void saveEdit({
+                    ...latest.current.config,
+                    ...(target?.kind === 'role'
+                      ? {
+                          bindings: latest.current.config.bindings.filter(
+                            (entry) => entry.roleId !== target.id,
+                          ),
+                        }
+                      : {
+                          productBindings: latest.current.config.productBindings?.filter(
+                            (entry) => entry.productId !== target?.id,
+                          ),
+                        }),
+                  })
+                }
+              >
+                清除{label}的重复绑定
+              </Button>
+            }
+          />
         ) : null}
         {onUploadResource ? (
           <div className="video-recreation-upload">
@@ -848,11 +854,21 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             )}
           </div>
         </header>
-        {sourceError ? <p role="alert">{sourceError}</p> : null}
-        {invalidDuration ? (
-          <p role="alert">来源时长必须是有限的正数；不会截断或补造时长。</p>
+        {sourceError ? (
+          <Typography.Text type="danger" role="alert">
+            {sourceError}
+          </Typography.Text>
         ) : null}
-        {sourceChanged ? <p role="alert">来源已改变，请重新打开节点编辑器。</p> : null}
+        {invalidDuration ? (
+          <Typography.Text type="danger" role="alert">
+            来源时长必须是有限的正数；不会截断或补造时长。
+          </Typography.Text>
+        ) : null}
+        {sourceChanged ? (
+          <Typography.Text type="danger" role="alert">
+            来源已改变，请重新打开节点编辑器。
+          </Typography.Text>
+        ) : null}
         <div className="video-recreation-model-actions">
           <div className="video-recreation-model-select">
             <Select
@@ -972,9 +988,9 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           </p>
         ) : null}
         {error ? (
-          <p className="video-recreation-error" role="alert">
+          <Typography.Text type="danger" role="alert" className="video-recreation-error">
             {error}
-          </p>
+          </Typography.Text>
         ) : null}
         {config.analysis ? (
           <Tabs
@@ -1071,52 +1087,64 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 <p>未识别到人物，可按商品继续处理。</p>
               ) : null}
               {unknownBindings.length ? (
-                <div role="alert">
-                  <p>
-                    以下绑定没有对应角色，已保留，请确认后清除：
-                    {unknownBindings
-                      .map((binding) => `${binding.roleId}：${binding.name}`)
-                      .join('、')}
-                  </p>
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    disabled={locked}
-                    onClick={() =>
-                      void saveEdit({
-                        ...latest.current.config,
-                        bindings: latest.current.config.bindings.filter(
-                          (binding) =>
-                            !unknownBindings.some((unknown) => unknown.roleId === binding.roleId),
-                        ),
-                      })
-                    }
-                  >
-                    清除无对应角色的绑定
-                  </Button>
-                </div>
+                <Alert
+                  type="warning"
+                  showIcon
+                  title={
+                    <>
+                      以下绑定没有对应角色，已保留，请确认后清除：
+                      {unknownBindings
+                        .map((binding) => `${binding.roleId}：${binding.name}`)
+                        .join('、')}
+                    </>
+                  }
+                  action={
+                    <Button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={locked}
+                      onClick={() =>
+                        void saveEdit({
+                          ...latest.current.config,
+                          bindings: latest.current.config.bindings.filter(
+                            (binding) =>
+                              !unknownBindings.some((unknown) => unknown.roleId === binding.roleId),
+                          ),
+                        })
+                      }
+                    >
+                      清除无对应角色的绑定
+                    </Button>
+                  }
+                />
               ) : null}
               {unknownPreserved.length ? (
-                <div role="alert">
-                  <p>
-                    以下保留人物没有对应角色，已保留，请确认后清除：{unknownPreserved.join('、')}
-                  </p>
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    disabled={locked}
-                    onClick={() =>
-                      void saveEdit({
-                        ...latest.current.config,
-                        preservedRoleIds: latest.current.config.preservedRoleIds?.filter(
-                          (id) => !unknownPreserved.includes(id),
-                        ),
-                      })
-                    }
-                  >
-                    清除无对应角色的保留选择
-                  </Button>
-                </div>
+                <Alert
+                  type="warning"
+                  showIcon
+                  title={
+                    <>
+                      以下保留人物没有对应角色，已保留，请确认后清除：{unknownPreserved.join('、')}
+                    </>
+                  }
+                  action={
+                    <Button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={locked}
+                      onClick={() =>
+                        void saveEdit({
+                          ...latest.current.config,
+                          preservedRoleIds: latest.current.config.preservedRoleIds?.filter(
+                            (id) => !unknownPreserved.includes(id),
+                          ),
+                        })
+                      }
+                    >
+                      清除无对应角色的保留选择
+                    </Button>
+                  }
+                />
               ) : null}
             </div>
             <div className="video-recreation-bindings">
@@ -1187,30 +1215,38 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
                 </p>
               ) : null}
               {unknownProducts.length ? (
-                <div role="alert">
-                  <p>
-                    以下商品绑定没有对应对象，已保留，请确认后清除：
-                    {unknownProducts.map((entry) => `${entry.productId}：${entry.name}`).join('、')}
-                  </p>
-                  <Button
-                    type="button"
-                    className="button button-secondary"
-                    disabled={locked}
-                    onClick={() =>
-                      void saveEdit({
-                        ...latest.current.config,
-                        productBindings: latest.current.config.productBindings?.filter(
-                          (entry) =>
-                            !unknownProducts.some(
-                              (unknown) => unknown.productId === entry.productId,
-                            ),
-                        ),
-                      })
-                    }
-                  >
-                    清除无对应商品的绑定
-                  </Button>
-                </div>
+                <Alert
+                  type="warning"
+                  showIcon
+                  title={
+                    <>
+                      以下商品绑定没有对应对象，已保留，请确认后清除：
+                      {unknownProducts
+                        .map((entry) => `${entry.productId}：${entry.name}`)
+                        .join('、')}
+                    </>
+                  }
+                  action={
+                    <Button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={locked}
+                      onClick={() =>
+                        void saveEdit({
+                          ...latest.current.config,
+                          productBindings: latest.current.config.productBindings?.filter(
+                            (entry) =>
+                              !unknownProducts.some(
+                                (unknown) => unknown.productId === entry.productId,
+                              ),
+                          ),
+                        })
+                      }
+                    >
+                      清除无对应商品的绑定
+                    </Button>
+                  }
+                />
               ) : null}
             </div>
           </>
@@ -1260,9 +1296,9 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
           </div>
         ) : null}
         {bindingIssues.map((message, index) => (
-          <p role="alert" key={index}>
+          <Typography.Text type="danger" role="alert" key={index}>
             {message}
-          </p>
+          </Typography.Text>
         ))}
         {issue ? (
           <p className="video-recreation-hint" role="status">

@@ -20,7 +20,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
-import { Tooltip } from 'antd';
+import { Alert, Button as AntdButton, Tooltip, Typography } from 'antd';
 import {
   useNodeConnections,
   useUpdateNodeInternals,
@@ -1306,7 +1306,9 @@ export function AssetNode({
               {effectiveRunError ? (
                 <div>
                   <dt>错误</dt>
-                  <dd role="alert">{effectiveRunError}</dd>
+                  <dd role="alert">
+                    <Typography.Text type="danger">{effectiveRunError}</Typography.Text>
+                  </dd>
                 </div>
               ) : null}
               <div>
@@ -1404,9 +1406,12 @@ export function AssetNode({
         </span>
       )}
       {downloadError && (
-        <div className="flow-node-download-feedback is-error nodrag nopan" role="alert">
-          {downloadError}
-        </div>
+        <Alert
+          type="error"
+          banner
+          className="flow-node-download-feedback is-error nodrag nopan"
+          title={downloadError}
+        />
       )}
       {uploadProgress !== null && (
         <span className="flow-node-upload-feedback" role="status">
@@ -1414,14 +1419,19 @@ export function AssetNode({
         </span>
       )}
       {uploadError && (
-        <div className="flow-node-upload-feedback is-error nodrag nopan" role="alert">
-          {uploadError}
-          {retryFile && (
-            <Button type="button" onClick={() => void uploadFile(retryFile)}>
-              重试
-            </Button>
-          )}
-        </div>
+        <Alert
+          type="error"
+          banner
+          className="flow-node-upload-feedback is-error nodrag nopan"
+          title={uploadError}
+          action={
+            retryFile ? (
+              <AntdButton autoInsertSpace={false} onClick={() => void uploadFile(retryFile)}>
+                重试
+              </AntdButton>
+            ) : undefined
+          }
+        />
       )}
     </div>
   );
@@ -1511,53 +1521,71 @@ function NodeStateContent({
           ? '运行已取消'
           : error || '生成失败，请检查运行详情';
     return (
-      <div className="flow-node-placeholder flow-node-runtime-state is-error" role="alert">
-        {state === 'cancelled' ? (
-          <X size={21} aria-hidden="true" />
-        ) : (
-          <TriangleAlert size={21} aria-hidden="true" />
-        )}
-        <span className="flow-node-state-message" title={message}>
-          {message}
-        </span>
-        {canRecover || canRetry ? (
-          <div className="flow-node-retry-actions">
-            {canRecover ? (
-              <Button
-                type="button"
-                className="flow-node-recover nodrag nopan"
-                onClick={onRecover}
-                disabled={isRecovering || isRetrying}
-                title="尝试查询原上游任务；任务不可恢复时会提示原因，不会重新提交生成请求"
-              >
-                {isRecovering ? (
-                  <LoaderCircle className="spin" size={13} aria-hidden="true" />
-                ) : (
-                  <Download size={13} aria-hidden="true" />
-                )}
-                {isRecovering ? '获取中…' : '获取资源'}
-              </Button>
-            ) : null}
-            {canRetry ? (
-              <Button
-                type="button"
-                className="flow-node-retry nodrag nopan"
-                onClick={onRetry}
-                disabled={isRetrying || isRecovering}
-              >
-                {isRetrying ? (
-                  <LoaderCircle className="spin" size={13} aria-hidden="true" />
-                ) : (
-                  <RefreshCw size={13} aria-hidden="true" />
-                )}
-                {isRetrying ? '提交中…' : '重试生成'}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-        {retryError ? <span className="flow-node-retry-error">{retryError}</span> : null}
-        {recoverError ? <span className="flow-node-retry-error">{recoverError}</span> : null}
-      </div>
+      <Alert
+        type="error"
+        showIcon
+        banner
+        className="flow-node-placeholder flow-node-runtime-state is-error"
+        icon={
+          state === 'cancelled' ? (
+            <X size={21} aria-hidden="true" />
+          ) : (
+            <TriangleAlert size={21} aria-hidden="true" />
+          )
+        }
+        title={
+          <span className="flow-node-state-message" title={message}>
+            {message}
+          </span>
+        }
+        description={
+          retryError || recoverError ? (
+            <>
+              {retryError ? <span className="flow-node-retry-error">{retryError}</span> : null}
+              {recoverError ? <span className="flow-node-retry-error">{recoverError}</span> : null}
+            </>
+          ) : undefined
+        }
+        action={
+          canRecover || canRetry ? (
+            <div className="flow-node-retry-actions">
+              {canRecover ? (
+                <AntdButton
+                  autoInsertSpace={false}
+                  className="flow-node-recover nodrag nopan"
+                  onClick={onRecover}
+                  disabled={isRecovering || isRetrying}
+                  icon={<Download size={13} aria-hidden="true" />}
+                  loading={
+                    isRecovering
+                      ? { icon: <LoaderCircle className="spin" size={13} aria-hidden="true" /> }
+                      : false
+                  }
+                  title="尝试查询原上游任务；任务不可恢复时会提示原因，不会重新提交生成请求"
+                >
+                  {isRecovering ? '获取中…' : '获取资源'}
+                </AntdButton>
+              ) : null}
+              {canRetry ? (
+                <AntdButton
+                  autoInsertSpace={false}
+                  className="flow-node-retry nodrag nopan"
+                  onClick={onRetry}
+                  disabled={isRetrying || isRecovering}
+                  icon={<RefreshCw size={13} aria-hidden="true" />}
+                  loading={
+                    isRetrying
+                      ? { icon: <LoaderCircle className="spin" size={13} aria-hidden="true" /> }
+                      : false
+                  }
+                >
+                  {isRetrying ? '提交中…' : '重试生成'}
+                </AntdButton>
+              ) : null}
+            </div>
+          ) : undefined
+        }
+      />
     );
   }
 

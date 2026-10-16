@@ -2147,6 +2147,25 @@ export class BullMqRunService implements RunService {
     return this.execution?.prisma;
   }
 
+  /**
+   * BullMQ 信封无效时回落到已经落库的成功结果。
+   *
+   * Worker 在返回结果之前已经原子写入 `succeeded` 运行行：返回值被截断或携带
+   * `null` 只说明队列信封不完整，不能反过来否定已经持久化的成功结果。只有持久化
+   * 行确实是 `succeeded` 且带结果时才恢复，否则保持原有的失败语义。
+   */
+  private async recoverDurableRunSuccess(
+    runId: string,
+    reason: string,
+  ): Promise<{ result: RunResult; updatedAt: string } | undefined> {
+    const durable = await this.persistence?.getRun?.(runId);
+    if (!durable || durable.status !== 'succeeded' || !durable.result) return undefined;
+    console.warn(
+      `[runs] 队列运行结果信封无效（${reason}）；以已持久化的成功结果为准：run=${runId}`,
+    );
+    return { result: sanitizeRunResult(durable.result), updatedAt: durable.updatedAt };
+  }
+
   private async toRunRecord(job: Job<RunJobData>): Promise<RunRecord> {
     const data = runJobDataSchema.parse(job.data);
     const state = await job.getState();
@@ -2157,6 +2176,7 @@ export class BullMqRunService implements RunService {
     let progress = progressResult?.progress ?? 0;
     let result: RunRecord['result'];
     let error: string | undefined;
+    let durableSuccessUpdatedAt: string | undefined;
 
     // 原 Job 重用同一 ID 后，Worker 首次写入前仍可能读到上一轮失败或取消进度。
     if (
@@ -2176,15 +2196,41 @@ export class BullMqRunService implements RunService {
         // A completed BullMQ job without a valid worker envelope is not a
         // successful run. Reporting success here loses the actual result and
         // makes retries/diagnostics impossible.
-        status = 'failed';
-        progress = 100;
-        error = 'worker returned an invalid run result';
+        // 但 Worker 在返回前已经原子写入 `succeeded` 行：返回值损坏只说明队列
+        // 信封不可信，不能反过来否定已经落库的成功结果。
+        const recovered = await this.recoverDurableRunSuccess(
+          data.runId,
+          'result envelope failed schema validation',
+        );
+        if (recovered) {
+          status = 'succeeded';
+          progress = 100;
+          error = undefined;
+          result = recovered.result;
+          durableSuccessUpdatedAt = recovered.updatedAt;
+        } else {
+          status = 'failed';
+          progress = 100;
+          error = 'worker returned an invalid run result';
+        }
       } else if (completed.data.status === 'succeeded' && !completed.data.result) {
         // The worker contract requires a result for successful runs. A
         // malformed envelope must not be exposed as a successful run.
-        status = 'failed';
-        progress = 100;
-        error = 'worker returned an invalid run result';
+        const recovered = await this.recoverDurableRunSuccess(
+          data.runId,
+          'succeeded envelope omitted its result',
+        );
+        if (recovered) {
+          status = 'succeeded';
+          progress = 100;
+          error = undefined;
+          result = recovered.result;
+          durableSuccessUpdatedAt = recovered.updatedAt;
+        } else {
+          status = 'failed';
+          progress = 100;
+          error = 'worker returned an invalid run result';
+        }
       } else {
         const completedResult = completed.data.result;
         status = completed.data.status;
@@ -2206,6 +2252,14 @@ export class BullMqRunService implements RunService {
     const updatedAt = progressResult?.updatedAt
       ? progressResult.updatedAt
       : new Date(job.finishedOn ?? job.processedOn ?? job.timestamp).toISOString();
+    // 队列没有给出任何完成时间时，持久化行的更新时间比入队时间更接近真实完成时刻。
+    const reconciledUpdatedAt =
+      !progressResult?.updatedAt &&
+      job.finishedOn === undefined &&
+      job.processedOn === undefined &&
+      durableSuccessUpdatedAt
+        ? durableSuccessUpdatedAt
+        : updatedAt;
     // `RunRecord.providerJob` is the complete durable schema. Normalize the
     // queue/result envelope through the complete parser before exposing it;
     // `normalizeProviderJob` intentionally returns a partial executor shape.
@@ -2231,7 +2285,7 @@ export class BullMqRunService implements RunService {
       ...(error ? { error } : {}),
       ...(data.retryOf ? { retryOf: data.retryOf } : {}),
       createdAt: new Date(job.timestamp).toISOString(),
-      updatedAt,
+      updatedAt: reconciledUpdatedAt,
     };
   }
 }

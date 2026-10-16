@@ -60,11 +60,21 @@ function mockPathLength(length: number) {
   return measure;
 }
 
+/** 组件自动生成的光束尾迹：一个亮头、一条光尾与一条更宽的辉光尾迹。 */
+function overlayParts(container: HTMLElement) {
+  return {
+    overlay: container.querySelector<SVGGElement>('.canvas-edge-effect-meteor'),
+    head: container.querySelectorAll('.canvas-edge-meteor-head'),
+    trail: container.querySelectorAll('.canvas-edge-meteor-trail'),
+    glow: container.querySelectorAll('.canvas-edge-meteor-trail-glow'),
+  };
+}
+
 describe('CanvasEdgeEffectOverlay', () => {
-  it('流星光束不改变默认流光与旧效果类名', () => {
+  it('流星鎏光是默认特效，并保留无叠加层特效的空类名约定', () => {
     expect(canvasEdgeAppearanceDefaults.effect).toBe('meteor');
     expect(edgeEffectOverlayClassName('meteor')).toBe('canvas-edge-effect-meteor');
-    expect(edgeEffectOverlayClassName('shooting-star')).toBe('canvas-edge-effect-shooting-star');
+    expect(edgeEffectOverlayClassName('breathe')).toBe('canvas-edge-effect-breathe');
     expect(edgeEffectOverlayClassName('none')).toBeNull();
     expect(edgeEffectOverlayClassName('marching')).toBeNull();
   });
@@ -72,27 +82,28 @@ describe('CanvasEdgeEffectOverlay', () => {
   it.each([
     [0, 0],
     [-10, 0],
-    [10, 0.5],
-    [40, 1],
+    [11, 0.5],
+    [22, 1],
     [100, 1],
     [1000, 1],
-    [10000, 1],
-  ])('路径长 %s 时尾迹缩放为 %s，最长保持 20 个画布单位', (length, ratio) => {
+  ])('路径长 %s 时尾迹缩放为 %s，最长保持 22 个画布单位', (length, ratio) => {
     const measure = mockPathLength(length);
     const { container } = render(
       <svg>
-        <CanvasEdgeEffectOverlay path={`M 0,0 L ${length},0`} effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path={`M 0,0 L ${length},0`} effect="meteor" />
       </svg>,
     );
     flushFrame();
-    const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-shooting-star');
+    const { overlay, head, trail, glow } = overlayParts(container);
     expect(measure).toHaveBeenCalledTimes(1);
     expect(
-      parseFloat(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale') ?? ''),
+      parseFloat(overlay?.style.getPropertyValue('--canvas-edge-meteor-tail-scale') ?? ''),
     ).toBeCloseTo(ratio);
-    expect(container.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    expect(container.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
-    container.querySelectorAll('.canvas-edge-shooting-star-fallback').forEach((path) => {
+    // 整条线只有这一束鎏光：一个亮头、一条光尾、一层辉光。
+    expect(head).toHaveLength(1);
+    expect(trail).toHaveLength(2);
+    expect(glow).toHaveLength(1);
+    container.querySelectorAll('.canvas-edge-meteor-fallback').forEach((path) => {
       expect(path).toHaveAttribute('pathLength', '1');
       expect(path).toHaveAttribute('d', `M 0,0 L ${length},0`);
     });
@@ -102,105 +113,130 @@ describe('CanvasEdgeEffectOverlay', () => {
     const measure = mockPathLength(1000);
     const { container, rerender } = render(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="meteor" />
       </svg>,
     );
     flushFrame();
-    const head = container.querySelector('.canvas-edge-shooting-star-head');
-    const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-shooting-star');
-    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale')).toBe('1');
+    const head = container.querySelector('.canvas-edge-meteor-head');
+    const overlay = container.querySelector<SVGGElement>('.canvas-edge-effect-meteor');
+    expect(overlay?.style.getPropertyValue('--canvas-edge-meteor-tail-scale')).toBe('1');
 
-    measure.mockReturnValue(100);
+    measure.mockReturnValue(11);
     rerender(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 100,0 L 0,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 100,0 L 0,0" effect="meteor" />
       </svg>,
     );
     flushFrame();
     expect(measure).toHaveBeenCalledTimes(2);
-    expect(container.querySelector('.canvas-edge-shooting-star-head')).toBe(head);
+    expect(container.querySelector('.canvas-edge-meteor-head')).toBe(head);
     expect(
-      container.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
+      container.querySelector<SVGGElement>('.canvas-edge-meteor-motion')?.style.offsetPath,
     ).toBe('path("M 100,0 L 0,0")');
-    expect(overlay?.style.getPropertyValue('--canvas-edge-star-tail-scale')).toBe('1');
+    expect(overlay?.style.getPropertyValue('--canvas-edge-meteor-tail-scale')).toBe('0.5');
   });
 
-  it('没有 SVG 布局接口时仍可渲染光束并使用 CSS 默认短尾', () => {
+  it('没有 SVG 布局接口时仍可渲染单束光束并使用 CSS 默认尾迹', () => {
     const { container } = render(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="meteor" />
       </svg>,
     );
-    expect(container.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    expect(container.querySelector('.canvas-edge-effect-shooting-star')).toHaveAttribute(
-      'pointer-events',
-      'none',
-    );
+    const { overlay, head, trail } = overlayParts(container);
+    expect(head).toHaveLength(1);
+    expect(trail).toHaveLength(2);
+    expect(overlay).toHaveAttribute('pointer-events', 'none');
   });
 
-  it('每条边只有一条渐细光尾与一个亮头，渐变标识互不串色', () => {
+  it('每条边只有一个渐细光尾与一个亮头，渐变标识互不串色', () => {
     const { container } = render(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 100,0" effect="shooting-star" />
-        <CanvasEdgeEffectOverlay path="M 100,0 L 0,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 100,0" effect="meteor" />
+        <CanvasEdgeEffectOverlay path="M 100,0 L 0,0" effect="meteor" />
       </svg>,
     );
     const gradients = [...container.querySelectorAll('linearGradient')];
     expect(new Set(gradients.map((gradient) => gradient.id)).size).toBe(2);
-    container.querySelectorAll('.canvas-edge-effect-shooting-star').forEach((overlay) => {
+    container.querySelectorAll('.canvas-edge-effect-meteor').forEach((overlay) => {
       const gradient = overlay.querySelector('linearGradient');
-      const trail = overlay.querySelector('.canvas-edge-shooting-star-trail');
-      expect(trail).toHaveAttribute('fill', 'url(#' + gradient?.id + ')');
+      const trail = overlay.querySelector(
+        '.canvas-edge-meteor-trail:not(.canvas-edge-meteor-trail-glow)',
+      );
+      expect(trail).toHaveAttribute('stroke', 'url(#' + gradient?.id + ')');
+      // 水平尾迹的包围盒高度为 0，渐变必须用 userSpaceOnUse 才不会退化。
+      expect(gradient).toHaveAttribute('gradientUnits', 'userSpaceOnUse');
+      expect(gradient).toHaveAttribute('x1', '-22');
+      expect(gradient).toHaveAttribute('x2', '0');
       expect(gradient?.querySelector('stop')).toHaveAttribute('stop-opacity', '0');
-      expect(overlay.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
-      expect(overlay.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
+      expect(overlay.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(1);
+      expect(overlay.querySelectorAll('.canvas-edge-meteor-trail')).toHaveLength(2);
+      // 不使用 SMIL 或逐边滤镜，光束由 CSS 运动路径驱动。
       expect(overlay.querySelectorAll('animate, animateMotion, filter')).toHaveLength(0);
     });
   });
 
-  it.each([NaN, Infinity])('无效测长 %s 不写入无效样式，保留默认短尾', (length) => {
+  it('呼吸脉冲不渲染运动路径层，只保留沿基础路径的叠加层', () => {
+    const { container } = render(
+      <svg>
+        <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="breathe" emphasized />
+      </svg>,
+    );
+    expect(container.querySelectorAll('.canvas-edge-effect-breathe')).toHaveLength(1);
+    expect(container.querySelector('.canvas-edge-effect-breathe')).toHaveClass(
+      'is-connected-selected',
+    );
+    expect(container.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(0);
+  });
+
+  it.each([NaN, Infinity])('无效测长 %s 不写入无效样式，保留默认尾迹', (length) => {
     mockPathLength(length);
     const { container } = render(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 60,20" effect="meteor" />
       </svg>,
     );
     flushFrame();
     expect(
       container
-        .querySelector<SVGGElement>('.canvas-edge-effect-shooting-star')
-        ?.style.getPropertyValue('--canvas-edge-star-tail-scale'),
+        .querySelector<SVGGElement>('.canvas-edge-effect-meteor')
+        ?.style.getPropertyValue('--canvas-edge-meteor-tail-scale'),
     ).toBe('');
   });
 
-  it('光束沿源到目标运动，支持主题、减少动态效果、拖动与视口暂停和静态降级', () => {
+  it('光束跟随主题、沿源到目标运动，整条线只有一束鎏光', () => {
     const css = readFileSync(
       resolve(process.cwd(), 'src/workspace/CanvasEdgeEffectOverlay.css'),
       'utf8',
     ).replace(/\s+/g, ' ');
 
-    expect(css).toContain('color: var(--canvas-edge-flow-color, var(--mc-accent-strong));');
-    expect(css).toMatch(/\.canvas-edge-effect-shooting-star \{[^}]*pointer-events: none;/);
+    // 颜色全部来自主题变量，不混底色或白色。
+    expect(css).toContain('color: var(--canvas-edge-beam, var(--mc-accent));');
+    expect(css).toContain('stroke: currentColor;');
+    expect(css).toMatch(/\.canvas-edge-meteor-trail-glow \{[^}]*stroke-opacity: 0.22;/);
     expect(css).toContain('offset-anchor: 0px 0px;');
     expect(css).toContain('offset-rotate: auto;');
     expect(css).toContain(
       "@supports (offset-path: path('M 0 0 L 1 0')) and (offset-anchor: 0px 0px)",
     );
-    expect(css).toMatch(/\.canvas-edge-shooting-star-fallback \{[^}]*stroke-dashoffset: -0.5;/);
-    expect(css).toMatch(/0% \{[^}]*offset-distance: 0%;/);
+    // 降级光斑同样只有一束：dasharray 的周期 1.16 大于归一化后的整条路径（1）。
+    expect(css).toMatch(/\.canvas-edge-meteor-fallback \{[^}]*stroke-dasharray: 0.16 1;/);
+    expect(css).toMatch(/@keyframes canvas-edge-meteor-dash \{[^}]*stroke-dashoffset: 0.16;/);
+    // 起点在源点外侧、终点在目标点外侧，一个周期正好覆盖可见区间，不会出现空窗。
+    expect(css).toMatch(/to \{[^}]*stroke-dashoffset: -1;/);
+    expect(css).toMatch(/@keyframes canvas-edge-meteor-beam \{[^}]*offset-distance: 0%;/);
     expect(css).toMatch(/100% \{[^}]*offset-distance: 100%;/);
     expect(css).toMatch(
-      /\.canvas-area\.is-viewport-moving \.canvas-edge-effect-shooting-star \{[^}]*visibility: hidden;/,
+      /\.canvas-area\.is-viewport-moving \.canvas-edge-effect-meteor \{ filter: none; visibility: hidden;/,
     );
     expect(css).toMatch(
-      /\.canvas-area\.is-viewport-moving \.canvas-edge-shooting-star-motion \{[^}]*animation-play-state: paused;/,
+      /\.canvas-area\.is-viewport-moving \.canvas-edge-meteor-motion, \.canvas-area\.is-viewport-moving \.canvas-edge-meteor-fallback \{ animation-play-state: paused;/,
     );
-    expect(css).toContain('.canvas-area.is-node-dragging .canvas-edge-effect-shooting-star,');
-    expect(css).toContain('.canvas-area.is-node-dragging .canvas-edge-shooting-star-motion,');
-    expect(css).toContain('filter: none;');
+    expect(css).toContain('.canvas-area.is-node-dragging .canvas-edge-effect-meteor,');
+    expect(css).toContain('.canvas-area.is-node-dragging .canvas-edge-meteor-motion,');
     const reducedMotion = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
     expect(reducedMotion).toContain('animation: none;');
     expect(reducedMotion).toContain('offset-distance: 50%;');
+    // 悬停态只用主题色派生变量，不引入滤镜、十六进制颜色或 important。
     expect(css).not.toMatch(/drop-shadow|blur\(|will-change:|#[0-9a-f]{3,8}|!important/);
   });
 });
@@ -211,23 +247,23 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     const renderAtZoom = (zoom: number) => (
       <svg>
         <g transform={'scale(' + zoom + ')'}>
-          <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="shooting-star" />
+          <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="meteor" />
         </g>
       </svg>
     );
     const view = render(renderAtZoom(1));
     flushFrame();
-    const motion = view.container.querySelector('.canvas-edge-shooting-star-motion');
+    const motion = view.container.querySelector('.canvas-edge-meteor-motion');
     for (const zoom of [0.25, 0.5, 1.5, 2]) view.rerender(renderAtZoom(zoom));
     expect(measure).toHaveBeenCalledTimes(1);
     expect(pendingFrames.size).toBe(0);
-    expect(view.container.querySelector('.canvas-edge-shooting-star-motion')).toBe(motion);
+    expect(view.container.querySelector('.canvas-edge-meteor-motion')).toBe(motion);
   });
   it('同一绘制帧内连续 12 次更新只测量最终路径', () => {
     const measure = mockPathLength(1000);
     const view = render(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="meteor" />
       </svg>,
     );
     flushFrame();
@@ -236,10 +272,7 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
       measure.mockReturnValue(1000 + step * 10);
       view.rerender(
         <svg>
-          <CanvasEdgeEffectOverlay
-            path={'M 0,0 L ' + (1000 + step * 10) + ',0'}
-            effect="shooting-star"
-          />
+          <CanvasEdgeEffectOverlay path={'M 0,0 L ' + (1000 + step * 10) + ',0'} effect="meteor" />
         </svg>,
       );
     }
@@ -247,8 +280,8 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     expect(pendingFrames.size).toBe(1);
     flushFrame();
     expect(measure).toHaveBeenCalledTimes(1);
-    expect(view.container.querySelector('.canvas-edge-effect-shooting-star')).toHaveStyle({
-      '--canvas-edge-star-tail-scale': '1',
+    expect(view.container.querySelector('.canvas-edge-effect-meteor')).toHaveStyle({
+      '--canvas-edge-meteor-tail-scale': '1',
     });
     view.unmount();
     expect(pendingFrames.size).toBe(0);
@@ -258,7 +291,7 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     const measure = mockPathLength(200);
     const view = render(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="meteor" />
       </svg>,
     );
     expect(pendingFrames.size).toBe(1);
@@ -272,7 +305,7 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     expect(measure).not.toHaveBeenCalled();
     view.rerender(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 200,0" effect="meteor" />
       </svg>,
     );
     flushFrame();
@@ -280,17 +313,17 @@ describe('CanvasEdgeEffectOverlay 拖动性能', () => {
     measure.mockReturnValue(1000);
     view.rerender(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 1000,0" effect="meteor" />
       </svg>,
     );
     flushFrame();
     expect(measure).toHaveBeenCalledTimes(2);
-    expect(view.container.querySelector('.canvas-edge-effect-shooting-star')).toHaveStyle({
-      '--canvas-edge-star-tail-scale': '1',
+    expect(view.container.querySelector('.canvas-edge-effect-meteor')).toHaveStyle({
+      '--canvas-edge-meteor-tail-scale': '1',
     });
     view.rerender(
       <svg>
-        <CanvasEdgeEffectOverlay path="M 0,0 L 500,0" effect="shooting-star" />
+        <CanvasEdgeEffectOverlay path="M 0,0 L 500,0" effect="meteor" />
       </svg>,
     );
     expect(pendingFrames.size).toBe(1);

@@ -135,21 +135,21 @@ describe('workspace preferences store', () => {
     state.setCanvasTheme('dark');
     state.setCanvasBackground('blank');
     state.setCanvasEdgePathStyle('smoothstep');
-    state.setCanvasEdgeEffect('cruiser');
+    state.setCanvasEdgeEffect('marching');
     state.setResourcePanelCollapsed(true);
     state.setShowImageEditSourceCard(false);
 
     expect(window.localStorage.getItem(CANVAS_THEME_KEY)).toBe('dark');
     expect(window.localStorage.getItem(CANVAS_BACKGROUND_KEY)).toBe('blank');
     expect(window.localStorage.getItem(CANVAS_EDGE_PATH_STYLE_KEY)).toBe('smoothstep');
-    expect(window.localStorage.getItem(CANVAS_EDGE_EFFECT_KEY)).toBe('cruiser');
+    expect(window.localStorage.getItem(CANVAS_EDGE_EFFECT_KEY)).toBe('marching');
     expect(window.localStorage.getItem(RESOURCE_PANEL_COLLAPSED_KEY)).toBe('true');
     expect(window.localStorage.getItem(IMAGE_EDIT_SOURCE_CARD_KEY)).toBe('false');
     // 迁移完成后旧键不再写入。
     expect(window.localStorage.getItem(CANVAS_EDGE_STYLE_KEY)).toBeNull();
   });
 
-  it.each(['meteor', 'shooting-star', 'marching', 'cruiser', 'multi', 'breathe', 'none'] as const)(
+  it.each(['meteor', 'marching', 'breathe', 'none'] as const)(
     '保存并重新读取特效 %s，保留独立路径偏好',
     async (effect) => {
       useWorkspacePreferences.getState().setCanvasEdgePathStyle('straight');
@@ -165,18 +165,18 @@ describe('workspace preferences store', () => {
 
   it('切路径形态不会重置特效，切特效也不会重置路径形态', () => {
     const state = useWorkspacePreferences.getState();
-    state.setCanvasEdgeEffect('multi');
+    state.setCanvasEdgeEffect('breathe');
     state.setCanvasEdgePathStyle('straight');
 
     expect(useWorkspacePreferences.getState()).toMatchObject({
       canvasEdgePathStyle: 'straight',
-      canvasEdgeEffect: 'multi',
+      canvasEdgeEffect: 'breathe',
     });
 
-    state.setCanvasEdgePathStyle('step');
-    expect(useWorkspacePreferences.getState().canvasEdgeEffect).toBe('multi');
+    state.setCanvasEdgePathStyle('smoothstep');
+    expect(useWorkspacePreferences.getState().canvasEdgeEffect).toBe('breathe');
     state.setCanvasEdgeEffect('none');
-    expect(useWorkspacePreferences.getState().canvasEdgePathStyle).toBe('step');
+    expect(useWorkspacePreferences.getState().canvasEdgePathStyle).toBe('smoothstep');
   });
 
   it('rehydrates persisted values and rejects unsupported appearance values', async () => {
@@ -246,9 +246,9 @@ describe('workspace preferences store', () => {
     await useWorkspacePreferences.persist.rehydrate();
     expect(window.localStorage.getItem(CANVAS_EDGE_STYLE_KEY)).toBe('minimal');
 
-    useWorkspacePreferences.getState().setCanvasEdgeEffect('multi');
+    useWorkspacePreferences.getState().setCanvasEdgeEffect('breathe');
 
     expect(window.localStorage.getItem(CANVAS_EDGE_STYLE_KEY)).toBeNull();
-    expect(window.localStorage.getItem(CANVAS_EDGE_EFFECT_KEY)).toBe('multi');
+    expect(window.localStorage.getItem(CANVAS_EDGE_EFFECT_KEY)).toBe('breathe');
   });
 });

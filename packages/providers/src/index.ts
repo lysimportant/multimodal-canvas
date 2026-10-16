@@ -19,6 +19,7 @@ import type {
 } from '@multimodal-canvas/domain';
 import {
   ImageOutputParameterError,
+  imageEditReferencesRequirePublicUrl,
   imageEditSourceSchema,
   normalizeImageOutputParameters,
   resolveImageOutputParameters,
@@ -762,6 +763,21 @@ export class NewApiProvider {
           model: snapshot.modelAlias,
           prompt: mapping.prompt,
           ...(parameters.n === undefined ? { n: 1 } : {}),
+        },
+        sourceImages: mapping.images,
+      };
+    }
+    // 上游声明只接受服务端可达的公网参考图时改用 JSON edits；否则维持既有 multipart 合同。
+    if (imageEditReferencesRequirePublicUrl(snapshot, snapshot.targetNodeId)) {
+      const reference = imageEditReferenceUrls(mapping.images);
+      return {
+        path: '/images/edits',
+        body: {
+          ...parameters,
+          model: snapshot.modelAlias,
+          prompt: mapping.prompt,
+          ...(parameters.n === undefined ? { n: 1 } : {}),
+          [reference.field]: reference.url,
         },
         sourceImages: mapping.images,
       };
@@ -5062,6 +5078,36 @@ function imageChatContentUrl(input: RunInputSnapshot): string {
   if (!parsed) throw inputRoleValueError('image', input.role, '可发送的图片内容');
   const mimeType = validatedMediaMimeType(parsed.mimeType, 'image') ?? 'image/png';
   return `data:${mimeType};base64,${validatedMediaBase64(parsed.base64)}`;
+}
+
+/**
+ * 上游只接受服务端可达的公网地址时，把水合的参考图整理成 edits 的 JSON 字段。
+ *
+ * Worker 与 API 在该模型上会签发短期地址，所以这里收到 data URL 只可能是
+ * 签发缺失；此时必须失败，绝不能把 base64 或文件字节发给上游。
+ *
+ * @param images 已映射的参考图输入。
+ * @returns 单图用官方 `image` 字段，多图用 `images` 数组，值为公网 URL。
+ * @throws 参考图不是绝对 HTTP(S) 地址。
+ */
+function imageEditReferenceUrls(images: readonly RunInputSnapshot[]): {
+  field: string;
+  url: string | string[];
+} {
+  const urls = images.map((input) => {
+    const contentUrl = input.snapshot.data.contentUrl;
+    const url = nonEmptyString(contentUrl) ? contentUrl.trim() : '';
+    if (!/^https?:\/\//i.test(url)) {
+      throw inputRoleValueError(
+        'image',
+        input.role,
+        '模型只接受服务端可访问的公网参考图，本机文件与内联图片无法转发',
+      );
+    }
+    return url;
+  });
+  // JSON edits 只认 `image` 与 `images`；multipart 的 `image[]` 键会被丢弃。
+  return images.length === 1 ? { field: 'image', url: urls[0]! } : { field: 'images', url: urls };
 }
 
 function resolveMappedPromptInput(

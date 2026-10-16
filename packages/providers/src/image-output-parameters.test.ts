@@ -252,3 +252,69 @@ describe('frozen image edit size declarations', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });
+
+describe('公网参考图的 edits 合同', () => {
+  it('声明 public-url 时改用 JSON edits 并原样下发图片地址', async () => {
+    const { provider, fetchImpl } = imageProvider();
+    const snapshot = imageSnapshot({}, true);
+    snapshot.imageEditCapability = { declared: true, referenceImages: 'public-url' };
+    snapshot.nodes.find((node) => node.id === 'source-image')!.data.contentUrl =
+      'https://canvas.example.test/v1/assets/synthetic-image/versions/1/content?access_token=test';
+
+    await provider.execute({ snapshot });
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe('https://newapi.example.test/v1/images/edits');
+    expect((init!.headers as Record<string, string>)['content-type']).toContain('application/json');
+    expect(JSON.parse(init!.body as string)).toMatchObject({
+      model: 'gpt-image-2.5-sunburst',
+      prompt: 'Create a portrait.',
+      n: 1,
+      image:
+        'https://canvas.example.test/v1/assets/synthetic-image/versions/1/content?access_token=test',
+    });
+  });
+
+  it('未声明时保持 multipart；声明后没有公网地址必须失败', async () => {
+    const { provider, fetchImpl } = imageProvider();
+    await provider.execute({ snapshot: imageSnapshot({}, true) });
+    expect(fetchImpl.mock.calls[0]![1]!.body).toBeInstanceOf(FormData);
+
+    const strict = imageProvider();
+    const strictSnapshot = imageSnapshot({}, true);
+    strictSnapshot.imageEditCapability = { declared: true, referenceImages: 'public-url' };
+    await expect(strict.provider.execute({ snapshot: strictSnapshot })).rejects.toThrow(
+      /公网参考图/,
+    );
+    expect(strict.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('多张参考图用 images 数组而不是 multipart 的 image[] 键', async () => {
+    const { provider, fetchImpl } = imageProvider();
+    const snapshot = imageSnapshot({}, true);
+    snapshot.imageEditCapability = { declared: true, referenceImages: 'public-url' };
+    const first = snapshot.nodes.find((node) => node.id === 'source-image')!;
+    first.data.contentUrl = 'https://canvas.example.test/v1/provider-assets/one/versions/1/content';
+    const second = structuredClone(first);
+    second.id = 'source-image-2';
+    second.data.assetId = 'synthetic-image-2';
+    second.data.contentUrl = 'https://canvas.example.test/v1/provider-assets/two/versions/1/content';
+    snapshot.nodes.push(second);
+    snapshot.inputs.push({
+      ...snapshot.inputs[0]!,
+      sourceAssetId: 'synthetic-image-2',
+      nodeId: second.id,
+      sortOrder: 1,
+      snapshot: second,
+    });
+
+    await provider.execute({ snapshot });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string);
+    expect(body.image).toBeUndefined();
+    expect(body.images).toEqual([
+      'https://canvas.example.test/v1/provider-assets/one/versions/1/content',
+      'https://canvas.example.test/v1/provider-assets/two/versions/1/content',
+    ]);
+  });
+});

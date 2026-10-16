@@ -1,3 +1,4 @@
+import { Alert, Button as AntdButton, Typography } from 'antd';
 import {
   AudioLines,
   Copy,
@@ -1071,9 +1072,12 @@ export function AssetViewerDialog({
             </div>
           </div>
           {downloadError && (
-            <div className="artifact-preview-viewer-download-error" role="alert">
-              {downloadError}
-            </div>
+            <Alert
+              type="error"
+              banner
+              className="artifact-preview-viewer-download-error"
+              title={downloadError}
+            />
           )}
           {cachedVideo.loading || (!cachedVideo.url && access.loading) ? (
             <ArtifactState
@@ -1321,9 +1325,9 @@ function MediaArtifactPreview({
     >
       {media}
       {playbackError && (
-        <span className="artifact-preview-playback-error" role="alert">
+        <Typography.Text type="danger" role="alert" className="artifact-preview-playback-error">
           {playbackError}
-        </span>
+        </Typography.Text>
       )}
       {kind === 'video' && controls && !videoPlaying && loadState === 'ready' && (
         <Button
@@ -1442,24 +1446,37 @@ function ArtifactState({
   onLoadStateChange?: (state: AssetPreviewLoadState) => void;
 }) {
   useReportLoadState(state, onLoadStateChange);
-  return (
-    <div
-      className={`artifact-preview-state artifact-preview-state-${state} ${className}`}
-      role={state === 'loading' ? 'status' : 'alert'}
-    >
-      {state === 'loading' ? (
+  if (state === 'loading') {
+    return (
+      <div
+        className={`artifact-preview-state artifact-preview-state-${state} ${className}`}
+        role="status"
+      >
         <LoaderCircle className="spin" size={18} aria-hidden="true" />
-      ) : (
-        <TriangleAlert size={18} aria-hidden="true" />
-      )}
-      <span>{message}</span>
-      {actionLabel && onAction ? (
-        <Button type="button" className="artifact-preview-retry nodrag nopan" onClick={onAction}>
-          <RefreshCw size={14} aria-hidden="true" />
-          {actionLabel}
-        </Button>
-      ) : null}
-    </div>
+        <span>{message}</span>
+      </div>
+    );
+  }
+  return (
+    <Alert
+      type="error"
+      banner
+      className={`artifact-preview-state artifact-preview-state-${state} ${className}`}
+      icon={<TriangleAlert size={18} aria-hidden="true" />}
+      title={<span>{message}</span>}
+      action={
+        actionLabel && onAction ? (
+          <AntdButton
+            autoInsertSpace={false}
+            className="artifact-preview-retry nodrag nopan"
+            onClick={onAction}
+            icon={<RefreshCw size={14} aria-hidden="true" />}
+          >
+            {actionLabel}
+          </AntdButton>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -1689,16 +1706,20 @@ export function TextResultContent({
           />
           {saving && <span role="status">正在保存…</span>}
           {saveError && (
-            <div role="alert">
-              {saveError}
-              <Button
-                type="button"
-                className="artifact-preview-action"
-                onClick={() => void commitDraft()}
-              >
-                重试保存
-              </Button>
-            </div>
+            <Alert
+              type="error"
+              banner
+              title={saveError}
+              action={
+                <AntdButton
+                  autoInsertSpace={false}
+                  className="artifact-preview-action"
+                  onClick={() => void commitDraft()}
+                >
+                  重试保存
+                </AntdButton>
+              }
+            />
           )}
         </>
       ) : editable ? (

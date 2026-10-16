@@ -145,6 +145,17 @@
   white-space: normal;
 }
 
+/* 原先是不带类名的 `<p>`，靠上面的 settings-content 规则换行；换成 Typography
+   之后要自带这些换行约束，颜色仍交给 antd 的 type 控制。 */
+.prompt-skill-hint {
+  display: block;
+  line-height: 1.5;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .prompt-skill-progress,
 .prompt-skill-preview {
   display: grid;

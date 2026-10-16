@@ -39,6 +39,7 @@ import {
   requestPromptSendStatusForFailure,
   resolveDatabaseRunId,
   sanitizeProviderJobPayload,
+  normalizeRunResultEnvelope,
 } from './index';
 import {
   createAuthorizedTestRunWorker as createRunWorker,
@@ -47,6 +48,7 @@ import {
 import { serializeWorkerError, type WorkerLogger } from './logger';
 import { workflowSnapshotFingerprint, workflowSnapshotFingerprintV1 } from './workflow-dag';
 import type { RequestPromptRecord } from '@multimodal-canvas/domain';
+import { runJobResultSchema, type RunJobResult } from '@multimodal-canvas/domain';
 import { NewApiProviderError } from '@multimodal-canvas/providers';
 
 const result = {
@@ -1369,5 +1371,75 @@ describe('worker provider job boundary', () => {
     expect(onPersistenceError).toHaveBeenCalledWith(persistenceError);
     expect(ensureRun).not.toHaveBeenCalled();
     expect(provider.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker run result envelope normalization', () => {
+  it('只把 providerJob 的 null 可选字段收敛为缺失键，信封合同随之通过', () => {
+    // BullMQ 的 JSON 往返会原样保留 null，而静态类型不会写上 null —— 这里模拟
+    // 读取端真正拿到的队列返回值。
+    const envelope = JSON.parse(
+      JSON.stringify({
+        status: 'succeeded',
+        progress: 100,
+        providerJob: {
+          id: 'provider_job_1',
+          provider: 'newapi',
+          platformJobId: null,
+          payload: { nested: null, keep: 1 },
+          status: 'succeeded',
+          progress: 100,
+          createdAt: '2026-09-17T10:00:00.000Z',
+          updatedAt: '2026-09-17T10:00:01.000Z',
+        },
+        result: {
+          provider: 'mock',
+          summary: 'done',
+          targetNodeId: 'node_text',
+          mediaType: 'text',
+          inputCount: 0,
+        },
+      }),
+    ) as RunJobResult;
+
+    // 未归一化时 `.optional()` 拒绝 `null`，这正是读取端把成功运行误判为失败的原因。
+    expect(runJobResultSchema.safeParse(envelope).success).toBe(false);
+    const normalized = normalizeRunResultEnvelope(envelope);
+    expect(runJobResultSchema.safeParse(normalized).success).toBe(true);
+    expect(normalized.providerJob).not.toHaveProperty('platformJobId');
+    // payload 是业务数据：整个 payload 不是 null 时，它内部的 null 必须原样保留。
+    expect(normalized.providerJob?.payload).toEqual({ nested: null, keep: 1 });
+  });
+
+  it('不删除结果正文里合法的业务 null', () => {
+    const envelope = JSON.parse(
+      JSON.stringify({
+        status: 'succeeded',
+        progress: 100,
+        result: {
+          provider: 'mock',
+          summary: 'done',
+          targetNodeId: 'node_image',
+          mediaType: 'image',
+          inputCount: 1,
+          promptMentions: [
+            {
+              mentionId: 'mention_1',
+              assetId: 'asset_1',
+              assetVersion: 1,
+              mediaType: 'image',
+              label: '参考图',
+              blockOrder: 0,
+              binding: { futureRole: null },
+            },
+          ],
+        },
+      }),
+    ) as RunJobResult;
+
+    const normalized = normalizeRunResultEnvelope(envelope);
+
+    expect(runJobResultSchema.safeParse(normalized).success).toBe(true);
+    expect(normalized.result?.promptMentions?.[0]?.binding).toEqual({ futureRole: null });
   });
 });

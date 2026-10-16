@@ -2,7 +2,7 @@ import type { ProjectResourceSearch } from '../project-resource-search';
 import './canvas-drag-performance.css';
 import './node-reference-pick.css';
 import { Button } from '@multimodal-canvas/ui';
-import { message } from 'antd';
+import { Button as AntdButton, message } from 'antd';
 import {
   Background,
   BackgroundVariant,
@@ -760,16 +760,17 @@ export function WorkflowCanvas({
           <div className="node-reference-pick-message">
             <span>当前处于添加参考资料模式</span>
             <div className="node-reference-pick-message-actions">
-              <Button
-                size="sm"
-                variant="default"
+              <AntdButton
+                size="small"
+                type="primary"
+                autoInsertSpace={false}
                 onClick={() => referenceMessageApi.destroy(REFERENCE_PICK_MESSAGE_KEY)}
               >
                 继续添加资料
-              </Button>
-              <Button size="sm" onClick={exitReferencePick}>
+              </AntdButton>
+              <AntdButton size="small" autoInsertSpace={false} onClick={exitReferencePick}>
                 退出模式
-              </Button>
+              </AntdButton>
             </div>
           </div>
         ),

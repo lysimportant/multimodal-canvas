@@ -1,4 +1,4 @@
-import { Select, Tabs } from 'antd';
+import { Select, Tabs, Typography } from 'antd';
 import {
   AudioLines,
   ExternalLink,
@@ -555,9 +555,9 @@ export function SettingsPanel({
         <p className="settings-status">正在加载 New API 账号与模型…</p>
       )}
       {error && category !== 'generation' && (
-        <p className="settings-field-error" role="alert">
+        <Typography.Text type="danger" className="settings-field-error" role="alert">
           {error}
-        </p>
+        </Typography.Text>
       )}
       {!loading && category === 'overview' && (
         <section className="settings-section" aria-labelledby="newapi-account-title">
@@ -577,7 +577,11 @@ export function SettingsPanel({
                 '暂无记录'
               )}
             </p>
-            {account?.error && <p className="settings-field-error">{account.error}</p>}
+            {account?.error && (
+              <Typography.Text type="danger" className="settings-field-error">
+                {account.error}
+              </Typography.Text>
+            )}
           </div>
           <div className="settings-actions">
             <Button
@@ -714,9 +718,9 @@ export function SettingsPanel({
                     }
                   />
                   {!currentExists && (
-                    <span className="settings-field-error">
+                    <Typography.Text type="danger" className="settings-field-error">
                       原选择 {current?.modelAlias} 已失效，请明确选择新的分组模型。
-                    </span>
+                    </Typography.Text>
                   )}
                 </label>
               );
@@ -738,7 +742,9 @@ export function SettingsPanel({
             </label>
           </div>
           {modelsQuery.isError && (
-            <p className="settings-field-error">模型目录加载失败，请同步后重试。</p>
+            <Typography.Text type="danger" className="settings-field-error">
+              模型目录加载失败，请同步后重试。
+            </Typography.Text>
           )}
         </section>
       )}

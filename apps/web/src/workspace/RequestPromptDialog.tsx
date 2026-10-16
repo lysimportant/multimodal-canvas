@@ -1,5 +1,6 @@
 import type { NodeTiming, RequestPromptRecord } from '@multimodal-canvas/domain';
 import { renderRequestPromptText, requestPromptRecordKey } from '@multimodal-canvas/domain';
+import { Alert, Typography } from 'antd';
 import { Button, Dialog, DialogContent, DialogTitle, Textarea } from '@multimodal-canvas/ui';
 import { Check, Copy, Loader2, Pencil, Plus, RefreshCw, Save, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -149,14 +150,19 @@ export function RequestPromptDialog({
             </p>
           ) : null}
           {state.status === 'failed' ? (
-            <div className="request-prompt-status" role="alert">
-              <span>{state.message ?? '生成说明加载失败'}</span>
-              {onRetry ? (
-                <Button type="button" className="request-prompt-retry" onClick={onRetry}>
-                  <RefreshCw size={13} aria-hidden="true" /> 重试
-                </Button>
-              ) : null}
-            </div>
+            <Alert
+              className="request-prompt-status"
+              type="error"
+              showIcon
+              title={state.message ?? '生成说明加载失败'}
+              action={
+                onRetry ? (
+                  <Button type="button" className="request-prompt-retry" onClick={onRetry}>
+                    <RefreshCw size={13} aria-hidden="true" /> 重试
+                  </Button>
+                ) : null
+              }
+            />
           ) : null}
           {state.status === 'missing' ? (
             <p className="request-prompt-status" role="status">
@@ -261,9 +267,13 @@ export function RequestPromptDialog({
                       </div>
                     </div>
                     {summaryError ? (
-                      <p className="request-prompt-summary-error" role="alert">
+                      <Typography.Text
+                        type="danger"
+                        className="request-prompt-summary-error"
+                        role="alert"
+                      >
                         {summaryError}
-                      </p>
+                      </Typography.Text>
                     ) : null}
                   </form>
                 ) : summary ? (

@@ -1,5 +1,5 @@
 import { Button, Input } from '@multimodal-canvas/ui';
-import { Modal, Select } from 'antd';
+import { Alert, Button as AntdButton, Modal, Select } from 'antd';
 import {
   LoaderCircle,
   History,
@@ -538,13 +538,19 @@ export const ResourcePanel = memo(function ResourcePanel({
           </div>
         )}
         {pagination?.error && (
-          <div className="empty-panel compact-empty resource-page-error" role="alert">
-            <strong>资源加载失败</strong>
-            <p>{pagination.error}</p>
-            <Button type="button" onClick={pagination.onRetry}>
-              重试加载资源
-            </Button>
-          </div>
+          <Alert
+            type="error"
+            showIcon
+            banner
+            className="resource-page-error"
+            title="资源加载失败"
+            description={pagination.error}
+            action={
+              <AntdButton autoInsertSpace={false} onClick={pagination.onRetry}>
+                重试加载资源
+              </AntdButton>
+            }
+          />
         )}
         {!pagination?.loading && !pagination?.error && filteredAssets.length === 0 && (
           <div className="empty-panel compact-empty">

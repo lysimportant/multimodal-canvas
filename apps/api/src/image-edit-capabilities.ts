@@ -177,18 +177,27 @@ export function checkImageEditCapabilities(input: {
     }
   }
 
+  const referenceImages = frozenReferenceImages(input.model);
+
   return {
     issues,
+
+    ...(referenceImages ? { frozenCapability: { declared: true, referenceImages } } : {}),
 
     ...(source ? { source } : {}),
   };
 }
 
-/** 合并目录限制并区分编辑能力未知与明确禁用。 */
-
-/** 显式 capabilities 优先于 limitations；无声明时不生成默认限制。 */
-
-/** 仅冻结已声明的编辑限制，未知能力保持缺省以兼容旧模型目录。 */
+/**
+ * 读取目录声明的参考图传输方式。
+ *
+ * 上游只接受服务端可达的公网地址时，Provider 必须停止内联 base64，
+ * 因此该声明要随运行冻结。仅识别 `public-url`，未知能力保持缺省以兼容旧模型目录。
+ */
+function frozenReferenceImages(model?: ImageEditCapabilityModel): 'public-url' | undefined {
+  const declared = model?.capabilities?.referenceImages ?? model?.limitations?.referenceImages;
+  return declared === 'public-url' ? 'public-url' : undefined;
+}
 
 /** 生成不含媒体内容和凭据的节点级诊断。 */
 function diagnostic(

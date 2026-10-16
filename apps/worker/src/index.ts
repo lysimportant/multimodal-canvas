@@ -21,6 +21,7 @@ import {
   promptDocumentSchema,
   reversePromptResultSchema,
   runJobDataSchema,
+  runJobResultSchema,
   runResultSchema,
   frozenPromptMentionSchema,
   newApiRequestIdSchema,
@@ -2477,7 +2478,10 @@ export function createRunWorker(options: {
         await persistRun('succeeded', finalProviderJob, finalResult, undefined, true);
         runLogger.info({ status: 'succeeded', progress: 100 }, 'run succeeded');
         finishRunSpan('ok', 'succeeded');
-        return {
+        // 队列返回值只是读取端信封：`null` 或缺失的可选字段会让读取端的 zod
+        // 合同校验失败。运行状态此时已经落库，因此这里只做归一化与自检，绝不
+        // 因为信封不合格把一次成功的运行改写成失败。
+        const envelope = normalizeRunResultEnvelope({
           status: 'succeeded',
           progress: 100,
           providerJob: finalProviderJob,
@@ -2485,7 +2489,20 @@ export function createRunWorker(options: {
             ...finalResult,
             providerJob: finalProviderJob,
           },
-        };
+        });
+        const envelopeCheck = runJobResultSchema.safeParse(envelope);
+        if (!envelopeCheck.success) {
+          runLogger.warn(
+            {
+              issues: envelopeCheck.error.issues.map((issue) => ({
+                path: issue.path.join('.'),
+                message: issue.message,
+              })),
+            },
+            'run result envelope failed validation',
+          );
+        }
+        return envelope;
       } catch (rawError) {
         if (activeProviderJob)
           activeProviderJob = attachProviderErrorMetadata(activeProviderJob, rawError);
@@ -3147,6 +3164,47 @@ function sanitizeProviderJobRecord(providerJob: ProviderJob): ProviderJob {
     ...(payload ? { payload } : {}),
     ...(providerJob.payload && !payload ? { payload: undefined } : {}),
   };
+}
+
+/**
+ * 把读取端信封里“只接受 `undefined`、不接受 `null`”的可选字段收敛为缺失键。
+ *
+ * BullMQ 的 JSON 往返会原样保留 `null`，而 zod 的 `.optional()` 只接受
+ * `undefined`，读取端因此可能拿到一个合同校验失败的返回值。这里**只**处理
+ * `providerJob.platformJobId` 与 `providerJob.payload`：结果正文里的业务对象必须
+ * 原样保留 —— 业务数据里合法的 `null`（例如资源提及绑定的前向兼容字段）一旦被
+ * 删掉，读取端会判定“结果被改写过”而拒绝这份成功结果。
+ */
+export function normalizeRunResultEnvelope(envelope: RunJobResult): RunJobResult {
+  const providerJob = normalizeEnvelopeProviderJob(envelope.providerJob);
+  const result = envelope.result
+    ? {
+        ...envelope.result,
+        providerJob: normalizeEnvelopeProviderJob(envelope.result.providerJob),
+      }
+    : envelope.result;
+  return {
+    ...envelope,
+    ...(isNullish(providerJob) ? {} : { providerJob }),
+    ...(isNullish(result) ? {} : { result }),
+  };
+}
+
+function normalizeEnvelopeProviderJob(
+  providerJob: RunJobResult['providerJob'],
+): RunJobResult['providerJob'] {
+  // 整个 providerJob 缺失或为 null 时交给调用方删除该键，不在这里伪造对象。
+  if (!providerJob) return providerJob;
+  const { platformJobId, payload, ...rest } = providerJob;
+  return {
+    ...rest,
+    ...(isNullish(platformJobId) ? {} : { platformJobId }),
+    ...(isNullish(payload) ? {} : { payload }),
+  };
+}
+
+function isNullish(value: unknown): boolean {
+  return value === null || value === undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

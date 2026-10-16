@@ -1,4 +1,5 @@
 import { Button } from '@multimodal-canvas/ui';
+import { Modal } from 'antd';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -139,6 +140,8 @@ export function OperationLogPage({
   const [entries, setEntries] = useState<OperationLogEntry[]>(() => readOperationLogs(user?.id));
   const [filter, setFilter] = useState<OperationLogCategory | 'all'>('all');
   const refresh = useCallback(() => setEntries(readOperationLogs(user?.id)), [user?.id]);
+  // 用 antd 的 Modal 取代原生 window.confirm：主题、无障碍与键盘行为都跟站内一致。
+  const [modal, modalContextHolder] = Modal.useModal();
 
   useEffect(() => {
     refresh();
@@ -155,6 +158,7 @@ export function OperationLogPage({
 
   return (
     <PageFrame route={route} onNavigate={onNavigate}>
+      {modalContextHolder}
       <section className="mc-operation-log-page" aria-labelledby="mc-operation-log-title">
         <header className="mc-operation-log-heading">
           <div>
@@ -199,9 +203,17 @@ export function OperationLogPage({
               type="button"
               className="mc-operation-log-clear"
               onClick={() => {
-                if (!window.confirm('确定清除此浏览器中的操作日志吗？')) return;
-                clearOperationLogs(user?.id);
-                refresh();
+                modal.confirm({
+                  title: '清除操作日志',
+                  content: '确定清除此浏览器中的操作日志吗？',
+                  okText: '清除',
+                  cancelText: '取消',
+                  okButtonProps: { danger: true },
+                  onOk: () => {
+                    clearOperationLogs(user?.id);
+                    refresh();
+                  },
+                });
               }}
             >
               <Trash2 size={15} aria-hidden="true" />

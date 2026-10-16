@@ -2,10 +2,9 @@ import { getBezierPath, getSmoothStepPath, getStraightPath, Position } from '@xy
 import { createContext, useContext, type ReactNode } from 'react';
 
 /** 连接线路径形态；只影响几何，不改变画布边的 ID、顺序、端口和 DAG。 */
-export type CanvasEdgePathStyle = 'bezier' | 'gentle' | 'smoothstep' | 'step' | 'straight';
+export type CanvasEdgePathStyle = 'bezier' | 'smoothstep' | 'straight';
 /** 连接线动态特效；`none` 表示保留静态基础路径。 */
-export type CanvasEdgeEffect =
-  'meteor' | 'shooting-star' | 'marching' | 'cruiser' | 'multi' | 'breathe' | 'none';
+export type CanvasEdgeEffect = 'meteor' | 'marching' | 'breathe' | 'none';
 
 /** 连接线外观偏好；由 `edgePathStyle` 与 `edgeEffect` 两个互相独立的字段组成。 */
 export type CanvasEdgeAppearance = {
@@ -15,17 +14,12 @@ export type CanvasEdgeAppearance = {
   effect: CanvasEdgeEffect;
 };
 
-/** 连接线外观默认值：标准曲线 + 流光，与旧 `flow` 偏好的观感一致。 */
+/** 连接线外观默认值：标准曲线 + 流星鎏光，升级后保持原来的观感。 */
 export const canvasEdgeAppearanceDefaults: CanvasEdgeAppearance = {
   pathStyle: 'bezier',
   effect: 'meteor',
 };
 
-/**
- * 轻弧曲线使用的贝塞尔曲率。xyflow 默认 0.25，降到 0.1 后控制点明显靠近两端连线，
- * 上下走向的连线才能和标准曲线区分开。
- */
-export const FLOW_GENTLE_CURVATURE = 0.1;
 /** 圆角折线的转角半径，单位为像素；xyflow 默认 5 在 2.5px 线宽下几乎看不出圆角。 */
 export const FLOW_SMOOTH_STEP_RADIUS = 12;
 
@@ -49,8 +43,8 @@ export type CanvasEdgePathParams = {
  * 按路径形态求解 SVG `d`，落定连线与拖拽预览共用同一套策略。
  *
  * 只调用 React Flow 自己的路径工具，保证几何与 xyflow 内建边一致：
- * `bezier`/`gentle` 用 `getBezierPath`，`smoothstep`/`step` 用同一 `getSmoothStepPath`
- * 的圆角与非圆角配置，`straight` 用 `getStraightPath`。
+ * `bezier` 用 `getBezierPath`，`smoothstep` 用 `getSmoothStepPath` 的圆角配置，
+ * `straight` 用 `getStraightPath`。
  *
  * @param pathStyle 路径形态。
  * @param params 两端坐标与锚点方向。
@@ -64,30 +58,19 @@ export function resolveEdgePath(
   if (pathStyle === 'straight') {
     return getStraightPath(params)[0];
   }
-  if (pathStyle === 'smoothstep' || pathStyle === 'step') {
+  if (pathStyle === 'smoothstep') {
     return getSmoothStepPath({
       ...params,
       sourcePosition,
       targetPosition,
-      borderRadius: pathStyle === 'smoothstep' ? FLOW_SMOOTH_STEP_RADIUS : 0,
+      borderRadius: FLOW_SMOOTH_STEP_RADIUS,
     })[0];
   }
-  return getBezierPath({
-    ...params,
-    sourcePosition,
-    targetPosition,
-    curvature: pathStyle === 'gentle' ? FLOW_GENTLE_CURVATURE : undefined,
-  })[0];
+  return getBezierPath({ ...params, sourcePosition, targetPosition })[0];
 }
 
 /** 需要额外叠加层的特效；`marching` 直接改造基础路径，`none` 完全静止。 */
-const overlayEffects = new Set<CanvasEdgeEffect>([
-  'meteor',
-  'shooting-star',
-  'cruiser',
-  'multi',
-  'breathe',
-]);
+const overlayEffects = new Set<CanvasEdgeEffect>(['meteor', 'breathe']);
 
 /**
  * 特效叠加层的类名，`none` 没有叠加层。
@@ -101,9 +84,8 @@ export function edgeEffectOverlayClassName(effect: CanvasEdgeEffect): string | n
 /**
  * 外观选项的小预览使用的固定几何，单位为 SVG 用户单位。
  *
- * 两端锚点对向（右->左）并保留 14 个单位的纵向落差，这样折线样式会产生可见的
- * 竖直走线段，圆角与直角能直接分辨。xyflow 的贝塞尔曲率只在锚点方向背离目标时
- * 生效，对向锚点下 `bezier` 与 `gentle` 的预览形态相同，差别在画布上才体现。
+ * 两端锚点对向（右->左）并保留 14 个单位的纵向落差，这样圆角折线会产生可见的
+ * 竖直走线段，能与直线直接分辨。
  */
 const PREVIEW_GEOMETRY: CanvasEdgePathParams = {
   sourceX: 4,

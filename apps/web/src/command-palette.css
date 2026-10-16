@@ -189,6 +189,8 @@
 .command-palette-error {
   border-top: 1px solid var(--mc-border, #e2e7eb);
   color: var(--mc-danger, #b42318);
+  /* antd Typography.Text 是行内元素，这里恢复原 <p> 的块级排版。 */
+  display: block;
   font-size: 12px;
   margin: 0;
   padding: 10px 16px;

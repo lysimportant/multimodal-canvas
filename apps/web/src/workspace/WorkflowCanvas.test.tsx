@@ -1852,18 +1852,18 @@ describe('WorkflowCanvas context menu', () => {
   });
 
   it('把连接线路径形态与动态特效分别标记在画布区域上', () => {
-    const props = createProps({ edgePathStyle: 'smoothstep', edgeEffect: 'cruiser' });
+    const props = createProps({ edgePathStyle: 'smoothstep', edgeEffect: 'breathe' });
     const { rerender } = render(<WorkflowCanvas {...props} />);
     const canvas = screen.getByRole('region', { name: '工作流画布' });
 
     expect(canvas).toHaveAttribute('data-edge-path-style', 'smoothstep');
-    expect(canvas).toHaveAttribute('data-edge-effect', 'cruiser');
+    expect(canvas).toHaveAttribute('data-edge-effect', 'breathe');
 
     rerender(<WorkflowCanvas {...props} edgePathStyle="straight" />);
 
     // 只改路径形态不能重置特效。
     expect(canvas).toHaveAttribute('data-edge-path-style', 'straight');
-    expect(canvas).toHaveAttribute('data-edge-effect', 'cruiser');
+    expect(canvas).toHaveAttribute('data-edge-effect', 'breathe');
   });
 
   it('prevents browser page zoom for Ctrl+wheel events on the canvas', () => {

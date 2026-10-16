@@ -1,62 +1,87 @@
-.canvas-edge-effect-shooting-star {
-  /* The SVG trail geometry is 20 units long; the runtime scale keeps it
-     proportional on very short edges while preserving a compact streak. */
-  --canvas-edge-star-tail-scale: 0.5;
-  color: var(--canvas-edge-flow-color, var(--mc-accent-strong));
+/* 一束鎏光：亮头 + 渐细光尾，颜色全部来自当前主题的连线色变量。 */
+.canvas-edge-effect-meteor {
+  /* The SVG trail is 22 units long; the runtime scale keeps it proportional on
+     very short edges while preserving a compact streak. */
+  --canvas-edge-meteor-tail-scale: 1;
+  color: var(--canvas-edge-beam, var(--mc-accent));
   pointer-events: none;
 }
 
-.canvas-edge-shooting-star-fallback {
+/* 不支持运动路径时的降级：沿真实路径行进的一束光。`pathLength=1` 把整条路径归一化，
+   dasharray 的周期 1.16 大于 1，因此整条线上任意时刻最多只有这一束 16% 长的鎏光。 */
+.canvas-edge-meteor-fallback {
+  animation: canvas-edge-meteor-dash 2.2s linear infinite;
   fill: none;
   stroke: currentColor;
-  /* `pathLength=1` makes the fallback a compact 20% streak instead of a dot. */
-  stroke-dasharray: 0.2 0.8;
-  stroke-dashoffset: -0.5;
+  stroke-dasharray: 0.16 1;
+  stroke-dashoffset: 0;
   stroke-linecap: round;
-  stroke-width: 6;
+  stroke-width: 5;
 }
 
-.canvas-edge-shooting-star-motion {
+.canvas-edge-meteor-motion {
   display: none;
   offset-anchor: 0px 0px;
-  offset-distance: 50%;
+  offset-distance: 0%;
   offset-rotate: auto;
   transform-box: view-box;
   transform-origin: 0 0;
 }
 
-.canvas-edge-shooting-star-trail {
-  stroke: none;
-  transform: scaleX(var(--canvas-edge-star-tail-scale));
+/* 主尾迹的颜色来自 JSX 上的渐变描边（`stroke="url(#…)"`）：CSS 里再写 `stroke`
+   会覆盖表现属性，把渐细的光尾压成整段实色。 */
+.canvas-edge-meteor-trail {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+  transform: scaleX(var(--canvas-edge-meteor-tail-scale));
   transform-box: view-box;
   transform-origin: 0 0;
 }
 
-.canvas-edge-shooting-star-head {
+/* 辉光用加宽的半透明笔触实现，等价于描边外发光，但不为每条边挂一层 filter。 */
+.canvas-edge-meteor-trail-glow {
+  stroke: currentColor;
+  stroke-opacity: 0.22;
+  stroke-width: 7;
+}
+
+.canvas-edge-meteor-head {
   fill: currentColor;
   stroke: none;
 }
 
 /* 无运动路径支持时保留中点亮点，不把光束误画在 SVG 原点。 */
 @supports (offset-path: path('M 0 0 L 1 0')) and (offset-anchor: 0px 0px) {
-  .canvas-edge-shooting-star-fallback {
+  .canvas-edge-meteor-fallback {
     visibility: hidden;
   }
 
-  .canvas-edge-shooting-star-motion {
+  .canvas-edge-meteor-motion {
     display: inline;
-    animation: canvas-edge-shooting-star 2.6s linear infinite;
+    animation: canvas-edge-meteor-beam 2.2s linear infinite;
   }
 }
 
-/* 路径从源到目标；只有位移和端点淡入淡出，没有滤镜或逐帧脚本。 */
-@keyframes canvas-edge-shooting-star {
+/* 路径从源到目标。让这束光的起点从源点外侧滑入、到目标点外侧滑出：位移区间正好覆盖
+   整个可见区间，整条线在整个周期里都只有一束光，也不会出现「光走到头停一下再出现」。 */
+@keyframes canvas-edge-meteor-dash {
+  from {
+    stroke-dashoffset: 0.16;
+  }
+  to {
+    stroke-dashoffset: -1;
+  }
+}
+
+@keyframes canvas-edge-meteor-beam {
   0% {
     offset-distance: 0%;
     opacity: 0;
   }
-  15%,
-  85% {
+  12%,
+  88% {
     opacity: 1;
   }
   100% {
@@ -65,22 +90,53 @@
   }
 }
 
+/* 连接到选中节点：只加宽、加速、提亮，同一束光的语义不变。 */
+.canvas-edge-effect-meteor.is-connected-selected {
+  color: var(--canvas-edge-stroke-active, var(--mc-accent-strong));
+}
+
+.canvas-edge-effect-meteor.is-connected-selected .canvas-edge-meteor-trail {
+  stroke-width: 3.2;
+}
+
+.canvas-edge-effect-meteor.is-connected-selected .canvas-edge-meteor-trail-glow {
+  stroke-opacity: 0.3;
+  stroke-width: 9;
+}
+
+.canvas-edge-effect-meteor.is-connected-selected .canvas-edge-meteor-motion,
+.canvas-edge-effect-meteor.is-connected-selected .canvas-edge-meteor-fallback {
+  animation-duration: 1.1s;
+}
+
+.canvas-edge-effect-meteor.is-connected-selected .canvas-edge-meteor-fallback {
+  stroke-width: 6;
+}
+
 /* 拖动和缩放只暂停装饰层；保留基础边、命中区及用户保存的特效值。 */
-.canvas-area.is-node-dragging .canvas-edge-effect-shooting-star,
-.canvas-area.is-viewport-moving .canvas-edge-effect-shooting-star {
+.canvas-area.is-node-dragging .canvas-edge-effect-meteor,
+.canvas-area.is-viewport-moving .canvas-edge-effect-meteor {
   filter: none;
   visibility: hidden;
 }
 
-.canvas-area.is-node-dragging .canvas-edge-shooting-star-motion,
-.canvas-area.is-viewport-moving .canvas-edge-shooting-star-motion {
+.canvas-area.is-node-dragging .canvas-edge-meteor-motion,
+.canvas-area.is-node-dragging .canvas-edge-meteor-fallback,
+.canvas-area.is-viewport-moving .canvas-edge-meteor-motion,
+.canvas-area.is-viewport-moving .canvas-edge-meteor-fallback {
   animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .canvas-edge-shooting-star-motion {
+  .canvas-edge-meteor-motion {
     animation: none;
     offset-distance: 50%;
     opacity: 1;
+  }
+
+  /* 静态时把这一束光停在整条线的中点，而不是缩回起点。 */
+  .canvas-edge-meteor-fallback {
+    animation: none;
+    stroke-dashoffset: 0.74;
   }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Typography } from 'antd';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { Button, Input } from '@multimodal-canvas/ui';
 import {
@@ -184,14 +185,14 @@ export function GenerationConcurrencySettings({
             </p>
           )}
           {(settings || unconfigured) && invalid && (
-            <p className="settings-field-error" role="alert">
+            <Typography.Text type="danger" className="settings-field-error" role="alert">
               并发数量必须是可精确表示的正整数。
-            </p>
+            </Typography.Text>
           )}
           {error && (
-            <p className="settings-field-error" role="alert">
+            <Typography.Text type="danger" className="settings-field-error" role="alert">
               {error}
-            </p>
+            </Typography.Text>
           )}
           <div className="generation-concurrency-actions">
             <Button type="button" onClick={() => setReload((value) => value + 1)} disabled={busy}>

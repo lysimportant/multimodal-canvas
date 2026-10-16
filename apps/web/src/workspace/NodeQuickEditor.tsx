@@ -12,7 +12,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import { Checkbox, Popover, Select, type SelectProps } from 'antd';
+import { Checkbox, Popover, Select, Typography, type SelectProps } from 'antd';
 import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 
 import type {
@@ -1411,9 +1411,13 @@ export function NodeQuickEditor({
                     </div>
                   </div>
                   {recreationPromptError && (
-                    <div className="node-quick-editor-recreation-prompt-error" role="alert">
+                    <Typography.Text
+                      type="danger"
+                      role="alert"
+                      className="node-quick-editor-recreation-prompt-error"
+                    >
                       {recreationPromptError}
-                    </div>
+                    </Typography.Text>
                   )}
                   <div className="node-quick-editor-prompt-group">{promptEditor}</div>
                   {controls}

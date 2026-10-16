@@ -4,6 +4,7 @@ import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaClient } from '@prisma/client';
 import {
+  imageEditReferencesRequirePublicUrl,
   imageEditSourceSchema,
   image2proVideoContractForModel,
   moonVideoContractForModel,
@@ -786,6 +787,10 @@ function providerAssetUrlPolicy(
   mediaType: MediaType,
 ): 'data' | 'preferred' | 'required' {
   const consumer = snapshot.nodes.find((node) => node.id === consumerNodeId);
+  if (consumer?.data.mediaType === 'image' && mediaType !== 'text') {
+    // 上游明确拒绝 base64 与文件字节：拿不到签名能力时必须在请求前失败，而不是内联转发。
+    return imageEditReferencesRequirePublicUrl(snapshot, consumerNodeId) ? 'required' : 'data';
+  }
   return consumer?.data.mediaType === 'video' && mediaType !== 'text' ? 'preferred' : 'data';
 }
 

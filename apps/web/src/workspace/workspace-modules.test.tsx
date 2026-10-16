@@ -145,24 +145,25 @@ describe('workspace modules', () => {
     expect(screen.getByRole('group', { name: '连接线路径' })).toBeVisible();
     expect(screen.getByRole('group', { name: '连接线特效' })).toBeVisible();
     expect(screen.getByRole('group', { name: '连接线组合预览' })).toBeVisible();
-    expect(document.querySelectorAll('.appearance-edge-option')).toHaveLength(12);
-    expect(document.querySelectorAll('[data-edge-path-style]')).toHaveLength(5);
-    expect(document.querySelectorAll('[data-edge-effect]')).toHaveLength(7);
+    expect(document.querySelectorAll('.appearance-edge-option')).toHaveLength(7);
+    expect(document.querySelectorAll('[data-edge-path-style]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-edge-effect]')).toHaveLength(4);
     // 每个选项与最终组合预览都使用真实路径预览，不是示意色块。
-    expect(document.querySelectorAll('.appearance-edge-preview')).toHaveLength(13);
+    expect(document.querySelectorAll('.appearance-edge-preview')).toHaveLength(8);
     expect(document.querySelectorAll('[data-edge-effect="meteor"]')).toHaveLength(1);
-    expect(document.querySelectorAll('[data-edge-effect="shooting-star"]')).toHaveLength(1);
-    /** 单束流星保持独立选项，且单条预览只有一个亮头，不替换原有流光。 */
-    const shootingStar = screen.getByRole('button', { name: '单束流星 头亮尾细' });
-    expect(shootingStar.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-edge-effect="breathe"]')).toHaveLength(1);
+    /** 流星鎏光是默认选项，单条预览里整条线只有一束光。 */
+    const meteor = screen.getByRole('button', { name: '流星鎏光 整条线一束光' });
+    expect(meteor.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(1);
+    expect(meteor.querySelectorAll('.canvas-edge-meteor-trail')).toHaveLength(2);
     await user.click(screen.getByRole('button', { name: /圆角折线/ }));
     expect(callbacks.onEdgePathStyle).toHaveBeenCalledWith('smoothstep');
     expect(callbacks.onEdgeEffect).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: /单点巡航/ }));
-    expect(callbacks.onEdgeEffect).toHaveBeenCalledWith('cruiser');
+    await user.click(screen.getByRole('button', { name: /呼吸脉冲/ }));
+    expect(callbacks.onEdgeEffect).toHaveBeenCalledWith('breathe');
     expect(callbacks.onEdgeEffect).toHaveBeenCalledTimes(1);
-    await user.click(shootingStar);
-    expect(callbacks.onEdgeEffect).toHaveBeenLastCalledWith('shooting-star');
+    await user.click(meteor);
+    expect(callbacks.onEdgeEffect).toHaveBeenLastCalledWith('meteor');
     expect(callbacks.onEdgeEffect).toHaveBeenCalledTimes(2);
     expect(callbacks.onEdgePathStyle).toHaveBeenCalledTimes(1);
     expect(callbacks.onClear).not.toHaveBeenCalled();

@@ -52,35 +52,45 @@
   }
 }
 
-/* 来源与生成节点共用轻量外壳；内容不参与节点外框的宽高计算。 */
+/* 来源与生成节点共用轻量外壳；内容不参与节点外框的宽高计算。
+   外框在节点创建时就存在，选中只换颜色并贴边加光圈，因此聚焦不会突然多出一条边框。 */
 .react-flow__node .flow-asset-node {
   background: var(--mc-surface);
   position: relative;
-  border: 1px solid transparent;
+  border: 1px solid var(--mc-border-strong);
   border-radius: 8px;
   box-sizing: border-box;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   min-height: 0;
   padding: 0;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
 }
 
 .react-flow__node .flow-asset-node:hover {
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-border-strong));
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
 }
 
 .react-flow__node .flow-asset-node.is-selected,
 .react-flow__node .flow-asset-node.is-selected:hover {
   border-color: var(--mc-accent-strong);
-  /* Keep the outline outside the measured shell so selection does not move
-     neighboring nodes or change the React Flow hit box. */
-  outline: 2px solid color-mix(in srgb, var(--mc-accent-strong) 88%, transparent);
-  outline-offset: 2px;
+  /* 光圈全部由贴着 border 的 box-shadow 生成：边框与光圈之间不会留空隙，
+     也不额外绘制描边环；box-shadow 不参与布局，邻居节点不会被挤动。 */
+  outline: none;
   box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--mc-accent) 22%, transparent),
+    0 0 0 1px var(--mc-accent-strong),
+    0 0 0 3px color-mix(in srgb, var(--mc-accent) 22%, transparent),
     0 0 18px color-mix(in srgb, var(--mc-accent-strong) 34%, transparent),
     0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   z-index: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node .flow-asset-node {
+    transition: none;
+  }
 }
 
 .flow-asset-node > .flow-node-placeholder,

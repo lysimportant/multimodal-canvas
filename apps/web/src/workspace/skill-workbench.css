@@ -357,7 +357,8 @@
   padding: 10px 16px;
 }
 
-.skill-workbench-footer p {
+.skill-workbench-footer p,
+.skill-workbench-footer [role='alert'] {
   align-items: center;
   display: flex;
   gap: 7px;

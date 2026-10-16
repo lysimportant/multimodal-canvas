@@ -82,7 +82,6 @@ export function QueryState({
       <div className="mg-state">
         <Alert
           type="error"
-          role="alert"
           showIcon
           title="暂时无法读取"
           description={errorMessage(error)}

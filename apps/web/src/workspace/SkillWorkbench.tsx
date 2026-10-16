@@ -15,7 +15,7 @@ import {
   Input,
   Textarea,
 } from '@multimodal-canvas/ui';
-import { AutoComplete, Checkbox, Select, Tooltip } from 'antd';
+import { AutoComplete, Checkbox, Select, Tooltip, Typography } from 'antd';
 import {
   Copy,
   Loader2,
@@ -355,14 +355,15 @@ function SkillContextResources({
           <strong>优化上下文</strong>
           <span>上传文件或图片，作为本次 Skill 优化的临时参考</span>
         </div>
-        <button
+        <Button
           type="button"
+          size="sm"
           className="skill-context-upload"
           disabled={disabled || uploading}
           onClick={() => fileInputRef.current?.click()}
         >
           {uploading ? '上传中…' : '添加文件或图片'}
-        </button>
+        </Button>
         <input
           ref={fileInputRef}
           className="skill-context-file-input"
@@ -390,9 +391,9 @@ function SkillContextResources({
         className="skill-context-editor"
       />
       {error ? (
-        <p className="skill-authoring-context-error" role="alert">
+        <Typography.Text type="danger" className="skill-authoring-context-error" role="alert">
           {error}
-        </p>
+        </Typography.Text>
       ) : null}
       <p className="skill-authoring-context-note">
         资源只参与当前优化预览，采用结果时不会写入 Skill 指令，也不会自动生成媒体。
@@ -1088,7 +1089,9 @@ function SkillWorkbenchSession({
           </div>
           <footer className="skill-workbench-footer">
             {error ? (
-              <p role="alert">{error}</p>
+              <Typography.Text type="danger" role="alert">
+                {error}
+              </Typography.Text>
             ) : (
               <p role="status">
                 {loading ? (

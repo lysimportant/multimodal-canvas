@@ -1,5 +1,5 @@
 import { Button, Input } from '@multimodal-canvas/ui';
-import { Modal, Select } from 'antd';
+import { Modal, Select, Typography } from 'antd';
 import {
   Archive,
   ArrowDownUp,
@@ -628,9 +628,14 @@ export function ProjectHub({
         )}
         {actionError && (
           <div role="listitem">
-            <p id="project-hub-action-error" className="project-hub-action-error" role="alert">
+            <Typography.Text
+              id="project-hub-action-error"
+              className="project-hub-action-error"
+              type="danger"
+              role="alert"
+            >
               {actionError}
-            </p>
+            </Typography.Text>
           </div>
         )}
       </div>

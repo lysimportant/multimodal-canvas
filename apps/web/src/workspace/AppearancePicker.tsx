@@ -41,9 +41,7 @@ export const appearanceEdgePathOptions: Array<{
   description: string;
 }> = [
   { value: 'bezier', label: '标准曲线', description: '当前贝塞尔形态' },
-  { value: 'gentle', label: '轻弧曲线', description: '曲率更低' },
   { value: 'smoothstep', label: '圆角折线', description: '圆润转角' },
-  { value: 'step', label: '直角折线', description: '直角走线' },
   { value: 'straight', label: '直线', description: '两端直连' },
 ];
 
@@ -53,11 +51,8 @@ export const appearanceEdgeEffectOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { value: 'meteor', label: '流光', description: '短亮线行进' },
-  { value: 'shooting-star', label: '单束流星', description: '头亮尾细' },
+  { value: 'meteor', label: '流星鎏光', description: '整条线一束光' },
   { value: 'marching', label: '虚线行进', description: '虚线沿向移动' },
-  { value: 'cruiser', label: '单点巡航', description: '单点循环' },
-  { value: 'multi', label: '多点流动', description: '多点间隔' },
   { value: 'breathe', label: '呼吸脉冲', description: '亮度起伏' },
   { value: 'none', label: '无特效', description: '完全静止' },
 ];

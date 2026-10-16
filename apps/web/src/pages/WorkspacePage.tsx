@@ -1,3 +1,4 @@
+import { Alert } from 'antd';
 import { Button, Input } from '@multimodal-canvas/ui';
 import {
   AlertTriangle,
@@ -95,12 +96,17 @@ export function WorkspacePage({
         </header>
 
         {missingProjectId && (
-          <div className="mc-workspace-route-alert" role="alert">
-            <AlertTriangle size={17} aria-hidden="true" />
-            <span>
-              项目 <strong>{missingProjectId}</strong> 不存在、已归档或无权访问。请选择其他项目。
-            </span>
-          </div>
+          <Alert
+            className="mc-workspace-route-alert"
+            type="warning"
+            showIcon
+            icon={<AlertTriangle size={17} aria-hidden="true" />}
+            title={
+              <>
+                项目 <strong>{missingProjectId}</strong> 不存在、已归档或无权访问。请选择其他项目。
+              </>
+            }
+          />
         )}
 
         <div className="mc-workspace-toolbar">
@@ -121,16 +127,21 @@ export function WorkspacePage({
             <span>正在读取项目元数据和最近更新时间…</span>
           </div>
         ) : error ? (
-          <div className="mc-workspace-state is-error" role="alert">
-            <AlertTriangle size={23} aria-hidden="true" />
-            <strong>项目列表加载失败</strong>
-            <span>{error}</span>
-            {onRetry && (
-              <Button type="button" onClick={onRetry}>
-                重新加载
-              </Button>
-            )}
-          </div>
+          <Alert
+            className="mc-workspace-state is-error"
+            type="error"
+            showIcon
+            icon={<AlertTriangle size={23} aria-hidden="true" />}
+            title="项目列表加载失败"
+            description={error}
+            action={
+              onRetry ? (
+                <Button type="button" onClick={onRetry}>
+                  重新加载
+                </Button>
+              ) : null
+            }
+          />
         ) : filteredProjects.length === 0 ? (
           <div className="mc-workspace-state">
             <FolderOpen size={25} aria-hidden="true" />

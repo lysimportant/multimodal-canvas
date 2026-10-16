@@ -871,7 +871,6 @@ function ResourceModal({
             <Alert
               className="mg-confirm-inline"
               type="warning"
-              role="alert"
               showIcon
               title={<>确认归档“{current.name}”？资源将从正常列表移入归档，可随时恢复。</>}
               description={

@@ -1,3 +1,4 @@
+import { Alert } from 'antd';
 import { Button } from '@multimodal-canvas/ui';
 import { AlertTriangle, ArrowUpRight, RotateCcw, Settings2 } from 'lucide-react';
 import type { MouseEvent, ReactNode } from 'react';
@@ -83,17 +84,22 @@ export function SettingsPage({
                 <span>正在读取分组状态和模型目录…</span>
               </div>
             ) : error ? (
-              <div className="mc-settings-state is-error" role="alert">
-                <AlertTriangle size={22} aria-hidden="true" />
-                <strong>设置加载失败</strong>
-                <span>{error}</span>
-                {onRetry && (
-                  <Button type="button" onClick={onRetry}>
-                    <RotateCcw size={14} aria-hidden="true" />
-                    重新加载
-                  </Button>
-                )}
-              </div>
+              <Alert
+                className="mc-settings-state is-error"
+                type="error"
+                showIcon
+                icon={<AlertTriangle size={22} aria-hidden="true" />}
+                title="设置加载失败"
+                description={error}
+                action={
+                  onRetry ? (
+                    <Button type="button" onClick={onRetry}>
+                      <RotateCcw size={14} aria-hidden="true" />
+                      重新加载
+                    </Button>
+                  ) : null
+                }
+              />
             ) : (
               children
             )}

@@ -2547,6 +2547,58 @@ describe('createRunWorker asset hydration boundary', () => {
     expect(JSON.stringify(job.data)).not.toContain(content.toString('base64'));
   });
 
+  it('上游只收公网参考图时图片引用也签发地址，不再内联 base64', async () => {
+    const content = Buffer.from('resolved image bytes');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'image',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      modelAlias: 'banana2',
+    });
+    snapshot.imageEditCapability = { declared: true, referenceImages: 'public-url' };
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+    const siteSigner = vi.fn(
+      createProviderAssetUrlSignerFromEnvironment({
+        CANVAS_WEB_URL: 'https://canvas.example.com',
+        API_JWT_SECRET: 'synthetic-site-secret',
+      })!,
+    );
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore, {
+      providerAssetUrlSigner: siteSigner,
+    });
+
+    const hydrated = await resolver.resolve(snapshot, { userId });
+
+    expect(siteSigner).toHaveBeenCalledOnce();
+    const contentUrl = hydrated.inputs[0]!.snapshot.data.contentUrl!;
+    expect(contentUrl).toMatch(/^https:\/\/canvas\.example\.com\/v1\/provider-assets\//);
+    expect(contentUrl).not.toContain('base64');
+  });
+
+  it('声明公网参考图却拿不到签名能力时在 Provider 请求前失败', async () => {
+    const content = Buffer.from('resolved image bytes');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'image',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      modelAlias: 'banana2',
+    });
+    snapshot.imageEditCapability = { declared: true, referenceImages: 'public-url' };
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(repository, blobStore);
+
+    // 内联 base64 会被上游拒绝，所以这里必须显式失败而不是静默降级。
+    await expect(resolver.resolve(snapshot, { userId })).rejects.toThrow(/公网 HTTPS/);
+  });
+
   it('redacts transient asset bytes when a provider echoes its request in an error', async () => {
     const content = Buffer.from('never persist this prompt', 'utf8');
     const durableSnapshot = referenceSnapshot({ assetId: textAssetId });

@@ -1,3 +1,4 @@
+import { Alert, Button as AntdButton } from 'antd';
 import {
   Expand,
   FlipHorizontal2,
@@ -513,21 +514,27 @@ export function ImagePreviewStage({
           />
         </div>
         {error ? (
-          <div className="artifact-preview-image-state" role="alert">
-            <span>{error}</span>
-            <Button
-              type="button"
-              onClick={() => {
-                setNatural(undefined);
-                setError(undefined);
-                updateView(INITIAL_VIEW);
-                setAttempt((current) => current + 1);
-                onRetry?.();
-              }}
-            >
-              重新加载预览
-            </Button>
-          </div>
+          <Alert
+            type="error"
+            showIcon
+            banner
+            className="artifact-preview-image-state"
+            title={<span>{error}</span>}
+            action={
+              <AntdButton
+                autoInsertSpace={false}
+                onClick={() => {
+                  setNatural(undefined);
+                  setError(undefined);
+                  updateView(INITIAL_VIEW);
+                  setAttempt((current) => current + 1);
+                  onRetry?.();
+                }}
+              >
+                重新加载预览
+              </AntdButton>
+            }
+          />
         ) : !ready ? (
           <div className="artifact-preview-image-state" role="status">
             正在加载原图…

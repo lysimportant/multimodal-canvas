@@ -8,7 +8,7 @@ import {
   type PromptSkill,
 } from '@multimodal-canvas/domain';
 import { Button, Textarea } from '@multimodal-canvas/ui';
-import { Dropdown, Select, Tooltip, type SelectProps } from 'antd';
+import { Dropdown, Select, Tooltip, Typography, type SelectProps } from 'antd';
 import {
   Check,
   ChevronDown,
@@ -545,9 +545,9 @@ function PromptSkillPanelSession({
             </p>
           )}
           {draftIssue && (
-            <p className="prompt-skill-error" role="alert">
+            <Typography.Text type="danger" className="prompt-skill-error" role="alert">
               {draftIssue}
-            </p>
+            </Typography.Text>
           )}
           <div className="prompt-skill-actions">
             <Button
@@ -776,26 +776,30 @@ function PromptSkillPanelSession({
         </p>
       )}
       {!skillsLoading && skillId && !skillAvailable && (
-        <p role={isAuthoring ? undefined : 'alert'}>
+        <Typography.Text
+          className="prompt-skill-hint"
+          type={isAuthoring ? 'warning' : 'danger'}
+          role={isAuthoring ? undefined : 'alert'}
+        >
           {isAuthoring
             ? '请先在左侧启用内置「技能升级助手」，或重新加载技能库。'
             : '所选 Skill 已不可用或已停用，请在技能工作台修复或重新选择'}
-        </p>
+        </Typography.Text>
       )}
       {inputIssue && (
-        <p className="prompt-skill-error" role="alert">
+        <Typography.Text type="danger" className="prompt-skill-error" role="alert">
           {inputIssue}
-        </p>
+        </Typography.Text>
       )}
       {skillsError && (
-        <p className="prompt-skill-error" role="alert">
+        <Typography.Text type="danger" className="prompt-skill-error" role="alert">
           {skillsError}
-        </p>
+        </Typography.Text>
       )}
       {error && (
-        <p className="prompt-skill-error" role="alert">
+        <Typography.Text type="danger" className="prompt-skill-error" role="alert">
           {error}
-        </p>
+        </Typography.Text>
       )}
       {pendingContent}
     </div>

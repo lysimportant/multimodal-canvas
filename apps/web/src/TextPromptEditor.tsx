@@ -6,6 +6,7 @@ import type {
   PromptMention,
 } from '@multimodal-canvas/domain';
 import { useMemo } from 'react';
+import { Typography } from 'antd';
 
 import { ResourceMentionEditor } from './ResourceMentionEditor';
 import { projectConnectedPromptDocument } from './resource-mention-sync';
@@ -139,9 +140,9 @@ export function TextPromptEditor({
         className={className}
       />
       {projection.error && (
-        <p role="alert" className="resource-mention-edit-warning">
+        <Typography.Text role="alert" className="resource-mention-edit-warning" type="warning">
           引用未自动恢复：{projection.error}
-        </p>
+        </Typography.Text>
       )}
     </>
   );

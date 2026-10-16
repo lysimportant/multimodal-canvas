@@ -905,8 +905,7 @@ h2 {
   min-width: 0;
 }
 
-.clear-search,
-.notice button {
+.clear-search {
   align-items: center;
   background: transparent;
   border: 0;
@@ -1564,8 +1563,10 @@ h2 {
 
 .flow-asset-node {
   background: var(--mc-surface);
-  border: 0;
+  /* 外框在节点创建时就存在，焦点/选中只改变颜色，不会突然出现一条边框。 */
+  border: 1px solid var(--mc-border-strong);
   border-radius: 8px;
+  box-sizing: border-box;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   display: flex;
   flex-direction: column;
@@ -1580,10 +1581,12 @@ h2 {
 
 .flow-asset-node.is-selected {
   /* The more specific React Flow selector in asset-node.css owns the same
-     visual state; keep this fallback strong for standalone node previews. */
-  outline: 2px solid color-mix(in srgb, var(--mc-accent-strong) 88%, transparent);
-  outline-offset: 2px;
+     visual state; keep this fallback flush for standalone node previews. */
+  border-color: var(--mc-accent-strong);
+  /* 光圈全部由贴着边框的 box-shadow 生成，不使用 outline-offset，所以没有空隙。 */
+  outline: none;
   box-shadow:
+    0 0 0 1px var(--mc-accent-strong),
     0 0 0 4px color-mix(in srgb, var(--mc-accent) 22%, transparent),
     0 0 18px color-mix(in srgb, var(--mc-accent-strong) 34%, transparent),
     0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
@@ -1758,14 +1761,14 @@ h2 {
 }
 
 .canvas-flow-edge-path {
-  stroke: var(--mc-accent);
+  stroke: var(--canvas-edge-stroke);
   stroke-linecap: round;
   stroke-width: 2.5;
 }
 
 .canvas-flow-edge-path.is-selected {
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-accent-strong) 58%, transparent));
-  stroke: var(--mc-accent-strong);
+  filter: drop-shadow(0 0 4px var(--canvas-edge-glow-strong));
+  stroke: var(--canvas-edge-stroke-active);
   stroke-width: 4px;
 }
 
@@ -1773,10 +1776,9 @@ h2 {
    The class is separate from React Flow's edge selection so multi-select can
    emphasize every adjacent edge without changing edge interaction semantics. */
 .canvas-flow-edge-path.is-connected-selected {
-  filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--mc-accent-strong) 88%, transparent))
-    drop-shadow(0 0 10px color-mix(in srgb, var(--mc-accent) 46%, transparent));
-  stroke: var(--mc-accent-strong) !important;
+  filter: drop-shadow(0 0 5px var(--canvas-edge-glow-strong))
+    drop-shadow(0 0 10px var(--canvas-edge-glow));
+  stroke: var(--canvas-edge-stroke-active) !important;
   stroke-width: 4.5px !important;
 }
 
@@ -1785,22 +1787,15 @@ h2 {
   stroke-dasharray: 20 9;
 }
 
-/* 特效叠加层：统一不接收指针事件，选择命中与删除始终由基础边负责。 */
-.canvas-edge-effect-meteor,
-.canvas-edge-effect-cruiser,
-.canvas-edge-effect-multi,
+/* 特效叠加层：统一不接收指针事件，选择命中与删除始终由基础边负责。
+   流星鎏光自带组件样式（CanvasEdgeEffectOverlay.css），此处只保留脉冲层。 */
 .canvas-edge-effect-breathe {
+  animation: canvas-edge-breathe 2.4s ease-in-out infinite;
   fill: none;
   pointer-events: none;
+  stroke: var(--canvas-edge-beam);
   stroke-linecap: round;
-}
-
-.canvas-edge-effect-meteor {
-  stroke: var(--canvas-edge-flow-color);
-  stroke-dasharray: 20 72;
-  stroke-width: 2;
-  animation: canvas-flow-meteor 1.6s linear infinite;
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent) 80%, #ffffff));
+  stroke-width: 5;
 }
 
 /* 虚线行进直接改造基础路径：路径几何不变，只叠加沿连接方向的位移。 */
@@ -1809,70 +1804,14 @@ h2 {
   stroke-dasharray: 9 9;
 }
 
-.canvas-edge-effect-cruiser {
-  stroke: var(--canvas-edge-flow-color);
-  /* A short luminous streak reads as motion better than a single dot. */
-  stroke-dasharray: 20 120;
-  stroke-width: 3;
-  animation: canvas-flow-meteor 2.6s linear infinite;
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent) 80%, #ffffff));
-}
-
-.canvas-edge-effect-multi {
-  stroke: var(--canvas-edge-flow-color);
-  stroke-dasharray: 20 22;
-  stroke-width: 2.5;
-  animation: canvas-flow-meteor 2.4s linear infinite;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mc-accent) 70%, #ffffff));
-}
-
-.canvas-edge-effect-breathe {
-  stroke: color-mix(in srgb, var(--mc-accent-strong) 74%, #ffffff);
-  stroke-width: 5;
-  animation: canvas-edge-breathe 2.4s ease-in-out infinite;
-}
-
-/* Accelerate and brighten every decorative layer adjacent to a selected node.
+/* Accelerate and brighten the decorative layer adjacent to a selected node.
    The base edge remains the hit target and keeps its own selection state. */
-.canvas-edge-effect-meteor.is-connected-selected,
-.canvas-edge-effect-cruiser.is-connected-selected,
-.canvas-edge-effect-multi.is-connected-selected,
 .canvas-edge-effect-breathe.is-connected-selected {
-  filter:
-    drop-shadow(0 0 6px color-mix(in srgb, var(--mc-accent-strong) 94%, transparent))
-    drop-shadow(0 0 12px color-mix(in srgb, var(--mc-accent) 55%, transparent));
-  stroke: color-mix(in srgb, var(--mc-accent-strong) 86%, #ffffff);
+  filter: drop-shadow(0 0 6px var(--canvas-edge-glow-strong))
+    drop-shadow(0 0 12px var(--canvas-edge-glow));
+  stroke: var(--canvas-edge-stroke-active);
   stroke-width: 5px;
   animation-duration: 0.65s;
-}
-
-.canvas-edge-effect-shooting-star.is-connected-selected {
-  color: var(--mc-accent-strong);
-  filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--mc-accent-strong) 90%, transparent))
-    drop-shadow(0 0 10px color-mix(in srgb, var(--mc-accent) 48%, transparent));
-}
-
-.canvas-edge-effect-shooting-star.is-connected-selected .canvas-edge-shooting-star-motion {
-  animation-duration: 0.65s;
-}
-
-.canvas-edge-effect-meteor.is-connected-selected {
-  stroke-dasharray: 20 72;
-}
-
-.canvas-edge-effect-cruiser.is-connected-selected {
-  stroke-dasharray: 20 120;
-}
-
-.canvas-edge-effect-multi.is-connected-selected {
-  stroke-dasharray: 20 22;
-}
-
-@keyframes canvas-flow-meteor {
-  to {
-    stroke-dashoffset: -164;
-  }
 }
 
 @keyframes canvas-edge-marching {
@@ -1892,30 +1831,12 @@ h2 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .canvas-edge-effect-meteor,
-  .canvas-edge-effect-cruiser,
-  .canvas-edge-effect-multi,
   .canvas-edge-effect-breathe,
   .canvas-flow-edge-path.canvas-edge-effect-marching {
     animation: none;
   }
 
-  /* 关闭动画后仍用静态线型与亮度区分特效，选中态继续由 is-selected 提供。 */
-  .canvas-edge-effect-meteor {
-    stroke-dasharray: 20 72;
-    opacity: 0.5;
-  }
-
-  .canvas-edge-effect-cruiser {
-    stroke-dasharray: 20 120;
-    opacity: 0.6;
-  }
-
-  .canvas-edge-effect-multi {
-    stroke-dasharray: 20 22;
-    opacity: 0.55;
-  }
-
+  /* 关闭动画后仍用静态亮度区分特效，选中态继续由 is-selected 提供。 */
   .canvas-edge-effect-breathe {
     opacity: 0.4;
   }
@@ -3715,7 +3636,6 @@ h2 {
 }
 
 .notice {
-  border: 1px solid;
   border-radius: 6px;
   box-shadow: 0 8px 20px rgb(20 34 28 / 12%);
   font-size: 12px;
@@ -3729,24 +3649,9 @@ h2 {
   z-index: 20;
 }
 
-.notice-success {
-  background: #edf7f2;
-  border-color: #b7d9c7;
-  color: #14633f;
-}
-
-.notice-error {
-  background: #fff3f1;
-  border-color: #e8bbb5;
-  color: #9b4035;
-}
-
-.notice span {
+/* 标题由 antd Alert 渲染，长文本仍然允许任意位置换行。 */
+.notice .ant-alert-title {
   overflow-wrap: anywhere;
-}
-
-.notice button {
-  margin-left: 8px;
 }
 
 .visually-hidden {
@@ -4600,14 +4505,6 @@ h2 {
   box-shadow: 0 3px 10px var(--mc-shadow);
 }
 
-.flow-asset-node {
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
-}
-
-.flow-asset-node.is-selected {
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
-}
-
 .flow-asset-node .react-flow__handle {
   background: var(--canvas-edge-stroke);
   border-color: var(--mc-surface);
@@ -4679,17 +4576,6 @@ h2 {
 .theme-menu select {
   background: transparent;
   color: var(--mc-text);
-}
-
-.notice-success {
-  background: var(--mc-accent-soft);
-  border-color: var(--mc-border-strong);
-  border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-border));
-  color: var(--mc-accent-strong);
-}
-
-.notice-error {
-  background: #fff1ef;
 }
 
 .inspector-result-text,
@@ -5641,11 +5527,15 @@ textarea:focus-visible {
   }
 }
 
-/* 连线、连接点和动态光束共用当前主题，不跟随媒体类型写死颜色。 */
+/* 连线、连接点和动态光束只从当前主题派生，不混底色或白色，避免浅色主题下被冲淡。 */
 :root,
 [data-theme] {
   --canvas-edge-stroke: var(--mc-accent);
-  --canvas-edge-flow-color: color-mix(in srgb, var(--mc-accent-strong) 55%, var(--mc-surface));
+  --canvas-edge-stroke-active: var(--mc-accent-strong);
+  /* 一束鎏光的主色与两层辉光，全部由主题色派生。 */
+  --canvas-edge-beam: var(--mc-accent);
+  --canvas-edge-glow: color-mix(in srgb, var(--mc-accent) 55%, transparent);
+  --canvas-edge-glow-strong: color-mix(in srgb, var(--mc-accent-strong) 85%, transparent);
 }
 
 .canvas-area .canvas-flow-edge-path:not(.is-selected) {

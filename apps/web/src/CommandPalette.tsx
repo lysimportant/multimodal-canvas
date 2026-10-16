@@ -1,5 +1,5 @@
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
-import { Modal } from 'antd';
+import { Modal, Typography } from 'antd';
 import { CornerDownLeft, Search, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
@@ -333,9 +333,9 @@ export function CommandPalette({
       </div>
 
       {selectError && (
-        <p className="command-palette-error" role="alert">
+        <Typography.Text className="command-palette-error" type="danger" role="alert">
           命令执行失败，请稍后重试。
-        </p>
+        </Typography.Text>
       )}
     </Modal>
   );

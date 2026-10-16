@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, Upload, X } from 'lucide-react';
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '@multimodal-canvas/ui';
+import { Typography } from 'antd';
 import type { Asset, MediaType } from '@multimodal-canvas/domain';
 import type { ProjectResourceSearch, ProjectResourceSearchPage } from './project-resource-search';
 import { AssetPreview } from './workspace/AssetPreview';
@@ -208,14 +209,16 @@ export function ReferenceResourceDialog({
           />
         </label>
         {(selectionError || uploadError) && (
-          <p className="reference-resource-dialog-error" role="alert">
+          <Typography.Text className="reference-resource-dialog-error" type="danger" role="alert">
             {selectionError ?? uploadError}
-          </p>
+          </Typography.Text>
         )}
         <div className="reference-resource-dialog-body" aria-busy={loading || uploading}>
           {currentResponse?.error ? (
             <div className="reference-resource-dialog-status">
-              <p role="alert">{currentResponse.error}</p>
+              <Typography.Text type="danger" role="alert">
+                {currentResponse.error}
+              </Typography.Text>
               <Button type="button" onClick={() => setRevision((current) => current + 1)}>
                 重试读取项目资料
               </Button>

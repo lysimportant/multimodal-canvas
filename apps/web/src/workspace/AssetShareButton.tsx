@@ -1,5 +1,5 @@
 import { Check, Copy, LoaderCircle, Share2, X } from 'lucide-react';
-import { Popover } from 'antd';
+import { Alert, Button as AntdButton, Popover } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { Asset } from '@multimodal-canvas/domain';
@@ -430,12 +430,17 @@ export function AssetShareButton({ asset, presentation = 'viewer' }: AssetShareB
           正在创建只读分享链接…
         </p>
       ) : error ? (
-        <div className="asset-share-error" role="alert">
-          <span>{error}</span>
-          <Button type="button" onClick={() => void createShare()}>
-            重试创建
-          </Button>
-        </div>
+        <Alert
+          type="error"
+          showIcon
+          className="asset-share-error"
+          title={error}
+          action={
+            <AntdButton autoInsertSpace={false} onClick={() => void createShare()}>
+              重试创建
+            </AntdButton>
+          }
+        />
       ) : shareExpired ? (
         <div className="asset-share-expired" role="status">
           <span>原分享链接已过期，不能继续复制或发送。</span>

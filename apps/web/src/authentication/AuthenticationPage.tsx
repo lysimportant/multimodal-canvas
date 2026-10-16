@@ -1,3 +1,4 @@
+import { Alert } from 'antd';
 import { Button } from '@multimodal-canvas/ui';
 import { ArrowLeft, ArrowRight, LoaderCircle, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -59,11 +60,15 @@ export function AuthenticationPage({ authUser }: AuthenticationPageProps) {
             使用 New API 账号登录后，LoveTV 会同步已授权的分组与模型到画布。
           </p>
           {failure && (
-            <p className="notice notice-error" role="alert">
-              {failure === 'login_cancelled'
-                ? '已取消登录，你可以随时重新登录。'
-                : '登录未完成，请重试或检查 New API 账号状态。'}
-            </p>
+            <Alert
+              type="error"
+              showIcon
+              title={
+                failure === 'login_cancelled'
+                  ? '已取消登录，你可以随时重新登录。'
+                  : '登录未完成，请重试或检查 New API 账号状态。'
+              }
+            />
           )}
           {authUser ? (
             <Button

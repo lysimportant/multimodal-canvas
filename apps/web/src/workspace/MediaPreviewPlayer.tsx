@@ -1,3 +1,4 @@
+import { Typography } from 'antd';
 import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { AudioLines, LoaderCircle, Pause, Play, Repeat2, RotateCcw } from 'lucide-react';
 
@@ -224,9 +225,9 @@ function MediaPlayerSession({
           </span>
         )}
         {error && (
-          <span className="media-preview-player-error" role="alert">
+          <Typography.Text type="danger" role="alert" className="media-preview-player-error">
             {error}
-          </span>
+          </Typography.Text>
         )}
         {failed && (
           <Button

@@ -8,7 +8,7 @@ import { arrangeCanvasNodes } from './canvas-auto-arrange';
 import './workspace/canvas-arrange-button.css';
 import { MobileWorkspacePanel, useMobileWorkspace } from './workspace/MobileWorkspacePanel';
 import { CanvasPersistence, type CanvasSnapshot } from './canvas-persistence';
-import { Dropdown, Modal } from 'antd';
+import { Alert, App as AntdApp, ConfigProvider, Dropdown, Modal, Typography } from 'antd';
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
 import {
   Archive,
@@ -400,9 +400,14 @@ function ProjectCreateDialog({
             aria-describedby={error ? 'project-create-error' : undefined}
           />
           {error && (
-            <span id="project-create-error" className="project-create-error" role="alert">
+            <Typography.Text
+              id="project-create-error"
+              className="project-create-error"
+              type="danger"
+              role="alert"
+            >
               {error}
-            </span>
+            </Typography.Text>
           )}
         </label>
         <div className="project-create-actions">
@@ -502,9 +507,14 @@ function AssetRenameDialog({
           />
         </label>
         {error && (
-          <p id="asset-rename-error" role="alert" className="project-create-error">
+          <Typography.Text
+            id="asset-rename-error"
+            role="alert"
+            className="project-create-error"
+            type="danger"
+          >
             {error}
-          </p>
+          </Typography.Text>
         )}
         <div className="project-create-actions">
           <UiButton type="button" onClick={onClose} disabled={busy}>
@@ -5520,16 +5530,18 @@ function WorkspaceApp({
         </header>
 
         {notice && (
-          <div
-            className={`notice notice-${notice.kind}`}
+          <Alert
+            className="notice"
+            type={notice.kind === 'error' ? 'error' : 'success'}
+            title={notice.message}
             role={notice.kind === 'error' ? 'alert' : 'status'}
-          >
-            {notice.kind === 'success' ? <Check size={15} /> : <X size={15} />}
-            <span>{notice.message}</span>
-            <UiButton type="button" aria-label="关闭提示" onClick={() => setNotice(null)}>
-              <X size={14} />
-            </UiButton>
-          </div>
+            showIcon
+            closable={{
+              'aria-label': '关闭提示',
+              closeIcon: <X size={14} />,
+              onClose: () => setNotice(null),
+            }}
+          />
         )}
 
         <ProjectHub
@@ -6017,16 +6029,18 @@ function RoutedApplication({
     <>
       {content}
       {pageNotice && (
-        <div
-          className={`notice notice-${pageNotice.kind}`}
+        <Alert
+          className="notice"
+          type={pageNotice.kind === 'error' ? 'error' : 'success'}
+          title={pageNotice.message}
           role={pageNotice.kind === 'error' ? 'alert' : 'status'}
-        >
-          {pageNotice.kind === 'success' ? <Check size={15} /> : <X size={15} />}
-          <span>{pageNotice.message}</span>
-          <UiButton type="button" aria-label="关闭提示" onClick={() => setPageNotice(null)}>
-            <X size={14} />
-          </UiButton>
-        </div>
+          showIcon
+          closable={{
+            'aria-label': '关闭提示',
+            closeIcon: <X size={14} />,
+            onClose: () => setPageNotice(null),
+          }}
+        />
       )}
       <ProjectCreateDialog
         open={isAuthenticated && projectCreateOwnerId === authUser?.id && showProjectCreate}
@@ -6240,12 +6254,18 @@ function AppContent() {
         />
       )}
       {authNotice && (
-        <div className="notice notice-error" role="alert">
-          <span>{authNotice}</span>
-          <UiButton type="button" aria-label="关闭账户提示" onClick={() => setAuthNotice(null)}>
-            <X size={14} />
-          </UiButton>
-        </div>
+        <Alert
+          className="notice"
+          type="error"
+          title={authNotice}
+          role="alert"
+          showIcon
+          closable={{
+            'aria-label': '关闭账户提示',
+            closeIcon: <X size={14} />,
+            onClose: () => setAuthNotice(null),
+          }}
+        />
       )}
     </AccountProvider>
   );
@@ -6267,15 +6287,22 @@ export function App() {
   }, [canvasTheme]);
 
   return (
-    <AppQueryProvider>
-      {route.id === 'share' ? (
-        <PublicAssetSharePage
-          key={window.location.hash}
-          token={new URLSearchParams(window.location.hash.slice(1)).get('token') ?? ''}
-        />
-      ) : (
-        <AppContent />
-      )}
-    </AppQueryProvider>
+    <ConfigProvider theme={{ cssVar: { key: 'canvas' } }}>
+      {/* `component={false}` keeps antd's context providers without injecting the
+          `.ant-app` wrapper element, so the existing `.app-shell` layout and the
+          `data-theme` CSS variable cascade stay exactly as they were. */}
+      <AntdApp component={false}>
+        <AppQueryProvider>
+          {route.id === 'share' ? (
+            <PublicAssetSharePage
+              key={window.location.hash}
+              token={new URLSearchParams(window.location.hash.slice(1)).get('token') ?? ''}
+            />
+          ) : (
+            <AppContent />
+          )}
+        </AppQueryProvider>
+      </AntdApp>
+    </ConfigProvider>
   );
 }

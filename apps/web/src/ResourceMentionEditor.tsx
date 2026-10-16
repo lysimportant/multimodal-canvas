@@ -25,7 +25,7 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Popover, type GetRef } from 'antd';
+import { Popover, Typography, type GetRef } from 'antd';
 
 import type {
   Asset,
@@ -1365,7 +1365,7 @@ export function ResourceMentionEditor({
             </div>
           ) : remoteProject && currentProjectResult?.error ? (
             <div className="resource-mention-empty" role="alert">
-              <p>{currentProjectResult.error}</p>
+              <Typography.Text type="danger">{currentProjectResult.error}</Typography.Text>
               <UiButton type="button" onClick={() => setProjectRevision((value) => value + 1)}>
                 重试搜索
               </UiButton>
@@ -1769,15 +1769,15 @@ export function ResourceMentionEditor({
       )}
 
       {protectedEditMessage && (
-        <p className="resource-mention-edit-warning" role="status">
+        <Typography.Text className="resource-mention-edit-warning" type="secondary" role="status">
           {protectedEditMessage}
-        </p>
+        </Typography.Text>
       )}
 
       {invalidPromptDocument && (
-        <p className="resource-mention-edit-warning" role="alert">
+        <Typography.Text className="resource-mention-edit-warning" type="warning" role="alert">
           提示词文档格式无效，当前暂按兼容纯文本编辑；保存后会规范化结构。
-        </p>
+        </Typography.Text>
       )}
 
       <Dialog
@@ -1813,13 +1813,14 @@ export function ResourceMentionEditor({
               />
             </label>
             {resourceNameError && (
-              <p
+              <Typography.Text
                 id={`resource-name-error-${nodeId}`}
                 role="alert"
                 className="resource-mention-edit-warning"
+                type="danger"
               >
                 {resourceNameError}
-              </p>
+              </Typography.Text>
             )}
             <div className="resource-mention-dialog-actions">
               {dialogItem.mentionId && (

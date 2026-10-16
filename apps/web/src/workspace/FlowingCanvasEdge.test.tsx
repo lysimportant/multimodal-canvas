@@ -15,7 +15,6 @@ import {
 
 import {
   CanvasEdgeAppearanceProvider,
-  FLOW_GENTLE_CURVATURE,
   FLOW_SMOOTH_STEP_RADIUS,
   canvasEdgeAppearanceDefaults,
   canvasEdgePreviewPath,
@@ -32,18 +31,10 @@ import {
   getConnectionHandlePoint,
 } from './FlowingCanvasEdge';
 
-/** 五种路径形态，顺序与外观面板一致。 */
-const pathStyles: CanvasEdgePathStyle[] = ['bezier', 'gentle', 'smoothstep', 'step', 'straight'];
-/** 七种动态特效，流星光束与旧流光独立，`none` 不渲染叠加层。 */
-const effects: CanvasEdgeEffect[] = [
-  'meteor',
-  'shooting-star',
-  'marching',
-  'cruiser',
-  'multi',
-  'breathe',
-  'none',
-];
+/** 三种路径形态，顺序与外观面板一致。 */
+const pathStyles: CanvasEdgePathStyle[] = ['bezier', 'smoothstep', 'straight'];
+/** 三种动态特效加关闭项；`none` 不渲染叠加层。 */
+const effects: CanvasEdgeEffect[] = ['meteor', 'marching', 'breathe', 'none'];
 
 /** 同一条边的两端锚点参数，路径求解测试共用。 */
 const edgeParams = {
@@ -130,50 +121,26 @@ describe('FlowingCanvasEdge', () => {
     expect(centerHandlePoint(x, y, position)).toEqual({ x: expectedX, y: expectedY });
   });
 
-  it('五种路径形态在同一组端点下几何各不相同', () => {
+  it('三种路径形态在同一组端点下几何各不相同', () => {
     const resolved = pathStyles.map((pathStyle) => resolveEdgePath(pathStyle, edgeParams));
 
     expect(new Set(resolved).size).toBe(pathStyles.length);
     expect(resolveEdgePath('bezier', edgeParams)).toBe(getBezierPath(edgeParams)[0]);
-    expect(resolveEdgePath('gentle', edgeParams)).toBe(
-      getBezierPath({ ...edgeParams, curvature: FLOW_GENTLE_CURVATURE })[0],
-    );
     expect(resolveEdgePath('smoothstep', edgeParams)).toBe(
       getSmoothStepPath({ ...edgeParams, borderRadius: FLOW_SMOOTH_STEP_RADIUS })[0],
-    );
-    expect(resolveEdgePath('step', edgeParams)).toBe(
-      getSmoothStepPath({ ...edgeParams, borderRadius: 0 })[0],
     );
     expect(resolveEdgePath('straight', edgeParams)).toBe(getStraightPath(edgeParams)[0]);
   });
 
-  it('外观面板的小预览使用真实几何，圆角与直角折线可区分', () => {
+  it('外观面板的小预览使用真实几何，三种形态各不相同', () => {
     const previews = pathStyles.map((pathStyle) => canvasEdgePreviewPath(pathStyle));
 
-    // 预览几何的锚点方向对向，xyflow 的曲率参数不参与，贝塞尔与轻弧预览同形。
-    expect(new Set(previews).size).toBe(pathStyles.length - 1);
-    expect(canvasEdgePreviewPath('bezier')).toBe(canvasEdgePreviewPath('gentle'));
-    // 圆角折线自带圆弧半径，直角折线的过渡是零长度的退化曲线。
+    expect(new Set(previews).size).toBe(pathStyles.length);
+    // 圆角折线自带圆弧半径，直线形态没有曲线段，标准曲线走贝塞尔。
     expect(canvasEdgePreviewPath('smoothstep')).toMatch(/Q [\d.]+,6 /);
-    expect(canvasEdgePreviewPath('step')).toMatch(/Q 34,6 34,6/);
-    expect(canvasEdgePreviewPath('smoothstep')).not.toBe(canvasEdgePreviewPath('step'));
     expect(canvasEdgePreviewPath('straight')).toMatch(/^M [\d.]+,[\d.]+L [\d.]+,[\d.]+$/);
-  });
-
-  it('轻弧曲线在锚点方向背离目标时与标准曲线几何不同', () => {
-    const asymmetric = {
-      sourceX: 260,
-      sourceY: 40,
-      targetX: 20,
-      targetY: 200,
-      sourcePosition: Position.Left,
-      targetPosition: Position.Bottom,
-    };
-
-    expect(resolveEdgePath('gentle', asymmetric)).not.toBe(resolveEdgePath('bezier', asymmetric));
-    expect(resolveEdgePath('gentle', asymmetric)).toBe(
-      getBezierPath({ ...asymmetric, curvature: FLOW_GENTLE_CURVATURE })[0],
-    );
+    expect(canvasEdgePreviewPath('bezier')).not.toBe(canvasEdgePreviewPath('smoothstep'));
+    expect(canvasEdgePreviewPath('smoothstep')).not.toBe(canvasEdgePreviewPath('straight'));
   });
 
   it.each(pathStyles)('%s 路径形态对准锚点圆心', (pathStyle) => {
@@ -228,8 +195,8 @@ describe('连接线路径与特效的独立性', () => {
     effects.map((effect) => [pathStyle, effect] as const),
   );
 
-  it('覆盖 5 x 7 共 35 种组合', () => {
-    expect(combinations).toHaveLength(35);
+  it('覆盖 3 x 4 共 12 种组合', () => {
+    expect(combinations).toHaveLength(12);
   });
 
   it.each(combinations)(
@@ -247,16 +214,16 @@ describe('连接线路径与特效的独立性', () => {
       );
       if (expectedOverlayClass) {
         expect(overlay).toHaveAttribute('class', expectedOverlayClass);
-        if (effect === 'shooting-star') {
-          expect(overlay?.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-          expect(overlay?.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
-          expect(overlay?.querySelector('.canvas-edge-shooting-star-fallback')).toHaveAttribute(
+        if (effect === 'meteor') {
+          expect(overlay?.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(1);
+          // 一条渐细光尾 + 一条更宽的辉光尾迹，整条边只有这一束鎏光。
+          expect(overlay?.querySelectorAll('.canvas-edge-meteor-trail')).toHaveLength(2);
+          expect(overlay?.querySelector('.canvas-edge-meteor-fallback')).toHaveAttribute(
             'd',
             settledPath(pathStyle),
           );
           expect(
-            overlay?.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style
-              .offsetPath,
+            overlay?.querySelector<SVGGElement>('.canvas-edge-meteor-motion')?.style.offsetPath,
           ).toBe('path(' + JSON.stringify(settledPath(pathStyle)) + ')');
         } else {
           expect(overlay).toHaveAttribute('d', settledPath(pathStyle));
@@ -282,7 +249,7 @@ describe('连接线路径与特效的独立性', () => {
   it('选中节点的相邻边获得独立强调态，未相邻边保持普通样式', () => {
     const { container } = render(
       <CanvasEdgeAppearanceProvider
-        appearance={{ pathStyle: 'bezier', effect: 'shooting-star' }}
+        appearance={{ pathStyle: 'bezier', effect: 'meteor' }}
         selectedNodeIds={new Set(['a'])}
       >
         <svg>
@@ -293,16 +260,16 @@ describe('连接线路径与特效的独立性', () => {
     );
 
     const bases = container.querySelectorAll<SVGPathElement>('.canvas-flow-edge-path');
-    const overlays = container.querySelectorAll<SVGGElement>('.canvas-edge-effect-shooting-star');
+    const overlays = container.querySelectorAll<SVGGElement>('.canvas-edge-effect-meteor');
     expect(bases[0]).toHaveClass('is-connected-selected');
     expect(bases[1]).not.toHaveClass('is-connected-selected');
     expect(overlays[0]).toHaveClass('is-connected-selected');
     expect(overlays[1]).not.toHaveClass('is-connected-selected');
   });
 
-  it('流星光束保留基础边的状态颜色、选中态、终点标记和透明命中区域', () => {
+  it('流星鎏光叠加层保留基础边的状态颜色、选中态、终点标记和透明命中区域', () => {
     const { container } = render(
-      <CanvasEdgeAppearanceProvider appearance={{ pathStyle: 'step', effect: 'shooting-star' }}>
+      <CanvasEdgeAppearanceProvider appearance={{ pathStyle: 'smoothstep', effect: 'meteor' }}>
         <svg>
           <FlowingCanvasEdge
             id="state-edge"
@@ -324,7 +291,7 @@ describe('连接线路径与特效的独立性', () => {
     expect(base).toHaveClass('is-selected');
     expect(base).toHaveStyle({ stroke: '#dc2626', strokeWidth: '3' });
     expect(base).toHaveAttribute('marker-end', 'url(#target-arrow)');
-    expect(hitArea).toHaveAttribute('d', settledPath('step'));
+    expect(hitArea).toHaveAttribute('d', settledPath('smoothstep'));
     expect(hitArea).toHaveAttribute('stroke-width', '20');
     expect(overlay).toHaveAttribute('aria-hidden', 'true');
     expect(overlay).toHaveAttribute('pointer-events', 'none');
@@ -346,11 +313,14 @@ describe('连接线路径与特效的独立性', () => {
     expect(onEdgePointerDown).toHaveBeenCalledTimes(1);
 
     const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
+    const overlayCss = readFileSync(
+      resolve(process.cwd(), 'src/workspace/CanvasEdgeEffectOverlay.css'),
+      'utf8',
+    ).replace(/\s+/g, ' ');
+    expect(overlayCss).toMatch(/\.canvas-edge-effect-meteor \{[^}]*pointer-events: none;/);
+    expect(css).toMatch(/\.canvas-edge-effect-breathe \{[^}]*pointer-events: none;/);
     expect(css).toMatch(
-      /\.canvas-edge-effect-meteor, \.canvas-edge-effect-cruiser, \.canvas-edge-effect-multi, \.canvas-edge-effect-breathe \{[^}]*pointer-events: none;/,
-    );
-    expect(css).toMatch(
-      /\.canvas-flow-edge-path\.is-selected \{[^}]*stroke: var\(--mc-accent-strong\);/,
+      /\.canvas-flow-edge-path\.is-selected \{[^}]*stroke: var\(--canvas-edge-stroke-active\);/,
     );
   });
 
@@ -358,7 +328,9 @@ describe('连接线路径与特效的独立性', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8').replace(/\s+/g, ' ');
     const reducedMotion = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
 
-    expect(reducedMotion).toMatch(/\.canvas-edge-effect-meteor,[^}]*animation: none;/);
+    expect(reducedMotion).toMatch(
+      /\.canvas-edge-effect-breathe, \.canvas-flow-edge-path\.canvas-edge-effect-marching \{[^}]*animation: none;/,
+    );
     expect(reducedMotion).toMatch(/\.canvas-edge-effect-breathe \{[^}]*opacity: 0\.4;/);
     expect(css).not.toContain('.edge-style-pulse');
     expect(css).not.toContain('.edge-style-minimal');
@@ -444,7 +416,7 @@ describe('主体吸附端点', () => {
 });
 
 describe('FlowingConnectionLine', () => {
-  it.each(pathStyles)('%s 流星光束在正向/反向拖线与落定后共用同一条源到目标路径', (pathStyle) => {
+  it.each(pathStyles)('%s 流星鎏光在正向/反向拖线与落定后共用同一条源到目标路径', (pathStyle) => {
     const source = centerHandlePoint(
       edgeParams.sourceX,
       edgeParams.sourceY,
@@ -476,7 +448,7 @@ describe('FlowingConnectionLine', () => {
             fromPosition={edgeParams.sourcePosition}
             toPosition={edgeParams.targetPosition}
             pathStyle={pathStyle}
-            effect="shooting-star"
+            effect="meteor"
           />
         </g>
         <g data-testid="reverse">
@@ -489,20 +461,20 @@ describe('FlowingConnectionLine', () => {
             toPosition={edgeParams.sourcePosition}
             fromHandle={fromHandle}
             pathStyle={pathStyle}
-            effect="shooting-star"
+            effect="meteor"
           />
         </g>
       </svg>,
     );
 
-    expect(container.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(2);
+    expect(container.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(2);
     container
-      .querySelectorAll('.canvas-flow-edge-path, .canvas-edge-shooting-star-fallback')
+      .querySelectorAll('.canvas-flow-edge-path, .canvas-edge-meteor-fallback')
       .forEach((path) => {
         expect(path).toHaveAttribute('d', settledPath(pathStyle));
       });
     container
-      .querySelectorAll<SVGGElement>('.canvas-edge-shooting-star-motion')
+      .querySelectorAll<SVGGElement>('.canvas-edge-meteor-motion')
       .forEach((motion) => {
         expect(motion.style.offsetPath).toBe(
           'path(' + JSON.stringify(settledPath(pathStyle)) + ')',
@@ -538,7 +510,7 @@ describe('FlowingConnectionLine', () => {
       'd',
       resolveEdgePath(pathStyle, preview),
     );
-    expect(container.querySelector('[data-testid="edge-effect-overlay"]')).toHaveAttribute(
+    expect(container.querySelector('.canvas-edge-meteor-fallback')).toHaveAttribute(
       'd',
       resolveEdgePath(pathStyle, preview),
     );

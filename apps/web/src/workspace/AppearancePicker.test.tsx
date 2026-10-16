@@ -29,12 +29,12 @@ describe('AppearancePicker', () => {
     expect(css).not.toContain('!important');
   });
 
-  it('单束流星独立于旧流光，选项与组合预览共用真实路径和同一特效层', async () => {
+  it('流星鎏光在选项与组合预览中共用真实路径和同一特效层，每条边只有一束光', async () => {
     const user = userEvent.setup();
     const props = {
       canvasTheme: 'eye-care' as const,
       canvasBackground: 'dots' as const,
-      canvasEdgePathStyle: 'step' as const,
+      canvasEdgePathStyle: 'smoothstep' as const,
       placement: 'bottom' as const,
       onThemeChange: vi.fn(),
       onBackgroundChange: vi.fn(),
@@ -49,31 +49,28 @@ describe('AppearancePicker', () => {
       within(dialog).getByRole('group', { name: '连接线特效' }),
     );
 
-    const meteor = within(dialog).getByRole('button', { name: '流光 短亮线行进' });
-    const shootingStar = within(dialog).getByRole('button', { name: '单束流星 头亮尾细' });
+    const meteor = within(dialog).getByRole('button', { name: '流星鎏光 整条线一束光' });
+    const breathe = within(dialog).getByRole('button', { name: '呼吸脉冲 亮度起伏' });
     expect(meteor).toHaveAttribute('aria-pressed', 'true');
-    expect(meteor.querySelector('.canvas-edge-effect-meteor')).toBeInTheDocument();
-    expect(shootingStar).toHaveAttribute('aria-pressed', 'false');
-    expect(shootingStar.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    expect(shootingStar.querySelector('strong')).toHaveTextContent('单束流星');
-    expect(shootingStar.querySelector('small')).toHaveTextContent('头亮尾细');
+    // 整条连接线上只有一束鎏光：一个亮头（外发光与光尾共用同一个头）。
+    expect(meteor.querySelectorAll('.canvas-edge-effect-meteor')).toHaveLength(1);
+    expect(meteor.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(1);
+    expect(meteor.querySelectorAll('.canvas-edge-meteor-trail')).toHaveLength(2);
+    expect(breathe).toHaveAttribute('aria-pressed', 'false');
+    expect(breathe.querySelector('.canvas-edge-effect-breathe')).toBeInTheDocument();
+    expect(breathe.querySelector('strong')).toHaveTextContent('呼吸脉冲');
+    expect(breathe.querySelector('small')).toHaveTextContent('亮度起伏');
 
-    await user.click(shootingStar);
-    expect(props.onEdgeEffectChange).toHaveBeenCalledExactlyOnceWith('shooting-star');
-    expect(props.onEdgePathStyleChange).not.toHaveBeenCalled();
-    rerender(<AppearancePicker {...props} canvasEdgeEffect="shooting-star" />);
-    expect(shootingStar).toHaveAttribute('aria-pressed', 'true');
-    expect(meteor).toHaveAttribute('aria-pressed', 'false');
-
+    // 切换前组合预览与路径选项预览都跟随当前特效（鎏光），且每条边只有一束光。
     const combined = within(dialog).getByRole('group', { name: '连接线组合预览' });
-    const expectedPath = canvasEdgePreviewPath('step');
-    expect(combined.querySelectorAll('.canvas-edge-shooting-star-head')).toHaveLength(1);
-    expect(combined.querySelectorAll('.canvas-edge-shooting-star-trail')).toHaveLength(1);
+    const expectedPath = canvasEdgePreviewPath('smoothstep');
+    expect(combined.querySelectorAll('.canvas-edge-meteor-head')).toHaveLength(1);
+    expect(combined.querySelectorAll('.canvas-edge-meteor-trail')).toHaveLength(2);
     expect(
-      combined.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
+      combined.querySelector<SVGGElement>('.canvas-edge-meteor-motion')?.style.offsetPath,
     ).toBe('path(' + JSON.stringify(expectedPath) + ')');
     combined
-      .querySelectorAll('.canvas-flow-edge-path, .canvas-edge-shooting-star-fallback')
+      .querySelectorAll('.canvas-flow-edge-path, .canvas-edge-meteor-fallback')
       .forEach((path) => {
         expect(path).toHaveAttribute('d', expectedPath);
       });
@@ -83,12 +80,25 @@ describe('AppearancePicker', () => {
       .forEach((option) => {
         const base = option.querySelector('.canvas-flow-edge-path');
         expect(
-          option.querySelector<SVGGElement>('.canvas-edge-shooting-star-motion')?.style.offsetPath,
+          option.querySelector<SVGGElement>('.canvas-edge-meteor-motion')?.style.offsetPath,
         ).toBe('path(' + JSON.stringify(base?.getAttribute('d')) + ')');
-        option.querySelectorAll('.canvas-edge-shooting-star-fallback').forEach((path) => {
+        option.querySelectorAll('.canvas-edge-meteor-fallback').forEach((path) => {
           expect(path).toHaveAttribute('d', base?.getAttribute('d'));
         });
       });
+
+    await user.click(breathe);
+    expect(props.onEdgeEffectChange).toHaveBeenCalledExactlyOnceWith('breathe');
+    expect(props.onEdgePathStyleChange).not.toHaveBeenCalled();
+    rerender(<AppearancePicker {...props} canvasEdgeEffect="breathe" />);
+    expect(breathe).toHaveAttribute('aria-pressed', 'true');
+    expect(meteor).toHaveAttribute('aria-pressed', 'false');
+    // 切换后组合预览同步换成脉冲叠加层，不再保留鎏光。
+    expect(
+      within(dialog)
+        .getByRole('group', { name: '连接线组合预览' })
+        .querySelectorAll('.canvas-edge-meteor-head'),
+    ).toHaveLength(0);
 
     await user.click(within(dialog).getByRole('button', { name: '直线 两端直连' }));
     expect(props.onEdgePathStyleChange).toHaveBeenCalledExactlyOnceWith('straight');
@@ -105,7 +115,7 @@ describe('AppearancePicker', () => {
       <AppearancePicker
         canvasTheme="eye-care"
         canvasBackground="dots"
-        canvasEdgePathStyle="gentle"
+        canvasEdgePathStyle="smoothstep"
         canvasEdgeEffect="meteor"
         placement="bottom"
         onThemeChange={onThemeChange}
@@ -128,12 +138,12 @@ describe('AppearancePicker', () => {
     await user.click(within(dialog).getByRole('button', { name: '十字' }));
     expect(onBackgroundChange).toHaveBeenCalledWith('cross');
     await user.click(within(dialog).getByRole('tab', { name: '连接' }));
-    expect(within(dialog).getByRole('button', { name: /轻弧曲线/ })).toHaveAttribute(
+    expect(within(dialog).getByRole('button', { name: /圆角折线/ })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
-    await user.click(within(dialog).getByRole('button', { name: /直角折线/ }));
-    expect(onEdgePathStyleChange).toHaveBeenCalledWith('step');
+    await user.click(within(dialog).getByRole('button', { name: /直线/ }));
+    expect(onEdgePathStyleChange).toHaveBeenCalledWith('straight');
     await user.click(within(dialog).getByRole('button', { name: /无特效/ }));
     expect(onEdgeEffectChange).toHaveBeenCalledWith('none');
     expect(

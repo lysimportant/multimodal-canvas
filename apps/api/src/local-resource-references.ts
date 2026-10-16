@@ -1,4 +1,4 @@
-import { type MediaType } from '@multimodal-canvas/domain';
+import { imageEditReferencesRequirePublicUrl, type MediaType } from '@multimodal-canvas/domain';
 import type { ProviderAssetUrlSigner } from '@multimodal-canvas/credential-crypto';
 import type { ResolvedMention } from '@multimodal-canvas/providers';
 
@@ -32,6 +32,11 @@ export function withLocalResourceReferences(
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
     const videoTarget = target.data.mediaType === 'video';
+    // 图片目标只在该模型的目录明确要求公网参考图时才签发地址，否则维持内联 base64。
+    const publicUrlTarget = videoTarget
+      ? true
+      : target.data.mediaType === 'image' &&
+        imageEditReferencesRequirePublicUrl(request.snapshot, target.id);
     // 已有公共任务只查询结果，不能因原图后来失效阻断恢复。
     if (videoTarget && request.providerJob?.platformJobId) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
@@ -153,7 +158,7 @@ export function withLocalResourceReferences(
         throw new Error(`资源 ${assetId} 已不可访问或已归档`);
       readAssets.push({ assetId, scope });
       assertActive();
-      if (videoTarget && mediaType !== 'text') {
+      if (publicUrlTarget && mediaType !== 'text') {
         if (!providerAssetUrlSigner) {
           throw new Error(
             '参考素材需要公网 HTTPS 访问：部署后会自动使用网站域名；当前网站地址或签名密钥不可用。本机 localhost 无法被远端模型读取。',
