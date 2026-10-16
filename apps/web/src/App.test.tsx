@@ -914,6 +914,76 @@ describe('App 组件库迁移', () => {
     },
   );
 
+  it.each(['queued', 'preparing', 'running', 'processing', 'cancel_requested'] as const)(
+    '%s 节点不能单删、替换身份或经底层 remove 删除，批量键盘删除仅移除普通节点',
+    async (status) => {
+      canvas.nodes = [emptyNode('active'), emptyNode('ordinary')];
+      projectRuns = [runRecord({ id: 'delete-protected', targetNodeId: 'active', status })];
+      await renderCanvas(1);
+      const active = view.canvas!.nodes[0];
+      act(() => view.canvas!.onDeleteNode?.('active'));
+      expect(view.canvas!.nodes).toHaveLength(2);
+      act(() => view.canvas!.onNodesChange([{ type: 'remove', id: 'active' }]));
+      expect(view.canvas!.nodes).toHaveLength(2);
+      act(() =>
+        view.canvas!.onNodesChange([
+          { type: 'replace', id: 'active', item: { ...active, id: 'replacement' } },
+        ]),
+      );
+      expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['active', 'ordinary']);
+      act(() =>
+        view.canvas!.onNodesChange([
+          { type: 'select', id: 'active', selected: true },
+          { type: 'select', id: 'ordinary', selected: true },
+        ]),
+      );
+      fireEvent.keyDown(window, { key: 'Delete' });
+      expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['active']);
+      fireEvent.keyDown(window, { key: 'Backspace' });
+      expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['active']);
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    },
+  );
+
+  it.each(['succeeded', 'failed', 'cancelled'] as const)(
+    '%s 终态节点恢复正常删除',
+    async (status) => {
+      canvas.nodes = [emptyNode('finished'), emptyNode('ordinary')];
+      projectRuns = [runRecord({ id: 'delete-finished', targetNodeId: 'finished', status })];
+      await renderCanvas();
+      act(() => view.canvas!.onDeleteNode?.('finished'));
+      expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['ordinary']);
+    },
+  );
+
+  it('提交请求未返回运行记录时也禁止删除与清空，完成后可删除', async () => {
+    canvas.nodes = [imageNode('pending', 'image-model')];
+    const pending = pendingNodeRuns(['pending'], true);
+    await renderCanvas(1);
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await waitFor(() => expect(pending.posts).toEqual(['pending']));
+    act(() => {
+      view.canvas!.onDeleteNode?.('pending');
+      view.canvas!.onNodesChange([{ type: 'remove', id: 'pending' }]);
+      void view.canvas!.onClearCanvas?.();
+    });
+    expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['pending']);
+    expect(screen.queryByRole('dialog', { name: '清空画布' })).not.toBeInTheDocument();
+    await act(async () => {
+      pending.creates.get('pending')!.resolve(json({ run: pending.runs.get('pending') }, 202));
+      pending.polls
+        .get('pending')!
+        .resolve(
+          json({ run: { ...pending.runs.get('pending'), status: 'succeeded', progress: 100 } }),
+        );
+    });
+    await waitFor(() => expect(view.canvas!.busyNodeIds?.size).toBe(0));
+    act(() => view.canvas!.onDeleteNode?.('pending'));
+    expect(view.canvas!.nodes).toHaveLength(0);
+    expect(pending.posts).toEqual(['pending']);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/cancel'))).toBe(false);
+  });
+
   it('轮询失败不解除服务端仍在运行的节点，不自动重发创建请求', async () => {
     canvas.nodes = [imageNode('a', 'image-model')];
     const pending = pendingNodeRuns(['a']);
@@ -1995,6 +2065,28 @@ describe('App 组件库迁移', () => {
     expect(view.canvas!.nodes[0].data.prompt).toBe('最新内容');
   });
 
+  it('清空确认等待期间开始运行时保留整张画布，不写入删除历史', async () => {
+    let emit: Parameters<typeof auth.openAuthEventStream>[1] | undefined;
+    vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, onEvent) => {
+      emit = onEvent;
+    });
+    const user = userEvent.setup();
+    await renderCanvas();
+    await user.click(screen.getByRole('button', { name: '测试清空画布' }));
+    const dialog = await screen.findByRole('dialog', { name: '清空画布' });
+    act(() =>
+      emit!(
+        'run.updated',
+        JSON.stringify(runRecord({ targetNodeId: 'empty-one', status: 'running' })),
+      ),
+    );
+    await user.click(within(dialog).getByRole('button', { name: '确认清空' }));
+    await screen.findByText(/正在运行或保存，暂不能清空画布/);
+    expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['empty-one', 'empty-two']);
+    expect(view.canvas!.canUndo).toBe(false);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
   it('确认等待期间切换项目，旧窗口和清理操作不进入新画布', async () => {
     const user = userEvent.setup();
     await renderCanvas();
@@ -2724,6 +2816,43 @@ describe('App 历史与共享保存快照', () => {
     );
   }
 
+  it('撤销与重做不能移除活动节点，阻止时保留历史，结束后可继续执行', async () => {
+    let emit: Parameters<typeof auth.openAuthEventStream>[1] | undefined;
+    vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, onEvent) => {
+      emit = onEvent;
+    });
+    await renderCanvas();
+    const added = { ...view.canvas!.nodes[0], id: 'added' };
+    act(() => view.canvas!.onNodesChange([{ type: 'add', item: added }]));
+    const active = runRecord({ id: 'history-active', targetNodeId: 'added', status: 'running' });
+    act(() => emit!('run.updated', JSON.stringify(active)));
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes.map((node) => node.id)).toContain('added');
+    expect(view.canvas!.canUndo).toBe(true);
+    expect(view.canvas!.canRedo).toBe(false);
+    act(() => emit!('run.updated', JSON.stringify({ ...active, status: 'succeeded' })));
+    act(() => view.canvas!.onUndoCanvas?.());
+    expect(view.canvas!.nodes.map((node) => node.id)).not.toContain('added');
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes.map((node) => node.id)).toContain('added');
+
+    act(() => view.canvas!.onDeleteNode?.('added'));
+    act(() => view.canvas!.onUndoCanvas?.());
+    const nextActive = {
+      ...active,
+      id: 'history-next-active',
+      createdAt: '2026-09-26T00:00:00.000Z',
+      updatedAt: '2026-09-26T00:00:00.000Z',
+    };
+    act(() => emit!('run.updated', JSON.stringify(nextActive)));
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes.map((node) => node.id)).toContain('added');
+    expect(view.canvas!.canRedo).toBe(true);
+    act(() => emit!('run.updated', JSON.stringify({ ...nextActive, status: 'cancelled' })));
+    act(() => view.canvas!.onRedoCanvas?.());
+    expect(view.canvas!.nodes.map((node) => node.id)).not.toContain('added');
+  });
+
   it('长时间拖动不反复自动保存，松手后仍按 400ms 保存最新位置', async () => {
     await renderCanvas();
     const id = view.canvas!.nodes[0].id;
@@ -2874,7 +3003,7 @@ describe('App 历史与共享保存快照', () => {
     expect(view.canvas!.groups).toHaveLength(1);
   });
 
-  it('SSE 的进度、结果以及删除期间收到的完成事件不被用户撤销/重做回滚', async () => {
+  it('SSE 进度与结果不被撤销/重做回滚，运行时禁止删除，完成后删除可撤销', async () => {
     let emit: Parameters<typeof auth.openAuthEventStream>[1] | undefined;
     vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, onEvent) => {
       emit = onEvent;
@@ -2895,6 +3024,7 @@ describe('App 历史与共享保存快照', () => {
     act(() => view.canvas!.onRedoCanvas?.());
     expect(view.canvas!.nodes[0].data).toMatchObject({ prompt: '用户编辑', runProgress: 60 });
     act(() => view.canvas!.onNodesChange([{ type: 'remove', id: 'empty-one' }]));
+    expect(view.canvas!.nodes.map((node) => node.id)).toContain('empty-one');
     const resultAsset = {
       assetId: 'synthetic-result',
       version: 1,
@@ -2912,6 +3042,8 @@ describe('App 历史与共享保存快照', () => {
         }),
       ),
     );
+    act(() => view.canvas!.onNodesChange([{ type: 'remove', id: 'empty-one' }]));
+    expect(view.canvas!.nodes.map((node) => node.id)).not.toContain('empty-one');
     act(() => view.canvas!.onUndoCanvas?.());
     expect(view.canvas!.nodes[0].data).toMatchObject({
       prompt: '用户编辑',

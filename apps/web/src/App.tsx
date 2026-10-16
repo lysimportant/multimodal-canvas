@@ -7,7 +7,7 @@ import { CanvasHistory } from './canvas-history';
 import { arrangeCanvasNodes } from './canvas-auto-arrange';
 import './workspace/canvas-arrange-button.css';
 import { MobileWorkspacePanel, useMobileWorkspace } from './workspace/MobileWorkspacePanel';
-import { CanvasPersistence, type CanvasSnapshot } from './canvas-persistence';
+import { CanvasPersistence, sameCanvasContent, type CanvasSnapshot } from './canvas-persistence';
 import { Alert, App as AntdApp, ConfigProvider, Dropdown, Modal, Typography } from 'antd';
 import { Input as UiInput, Button as UiButton } from '@multimodal-canvas/ui';
 import {
@@ -958,6 +958,23 @@ function WorkspaceApp({
     [],
   );
 
+  /** 移除节点前读取实时状态，防止清空、历史和底层事件绕过删除保护。 */
+  const canRemoveNodes = useCallback(
+    (nodeIds: ReadonlySet<string>, action: string) => {
+      if (nodeIds.size === 0) return true;
+      const blocked = nodesRef.current.filter(
+        (node) => nodeIds.has(node.id) && isNodeBusy(node.id),
+      );
+      if (blocked.length === 0) return true;
+      setNotice({
+        kind: 'error',
+        message: `${blocked.map((node) => `「${node.data.label || node.id}」`).join('、')}正在运行或保存，暂不能${action}。`,
+      });
+      return false;
+    },
+    [isNodeBusy, setNotice],
+  );
+
   useEffect(() => {
     runPollingLifecycleRef.current.active = false;
     const lifecycle: RunPollingLifecycle = { active: true };
@@ -1092,6 +1109,19 @@ function WorkspaceApp({
   /** 撤销用户编辑，运行状态从当前会话合并而非从历史回滚。 */
   const undoCanvas = useCallback(() => {
     const previous = currentCanvasSnapshot();
+    const target = [...historyRef.current.past]
+      .reverse()
+      .find((snapshot) => !sameCanvasContent(snapshot, previous));
+    if (target) {
+      const retained = new Set(target.nodes.map((node) => node.id));
+      if (
+        !canRemoveNodes(
+          new Set(previous.nodes.filter((node) => !retained.has(node.id)).map((node) => node.id)),
+          '撤销此操作',
+        )
+      )
+        return;
+    }
     const next = historyRef.current.undo(previous, runRecordsRef.current);
     if (!next) return;
     const nextIds = new Set(next.nodes.map((node) => node.id));
@@ -1107,11 +1137,28 @@ function WorkspaceApp({
       count: changedNodes.length,
     });
     applyHistorySnapshot(next);
-  }, [applyHistorySnapshot, authUser?.id, currentCanvasSnapshot, initialProject.id]);
+  }, [
+    applyHistorySnapshot,
+    authUser?.id,
+    canRemoveNodes,
+    currentCanvasSnapshot,
+    initialProject.id,
+  ]);
 
   /** 重做布局与配置，仍保留异步更新后的最新运行展示。 */
   const redoCanvas = useCallback(() => {
     const previous = currentCanvasSnapshot();
+    const target = historyRef.current.future.at(-1);
+    if (target) {
+      const retained = new Set(target.nodes.map((node) => node.id));
+      if (
+        !canRemoveNodes(
+          new Set(previous.nodes.filter((node) => !retained.has(node.id)).map((node) => node.id)),
+          '重做此操作',
+        )
+      )
+        return;
+    }
     const next = historyRef.current.redo(previous, runRecordsRef.current);
     if (!next) return;
     const nextIds = new Set(next.nodes.map((node) => node.id));
@@ -1127,7 +1174,13 @@ function WorkspaceApp({
       count: changedNodes.length,
     });
     applyHistorySnapshot(next);
-  }, [applyHistorySnapshot, authUser?.id, currentCanvasSnapshot, initialProject.id]);
+  }, [
+    applyHistorySnapshot,
+    authUser?.id,
+    canRemoveNodes,
+    currentCanvasSnapshot,
+    initialProject.id,
+  ]);
 
   /**
    * 清空当前画布中的节点、连线与组。
@@ -1138,6 +1191,9 @@ function WorkspaceApp({
    */
   const clearCanvas = useCallback(async () => {
     if (clearActionPendingRef.current) return;
+    const canClear = () =>
+      canRemoveNodes(new Set(nodesRef.current.map((node) => node.id)), '清空画布');
+    if (!canClear()) return;
     const lifecycle = runPollingLifecycleRef.current;
     /** 对比实际对象标识与在途任务，而非只比较数量，避免异步等待后误用旧范围。 */
     const currentScope = () => {
@@ -1176,7 +1232,7 @@ function WorkspaceApp({
         if (scope.empty) return;
         const confirmed = await modal.confirm({
           title: '清空画布',
-          content: `${changed ? '画布状态已变化，请确认更新后的范围。' : ''}确定清空当前画布吗？将移除${scope.description}。当前有 ${scope.activeRuns} 个在途任务，清空后仍会继续执行，结果保留在资源库。画布资源不会删除，且可以通过撤销恢复。`,
+          content: `${changed ? '画布状态已变化，请确认更新后的范围。' : ''}确定清空当前画布吗？将移除${scope.description}。运行或保存中的节点不能清空。当前有 ${scope.activeRuns} 个在途任务，运行记录和资源库中的结果会保留。画布资源不会删除，且可以通过撤销恢复。`,
           okText: '确认清空',
           cancelText: '取消',
           cancelButtonProps: { autoInsertSpace: false },
@@ -1184,6 +1240,7 @@ function WorkspaceApp({
           mask: { closable: false },
         });
         if (!confirmed || !lifecycle.active) return;
+        if (!canClear()) return;
         if (currentScope().signature === scope.signature) break;
         changed = true;
       }
@@ -1213,7 +1270,7 @@ function WorkspaceApp({
     } finally {
       clearActionPendingRef.current = false;
     }
-  }, [authUser?.id, initialProject.id, modal, rememberHistory, setEdges, setNodes]);
+  }, [authUser?.id, canRemoveNodes, initialProject.id, modal, rememberHistory, setEdges, setNodes]);
 
   /**
    * 只清理内容为空的提示词节点。
@@ -1521,6 +1578,27 @@ function WorkspaceApp({
 
   const handleNodesChange: OnNodesChange<AssetFlowNode> = useCallback(
     (changes) => {
+      // React Flow 的 remove 和换身份 replace 也可能绕过菜单与键盘删除入口。
+      const removals = new Set(
+        changes
+          .filter(
+            (change) =>
+              change.type === 'remove' ||
+              (change.type === 'replace' && change.item.id !== change.id),
+          )
+          .map((change) => ('id' in change ? change.id : '')),
+      );
+      if (!canRemoveNodes(removals, '删除')) {
+        changes = changes.filter(
+          (change) =>
+            !(
+              (change.type === 'remove' ||
+                (change.type === 'replace' && change.item.id !== change.id)) &&
+              isNodeBusy(change.id)
+            ),
+        );
+      }
+      if (changes.length === 0) return;
       if (changes.some((change) => change.type === 'select')) {
         const next = applyNodeChanges(changes, nodesRef.current);
         const selected = projectGenerationBatches(next, []).nodes.filter(
@@ -1553,7 +1631,7 @@ function WorkspaceApp({
       }
       applyNodesChange(changes);
     },
-    [applyNodesChange, rememberHistory],
+    [applyNodesChange, canRemoveNodes, isNodeBusy, rememberHistory],
   );
 
   const handleNodeDragStart = useCallback(() => {

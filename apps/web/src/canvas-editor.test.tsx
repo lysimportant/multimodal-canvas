@@ -1326,7 +1326,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     },
   );
 
-  it('批量首份请求等待期间撤销新增节点，不再提交已移除的后续份数', async () => {
+  it('批量首份请求等待期间禁止撤销新增节点，完成后仍可撤销批量创建', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
@@ -1354,17 +1354,20 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(flowNodes()).toHaveLength(3);
     await user.click(screen.getByRole('button', { name: '画布空白' }));
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
-    await waitFor(() => expect(flowNodes()).toHaveLength(1));
+    await screen.findByText(/正在运行或保存，暂不能撤销此操作/);
+    expect(flowNodes()).toHaveLength(3);
     await act(async () => {
       releaseFirst();
     });
-    await screen.findByText(/已完成 1\/3 份.*生成节点已移除/);
-    expect(attempts).toBe(1);
-    expect(nodeRunRequestCounts.size).toBe(1);
-    expect(flowNodes()).toHaveLength(1);
+    await screen.findByText('已完成 3 份生成');
+    expect(attempts).toBe(3);
+    expect([...nodeRunRequestCounts.values()]).toEqual([1, 1, 1]);
+    expect(flowNodes()).toHaveLength(3);
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(flowNodes()).toHaveLength(1));
   });
 
-  it('批量首份请求等待期间删除首节点，保留兄弟节点但停止后续提交', async () => {
+  it('批量首份请求等待期间禁止删除首节点，完成后可正常删除', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     const editor = await fillSelectedPrompt(user, 'Create independent drafts.');
@@ -1393,18 +1396,21 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const root = canvas.nodes.find((node) => node.data.generationBatch?.index === 0)!;
     expect(flowNodes()).toHaveLength(3);
     await user.click(screen.getByRole('button', { name: '删除节点：文字生成节点' }));
-    await waitFor(() => expect(flowNodes()).toHaveLength(2));
+    await screen.findByText(/正在运行或保存，暂不能删除/);
+    expect(flowNodes()).toHaveLength(3);
     await act(async () => {
       releaseFirst();
     });
-    await screen.findByText(/已完成 1\/3 份.*生成节点已移除/);
-    expect(attempts).toBe(1);
-    expect(nodeRunRequestCounts.size).toBe(1);
+    await screen.findByText('已完成 3 份生成');
+    expect(attempts).toBe(3);
+    expect(nodeRunRequestCounts.size).toBe(3);
     expect(nodeRunRequestCounts.get(root.id)).toBe(1);
     expect(
       fetchMock.mock.calls.some(([input]) => String(input).endsWith(`/v1/runs/run_${root.id}_0`)),
     ).toBe(true);
-    expect(flowNodes()).toHaveLength(2);
+    expect(flowNodes()).toHaveLength(3);
+    await user.click(screen.getByRole('button', { name: '删除节点：文字生成节点' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(2));
     expect(findNodeByLabel('文字生成节点')).toBeUndefined();
   });
 
@@ -1711,7 +1717,7 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(screen.getByRole('button', { name: /^组 1/ })).toBeInTheDocument();
   });
 
-  it('清空确认说明在途任务继续执行，迟到完成事件只刷新资源而不复活节点', async () => {
+  it('运行中的节点阻止清空画布，完成后可确认清空且不取消或重发任务', async () => {
     const emitRun = captureRunEvents();
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
@@ -1721,24 +1727,27 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     act(() => emitRun(running));
     await user.hover(screen.getByRole('button', { name: '清空' }));
     await user.click(await screen.findByRole('menuitem', { name: /清空画布/ }));
-    const dialog = await findClearCanvasConfirmation();
-    expect(dialog).toHaveTextContent('当前有 1 个在途任务');
-    expect(dialog).toHaveTextContent('清空后仍会继续执行，结果保留在资源库');
-    await user.click(within(dialog).getByRole('button', { name: '确认清空' }));
-    await waitFor(() => expect(flowNodes()).toHaveLength(0));
-    expect(screen.queryByRole('region', { name: /设置$/ })).not.toBeInTheDocument();
+    await screen.findByText(/正在运行或保存，暂不能清空画布/);
+    expect(screen.queryByRole('dialog', { name: '清空画布' })).not.toBeInTheDocument();
+    expect(flowNodes()).toHaveLength(1);
     const requestsBeforeCompletion = fetchMock.mock.calls.length;
 
     const completed = createRestoredRun(node);
     completed.updatedAt = '2026-08-28T08:00:15.000Z';
     await act(async () => emitRun(completed));
-    await waitFor(() => expect(canvas.nodes).toHaveLength(0));
-    expect(flowNodes()).toHaveLength(0);
+    await screen.findByLabelText('运行成功');
+    expect(flowNodes()).toHaveLength(1);
     expect(
       fetchMock.mock.calls
         .slice(requestsBeforeCompletion)
         .some(([input]) => /\/v1\/assets(?:\?|$)/.test(String(input))),
     ).toBe(true);
+    await user.hover(screen.getByRole('button', { name: '清空' }));
+    await user.click(await screen.findByRole('menuitem', { name: /清空画布/ }));
+    const dialog = await findClearCanvasConfirmation();
+    expect(dialog).toHaveTextContent('运行或保存中的节点不能清空');
+    await user.click(within(dialog).getByRole('button', { name: '确认清空' }));
+    await waitFor(() => expect(flowNodes()).toHaveLength(0));
     expect(nodeRunRequestCounts.size).toBe(0);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/cancel'))).toBe(false);
   });
