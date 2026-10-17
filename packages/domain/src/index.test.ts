@@ -38,6 +38,8 @@ import {
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
   runExecutionBindingSchema,
+  GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
   targetPortRolesForMediaType,
   imageEditCapability,
   imageEditSourceOf,
@@ -57,7 +59,16 @@ describe('request prompt resource contract', () => {
       contract: 'globalstore-model-center-image-v2',
     };
     expect(runExecutionBindingSchema.parse(image)).toEqual(image);
+    expect(image.contract).toBe(GLOBALSTORE_IMAGE_CONTRACT);
+    const video = { ...image, mediaType: 'video', contract: GLOBALSTORE_VIDEO_CONTRACT };
+    expect(runExecutionBindingSchema.parse(video)).toEqual(video);
     expect(runExecutionBindingSchema.safeParse({ ...image, mediaType: 'video' }).success).toBe(
+      false,
+    );
+    expect(runExecutionBindingSchema.safeParse({ ...video, mediaType: 'image' }).success).toBe(
+      false,
+    );
+    expect(runExecutionBindingSchema.safeParse({ ...image, mediaType: 'audio' }).success).toBe(
       false,
     );
     expect(

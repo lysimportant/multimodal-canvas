@@ -117,4 +117,174 @@ describe('GlobalStore 图片异步合同', () => {
     ]);
     await expect(third.provider.execute(third.request)).rejects.toThrow('不是真实受支持图片');
   });
+  it.each([
+    ['seedream-5.0', { size: '2048x2048' }, { model: 'seedream-5.0', size: '2048x2048' }],
+    [
+      'seedream-5.0',
+      { aspectRatio: '16:9', resolution: '3k' },
+      { model: 'seedream-5.0', aspect_ratio: '16:9', resolution: '3K' },
+    ],
+    [
+      'seedream_5.0Pro',
+      { size: '2048x2048' },
+      { model: 'seedream_5.0Pro', aspect_ratio: '1:1', resolution: '2K' },
+    ],
+    ['banana2', { size: '1024x1024' }, { model: 'banana2', size: '1024x1024' }],
+    [
+      'banana_c1',
+      { size: '1024x1024', quality: 'STANDARD' },
+      { model: 'banana_c1', size: '1024x1024', quality: 'standard' },
+    ],
+    [
+      'banana_c2',
+      { size: '2048x2048' },
+      { model: 'banana_c2', aspect_ratio: '1:1', resolution: '2K' },
+    ],
+    [
+      'bananapro',
+      { aspect_ratio: '16:9', resolution: '4k' },
+      { model: 'bananapro', aspect_ratio: '16:9', resolution: '4K' },
+    ],
+    [
+      'gpt-image-2',
+      { size: '1024x1024', quality: 'medium' },
+      { model: 'gpt-image-2', size: '1024x1024', quality: 'medium' },
+    ],
+    [
+      'gpt-image-2.5',
+      { size: '1280x720', imageQuality: 'high' },
+      { model: 'gpt-image-2.5', size: '1280x720', quality: 'high' },
+    ],
+  ])('%s 只发送该型号支持的规范参数', async (modelAlias, parameters, expected) => {
+    const current = setup([
+      task('completed', { result_url: 'https://cdn.example/result.png' }),
+      new Response(png),
+    ]);
+    current.request.snapshot = {
+      ...snapshot,
+      modelAlias,
+      parameters,
+    } as unknown as RunSnapshot;
+    await current.provider.execute(current.request);
+    const body = JSON.parse(String(current.fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body).toMatchObject(expected);
+    expect(body).not.toHaveProperty('aspectRatio');
+    expect(body).not.toHaveProperty('imageQuality');
+    expect(body).not.toHaveProperty('image_size');
+  });
+
+  it('拒绝模型不支持的参数、枚举和互斥组合', async () => {
+    const invalidCases = [
+      ['seedream-5.0', { size: '2048x2048', aspectRatio: '1:1' }, '不能同时设置'],
+      ['seedream_5.0Pro', { size: '2048x2048', aspectRatio: '1:1' }, '不能同时设置'],
+      ['seedream-5.0', { aspect_ratio: 'auto' }, '不支持该 aspect_ratio'],
+      ['seedream-5.0', { resolution: '1k' }, '不支持该 resolution'],
+      ['banana_c1', { quality: 'high' }, '不支持该 quality'],
+      ['banana_c1', { size: '1024x1024', aspectRatio: '1:1' }, '不能同时设置'],
+      ['banana_c2', { size: '1024x1024', aspectRatio: '1:1' }, '不能同时设置'],
+      ['gpt-image-2', { aspectRatio: '1:1', resolution: '1K' }, '必须提供文档列出的 size'],
+      ['gpt-image-2', { size: '1024x512' }, '只支持文档列出的 size'],
+      ['gpt-image-2.5', { size: '2048x1024' }, '只支持文档列出的 size'],
+      ['unlisted-image-model', { size: '1024x1024' }, '合同尚未核验'],
+    ] as const;
+
+    for (const [modelAlias, parameters, message] of invalidCases) {
+      const current = setup([]);
+      current.request.snapshot = {
+        ...snapshot,
+        modelAlias,
+        parameters,
+      } as unknown as RunSnapshot;
+      await expect(current.provider.execute(current.request)).rejects.toThrow(message);
+      expect(current.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
+  it('按型号文档限制参考图数量并以文档大小写发送模型 ID', async () => {
+    for (const [modelAlias, limit] of [
+      ['seedream_5.0Pro', 10],
+      ['banana2', 14],
+      ['banana_c1', 14],
+      ['banana_c2', 6],
+      ['bananapro', 14],
+      ['gpt-image-2', 14],
+      ['gpt-image-2.5', 14],
+    ] as const) {
+      const inputs = Array.from({ length: limit }, (_, index) => ({
+        nodeId: `ref-${index}`,
+        role: 'referenceImage',
+        sortOrder: index,
+        snapshot: {
+          id: `ref-${index}`,
+          data: {
+            mediaType: 'image',
+            label: `ref-${index}`,
+            contentUrl: `https://ref-${index}.example/image.png`,
+          },
+        },
+      }));
+      const current = setup([
+        task('completed', { result_url: 'https://cdn.example/result.png' }),
+        new Response(png),
+      ]);
+      current.request.snapshot = {
+        ...snapshot,
+        modelAlias,
+        inputs,
+        parameters: modelAlias.startsWith('gpt-image') ? { size: '1024x1024' } : {},
+      } as unknown as RunSnapshot;
+      await current.provider.execute(current.request);
+      const body = JSON.parse(String(current.fetchImpl.mock.calls[0]?.[1]?.body));
+      expect(body.model).toBe(modelAlias);
+      expect(body.reference_images).toHaveLength(limit);
+
+      const overLimit = setup([]);
+      overLimit.request.snapshot = {
+        ...current.request.snapshot,
+        inputs: [...inputs, { ...inputs[0]!, nodeId: 'over-limit', sortOrder: limit }],
+      } as unknown as RunSnapshot;
+      await expect(overLimit.provider.execute(overLimit.request)).rejects.toThrow(
+        `${limit} 张参考图`,
+      );
+      expect(overLimit.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ['gpt-image-2', '2048x1152', '2816x1584'],
+    ['gpt-image-2.5', '1024x576', '1280x720'],
+  ])('将画布像素尺寸映射为 %s 文档列出的固定 size', async (modelAlias, size, expectedSize) => {
+    const current = setup([
+      task('completed', { result_url: 'https://cdn.example/result.png' }),
+      new Response(png),
+    ]);
+    current.request.snapshot = {
+      ...snapshot,
+      modelAlias,
+      parameters: { size },
+    } as unknown as RunSnapshot;
+
+    await current.provider.execute(current.request);
+
+    const body = JSON.parse(String(current.fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.size).toBe(expectedSize);
+    expect(body).not.toHaveProperty('aspect_ratio');
+    expect(body).not.toHaveProperty('resolution');
+  });
+
+  it('拒绝零尺寸或无法映射到文档比例的 GPT 固定尺寸', async () => {
+    for (const [modelAlias, size] of [
+      ['seedream-5.0', '0x1024'],
+      ['gpt-image-2', '1024x512'],
+    ]) {
+      const current = setup([]);
+      current.request.snapshot = {
+        ...snapshot,
+        modelAlias,
+        parameters: { size },
+      } as unknown as RunSnapshot;
+      await expect(current.provider.execute(current.request)).rejects.toThrow();
+      expect(current.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
 });

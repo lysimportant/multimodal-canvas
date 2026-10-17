@@ -142,6 +142,9 @@ function CustomApiSection() {
   const [globalStoreBaseUrl, setGlobalStoreBaseUrl] = useState('');
   const [globalStoreApiKey, setGlobalStoreApiKey] = useState('');
   const [globalStoreModelId, setGlobalStoreModelId] = useState('');
+  const [globalStoreModelMediaType, setGlobalStoreModelMediaType] = useState<'image' | 'video'>(
+    'image',
+  );
   const [globalStoreBusy, setGlobalStoreBusy] = useState(false);
   const [globalStoreStatus, setGlobalStoreStatus] = useState<{
     error: boolean;
@@ -221,13 +224,17 @@ function CustomApiSection() {
     setGlobalStoreBusy(true);
     setGlobalStoreStatus(null);
     try {
-      const ids = [
-        ...new Set([...(globalStoreQuery.data?.models ?? []).map((model) => model.id), id]),
-      ];
+      const models = (globalStoreQuery.data?.models ?? []).flatMap((model) =>
+        model.mediaTypes.flatMap((mediaType) =>
+          mediaType === 'image' || mediaType === 'video' ? [{ id: model.id, mediaType }] : [],
+        ),
+      );
+      if (!models.some((model) => model.id === id && model.mediaType === globalStoreModelMediaType))
+        models.push({ id, mediaType: globalStoreModelMediaType });
       const result = await saveGlobalStoreConfiguration({
         baseUrl: globalStoreBaseUrl.trim(),
         apiKey: globalStoreApiKey,
-        models: ids.map((id) => ({ id, mediaType: 'image' })),
+        models,
       });
       setGlobalStoreApiKey('');
       setGlobalStoreModelId('');
@@ -236,7 +243,10 @@ function CustomApiSection() {
         result,
       );
       await queryClient.invalidateQueries({ queryKey: modelCatalogQueryKey });
-      setGlobalStoreStatus({ error: false, message: '已保存，图片模型已加入画布目录' });
+      setGlobalStoreStatus({
+        error: false,
+        message: `已保存，${globalStoreModelMediaType === 'video' ? '视频' : '图片'}模型已加入画布目录`,
+      });
     } catch (error) {
       setGlobalStoreStatus({
         error: true,
@@ -359,8 +369,8 @@ function CustomApiSection() {
         <div className="settings-section-heading">
           <h3 id="globalstore-model-center-title">GlobalStore Model Center</h3>
           <p className="settings-status">
-            Model Center 没有标准 <code>/v1/models</code> 目录接口，请手工登记文档中的精确模型
-            ID。目前仅支持图片模型；密钥提交后由服务端保存，不写入浏览器存储。
+            Model Center 没有标准 <code>/v1/models</code> 目录接口，请手工登记文档中的精确模型 ID
+            和媒体类型；密钥提交后由服务端保存，不写入浏览器存储。
           </p>
         </div>
         <label className="settings-field">
@@ -398,7 +408,19 @@ function CustomApiSection() {
               }}
             />
           </label>
-          <p className="settings-status">媒体类型：图片</p>
+          <label className="settings-field">
+            <span>媒体类型</span>
+            <Select
+              aria-label="GlobalStore 模型媒体类型"
+              value={globalStoreModelMediaType}
+              onChange={(value: 'image' | 'video') => setGlobalStoreModelMediaType(value)}
+              options={[
+                { value: 'image', label: '图片' },
+                { value: 'video', label: '视频' },
+              ]}
+              virtual={false}
+            />
+          </label>
         </div>
         <Button
           type="button"
@@ -422,7 +444,12 @@ function CustomApiSection() {
         {(globalStoreQuery.data?.models.length ?? 0) > 0 && (
           <ul aria-label="GlobalStore 已登记模型">
             {globalStoreQuery.data?.models.map((model) => (
-              <li key={model.id}>{model.id} · 图片</li>
+              <li key={`${model.id}:${model.mediaTypes.join(',')}`}>
+                {model.id} ·{' '}
+                {model.mediaTypes
+                  .map((type) => (type === 'video' ? '视频' : type === 'image' ? '图片' : type))
+                  .join('、')}
+              </li>
             ))}
           </ul>
         )}

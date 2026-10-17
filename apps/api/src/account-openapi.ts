@@ -290,10 +290,10 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
     },
     '/v1/account/newapi': { get: operation('读取本人账号和全部纳入分组状态；不含 Key 或尾号') },
     '/v1/account/globalstore/models': {
-      get: operation('读取本人最新 GlobalStore Model Center 图片目录及地址；不返回 Key'),
+      get: operation('读取本人最新 GlobalStore Model Center 图片/视频目录及地址；不返回 Key'),
       post: {
         ...operation(
-          '加密保存本人 GlobalStore 图片凭据和精确模型目录；返回 credentialId 与统一模型目录，保留历史任务凭据',
+          '加密保存本人 GlobalStore 图片/视频凭据和精确模型目录；返回 credentialId 与统一模型目录，保留历史任务凭据',
         ),
         requestBody: body(
           {
@@ -310,7 +310,7 @@ export function accountOpenApiPaths(user: unknown, asset: unknown) {
               items: object(
                 {
                   id: { type: 'string', minLength: 1, maxLength: 200 },
-                  mediaType: { type: 'string', const: 'image' },
+                  mediaType: { type: 'string', enum: ['image', 'video'] },
                 },
                 ['id', 'mediaType'],
               ),

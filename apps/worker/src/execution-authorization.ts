@@ -1,9 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
-import {
-  GLOBALSTORE_IMAGE_CONTRACT,
-  type RunExecutionBinding,
-  type RunSnapshot,
-} from '@multimodal-canvas/domain';
+import { type RunExecutionBinding, type RunSnapshot } from '@multimodal-canvas/domain';
 import { verifyNewApiExecutionAuthority } from '@multimodal-canvas/providers';
 import { createCredentialEncryptionKeyringFromEnvironment } from '@multimodal-canvas/credential-crypto';
 import {
@@ -72,11 +68,12 @@ export class PrismaWorkerExecutionAuthorization implements WorkerExecutionAuthor
     }
     if (frozen.provider === 'globalstore') {
       const catalog = credential.modelCatalog;
+      assertExecutionBindingCurrent(frozen, {
+        ...frozen,
+        credentialVersion: credential.version,
+      });
       if (
         credential.provider !== 'globalstore' ||
-        frozen.authority ||
-        frozen.mediaType !== 'image' ||
-        frozen.contract !== GLOBALSTORE_IMAGE_CONTRACT ||
         !Array.isArray(catalog) ||
         !catalog.some(
           (entry) =>
@@ -84,10 +81,10 @@ export class PrismaWorkerExecutionAuthorization implements WorkerExecutionAuthor
             typeof entry === 'object' &&
             !Array.isArray(entry) &&
             entry.id === frozen.modelAlias &&
-            entry.mediaType === 'image',
+            entry.mediaType === frozen.mediaType,
         )
       ) {
-        throw new ExecutionError('binding_changed', 'GlobalStore 凭据、模型或图片协议已变化');
+        throw new ExecutionError('binding_changed', 'GlobalStore 凭据或模型目录已变化');
       }
       return;
     }

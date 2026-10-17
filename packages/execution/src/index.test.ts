@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RunJobData, RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
+  type RunExecutionBinding,
+  type RunJobData,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 import {
   ExecutionError,
   PrismaExecutionService,
@@ -58,6 +64,26 @@ function snapshot(): RunSnapshot {
   };
 }
 
+function globalstoreSnapshot(
+  mediaType: RunExecutionBinding['mediaType'],
+  contract: string,
+  withAuthority = false,
+): RunSnapshot {
+  const value = snapshot();
+  value.nodes[0]!.type = mediaType;
+  value.nodes[0]!.data.mediaType = mediaType;
+  value.executionBindings!.target = {
+    credentialId: '22222222-2222-4222-a222-222222222222',
+    credentialVersion: 2,
+    modelAlias: 'model-1',
+    mediaType,
+    provider: 'globalstore',
+    contract,
+    ...(withAuthority ? { authority } : {}),
+  };
+  return value;
+}
+
 describe('中性执行合同', () => {
   it('运行 ID 映射与 billing 无关且保持稳定', () => {
     expect(executionDatabaseRunId('run_example')).toBe('349a9890-3d1e-472e-a0b1-ec5298591f94');
@@ -91,10 +117,35 @@ describe('中性执行合同', () => {
       }),
     ).toThrowError(/权限修订已变化/);
   });
+
+  it('仅接受与 GlobalStore 媒体类型对应的合同，图片和视频都有效', () => {
+    for (const [mediaType, contract] of [
+      ['image', GLOBALSTORE_IMAGE_CONTRACT],
+      ['video', GLOBALSTORE_VIDEO_CONTRACT],
+    ] as const) {
+      const value = globalstoreSnapshot(mediaType, contract);
+      expect(() => assertExecutionBindings(value)).not.toThrow();
+      expect(() =>
+        assertExecutionBindingCurrent(value.executionBindings!.target!, {
+          ...value.executionBindings!.target!,
+        }),
+      ).not.toThrow();
+    }
+
+    for (const value of [
+      globalstoreSnapshot('image', GLOBALSTORE_VIDEO_CONTRACT),
+      globalstoreSnapshot('video', GLOBALSTORE_IMAGE_CONTRACT),
+      globalstoreSnapshot('text', 'newapi-chat-v1'),
+      globalstoreSnapshot('audio', 'newapi-audio-v1'),
+      globalstoreSnapshot('image', GLOBALSTORE_IMAGE_CONTRACT, true),
+    ]) {
+      expect(() => assertExecutionBindings(value)).toThrowError(ExecutionError);
+    }
+  });
 });
 
 describe('PrismaExecutionService', () => {
-  it('GlobalStore 受理在同一事务检查本人凭据、版本和图片目录，且不查询 New API 授权', async () => {
+  it('GlobalStore 受理按冻结媒体类型检查本人凭据、版本和模型目录，且不查询 New API 授权', async () => {
     const f = fakeExecutionClient();
     const service = new PrismaExecutionService(f.client as never);
     let credential: Record<string, unknown> | null = {
@@ -123,7 +174,7 @@ describe('PrismaExecutionService', () => {
       modelAlias: 'model-1',
       mediaType: 'image',
       provider: 'globalstore',
-      contract: 'globalstore-model-center-image-v2',
+      contract: GLOBALSTORE_IMAGE_CONTRACT,
     };
     const input = (runId: string) => ({
       runId,
@@ -140,6 +191,15 @@ describe('PrismaExecutionService', () => {
       queueName: 'runs-test',
     });
     await service.createSubmission(input('gs-valid'));
+    frozen.nodes[0]!.type = 'video';
+    frozen.nodes[0]!.data.mediaType = 'video';
+    frozen.executionBindings!.target = {
+      ...frozen.executionBindings!.target!,
+      mediaType: 'video',
+      contract: GLOBALSTORE_VIDEO_CONTRACT,
+    };
+    credential = { ...credential, modelCatalog: [{ id: 'model-1', mediaType: 'video' }] };
+    await service.createSubmission(input('gs-video-valid'));
     expect(credentialQuery).toEqual({
       where: {
         id: '22222222-2222-4222-a222-222222222222',
@@ -148,20 +208,27 @@ describe('PrismaExecutionService', () => {
         provider: 'globalstore',
       },
     });
-    expect(f.rows.authorization.size).toBe(1);
+    expect(f.rows.authorization.size).toBe(2);
     credential = { ...credential, version: 3 };
     await expect(service.createSubmission(input('gs-changed'))).rejects.toMatchObject({
       code: 'binding_changed',
     });
-    credential = { ...credential, version: 2, modelCatalog: [{ id: 'other', mediaType: 'image' }] };
+    credential = { ...credential, version: 2, modelCatalog: [{ id: 'other', mediaType: 'video' }] };
     await expect(service.createSubmission(input('gs-unlisted'))).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    credential = {
+      ...credential,
+      modelCatalog: [{ id: 'model-1', mediaType: 'image' }],
+    };
+    await expect(service.createSubmission(input('gs-wrong-media'))).rejects.toMatchObject({
       code: 'binding_changed',
     });
     credential = null;
     await expect(service.createSubmission(input('gs-foreign'))).rejects.toMatchObject({
       code: 'binding_changed',
     });
-    expect(f.rows.authorization.size).toBe(1);
+    expect(f.rows.authorization.size).toBe(2);
   });
 
   it('在一次事务中写入 Run、授权和 outbox，并按原身份幂等恢复', async () => {

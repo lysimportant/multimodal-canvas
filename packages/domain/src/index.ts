@@ -1280,6 +1280,7 @@ export const runCredentialReferenceSchema = z.object({
 
 /** 每个节点的中性执行合同；费用由 New API 处理，不含 Canvas 商品或报价。 */
 export const GLOBALSTORE_IMAGE_CONTRACT = 'globalstore-model-center-image-v2' as const;
+export const GLOBALSTORE_VIDEO_CONTRACT = 'globalstore-model-center-video-v2' as const;
 
 export const runExecutionBindingSchema = z
   .object({
@@ -1296,12 +1297,13 @@ export const runExecutionBindingSchema = z
     if (binding.provider === 'globalstore') {
       if (
         binding.authority ||
-        binding.mediaType !== 'image' ||
-        binding.contract !== GLOBALSTORE_IMAGE_CONTRACT
+        (binding.mediaType === 'image' && binding.contract !== GLOBALSTORE_IMAGE_CONTRACT) ||
+        (binding.mediaType === 'video' && binding.contract !== GLOBALSTORE_VIDEO_CONTRACT) ||
+        (binding.mediaType !== 'image' && binding.mediaType !== 'video')
       )
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'invalid GlobalStore image execution binding',
+          message: 'invalid GlobalStore execution binding',
         });
     } else if (!binding.authority) {
       context.addIssue({

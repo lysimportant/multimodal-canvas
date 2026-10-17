@@ -66,7 +66,7 @@ const input = {
 };
 
 describe('GlobalStore 本人模型登记', () => {
-  it('HTTP入口要求本人会话，只返回安全目录，拒绝未实现的媒体合同', async () => {
+  it('HTTP入口要求本人会话，只返回安全目录，拒绝未支持的媒体类型', async () => {
     const f = fixture();
     const service = new NewApiAccountService({
       prisma: f.prisma,
@@ -118,7 +118,7 @@ describe('GlobalStore 本人模型登记', () => {
         method: 'POST',
         url: '/v1/account/globalstore/models',
         headers: { 'x-synthetic-user': 'owner-1' },
-        payload: { ...input, models: [{ id: 'wan3.0-Prime', mediaType: 'video' }] },
+        payload: { ...input, models: [{ id: 'unsupported', mediaType: 'audio' }] },
       });
       expect(unsupported.statusCode).toBe(400);
       expect(f.rows).toHaveLength(1);
@@ -129,7 +129,10 @@ describe('GlobalStore 本人模型登记', () => {
 
   it('加密保存并返回真实凭据目录；更新保留历史凭据且不返回密钥', async () => {
     const f = fixture();
-    const first = await f.account.save('owner-1', input);
+    const first = await f.account.save('owner-1', {
+      ...input,
+      models: [...input.models, { id: 'wan3.0-Prime', mediaType: 'video' }],
+    });
     const second = await f.account.save('owner-1', {
       ...input,
       apiKey: 'second-synthetic-fixture-key',
@@ -154,6 +157,12 @@ describe('GlobalStore 本人模型登记', () => {
       contract: 'globalstore-model-center-image-v2',
       available: true,
     });
+    expect(first.models[1]).toMatchObject({
+      id: 'wan3.0-Prime',
+      mediaTypes: ['video'],
+      provider: 'globalstore',
+      contract: 'globalstore-model-center-video-v2',
+    });
 
     const service = new NewApiAccountService({
       prisma: f.prisma,
@@ -169,9 +178,33 @@ describe('GlobalStore 本人模型登记', () => {
     await expect(service.models('owner-1', 'image', first.credentialId)).resolves.toEqual([
       expect.objectContaining({ credentialId: first.credentialId }),
     ]);
+    await expect(service.models('owner-1', 'video', first.credentialId)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'wan3.0-Prime',
+        mediaTypes: ['video'],
+        contract: 'globalstore-model-center-video-v2',
+      }),
+    ]);
     await expect(service.models('owner-2', 'image')).rejects.toMatchObject({
       code: 'authorization_revoked',
     });
+  });
+
+  it('旧 JSON 目录未记录媒体类型时仍按图片读取', async () => {
+    const f = fixture();
+    const saved = await f.account.save('owner-1', input);
+    f.rows[0]!.modelCatalog = [{ id: 'legacy-image' }];
+
+    await expect(f.account.get('owner-1')).resolves.toMatchObject({
+      models: [
+        expect.objectContaining({
+          id: 'legacy-image',
+          mediaTypes: ['image'],
+          contract: 'globalstore-model-center-image-v2',
+        }),
+      ],
+    });
+    expect(saved.credentialId).toBe(f.rows[0]!.id);
   });
 
   it.each([
@@ -245,5 +278,55 @@ describe('GlobalStore 本人模型登记', () => {
     await expect(
       newApiRequestUser.run('owner-1', () => settings.getCredentialReference(saved.credentialId)),
     ).resolves.toEqual({ credentialId: saved.credentialId, credentialVersion: 1 });
+  });
+
+  it('按视频目录类型冻结视频合同并拒绝媒体类型不匹配', async () => {
+    const f = fixture();
+    const saved = await f.account.save('owner-1', {
+      ...input,
+      models: [{ id: 'wan3.0-Prime', mediaType: 'video' }],
+    });
+    const service = new NewApiAccountService({
+      prisma: f.prisma,
+      keyring: f.keyring,
+      webUrl: 'http://localhost:5173',
+    } as never);
+    const snapshot: RunSnapshot = {
+      projectId: 'fixture-project',
+      canvasRevision: 1,
+      targetNodeId: 'video',
+      modelAlias: 'wan3.0-Prime',
+      parameters: {},
+      submittedAt: new Date().toISOString(),
+      nodeCredentialReferences: {
+        video: { credentialId: saved.credentialId, credentialVersion: 1 },
+      },
+      nodes: [
+        {
+          id: 'video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: { label: 'Video', mediaType: 'video', mode: 'generate' },
+        },
+      ],
+      edges: [],
+      inputs: [],
+    };
+
+    await expect(service.freeze('owner-1', snapshot)).resolves.toMatchObject({
+      executionBindings: {
+        video: {
+          credentialId: saved.credentialId,
+          credentialVersion: 1,
+          modelAlias: 'wan3.0-Prime',
+          mediaType: 'video',
+          provider: 'globalstore',
+          contract: 'globalstore-model-center-video-v2',
+        },
+      },
+    });
+    await expect(
+      service.freeze('owner-1', { ...snapshot, modelAlias: 'image-only' }),
+    ).rejects.toMatchObject({ code: 'model_unavailable' });
   });
 });

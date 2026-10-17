@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { GLOBALSTORE_IMAGE_CONTRACT, type RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
+  type RunExecutionBinding,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 import { PrismaWorkerExecutionAuthorization } from './execution-authorization';
 
 const userId = '33333333-3333-4333-a333-333333333333';
@@ -226,15 +231,17 @@ describe('PrismaWorkerExecutionAuthorization', () => {
 });
 
 describe('GlobalStore 节点执行授权', () => {
-  function globalstoreFixture() {
+  function globalstoreFixture(mediaType: 'image' | 'video' = 'image') {
     const { frozen, execution } = fixture();
+    frozen.nodes[0]!.type = mediaType;
+    frozen.nodes[0]!.data.mediaType = mediaType;
     frozen.executionBindings!.target = {
       credentialId,
       credentialVersion: 3,
       provider: 'globalstore',
       modelAlias: 'seedream-5.0',
-      mediaType: 'image',
-      contract: GLOBALSTORE_IMAGE_CONTRACT,
+      mediaType,
+      contract: mediaType === 'image' ? GLOBALSTORE_IMAGE_CONTRACT : GLOBALSTORE_VIDEO_CONTRACT,
     };
     const credential = {
       id: credentialId,
@@ -242,7 +249,7 @@ describe('GlobalStore 节点执行授权', () => {
       projectId: null,
       version: 3,
       provider: 'globalstore',
-      modelCatalog: [{ id: 'seedream-5.0', mediaType: 'image' }],
+      modelCatalog: [{ id: 'seedream-5.0', mediaType }],
     };
     const prisma = {
       aiCredential: { findUnique: vi.fn().mockResolvedValue(credential) },
@@ -264,6 +271,13 @@ describe('GlobalStore 节点执行授权', () => {
     expect(f.verifyUpstream).not.toHaveBeenCalled();
   });
 
+  it('验证本人冻结的视频凭据时按 video 目录项核对', async () => {
+    const f = globalstoreFixture('video');
+    await f.authorization.authorizeNode('run-1', 'target', f.frozen);
+    expect(f.prisma.newApiGroupBinding.findFirst).not.toHaveBeenCalled();
+    expect(f.verifyUpstream).not.toHaveBeenCalled();
+  });
+
   it.each([
     { ownerId: 'other-user' },
     { version: 4 },
@@ -273,6 +287,45 @@ describe('GlobalStore 节点执行授权', () => {
   ])('拒绝归属、版本、供应商或目录不匹配 %j', async (change) => {
     const f = globalstoreFixture();
     f.prisma.aiCredential.findUnique.mockResolvedValue({ ...f.credential, ...change });
+    await expect(f.authorization.authorizeNode('run-1', 'target', f.frozen)).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    expect(f.verifyUpstream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { mediaType: 'text', contract: 'newapi-chat-v1' },
+    { mediaType: 'audio', contract: 'newapi-audio-v1' },
+    { mediaType: 'video', contract: GLOBALSTORE_IMAGE_CONTRACT },
+    { mediaType: 'image', contract: GLOBALSTORE_VIDEO_CONTRACT },
+  ] as const)('合同或媒体类型不合法时拒绝授权 %j', async ({ mediaType, contract }) => {
+    const f = globalstoreFixture();
+    f.frozen.nodes[0]!.type = mediaType;
+    f.frozen.nodes[0]!.data.mediaType = mediaType;
+    f.frozen.executionBindings!.target = {
+      ...f.frozen.executionBindings!.target!,
+      mediaType: mediaType as RunExecutionBinding['mediaType'],
+      contract,
+    };
+    await expect(f.authorization.authorizeNode('run-1', 'target', f.frozen)).rejects.toMatchObject({
+      code: 'binding_changed',
+    });
+    expect(f.verifyUpstream).not.toHaveBeenCalled();
+  });
+
+  it('GlobalStore 绑定带有 New API authority 时拒绝授权', async () => {
+    const f = globalstoreFixture();
+    f.frozen.executionBindings!.target!.authority = {
+      issuer: 'https://newapi.example',
+      externalUserId: 'upstream-user',
+      instanceId: 'canvas-instance',
+      grantId: 'grant-1',
+      tokenId: 'token-1',
+      credentialRevision: 'credential-1',
+      group: 'default',
+      permissionRevision: 'revision-1',
+      autoGroups: ['default'],
+    };
     await expect(f.authorization.authorizeNode('run-1', 'target', f.frozen)).rejects.toMatchObject({
       code: 'binding_changed',
     });

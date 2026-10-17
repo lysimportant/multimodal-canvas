@@ -1,4 +1,4 @@
-import { renderPromptDocument } from '@multimodal-canvas/domain';
+import { GLOBALSTORE_IMAGE_CONTRACT, renderPromptDocument } from '@multimodal-canvas/domain';
 import { reportRequestPrompt } from './index.js';
 import type { NewApiProviderRequest, ProviderExecution, ProviderJobUpdate } from './index.js';
 
@@ -12,7 +12,387 @@ export type GlobalStoreImageProviderOptions = {
   fetchImpl?: typeof fetch;
   requireHttps?: boolean;
 };
-const contract = 'globalstore-model-center-image-v2';
+const contract = GLOBALSTORE_IMAGE_CONTRACT;
+
+type GlobalStoreImageSpec = {
+  model: string;
+  referenceImages: number;
+  aspectRatios: readonly string[];
+  resolutions: readonly string[];
+  supportsSize?: boolean;
+  requiredSize?: boolean;
+  sizes?: readonly string[];
+  qualities?: readonly string[];
+};
+
+const seedreamRatios = ['1:1', '3:4', '4:3', '16:9', '9:16', '3:2', '2:3', '21:9'] as const;
+const bananaRatios = [
+  '21:9',
+  '16:9',
+  '3:2',
+  '4:3',
+  '5:4',
+  '1:1',
+  '4:5',
+  '3:4',
+  '2:3',
+  '9:16',
+  'auto',
+  '1:4',
+  '4:1',
+  '1:8',
+  '8:1',
+] as const;
+const bananaC2Ratios = [
+  'auto',
+  '1:1',
+  '16:9',
+  '9:16',
+  '4:3',
+  '3:4',
+  '3:2',
+  '2:3',
+  '5:4',
+  '4:5',
+  '21:9',
+  '1:4',
+  '4:1',
+  '1:8',
+  '8:1',
+] as const;
+const gptRatios = ['1:1', '16:9', '9:16', '3:4', '4:3', '2:3', '3:2'] as const;
+const bananaSizes = [
+  '1584x672',
+  '1376x768',
+  '1264x848',
+  '1200x896',
+  '1152x928',
+  '1024x1024',
+  '928x1152',
+  '896x1200',
+  '848x1264',
+  '768x1376',
+  '3168x1344',
+  '2752x1536',
+  '2528x1696',
+  '2400x1792',
+  '2304x1856',
+  '2048x2048',
+  '1856x2304',
+  '1792x2400',
+  '1696x2528',
+  '1536x2752',
+  '6336x2688',
+  '5504x3072',
+  '5056x3392',
+  '4800x3584',
+  '4608x3712',
+  '4096x4096',
+  '3712x4608',
+  '3584x4800',
+  '3392x5056',
+  '3072x5504',
+] as const;
+const bananaC1Sizes = [
+  '1584x672',
+  '1376x768',
+  '1264x848',
+  '1200x896',
+  '1152x928',
+  '1024x1024',
+  '928x1152',
+  '896x1200',
+  '848x1264',
+  '768x1376',
+  '2880x384',
+  '2048x512',
+  '512x2048',
+  '384x2880',
+] as const;
+const gptSizes = [
+  '1024x1024',
+  '1280x720',
+  '720x1280',
+  '2048x2048',
+  '2816x1584',
+  '1584x2816',
+  '1776x2368',
+  '2368x1776',
+  '1664x2496',
+  '2496x1664',
+  '1152x864',
+  '864x1152',
+  '1248x832',
+  '832x1248',
+] as const;
+const globalStoreImageSpecs = new Map<string, GlobalStoreImageSpec>(
+  [
+    {
+      model: 'seedream-5.0',
+      referenceImages: 10,
+      aspectRatios: seedreamRatios,
+      resolutions: ['2K', '3K', '4K'],
+      supportsSize: true,
+    },
+    {
+      model: 'seedream_5.0Pro',
+      referenceImages: 10,
+      aspectRatios: seedreamRatios,
+      resolutions: ['1K', '2K'],
+    },
+    {
+      model: 'banana2',
+      referenceImages: 14,
+      aspectRatios: bananaRatios,
+      resolutions: ['1k', '2k', '4k'],
+      supportsSize: true,
+      sizes: bananaSizes,
+    },
+    {
+      model: 'banana_c1',
+      referenceImages: 14,
+      aspectRatios: ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16', '4:1', '1:4'],
+      resolutions: ['1K'],
+      supportsSize: true,
+      sizes: bananaC1Sizes,
+      qualities: ['standard'],
+    },
+    {
+      model: 'banana_c2',
+      referenceImages: 6,
+      aspectRatios: bananaC2Ratios,
+      resolutions: ['1K', '2K', '4K'],
+    },
+    {
+      model: 'bananapro',
+      referenceImages: 14,
+      aspectRatios: bananaRatios,
+      resolutions: ['1k', '2k', '4K'],
+      supportsSize: true,
+      sizes: bananaSizes,
+    },
+    {
+      model: 'gpt-image-2',
+      referenceImages: 14,
+      aspectRatios: gptRatios,
+      resolutions: ['1K', '2K'],
+      supportsSize: true,
+      requiredSize: true,
+      sizes: gptSizes,
+      qualities: ['medium', 'high'],
+    },
+    {
+      model: 'gpt-image-2.5',
+      referenceImages: 14,
+      aspectRatios: gptRatios,
+      resolutions: ['1K'],
+      supportsSize: true,
+      requiredSize: true,
+      sizes: gptSizes,
+      qualities: ['low', 'medium', 'high'],
+    },
+  ].map((spec) => [spec.model.toLowerCase(), spec]),
+);
+
+/** 只输出对应型号文档定义的字段，并将画布兼容别名收敛为供应商字段。 */
+function globalStoreImageParameters(
+  spec: GlobalStoreImageSpec,
+  parameters: Readonly<Record<string, unknown>>,
+): Record<string, string> {
+  const output: Record<string, string> = {};
+  let size = readImageParameterAlias(parameters, ['size', 'image_size', 'imageSize'], 'size');
+  let aspectRatio = readImageParameterAlias(
+    parameters,
+    ['aspect_ratio', 'aspectRatio', 'ratio'],
+    'aspect_ratio',
+  );
+  let resolution = readImageParameterAlias(
+    parameters,
+    ['resolution', 'image_resolution', 'imageResolution'],
+    'resolution',
+  );
+  const quality = readImageParameterAlias(
+    parameters,
+    ['quality', 'image_quality', 'imageQuality'],
+    'quality',
+  );
+
+  // Older canvas snapshots sometimes store a complete pixel dimension in `resolution`.
+  if (resolution && /^(\d+)\s*[x×]\s*(\d+)$/i.test(resolution)) {
+    if (size && normalizeImageSize(size) !== normalizeImageSize(resolution))
+      throw new Error('GlobalStore 图片 size 与 resolution 别名冲突');
+    size = size ?? resolution;
+    resolution = undefined;
+  }
+
+  let nativeQuality: string | undefined;
+  if (quality) {
+    const nativeValue = spec.qualities?.find(
+      (value) => value.toLowerCase() === quality.toLowerCase(),
+    );
+    const resolutionValue = spec.resolutions.find(
+      (value) => value.toLowerCase() === quality.toLowerCase(),
+    );
+    if (nativeValue) nativeQuality = nativeValue;
+    else if (resolutionValue) {
+      if (resolution && resolution.toLowerCase() !== resolutionValue.toLowerCase())
+        throw new Error('GlobalStore 图片 quality 与 resolution 参数冲突');
+      resolution = resolutionValue;
+    } else throw new Error(`GlobalStore ${spec.model} 不支持该 quality 参数`);
+  }
+
+  if (size && (aspectRatio || resolution))
+    throw new Error(`GlobalStore ${spec.model} 的 size 与 aspect_ratio/resolution 不能同时设置`);
+
+  if (size) {
+    const normalizedSize = normalizeImageSize(size);
+    const dimensions = imageDimensions(normalizedSize);
+    if (!dimensions) throw new Error(`GlobalStore ${spec.model} 的 size 必须是宽x高像素尺寸`);
+
+    if (spec.supportsSize && (!spec.sizes || spec.sizes.includes(normalizedSize))) {
+      output.size = normalizedSize;
+    } else {
+      if (spec.requiredSize) {
+        const documentedSize = mapToDocumentedImageSize(normalizedSize, spec);
+        if (!documentedSize) throw new Error(`GlobalStore ${spec.model} 只支持文档列出的 size`);
+        output.size = documentedSize;
+        if (nativeQuality) output.quality = nativeQuality;
+        return output;
+      }
+      const derived = imageSizeToRatioAndResolution(normalizedSize, spec);
+      if (!derived)
+        throw new Error(
+          `GlobalStore ${spec.model} 不支持此尺寸，无法映射到 aspect_ratio/resolution`,
+        );
+      output.aspect_ratio = derived.aspectRatio;
+      output.resolution = derived.resolution;
+    }
+  } else {
+    if (spec.requiredSize) throw new Error(`GlobalStore ${spec.model} 必须提供文档列出的 size`);
+    if (aspectRatio) {
+      const canonical = spec.aspectRatios.find(
+        (value) => value.toLowerCase() === aspectRatio!.toLowerCase(),
+      );
+      if (!canonical) throw new Error(`GlobalStore ${spec.model} 不支持该 aspect_ratio`);
+      output.aspect_ratio = canonical;
+    }
+    if (resolution) {
+      const canonical = spec.resolutions.find(
+        (value) => value.toLowerCase() === resolution!.toLowerCase(),
+      );
+      if (!canonical) throw new Error(`GlobalStore ${spec.model} 不支持该 resolution`);
+      output.resolution = canonical;
+    }
+  }
+
+  if (nativeQuality) output.quality = nativeQuality;
+  return output;
+}
+
+function readImageParameterAlias(
+  parameters: Readonly<Record<string, unknown>>,
+  aliases: readonly string[],
+  field: string,
+): string | undefined {
+  const entries = aliases.flatMap((name) => {
+    const value = parameters[name];
+    if (value === undefined || value === null) return [];
+    if (typeof value !== 'string' || !value.trim())
+      throw new Error(`GlobalStore 图片参数 ${field} 必须是非空字符串`);
+    return [value.trim()];
+  });
+  const normalized = entries.map((value) =>
+    field === 'size' ? normalizeImageSize(value).toLowerCase() : value.toLowerCase(),
+  );
+  if (new Set(normalized).size > 1) throw new Error(`GlobalStore 图片 ${field} 兼容别名值冲突`);
+  return entries[0];
+}
+
+function normalizeImageSize(value: string): string {
+  return value.trim().replace(/\s*[x×]\s*/i, 'x');
+}
+
+function imageDimensions(size: string): { width: number; height: number } | undefined {
+  const match = /^(\d+)x(\d+)$/i.exec(size);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0)
+    return undefined;
+  return { width, height };
+}
+
+/** GPT Image has a fixed size list. Convert Canvas's normalized sizes to the closest listed
+ * dimensions only when their ratio and documented resolution are both supported. */
+function mapToDocumentedImageSize(size: string, spec: GlobalStoreImageSpec): string | undefined {
+  if (!spec.sizes) return undefined;
+  const target = imageDimensions(size);
+  const derived = imageSizeToRatioAndResolution(size, spec);
+  if (!target || !derived) return undefined;
+  const targetRatio = target.width / target.height;
+  const targetLongEdge = Math.max(target.width, target.height);
+  return spec.sizes
+    .flatMap((candidate) => {
+      const dimensions = imageDimensions(candidate);
+      if (!dimensions) return [];
+      const candidateRatio = dimensions.width / dimensions.height;
+      const ratioError = Math.abs(targetRatio - candidateRatio) / candidateRatio;
+      return {
+        candidate,
+        ratioError,
+        scaleError: Math.abs(
+          Math.log(Math.max(dimensions.width, dimensions.height) / targetLongEdge),
+        ),
+      };
+    })
+    .filter((candidate) => candidate.ratioError <= 0.01)
+    .sort((left, right) => left.scaleError - right.scaleError)[0]?.candidate;
+}
+
+function imageSizeToRatioAndResolution(
+  size: string,
+  spec: GlobalStoreImageSpec,
+): { aspectRatio: string; resolution: string } | undefined {
+  const dimensions = imageDimensions(size);
+  if (!dimensions) return undefined;
+  const { width, height } = dimensions;
+  const longEdge = Math.max(width, height);
+
+  const ratio = width / height;
+  const aspectRatio = spec.aspectRatios
+    .map((value) => {
+      const [horizontal, vertical] = value.split(':').map(Number);
+      if (!horizontal || !vertical) return undefined;
+      const documentedRatio = horizontal / vertical;
+      return {
+        value,
+        error: Math.abs(ratio - documentedRatio) / documentedRatio,
+      };
+    })
+    .filter((candidate): candidate is { value: string; error: number } => Boolean(candidate))
+    .sort((left, right) => left.error - right.error)[0];
+  if (!aspectRatio || aspectRatio.error > 0.01) return undefined;
+
+  const resolutionLongEdges: Readonly<Record<string, readonly number[]>> = {
+    '1k': [1024],
+    '2k': [2048],
+    '3k': [3072],
+    '4k': [3840, 4096],
+  };
+  const resolution = spec.resolutions
+    .flatMap((value) => {
+      const documentedLongEdges = resolutionLongEdges[value.toLowerCase()] ?? [];
+      return documentedLongEdges.flatMap((documentedLongEdge) =>
+        documentedLongEdge
+          ? [{ value, error: Math.abs(longEdge - documentedLongEdge) / documentedLongEdge }]
+          : [],
+      );
+    })
+    .filter((candidate): candidate is { value: string; error: number } => Boolean(candidate))
+    .sort((left, right) => left.error - right.error)[0];
+  if (!resolution || resolution.error > 0.1) return undefined;
+  return { aspectRatio: aspectRatio.value, resolution: resolution.value };
+}
 
 export function normalizeGlobalStoreBaseUrl(value: string, requireHttps = true): string {
   const url = new URL(value);
@@ -50,6 +430,8 @@ export class GlobalStoreImageProvider {
     const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
     if (!target || target.data.mediaType !== 'image')
       throw new Error('GlobalStore 仅支持图片生成节点');
+    const spec = globalStoreImageSpecs.get(snapshot.modelAlias.toLowerCase());
+    if (!spec) throw new Error('GlobalStore 图片模型合同尚未核验，请选择官方文档已列出的型号');
     const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 180_000);
     const pollingSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
     const check = () => pollingSignal.throwIfAborted();
@@ -141,15 +523,15 @@ export class GlobalStoreImageProvider {
           referenceImages.push(url.toString());
         } else throw new Error('GlobalStore 不支持此输入，请检查参考图与文本连接');
       }
-      if (referenceImages.length > 10) throw new Error('GlobalStore 最多支持 10 张参考图');
+      if (referenceImages.length > spec.referenceImages)
+        throw new Error(`GlobalStore ${spec.model} 最多支持 ${spec.referenceImages} 张参考图`);
       const sentPrompt = [prompt, ...textInputs].join('\n');
       const body: Record<string, unknown> = {
-        model: snapshot.modelAlias,
+        model: spec.model,
         prompt: sentPrompt,
         ...(referenceImages.length ? { reference_images: referenceImages } : {}),
       };
-      for (const name of ['aspect_ratio', 'resolution', 'size'])
-        if (snapshot.parameters[name] !== undefined) body[name] = snapshot.parameters[name];
+      Object.assign(body, globalStoreImageParameters(spec, snapshot.parameters));
       await reportRequestPrompt({
         ...request,
         provider: 'globalstore',

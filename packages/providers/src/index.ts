@@ -43,6 +43,7 @@ import {
 export type ProviderName = 'mock' | 'newapi' | 'globalstore';
 export { GlobalStoreImageProvider, normalizeGlobalStoreBaseUrl } from './globalstore-image.js';
 export type { GlobalStoreImageProviderOptions } from './globalstore-image.js';
+export { GlobalStoreVideoProvider } from './globalstore-video.js';
 export { verifyNewApiExecutionAuthority } from './newapi-authority';
 
 /** 服务端冻结权限按 New API 受理合同传递；上游在预扣与供应商 POST 前比对。 */

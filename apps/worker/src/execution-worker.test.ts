@@ -3,6 +3,7 @@ import { UnrecoverableError } from 'bullmq';
 
 import {
   GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
   type ProviderJob,
   type RunJobData,
   type RunSnapshot,
@@ -368,6 +369,139 @@ describe('GlobalStore 图片 Worker', () => {
     createRunWorker({ ...f.options, execution: singleSendAuthorization().execution });
     await expect(queueState.processor!(f.job)).rejects.toThrow('provider differs');
     expect(f.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('GlobalStore 视频 Worker', () => {
+  function globalstoreVideoSnapshot(): RunSnapshot {
+    const frozen = snapshot('video', true);
+    frozen.modelAlias = 'sd_2.0_special';
+    frozen.parameters = {
+      duration: 8,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+      seed: 42,
+      generate_audio: false,
+    };
+    frozen.nodes[0]!.data.prompt = 'A synthetic video prompt';
+    frozen.executionBindings!.target = {
+      credentialId: frozen.credentialId!,
+      credentialVersion: frozen.credentialVersion!,
+      provider: 'globalstore',
+      modelAlias: frozen.modelAlias,
+      mediaType: 'video',
+      contract: GLOBALSTORE_VIDEO_CONTRACT,
+    };
+    return frozen;
+  }
+
+  function useBuiltInGlobalStoreVideoProvider(f: ReturnType<typeof fixture>) {
+    delete f.options.provider;
+    delete f.options.videoProvider;
+    f.options.persistence!.getProviderCredentials = async () => ({
+      baseUrl: 'https://provider.example',
+      apiKey: 'synthetic-test-key',
+      provider: 'globalstore',
+    });
+  }
+
+  it('创建请求按文档发送 duration（没有 seconds）并归档结果 URL', async () => {
+    const f = fixture(globalstoreVideoSnapshot());
+    useBuiltInGlobalStoreVideoProvider(f);
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      calls.push({ url: String(input), init });
+      return Response.json({
+        id: 'gs-video-1',
+        object: 'video',
+        status: 'completed',
+        result_url: 'https://cdn.example/result.mp4',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+    const archive = vi.fn(f.options.resultArchiver!);
+    const authorization = singleSendAuthorization();
+    createRunWorker({ ...f.options, resultArchiver: archive, execution: authorization.execution });
+
+    await expect(queueState.processor!(f.job)).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('https://provider.example/kyyReactApiServer/v2/model-center/tasks');
+    expect(calls[0]?.init?.method).toBe('POST');
+    expect(calls[0]?.init?.headers).toMatchObject({
+      Authorization: 'Bearer synthetic-test-key',
+      'Content-Type': 'application/json',
+    });
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body).toMatchObject({
+      model: 'sd_2.0_special',
+      prompt: 'A synthetic video prompt',
+      duration: 8,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+      seed: 42,
+      generate_audio: false,
+    });
+    expect(body).not.toHaveProperty('seconds');
+    expect(f.job.data.providerJob).toMatchObject({
+      provider: 'globalstore',
+      platformJobId: 'gs-video-1',
+      status: 'succeeded',
+      payload: { contract: GLOBALSTORE_VIDEO_CONTRACT, deliveryState: 'archived' },
+    });
+    expect(archive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        output: expect.objectContaining({
+          kind: 'url',
+          mediaType: 'video',
+          url: 'https://cdn.example/result.mp4',
+        }),
+      }),
+    );
+    expect(authorization.status()).toBe('sent');
+    expect(JSON.stringify(f.job.data)).not.toContain('synthetic-test-key');
+    expect(JSON.stringify(f.job.data)).not.toContain('cdn.example');
+  });
+
+  it('只读恢复通过任务 ID 查询，不会重新 POST 创建', async () => {
+    const providerJob: ProviderJob = {
+      ...createProviderJobRecord(
+        '123e4567-e89b-42d3-a456-426614174215',
+        'globalstore',
+        'submitted',
+        20,
+      ),
+      platformJobId: 'gs-video-existing',
+      payload: { contract: GLOBALSTORE_VIDEO_CONTRACT, phase: 'polling' },
+    };
+    const f = fixture(globalstoreVideoSnapshot(), providerJob);
+    f.job.data.retrieveOnly = true;
+    useBuiltInGlobalStoreVideoProvider(f);
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async (input) => {
+        calls.push(String(input));
+        return Response.json({
+          id: 'gs-video-existing',
+          object: 'video',
+          status: 'completed',
+          video_url: 'https://cdn.example/existing.mp4',
+        });
+      }),
+    );
+    createRunWorker({ ...f.options, execution: singleSendAuthorization().execution });
+
+    await expect(queueState.processor!(f.job)).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(calls).toEqual([
+      'https://provider.example/kyyReactApiServer/v2/model-center/tasks/gs-video-existing',
+    ]);
+    expect(f.job.data.providerJob).toMatchObject({
+      provider: 'globalstore',
+      platformJobId: 'gs-video-existing',
+      payload: { contract: GLOBALSTORE_VIDEO_CONTRACT, deliveryState: 'archived' },
+    });
   });
 });
 

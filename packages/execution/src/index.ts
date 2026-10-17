@@ -5,6 +5,7 @@ import {
   runSnapshotFingerprintMaterial,
   runSnapshotSchema,
   GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
   type RunExecutionBinding,
   type RunJobData,
   type RunSnapshot,
@@ -93,6 +94,14 @@ function taskProvider(binding: RunExecutionBinding | undefined): string {
   return binding?.provider === 'globalstore' ? 'globalstore' : 'newapi';
 }
 
+function globalstoreContractForMediaType(
+  mediaType: RunExecutionBinding['mediaType'],
+): string | undefined {
+  if (mediaType === 'image') return GLOBALSTORE_IMAGE_CONTRACT;
+  if (mediaType === 'video') return GLOBALSTORE_VIDEO_CONTRACT;
+  return undefined;
+}
+
 /** 校验新模式逐节点绑定完整且与冻结节点一致。 */
 export function assertExecutionBindings(snapshot: RunSnapshot): void {
   for (const nodeId of executableNodeIds(snapshot)) {
@@ -110,6 +119,12 @@ export function assertExecutionBindings(snapshot: RunSnapshot): void {
     if (binding.authority?.group === '神秘分组') {
       throw new ExecutionError('binding_changed', '排除分组不能进入执行授权');
     }
+    if (binding.provider === 'globalstore') {
+      const expectedContract = globalstoreContractForMediaType(binding.mediaType);
+      if (binding.authority || !expectedContract || binding.contract !== expectedContract) {
+        throw new ExecutionError('binding_changed', 'GlobalStore 合同与媒体类型不一致');
+      }
+    }
   }
 }
 
@@ -125,14 +140,14 @@ export function assertExecutionBindingCurrent(
       frozen.credentialId !== current.credentialId ||
       frozen.credentialVersion !== current.credentialVersion ||
       frozen.modelAlias !== current.modelAlias ||
-      frozen.mediaType !== 'image' ||
-      current.mediaType !== 'image' ||
-      frozen.contract !== GLOBALSTORE_IMAGE_CONTRACT ||
-      current.contract !== GLOBALSTORE_IMAGE_CONTRACT ||
+      frozen.mediaType !== current.mediaType ||
+      !globalstoreContractForMediaType(frozen.mediaType) ||
+      frozen.contract !== globalstoreContractForMediaType(frozen.mediaType) ||
+      current.contract !== globalstoreContractForMediaType(frozen.mediaType) ||
       frozen.authority ||
       current.authority
     )
-      throw new ExecutionError('binding_changed', 'GlobalStore 凭据或图片合同已变化');
+      throw new ExecutionError('binding_changed', 'GlobalStore 凭据或执行合同已变化');
     return;
   }
   if (!frozen.authority || !current.authority)
@@ -269,10 +284,10 @@ export class PrismaExecutionService {
                   typeof entry === 'object' &&
                   !Array.isArray(entry) &&
                   entry.id === binding.modelAlias &&
-                  entry.mediaType === 'image',
+                  entry.mediaType === binding.mediaType,
               )
             )
-              throw new ExecutionError('binding_changed', 'GlobalStore 图片模型不在冻结目录中');
+              throw new ExecutionError('binding_changed', 'GlobalStore 模型不在冻结目录中');
             assertExecutionBindingCurrent(binding, {
               ...binding,
               credentialVersion: credential.version,

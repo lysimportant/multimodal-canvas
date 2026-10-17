@@ -451,7 +451,7 @@ describe('SettingsPanel', () => {
 });
 
 describe('GlobalStore 设置', () => {
-  it('仅保存服务端图片目录，成功后清空密钥且不持久化到浏览器', async () => {
+  it('登记准确图片或视频类型，成功后清空密钥且不持久化到浏览器', async () => {
     const originalFetch = fetchMock.getMockImplementation()!;
     const credentialId = '11111111-1111-4111-8111-111111111111';
     const savedModel = {
@@ -462,14 +462,22 @@ describe('GlobalStore 设置', () => {
       provider: 'globalstore',
       contract: 'globalstore-model-center-image-v2',
     };
+    const savedVideoModel = {
+      id: 'wan3.0-Prime',
+      name: 'wan3.0-Prime',
+      mediaTypes: ['video'],
+      credentialId,
+      provider: 'globalstore',
+      contract: 'globalstore-model-center-video-v2',
+    };
     let savedBody: unknown;
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('/v1/account/globalstore/models')) {
         if (init?.method === 'POST') {
           savedBody = JSON.parse(String(init.body));
-          return response({ credentialId, models: [savedModel] });
+          return response({ credentialId, models: [savedModel, savedVideoModel] });
         }
-        return response({ models: [] });
+        return response({ models: [savedModel] });
       }
       return originalFetch(input, init);
     });
@@ -486,17 +494,25 @@ describe('GlobalStore 设置', () => {
       target: { value: 'synthetic-globalstore-key' },
     });
     fireEvent.change(screen.getByLabelText('GlobalStore 模型 ID'), {
-      target: { value: 'seedream-5.0' },
+      target: { value: 'wan3.0-Prime' },
     });
+    const interaction = userEvent.setup();
+    await interaction.click(screen.getByRole('combobox', { name: 'GlobalStore 模型媒体类型' }));
+    await interaction.click(await screen.findByRole('option', { name: '视频' }));
     fireEvent.click(screen.getByRole('button', { name: '添加 GlobalStore 模型' }));
-    expect(await screen.findByText('已保存，图片模型已加入画布目录')).toBeVisible();
+    expect(await screen.findByText('已保存，视频模型已加入画布目录')).toBeVisible();
     expect(savedBody).toEqual({
       baseUrl: 'https://saas.globalstore.ai/kyyReactApiServer/v2/model-center',
       apiKey: 'synthetic-globalstore-key',
-      models: [{ id: 'seedream-5.0', mediaType: 'image' }],
+      models: [
+        { id: 'seedream-5.0', mediaType: 'image' },
+        { id: 'wan3.0-Prime', mediaType: 'video' },
+      ],
     });
+    expect(await screen.findByText('seedream-5.0 · 图片')).toBeVisible();
+    expect(screen.getByText('wan3.0-Prime · 视频')).toBeVisible();
     expect(screen.getByLabelText('GlobalStore Model Center API Key')).toHaveValue('');
     expect(JSON.stringify(localStorage)).not.toContain('synthetic-globalstore-key');
-    expect(screen.queryByLabelText('GlobalStore 模型媒体类型')).toBeNull();
+    expect(screen.getByLabelText('GlobalStore 模型媒体类型')).toBeVisible();
   });
 });

@@ -26,7 +26,7 @@ export async function fetchGlobalStoreConfiguration(
 export async function saveGlobalStoreConfiguration(input: {
   baseUrl: string;
   apiKey: string;
-  models: Array<{ id: string; mediaType: 'image' }>;
+  models: Array<{ id: string; mediaType: 'image' | 'video' }>;
 }): Promise<GlobalStoreConfiguration> {
   const response = await apiFetch(`${API_BASE_URL}/v1/account/globalstore/models`, {
     method: 'POST',

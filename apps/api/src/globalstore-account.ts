@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { GLOBALSTORE_IMAGE_CONTRACT } from '@multimodal-canvas/domain';
+import { GLOBALSTORE_IMAGE_CONTRACT, GLOBALSTORE_VIDEO_CONTRACT } from '@multimodal-canvas/domain';
 import {
   CredentialEncryptionKeyring,
   normalizeProviderAssetEndpoint,
@@ -20,7 +20,8 @@ export const globalStoreCatalogSchema = z
           .min(1)
           .max(200)
           .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/),
-        mediaType: z.literal('image'),
+        // 旧账号目录只有 id；其历史语义一直是图片模型。
+        mediaType: z.enum(['image', 'video']).default('image'),
       })
       .strict(),
   )
@@ -70,14 +71,19 @@ export function globalStoreModels(credential: AiCredential): ModelCatalogEntry[]
   return catalog.data.map((entry) => ({
     id: entry.id,
     name: entry.id,
-    mediaTypes: ['image'],
+    mediaTypes: [entry.mediaType],
     provider: 'globalstore',
     credentialId: credential.id,
     group: 'GlobalStore Model Center',
-    contract: GLOBALSTORE_IMAGE_CONTRACT,
+    contract: entry.mediaType === 'video' ? GLOBALSTORE_VIDEO_CONTRACT : GLOBALSTORE_IMAGE_CONTRACT,
     available: true,
     capabilities: { mentionMediaTypes: [] },
-    limitations: { note: '支持图片参考连线；暂不支持提示词内素材提及。' },
+    limitations: {
+      note:
+        entry.mediaType === 'image'
+          ? '支持图片参考连线；暂不支持提示词内素材提及。'
+          : '视频生成暂不支持提示词内素材提及。',
+    },
     refreshedAt: credential.updatedAt.toISOString(),
   }));
 }
@@ -130,10 +136,14 @@ export class GlobalStoreAccount {
     if (!parsed.success)
       throw new NewApiAccountError(
         'invalid_globalstore_configuration',
-        '请填写地址、Key 和精确的图片模型 ID',
+        '请填写地址、Key 和精确的图片或视频模型 ID',
       );
     const baseUrl = normalizeGlobalStoreBaseUrl(parsed.data.baseUrl);
-    const models = [...new Map(parsed.data.models.map((entry) => [entry.id, entry])).values()];
+    const models = [
+      ...new Map(
+        parsed.data.models.map((entry) => [`${entry.id}:${entry.mediaType}`, entry]),
+      ).values(),
+    ];
     const credential = await this.prisma.aiCredential.create({
       data: {
         ownerId: userId,

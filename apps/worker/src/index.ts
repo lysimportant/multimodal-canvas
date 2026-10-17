@@ -14,6 +14,7 @@ import {
 } from './result-staging';
 import {
   GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
   requestPromptRecordSchema,
   parseReversePromptOutput,
   createMockPromptOptimizationOutput,
@@ -44,6 +45,7 @@ import {
   NewApiProviderError,
   NewApiVideoProvider,
   GlobalStoreImageProvider,
+  GlobalStoreVideoProvider,
   requestNewApiVideoRefund,
   videoRefundMessage,
   type VideoRefundReason,
@@ -497,11 +499,8 @@ export function createRunWorker(options: {
     }
     const binding = snapshot.executionBindings?.[snapshot.targetNodeId];
     const globalstore = binding?.provider === 'globalstore';
-    if (
-      globalstore &&
-      (video || binding.mediaType !== 'image' || binding.contract !== GLOBALSTORE_IMAGE_CONTRACT)
-    ) {
-      throw new Error('GlobalStore execution requires a frozen image task contract');
+    if (globalstore && !isGlobalStoreNode(snapshot, snapshot.targetNodeId)) {
+      throw new Error('GlobalStore execution requires a frozen image or video task contract');
     }
     if (
       persistedCredentials &&
@@ -515,14 +514,17 @@ export function createRunWorker(options: {
     if (options.provider) return options.provider;
     if (persistedCredentials) {
       if (globalstore) {
-        return new GlobalStoreImageProvider({
+        const providerOptions = {
           baseUrl: persistedCredentials.baseUrl,
           apiKey: persistedCredentials.apiKey,
           timeoutMs: 900_000,
           maxResponseBytes: 50 * 1024 * 1024,
           maxContentBytes: 50 * 1024 * 1024,
           requireHttps: process.env.NODE_ENV === 'production',
-        });
+        };
+        return binding?.mediaType === 'video'
+          ? new GlobalStoreVideoProvider(providerOptions)
+          : new GlobalStoreImageProvider(providerOptions);
       }
       const configuredTimeout =
         await options.persistence?.getProviderTimeoutMs?.(credentialReference);
@@ -1364,14 +1366,13 @@ export function createRunWorker(options: {
           const frozenContract = retainedContract ?? boundContract;
           if (
             initialData.provider === 'newapi' &&
-            (node.data.mediaType === 'video' ||
-              isGlobalStoreImageNode(executionSnapshot, node.id)) &&
+            (node.data.mediaType === 'video' || isGlobalStoreNode(executionSnapshot, node.id)) &&
             canResumeProviderJob(providerJob, { allowTerminalStatus: true }) &&
             providerJob.provider ===
               nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
             (isNewApiVideoContract(frozenContract) ||
-              (isGlobalStoreImageNode(executionSnapshot, node.id) &&
-                frozenContract === GLOBALSTORE_IMAGE_CONTRACT)) &&
+              (isGlobalStoreNode(executionSnapshot, node.id) &&
+                frozenContract === boundContract)) &&
             (!retainedContract || !boundContract || retainedContract === boundContract) &&
             !unrecoverableDeliveryNodes.has(node.id)
           )
@@ -1459,7 +1460,7 @@ export function createRunWorker(options: {
         reason: VideoRefundReason,
       ): Promise<VideoRefundStatus> => {
         if (providerJob?.payload?.refundStatus === 'refunded') return 'refunded';
-        if (isGlobalStoreImageNode(executionSnapshot, nodeId)) return 'not_charged';
+        if (isGlobalStoreNode(executionSnapshot, nodeId)) return 'not_charged';
         if (initialData.provider !== 'newapi') return 'not_charged';
         if (!providerJob?.platformJobId) {
           return providerJob?.payload?.phase === 'submitting' ||
@@ -1787,8 +1788,7 @@ export function createRunWorker(options: {
           // 已提交的视频任务只按已验证的平台 ID 继续查询；原素材水合与可访问性
           // 复核仅服务创建 POST，恢复时重复执行会让已付费任务因素材变化而无法收尾。
           const resumeSubmittedVideo =
-            (node.data.mediaType === 'video' ||
-              isGlobalStoreImageNode(executionSnapshot, node.id)) &&
+            (node.data.mediaType === 'video' || isGlobalStoreNode(executionSnapshot, node.id)) &&
             canResumeProviderJob(existingNodeProviderJob, {
               allowTerminalStatus: retrieveOnlyObserved,
             });
@@ -1827,8 +1827,7 @@ export function createRunWorker(options: {
             }
             const protectVideoSubmission =
               currentData.provider === 'newapi' &&
-              (node.data.mediaType === 'video' ||
-                isGlobalStoreImageNode(executionSnapshot, node.id));
+              (node.data.mediaType === 'video' || isGlobalStoreNode(executionSnapshot, node.id));
             if (protectVideoSubmission) videoSubmissionProtected = true;
             if (!runExecution) return;
             if (!resumeSubmittedVideo && currentData.retryOf) {
@@ -1955,7 +1954,7 @@ export function createRunWorker(options: {
                   if (
                     cancellationSignal.aborted &&
                     node.data.mediaType !== 'video' &&
-                    !isGlobalStoreImageNode(executionSnapshot, node.id)
+                    !isGlobalStoreNode(executionSnapshot, node.id)
                   )
                     return;
                   if (cancellationFinalized) {
@@ -3086,13 +3085,12 @@ function createArchiveKey(
 }
 
 /** 已有平台 ID、创建中的视频回执都表示上游可能已经开始计费，不能再本地取消。 */
-function isGlobalStoreImageNode(snapshot: RunSnapshot, nodeId: string): boolean {
+function isGlobalStoreNode(snapshot: RunSnapshot, nodeId: string): boolean {
   const binding = snapshot.executionBindings?.[nodeId];
-  return (
-    binding?.provider === 'globalstore' &&
-    binding.mediaType === 'image' &&
-    binding.contract === GLOBALSTORE_IMAGE_CONTRACT
-  );
+  if (binding?.provider !== 'globalstore') return false;
+  return binding.mediaType === 'image'
+    ? binding.contract === GLOBALSTORE_IMAGE_CONTRACT
+    : binding.mediaType === 'video' && binding.contract === GLOBALSTORE_VIDEO_CONTRACT;
 }
 
 function nodeProviderName(snapshot: RunSnapshot, nodeId: string, fallback: string): string {
@@ -3106,7 +3104,7 @@ function hasSubmittedAsyncWork(data: RunJobData): boolean {
       .filter(
         (node) =>
           node.data.mode !== 'source' &&
-          (node.data.mediaType === 'video' || isGlobalStoreImageNode(data.snapshot, node.id)),
+          (node.data.mediaType === 'video' || isGlobalStoreNode(data.snapshot, node.id)),
       )
       .map((node) => node.id),
   );
@@ -3132,13 +3130,19 @@ async function executeProviderWithCancellation(
 ): Promise<RunResult | ProviderExecution> {
   // Built-in video GETs abort promptly before submission. Keep an already-started
   // POST alive until its task identity is received; accepted video work is not cancellable.
-  if (awaitVideoSubmission && provider instanceof NewApiVideoProvider) {
+  if (
+    awaitVideoSubmission &&
+    (provider instanceof NewApiVideoProvider || provider instanceof GlobalStoreVideoProvider)
+  ) {
     if (signal.aborted) throw workerCancellationError();
     return provider.execute(request);
   }
   // Keep the submission response attached until its paid task ID is durable.
   // The provider itself honours cancellation before POST and during polling.
-  if (provider instanceof GlobalStoreImageProvider) {
+  if (
+    provider instanceof GlobalStoreImageProvider ||
+    provider instanceof GlobalStoreVideoProvider
+  ) {
     if (signal.aborted) throw workerCancellationError();
     return provider.execute(request);
   }

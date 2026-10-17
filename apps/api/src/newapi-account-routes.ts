@@ -120,7 +120,7 @@ export function registerNewApiAccountRoutes(
     if (!input.success)
       return reply.code(400).send({
         code: 'invalid_globalstore_configuration',
-        error: '请填写有效的地址、Key 和图片模型 ID',
+        error: '请填写有效的地址、Key 和图片或视频模型 ID',
       });
     return service.globalStore.save(owner, input.data);
   });

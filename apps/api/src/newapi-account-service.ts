@@ -5,6 +5,7 @@ import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypt
 import {
   isGeminiChatImageModel,
   GLOBALSTORE_IMAGE_CONTRACT,
+  GLOBALSTORE_VIDEO_CONTRACT,
   runSnapshotSchema,
   type MediaType,
   type NewApiExecutionAuthority,
@@ -797,10 +798,9 @@ export class NewApiAccountService {
           (credential): credential is NonNullable<typeof credential> => Boolean(credential),
         )
       : await this.globalStore.credentials(userId);
-    const externalModels =
-      !mediaType || mediaType === 'image'
-        ? globalStoreCredentials.flatMap((credential) => globalStoreModels(credential))
-        : [];
+    const externalModels = globalStoreCredentials
+      .flatMap((credential) => globalStoreModels(credential))
+      .filter((model) => !mediaType || model.mediaTypes.includes(mediaType));
     if (credentialId && globalStoreCredentials.length > 0) return externalModels;
     let identity: Awaited<ReturnType<NewApiAccountService['identity']>>;
     try {
@@ -928,23 +928,25 @@ export class NewApiAccountService {
       if (globalStoreCredential) {
         const modelAlias =
           nodeId === snapshot.targetNodeId ? snapshot.modelAlias : node.data.modelAlias;
-        if (
-          globalStoreCredential.version !== reference.credentialVersion ||
-          node.data.mediaType !== 'image' ||
-          !globalStoreModels(globalStoreCredential).some((entry) => entry.id === modelAlias)
-        )
+        const model = globalStoreModels(globalStoreCredential).find(
+          (entry) => entry.id === modelAlias && entry.mediaTypes.includes(node.data.mediaType),
+        );
+        if (globalStoreCredential.version !== reference.credentialVersion || !model)
           throw new NewApiAccountError(
             'model_unavailable',
-            'GlobalStore 凭据版本或图片模型不匹配，请重新选择',
+            'GlobalStore 凭据版本或模型媒体类型不匹配，请重新选择',
             409,
           );
         executionBindings[nodeId] = {
           credentialId: reference.credentialId,
           credentialVersion: reference.credentialVersion,
           modelAlias: modelAlias!,
-          mediaType: 'image',
+          mediaType: node.data.mediaType,
           provider: 'globalstore',
-          contract: GLOBALSTORE_IMAGE_CONTRACT,
+          contract:
+            node.data.mediaType === 'video'
+              ? GLOBALSTORE_VIDEO_CONTRACT
+              : GLOBALSTORE_IMAGE_CONTRACT,
         };
         continue;
       }
