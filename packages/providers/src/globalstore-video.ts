@@ -175,6 +175,11 @@ const globalStoreVideoSpecs = new Map<string, GlobalStoreVideoSpec>(
   ].map((spec) => [spec.model.toLowerCase(), spec]),
 );
 
+/** 复用已核验的型号表，供 NewAPI 转发时选择单一 duration 字段；不推断相似别名。 */
+export function isGlobalStoreVideoModel(modelAlias: string): boolean {
+  return globalStoreVideoSpecs.has(modelAlias.toLowerCase());
+}
+
 /** GlobalStore Model Center 的异步视频任务适配器。 */
 export class GlobalStoreVideoProvider {
   private readonly base: string;

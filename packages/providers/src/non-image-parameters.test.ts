@@ -311,6 +311,111 @@ describe('非图片参数的出站字段', () => {
   );
 
   it.each([
+    { duration: 8 },
+    { duration: '8' },
+    { seconds: 8 },
+    { seconds: '8' },
+    { durationSeconds: '8' },
+    { duration: 8, seconds: '8', durationSeconds: 8 },
+    { duration: 8, seconds: '10', durationSeconds: 12 },
+  ])('GlobalStore 经 NewAPI 创建时只发 duration，避免渠道时长冲突 %#', async (parameters) => {
+    const snapshot = snapshotFor('video', parameters, 'sd_2.0_special');
+    const original = structuredClone(snapshot);
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      if (init?.method === 'POST') {
+        const body = requestBody(init);
+        if ('duration' in body && 'seconds' in body) {
+          return Response.json(
+            { error: { code: 'new_api_error', message: 'duration conflicts with seconds' } },
+            { status: 400 },
+          );
+        }
+        return jsonResponse({ id: 'synthetic-task', status: 'queued' });
+      }
+      return jsonResponse({
+        id: 'synthetic-task',
+        status: 'completed',
+        video: { url: 'https://cdn.example/synthetic.mp4' },
+      });
+    });
+    const provider = new NewApiVideoProvider({
+      baseUrl: 'https://newapi.example/v1',
+      apiKey: 'synthetic-parameter-test-key',
+      videoContract: 'newapi-video-v1',
+      pollIntervalMs: 0,
+      maxPollAttempts: 1,
+      fetchImpl,
+    });
+
+    const result = await provider.execute({ snapshot, onProviderJob: vi.fn() });
+
+    expect(requestBody(fetchImpl.mock.calls[0]?.[1])).toEqual({
+      model: 'sd_2.0_special',
+      prompt: 'Describe a calm coastal scene.',
+      duration: 8,
+    });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ['https://newapi.example/v1/videos', 'POST'],
+      ['https://newapi.example/v1/videos/synthetic-task', 'GET'],
+    ]);
+    expect(result.output).toMatchObject({ kind: 'url', url: 'https://cdn.example/synthetic.mp4' });
+    expect(snapshot).toEqual(original);
+  });
+
+  it.each([
+    'sd_2.0_special',
+    'sd_2.0_fast_special',
+    'sd_2.0_mini_special',
+    'sd_2.0_discount',
+    'sd_2.0_fast_discount',
+    'sd_2.0_mini_discount',
+    'sd_2.5_special',
+    'sd_2.5_discount',
+    'seedance_2.0_nsfw_c1',
+    'veo3.1-fast',
+    'wan3.0',
+    'wan3.0-Prime',
+    'grok_video',
+    'grok_1.5',
+    'omni_720P',
+  ])('已知 GlobalStore 型号 %s 不附加 seconds，仍保留扩展字段', async (model) => {
+    const { provider, fetchImpl, onProviderJob } = videoHarness('newapi-video-v1');
+    const duration = model === 'omni_720P' ? 10 : 8;
+    await provider.execute({
+      snapshot: snapshotFor(
+        'video',
+        { duration, aspectRatio: '16:9', videoResolution: '720p', seed: 0, generate_audio: false },
+        model,
+      ),
+      onProviderJob,
+    });
+    expect(requestBody(fetchImpl.mock.calls[0]?.[1])).toEqual({
+      model,
+      prompt: 'Describe a calm coastal scene.',
+      duration,
+      aspect_ratio: '16:9',
+      resolution: '720p',
+      seed: 0,
+      generate_audio: false,
+    });
+  });
+
+  it.each(['sd_2.0_special-custom', 'custom-sd_2.0_special'])(
+    '相似型号 %s 不自动套用 GlobalStore 时长规则',
+    async (model) => {
+      const { provider, fetchImpl, onProviderJob } = videoHarness('newapi-video-v1');
+      await provider.execute({
+        snapshot: snapshotFor('video', { duration: 8 }, model),
+        onProviderJob,
+      });
+      expect(requestBody(fetchImpl.mock.calls[0]?.[1])).toMatchObject({
+        duration: 8,
+        seconds: '8',
+      });
+    },
+  );
+
+  it.each([
     { duration: 8, seconds: '10' },
     { resolution: '720p', videoResolution: '1080p' },
     { size: '1280x720', videoSize: '720x1280' },

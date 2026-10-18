@@ -39,6 +39,7 @@ import {
   type Image2proVideoModelContract,
   type MoonVideoModelContract,
 } from '@multimodal-canvas/domain';
+import { isGlobalStoreVideoModel } from './globalstore-video.js';
 
 export type ProviderName = 'mock' | 'newapi' | 'globalstore';
 export { GlobalStoreImageProvider, normalizeGlobalStoreBaseUrl } from './globalstore-image.js';
@@ -2125,7 +2126,8 @@ function videoPayload(
 
 /**
  * New API OpenAI 视频创建体：路径为 POST /videos。
- * duration 用数字（该网关已验证），seconds 用字符串避免 Go 把数字 seconds 反序列化失败；图生视频 image 为 URL 字符串。
+ * GlobalStore 已知型号只传数字 duration，避免渠道拒绝重复的 seconds；其他型号保留既有映射。
+ * seconds 使用字符串以兼容 Go 请求结构；图生视频 image 为 URL 字符串。
  */
 function openaiVideoPayload(
   snapshot: RunSnapshot,
@@ -2161,7 +2163,8 @@ function openaiVideoPayload(
   }
   const payload = videoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   const duration = payload.duration;
-  if (typeof duration === 'number') payload.seconds = String(duration);
+  if (typeof duration === 'number' && !isGlobalStoreVideoModel(snapshot.modelAlias))
+    payload.seconds = String(duration);
   if (isRecord(payload.image) && nonEmptyString(payload.image.url)) {
     payload.image = payload.image.url.trim();
   }
