@@ -10,6 +10,7 @@ import {
   GripVertical,
   Info,
   LoaderCircle,
+  MoreHorizontal,
   Pencil,
   Power,
   RefreshCw,
@@ -45,6 +46,7 @@ import {
   type ReactNode,
   type ReactElement,
   type CSSProperties,
+  type RefObject,
 } from 'react';
 
 import type { Asset, PortRole, RunStatus, VideoMode } from '@multimodal-canvas/domain';
@@ -58,6 +60,8 @@ import {
 import {
   Button,
   Input,
+  FilePicker,
+  type FilePickerHandle,
   Dialog,
   DialogClose,
   DialogContent,
@@ -78,6 +82,7 @@ import { GenerationBatchViewContext } from './generation-batch-view';
 import { getNodeInfoTimes } from './node-info';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
 import { NodeRunControlStoreContext, NodeStopContext, useNodeRunControl } from './node-run-control';
+import { MobileWorkspacePanel, useMobileWorkspace } from './MobileWorkspacePanel';
 import './asset-node.css';
 
 /** 节点本体把点击修饰键交给画布，避免捕获阶段覆盖 React Flow 的多选。 */
@@ -131,6 +136,112 @@ export const NodePromptContext = createContext<NodePromptHandler | null>(null);
 
 type NodePresentationState = 'empty' | 'running' | 'failed' | 'cancelled' | 'preview' | 'missing';
 
+/** 手机动作已在抽屉中显示名称，不再由触摸触发悬浮说明。 */
+const MobileNodeActionsContext = createContext(false);
+
+/** 桌面保留原悬浮栏，手机只在卡片内放置一个明确的操作入口。 */
+function NodeActionsContainer({
+  mobile,
+  open,
+  onOpenChange,
+  label,
+  controlsRef,
+  style,
+  children,
+}: {
+  mobile: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  label: string;
+  controlsRef: RefObject<HTMLDivElement | null>;
+  style: CSSProperties;
+  children: ReactNode;
+}) {
+  const panelId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(true);
+  useEffect(() => {
+    if (!mobile || !open) return;
+    const frame = requestAnimationFrame(() => {
+      document
+        .getElementById(panelId)
+        ?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [mobile, open, panelId]);
+  if (!mobile) {
+    return (
+      <div
+        ref={controlsRef}
+        className="flow-node-header flow-node-floating-controls"
+        style={style}
+        role="group"
+        aria-label={`节点操作：${label}`}
+        aria-disabled={false}
+      >
+        {children}
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flow-node-mobile-controls nodrag nopan nowheel"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <AntdButton
+        ref={triggerRef}
+        className="flow-node-mobile-trigger"
+        style={style}
+        icon={<MoreHorizontal size={22} aria-hidden="true" />}
+        aria-label={`节点操作：${label}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => {
+          restoreFocus.current = true;
+          onOpenChange(true);
+        }}
+      />
+      <MobileWorkspacePanel
+        mobile
+        open={open}
+        title={`节点操作：${label}`}
+        id={panelId}
+        kind="menu"
+        onClose={() => {
+          restoreFocus.current = true;
+          onOpenChange(false);
+        }}
+        restoreFocusRef={restoreFocus.current ? triggerRef : undefined}
+      >
+        <MobileNodeActionsContext.Provider value>
+          <div
+            className="flow-node-floating-controls flow-node-mobile-actions"
+            role="group"
+            aria-label={`节点操作：${label}`}
+            onClickCapture={(event) => {
+              // 进入画布编辑或外部对话框前收起抽屉；分享和信息仍在当前层级操作。
+              if (
+                (event.target as Element).closest(
+                  '.flow-node-prompt-button, .flow-node-edit-image-button, .flow-node-recreate-video-button, .flow-node-delete-button',
+                ) &&
+                !(event.target as Element).closest('button:disabled')
+              ) {
+                restoreFocus.current = false;
+                onOpenChange(false);
+              }
+            }}
+          >
+            {children}
+          </div>
+        </MobileNodeActionsContext.Provider>
+      </MobileWorkspacePanel>
+    </div>
+  );
+}
+
 /**
  * 悬浮栏图标旁的功能简述，始终与图标一起显示。
  * @param children 简短中文功能名。
@@ -147,6 +258,7 @@ function NodeFloatingHint({
   description: string;
   children: ReactElement<HTMLAttributes<HTMLElement>>;
 }) {
+  const mobile = useContext(MobileNodeActionsContext);
   const [open, setOpen] = useState(false);
 
   /** Modal 会在 effect 内恢复焦点；延后更新说明，避免库的 focus trigger 同步 flush。 */
@@ -157,6 +269,8 @@ function NodeFloatingHint({
       setOpen(element.ownerDocument.activeElement === element);
     });
   };
+
+  if (mobile) return children;
 
   return (
     <Tooltip
@@ -220,6 +334,8 @@ export function AssetNode({
   width,
   height,
 }: NodeProps<AssetFlowNode>) {
+  const mobile = useMobileWorkspace();
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const largeCanvas = useContext(CanvasPerformanceContext);
   const selectionMode = useContext(CanvasSelectionModeContext);
   const updateNodeInternals = useUpdateNodeInternals();
@@ -262,7 +378,10 @@ export function AssetNode({
   const effectiveRunError = isLocallySubmitting ? undefined : data.runError;
   const batchContext = useContext(GenerationBatchViewContext);
   const batchView = batchContext.views.get(id);
-  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!mobile || selectionMode || batchView?.hidden) setMobileActionsOpen(false);
+  }, [mobile, selectionMode, batchView?.hidden]);
+  const inputRef = useRef<FilePickerHandle>(null);
   const floatingControlsRef = useRef<HTMLDivElement>(null);
   const uploadLock = useRef(false);
   /** 当前下载请求；切换节点产物或卸载时取消，防止下载过时内容。 */
@@ -294,6 +413,7 @@ export function AssetNode({
   const keepDetail = Boolean(
     (!selectionMode && (selected || hovered || focusWithin)) ||
     previewInteracting ||
+    mobileActionsOpen ||
     infoOpen ||
     renameOpen ||
     isDownloading ||
@@ -312,12 +432,14 @@ export function AssetNode({
   );
   /** 选区模式和隐藏悬浮栏保持固定视口快照，不因 hover 或 selected 恢复逐帧测量。 */
   const controlsVisible =
-    !selectionMode && Boolean(hovered || focusWithin || selected) && !batchView?.hidden;
+    !selectionMode &&
+    (mobile ? renderDetail === 'full' : Boolean(hovered || focusWithin || selected)) &&
+    !batchView?.hidden;
   const [viewportX, viewportY, zoom] = useStore(
     (state) =>
       [
-        controlsVisible ? state.transform[0] : 0,
-        controlsVisible ? state.transform[1] : 0,
+        controlsVisible && !mobile ? state.transform[0] : 0,
+        controlsVisible && !mobile ? state.transform[1] : 0,
         controlsVisible ? state.transform[2] : 1,
       ] as const,
     (previous, next) =>
@@ -353,7 +475,7 @@ export function AssetNode({
   }, []);
 
   useLayoutEffect(() => {
-    if (!controlsVisible) return;
+    if (!controlsVisible || mobile) return;
     const controls = floatingControlsRef.current;
     const canvas = controls?.closest('.react-flow');
     const node = controls?.closest('.react-flow__node');
@@ -368,13 +490,14 @@ export function AssetNode({
       observer?.disconnect();
       node.removeEventListener('transitionend', constrainControls);
     };
-  }, [constrainControls, controlsVisible]);
+  }, [constrainControls, controlsVisible, mobile]);
 
   useLayoutEffect(() => {
-    if (controlsVisible) constrainControls();
+    if (controlsVisible && !mobile) constrainControls();
   }, [
     constrainControls,
     controlsVisible,
+    mobile,
     positionAbsoluteX,
     positionAbsoluteY,
     viewportX,
@@ -383,7 +506,8 @@ export function AssetNode({
   ]);
   // 仅可见悬浮卡片或信息面板中的活动计时订阅共享时钟。
   const durationNow = useSharedNodeClock(
-    (infoOpen || controlsVisible) && isNodeRunning(effectiveRunStatus),
+    (infoOpen || (mobile ? mobileActionsOpen : controlsVisible)) &&
+      isNodeRunning(effectiveRunStatus),
   );
   const [draftLabel, setDraftLabel] = useState(data.label);
   const renameTitleId = useId();
@@ -731,7 +855,7 @@ export function AssetNode({
       data-render-detail={renderDetail}
       data-selection-mode={selectionMode}
       onMouseEnter={() => {
-        if (!selectionMode) setHovered(true);
+        if (!selectionMode && !mobile) setHovered(true);
       }}
       onMouseLeave={() => {
         if (hovered) setHovered(false);
@@ -743,6 +867,12 @@ export function AssetNode({
         }
       }}
       onClickCapture={(event) => {
+        if (
+          mobile &&
+          (!event.currentTarget.contains(event.target as Node) ||
+            (event.target as Element).closest('.flow-node-mobile-controls'))
+        )
+          return;
         if ((event.target as Element).closest('.flow-node-prompt-button, .flow-node-batch-toggle'))
           return;
         selectNode?.(data, event);
@@ -802,29 +932,26 @@ export function AssetNode({
         <VideoInputSummary nodeId={id} videoMode={data.videoMode} />
       ) : null}
       {contentHandlers ? (
-        <input
+        <FilePicker
           ref={inputRef}
-          type="file"
-          hidden
           aria-label={`上传到节点：${data.label}`}
           accept={
             data.mediaType === 'text' ? '.txt,.md,text/plain,text/markdown' : `${data.mediaType}/*`
           }
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = '';
+          disabled={writingDisabled}
+          onFilesSelected={([file]) => {
             if (file) void uploadFile(file);
           }}
         />
       ) : null}
       {!selectionMode && (!largeCanvas || controlsVisible) && (
-        <div
-          ref={floatingControlsRef}
-          className={`flow-node-header${floatingControls ? ' flow-node-floating-controls' : ''}`}
+        <NodeActionsContainer
+          mobile={mobile}
+          open={mobileActionsOpen}
+          onOpenChange={setMobileActionsOpen}
+          label={data.label}
+          controlsRef={floatingControlsRef}
           style={floatingControlStyle}
-          role="group"
-          aria-label={`节点操作：${data.label}`}
-          aria-disabled={false}
         >
           {floatingControls ? (
             <>
@@ -850,15 +977,21 @@ export function AssetNode({
                   <NodeFloatingActionLabel>重命名</NodeFloatingActionLabel>
                 </NodeFloatingActionButton>
               ) : null}
-              <NodeFloatingActionButton
-                type="button"
-                className="flow-node-action-button flow-node-drag-handle"
-                aria-label="拖动移动节点"
-                title="按住拖动，调整节点在画布中的位置"
-              >
-                <GripVertical size={18} aria-hidden="true" />
-                <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
-              </NodeFloatingActionButton>
+              {!mobile ? (
+                <NodeFloatingActionButton
+                  type="button"
+                  className="flow-node-action-button flow-node-drag-handle"
+                  aria-label="拖动移动节点"
+                  title="按住拖动，调整节点在画布中的位置"
+                >
+                  <GripVertical size={18} aria-hidden="true" />
+                  <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
+                </NodeFloatingActionButton>
+              ) : (
+                <Typography.Text type="secondary" className="flow-node-mobile-move-hint">
+                  关闭面板后，按住卡片即可移动节点
+                </Typography.Text>
+              )}
               <NodeFloatingActionButton
                 type="button"
                 className={`flow-node-action-button flow-node-info-button nodrag nopan nowheel${data.stale ? ' is-stale' : ''}`}
@@ -1009,7 +1142,7 @@ export function AssetNode({
               {recreateVideo && data.mediaType === 'video' && previewAsset?.contentUrl ? (
                 <NodeFloatingActionButton
                   type="button"
-                  className="flow-node-action-button nodrag nopan nowheel"
+                  className="flow-node-action-button flow-node-recreate-video-button nodrag nopan nowheel"
                   disabled={writingDisabled}
                   aria-label={`复刻短视频：${data.label}`}
                   title="创建短视频复刻节点，原视频保留不变"
@@ -1111,7 +1244,7 @@ export function AssetNode({
               </span>
             </>
           )}
-        </div>
+        </NodeActionsContainer>
       )}
       <Dialog
         open={renameOpen}

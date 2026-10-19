@@ -1,4 +1,4 @@
-import { Button, Input } from '@multimodal-canvas/ui';
+import { Button, Input, FilePicker, type FilePickerHandle } from '@multimodal-canvas/ui';
 import { Alert, Button as AntdButton, Modal, Select } from 'antd';
 import {
   LoaderCircle,
@@ -87,13 +87,13 @@ export const ResourcePanel = memo(function ResourcePanel({
   onDeleteAsset?: (asset: Asset) => void;
   onDrop: (event: DragEvent) => void;
   onToggleCollapsed: () => void;
-  uploadInputRef?: RefObject<HTMLInputElement | null>;
+  uploadInputRef?: RefObject<FilePickerHandle | null>;
 }) {
   const panelRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const collapseButtonRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
-  const localInputRef = useRef<HTMLInputElement>(null);
+  const localInputRef = useRef<FilePickerHandle>(null);
   const inputRef = uploadInputRef ?? localInputRef;
   const [modal, modalContextHolder] = Modal.useModal();
   /** 当前正在预览的资源；关闭对话框后清空。 */
@@ -353,17 +353,12 @@ export const ResourcePanel = memo(function ResourcePanel({
         >
           <ChevronDown size={16} aria-hidden="true" />
         </Button>
-        <input
+        <FilePicker
           ref={inputRef}
-          className="visually-hidden"
-          tabIndex={-1}
-          type="file"
           accept="image/*,audio/*,video/*,text/*,.md,.json"
           multiple
-          onChange={(event) => {
-            if (event.target.files) onFilesSelected(event.target.files);
-            event.target.value = '';
-          }}
+          disabled={isUploading}
+          onFilesSelected={onFilesSelected}
         />
       </div>
       <label className="search-field">

@@ -994,7 +994,7 @@ describe('上传资料独立保存', () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([]);
   });
 
-  it('新资料保留当前视频模式，重复帧资料保持原模式和连线且附加幂等', async () => {
+  it('新资料保留当前视频模式和提示词', async () => {
     canvas.nodes[2].data.promptDocument = {
       version: 1,
       blocks: [{ type: 'text', text: '原始正文' }],
@@ -1002,13 +1002,15 @@ describe('上传资料独立保存', () => {
     canvas.nodes[2].data.resourceRefs = [];
     canvas.nodes[2].data.videoMode = 'text_to_video';
     canvas.edges = [];
-    const app = render(<App />);
+    render(<App />);
     await screen.findByRole('textbox', { name: '提示词' });
     act(() => view.canvas!.onResourceAttach!(image, 'video-target'));
     expect(view.canvas!.nodes[2].data.videoMode).toBe('text_to_video');
     expect(view.canvas!.nodes[2].data.promptDocument).toEqual(canvas.nodes[2].data.promptDocument);
-    app.unmount();
-    canvas = initialCanvas();
+  });
+
+  // 独立场景使用 beforeEach 的全新项目状态，避免前一场景草稿触发真实冲突保护。
+  it('重复帧资料保持原模式和连线且附加幂等', async () => {
     restoreLegacyCanvas();
     await openLegacyEditor();
     const before = structuredClone(view.canvas!.nodes);

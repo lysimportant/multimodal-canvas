@@ -473,13 +473,9 @@ describe('FlowingConnectionLine', () => {
       .forEach((path) => {
         expect(path).toHaveAttribute('d', settledPath(pathStyle));
       });
-    container
-      .querySelectorAll<SVGGElement>('.canvas-edge-meteor-motion')
-      .forEach((motion) => {
-        expect(motion.style.offsetPath).toBe(
-          'path(' + JSON.stringify(settledPath(pathStyle)) + ')',
-        );
-      });
+    container.querySelectorAll<SVGGElement>('.canvas-edge-meteor-motion').forEach((motion) => {
+      expect(motion.style.offsetPath).toBe('path(' + JSON.stringify(settledPath(pathStyle)) + ')');
+    });
   });
 
   it.each(pathStyles)('%s 预览使用 xyflow 已居中的端点，不再二次内收', (pathStyle) => {

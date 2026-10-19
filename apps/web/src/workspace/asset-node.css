@@ -13,6 +13,7 @@
 }
 
 .is-generation-batch-hidden .flow-node-floating-controls,
+.is-generation-batch-hidden .flow-node-mobile-controls,
 .is-generation-batch-hidden .react-flow__handle,
 .is-generation-batch-hidden .react-flow__resize-control,
 .is-generation-batch-hidden .flow-node-recreation-badge,
@@ -420,6 +421,61 @@
   ) {
   background: var(--mc-surface-muted);
   color: #bf4237;
+}
+
+/* 合并入口放在卡片上方，避免遮挡回显；反向缩放维持 44px 触控面积。 */
+.flow-node-mobile-controls {
+  display: contents;
+}
+
+.flow-asset-node .flow-node-mobile-trigger.ant-btn {
+  background: var(--mc-surface);
+  border-color: var(--mc-border-strong);
+  color: var(--mc-text);
+  height: 44px;
+  left: 0;
+  padding: 0;
+  position: absolute;
+  bottom: calc(100% + 8px * var(--flow-node-inverse-zoom, 1));
+  transform: scale(var(--flow-node-inverse-zoom, 1));
+  transform-origin: bottom left;
+  width: 44px;
+  z-index: 5;
+}
+
+.flow-node-mobile-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.flow-node-mobile-actions::after {
+  display: none;
+}
+
+.flow-node-mobile-actions .flow-node-action-button,
+.flow-node-mobile-actions .flow-node-action-button.ant-btn {
+  min-height: 44px;
+  min-width: 0;
+  padding: 10px 8px;
+  width: 100%;
+}
+
+.flow-node-mobile-actions .flow-node-action-label {
+  min-width: 0;
+  white-space: normal;
+}
+
+.flow-node-mobile-actions .flow-node-action-button[tabindex] {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
+.flow-node-mobile-move-hint {
+  grid-column: 1 / -1;
+  order: -1;
 }
 
 .flow-node-dialog-backdrop {

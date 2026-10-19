@@ -77,6 +77,17 @@ function durationCard() {
   return within(screen.getByRole('dialog', { name: '视频时长' }));
 }
 
+/** 为 JSDOM 提供轨道尺寸，用真实指针事件验证 Slider 的连续数值回写。 */
+function setDurationSlider(handle: HTMLElement, seconds: number) {
+  const track = handle.closest<HTMLElement>('.ant-slider')!;
+  const bounds = vi
+    .spyOn(track, 'getBoundingClientRect')
+    .mockReturnValue(new DOMRect(0, 0, 250, 20));
+  fireEvent.mouseDown(track, { clientX: (seconds - 5) * 10, clientY: 10, button: 0 });
+  fireEvent.mouseUp(document);
+  bounds.mockRestore();
+}
+
 type PromptMentionBlock = Extract<PromptDocument['blocks'][number], { type: 'mention' }>;
 
 /** 组件用例的本人分组引用；重渲染时必须与目录保持相同身份。 */
@@ -1600,11 +1611,11 @@ describe('NodeQuickEditor', () => {
     const card = screen.getByRole('dialog', { name: '视频时长' });
     const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
     await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveAttribute('type', 'range');
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveAttribute('step', '1');
-    expect(slider).toHaveValue('10');
+    expect(slider.closest('.ant-slider')).toBeInTheDocument();
+    expect(slider).toHaveAttribute('aria-valuemin', '5');
+    expect(slider).toHaveAttribute('aria-valuemax', '30');
+    expect(slider).toHaveAttribute('role', 'slider');
+    expect(slider).toHaveAttribute('aria-valuenow', '10');
     expect(slider).toHaveAttribute('aria-valuetext', '未设置，滑块参考起点 10 秒');
     expect(slider).toHaveAttribute('aria-invalid', 'false');
     expect(slider).toHaveAccessibleDescription(/未设置；滑块从 10 秒起，拖动后才保存/);
@@ -1620,15 +1631,16 @@ describe('NodeQuickEditor', () => {
     expect(within(card).getByRole('button', { name: '清除时长' })).toBeDisabled();
     expect(onParametersChange).not.toHaveBeenCalled();
 
-    // JSDOM 不模拟原生滑块按键更新；change 验证回写，真实步进和拖动由 E2E 覆盖。
+    // 轨道点击与方向键均走真实 Slider，验证 1 秒步进及参数回写。
     for (const seconds of [5, 6, 10, 17, 30]) {
-      fireEvent.change(slider, { target: { value: String(seconds) } });
+      if (seconds === 6) fireEvent.keyDown(slider, { key: 'ArrowRight', keyCode: 39 });
+      else setDurationSlider(slider, seconds);
       expect(onParametersChange).toHaveBeenLastCalledWith({
         resolution: '720p',
         aspectRatio: '16:9',
         duration: seconds,
       });
-      expect(slider).toHaveValue(String(seconds));
+      expect(slider).toHaveAttribute('aria-valuenow', String(seconds));
       expect(trigger).toHaveAccessibleName('时长（秒）：' + seconds + ' 秒');
       expect(within(card).getByText(seconds + ' 秒', { selector: 'output' })).toBeVisible();
       expect(card).toBeVisible();
@@ -1645,7 +1657,10 @@ describe('NodeQuickEditor', () => {
     expect(trigger).toHaveFocus();
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     await user.click(trigger);
-    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveValue('10');
+    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveAttribute(
+      'aria-valuenow',
+      '10',
+    );
     expect(durationCard().getByRole('button', { name: '清除时长' })).toBeDisabled();
     expect(onParametersChange).toHaveBeenCalledTimes(6);
   });
@@ -1678,12 +1693,12 @@ describe('NodeQuickEditor', () => {
     const card = screen.getByRole('dialog', { name: '视频时长' });
     const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
     await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveValue('10');
+    expect(slider).toHaveAttribute('aria-valuenow', '10');
     expect(slider).toHaveAttribute('aria-invalid', 'true');
     expect(slider).toHaveAccessibleDescription(/视频时长必须为正数秒/);
     expect(within(card).getByText(saved + ' 秒', { selector: 'output' })).toBeVisible();
     expect(onParametersChange).not.toHaveBeenCalled();
-    fireEvent.change(slider, { target: { value: '12' } });
+    setDurationSlider(slider, 12);
     expect(onParametersChange).toHaveBeenCalledOnce();
     expect(onParametersChange).toHaveBeenLastCalledWith({
       duration: 12,
@@ -1738,10 +1753,10 @@ describe('NodeQuickEditor', () => {
       const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
       await waitFor(() => expect(slider).toBeVisible());
       expect(within(card).getByText(label, { selector: 'output' })).toBeVisible();
-      expect(slider).toHaveValue(String(reference));
-      expect(slider).toHaveAttribute('min', '5');
-      expect(slider).toHaveAttribute('max', '30');
-      expect(slider).toHaveAttribute('step', '1');
+      expect(slider).toHaveAttribute('aria-valuenow', String(reference));
+      expect(slider).toHaveAttribute('aria-valuemin', '5');
+      expect(slider).toHaveAttribute('aria-valuemax', '30');
+      expect(slider).toHaveAttribute('role', 'slider');
       expect(slider).toHaveAttribute(
         'aria-valuetext',
         label + '，滑块参考起点 ' + reference + ' 秒',
@@ -1818,7 +1833,7 @@ describe('NodeQuickEditor', () => {
       expect(fireEvent.keyDown(slider, { key, code: key })).toBe(false);
       expect(onParametersChange).toHaveBeenCalledOnce();
       expect(onParametersChange).toHaveBeenLastCalledWith({ duration: seconds });
-      expect(slider).toHaveValue(String(seconds));
+      expect(slider).toHaveAttribute('aria-valuenow', String(seconds));
       expect(slider).toHaveFocus();
       expect(trigger).toHaveAccessibleName('时长（秒）：' + seconds + ' 秒');
       expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
@@ -1853,9 +1868,7 @@ describe('NodeQuickEditor', () => {
       expect(Number(durationLayer.style.zIndex)).toBeGreaterThan(2000);
       expect(Number(durationLayer.style.zIndex)).toBeGreaterThan(Number(parentLayer.style.zIndex));
       await waitFor(() => expect(durationLayer).toBeVisible());
-      fireEvent.change(durationCard().getByRole('slider', { name: '视频时长（秒）' }), {
-        target: { value: '30' },
-      });
+      setDurationSlider(durationCard().getByRole('slider', { name: '视频时长（秒）' }), 30);
       expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 30 });
       expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
       expect(panel).toBeVisible();
@@ -1910,8 +1923,8 @@ describe('NodeQuickEditor', () => {
       const card = screen.getByRole('dialog', { name: '视频时长' });
       const slider = within(card).getByRole('slider', { name: '视频时长（秒）' });
       await waitFor(() => expect(slider).toBeVisible());
-      expect(slider).toHaveValue('10');
-      expect(slider).toBeDisabled();
+      expect(slider).toHaveAttribute('aria-valuenow', '10');
+      expect(slider).toHaveAttribute('aria-disabled', 'true');
       expect(within(card).getByRole('button', { name: '清除时长' })).toBeDisabled();
       if (modelAlias === 'wan3.0-video') {
         expect(within(card).getByRole('button', { name: '自动时长' })).toBeDisabled();
@@ -2007,9 +2020,9 @@ describe('NodeQuickEditor', () => {
     await user.click(slider);
     expect(slider).toHaveFocus();
     for (const seconds of [9, 10, 17, 30]) {
-      fireEvent.change(slider, { target: { value: String(seconds) } });
+      setDurationSlider(slider, seconds);
       expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toBe(slider);
-      expect(slider).toHaveValue(String(seconds));
+      expect(slider).toHaveAttribute('aria-valuenow', String(seconds));
       expect(slider).toHaveFocus();
       expect(card).toBeVisible();
     }
@@ -2059,9 +2072,9 @@ describe('NodeQuickEditor', () => {
       const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
       await waitFor(() => expect(slider).toBeVisible());
       await waitFor(() => expect(slider).toHaveFocus());
-      expect(slider).toHaveValue('10');
+      expect(slider).toHaveAttribute('aria-valuenow', '10');
       expect(onParametersChange).not.toHaveBeenCalled();
-      fireEvent.change(slider, { target: { value: '12' } });
+      setDurationSlider(slider, 12);
       expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 12 });
       expect(slider).toHaveFocus();
       expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
@@ -2148,7 +2161,10 @@ describe('NodeQuickEditor', () => {
     const trigger = screen.getByRole('button', { name: '时长（秒）：2 秒' });
     await user.click(trigger);
     expect(onParametersChange).not.toHaveBeenCalled();
-    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveValue('5');
+    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveAttribute(
+      'aria-valuenow',
+      '5',
+    );
     await user.click(durationCard().getByRole('button', { name: '自动时长', pressed: false }));
     expect(onParametersChange).toHaveBeenLastCalledWith({ duration: -1 });
     expect(screen.queryByRole('dialog', { name: '视频时长' })).not.toBeInTheDocument();
@@ -2157,15 +2173,15 @@ describe('NodeQuickEditor', () => {
     await user.click(trigger);
     const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
     await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveValue('10');
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveAttribute('step', '1');
+    expect(slider).toHaveAttribute('aria-valuenow', '10');
+    expect(slider).toHaveAttribute('aria-valuemin', '5');
+    expect(slider).toHaveAttribute('aria-valuemax', '30');
+    expect(slider).toHaveAttribute('role', 'slider');
     expect(slider).toHaveAttribute('aria-valuetext', '自动，滑块参考起点 10 秒');
     expect(slider).toHaveAttribute('aria-invalid', 'false');
     expect(durationCard().getByRole('button', { name: '自动时长', pressed: true })).toBeEnabled();
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
-    fireEvent.change(slider, { target: { value: '11' } });
+    setDurationSlider(slider, 11);
     expect(onParametersChange).toHaveBeenLastCalledWith({ duration: 11 });
     expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
     expect(trigger).toHaveAccessibleName('时长（秒）：11 秒');
@@ -3966,9 +3982,9 @@ describe('NodeQuickEditor', () => {
     await user.click(within(durationGroup).getByRole('button'));
     const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
     await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveValue('10');
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
+    expect(slider).toHaveAttribute('aria-valuenow', '10');
+    expect(slider).toHaveAttribute('aria-valuemin', '5');
+    expect(slider).toHaveAttribute('aria-valuemax', '30');
     expect(slider).toHaveAttribute('aria-valuetext', '自动，滑块参考起点 10 秒');
     expect(durationCard().getByRole('button', { name: '自动时长', pressed: true })).toBeEnabled();
   });
@@ -4044,10 +4060,10 @@ describe('NodeQuickEditor', () => {
     await user.click(within(durationGroup).getByRole('button'));
     const slider = durationCard().getByRole('slider', { name: '视频时长（秒）' });
     await waitFor(() => expect(slider).toBeVisible());
-    expect(slider).toHaveAttribute('min', '5');
-    expect(slider).toHaveAttribute('max', '30');
-    expect(slider).toHaveAttribute('step', '1');
-    expect(slider).toHaveValue('5');
+    expect(slider).toHaveAttribute('aria-valuemin', '5');
+    expect(slider).toHaveAttribute('aria-valuemax', '30');
+    expect(slider).toHaveAttribute('role', 'slider');
+    expect(slider).toHaveAttribute('aria-valuenow', '5');
     expect(durationCard().getByText('4 秒', { selector: 'output' })).toBeVisible();
     expect(onParametersChange).not.toHaveBeenCalled();
     fireEvent.keyDown(within(durationGroup).getByRole('button'), {
@@ -4072,7 +4088,10 @@ describe('NodeQuickEditor', () => {
       selectPopup(ratioGroup).getByRole('option', { name: /1:1/, selected: false }),
     ).toHaveAttribute('aria-selected', 'false');
     await user.click(within(durationGroup).getByRole('button'));
-    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveValue('5');
+    expect(durationCard().getByRole('slider', { name: '视频时长（秒）' })).toHaveAttribute(
+      'aria-valuenow',
+      '5',
+    );
     expect(within(durationGroup).getByRole('button')).toHaveAccessibleName('时长（秒）：4 秒');
     if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
       await user.click(within(ratioGroup).getByRole('combobox'));
@@ -4088,9 +4107,7 @@ describe('NodeQuickEditor', () => {
     await user.click(ratioButton);
     await user.click(within(durationGroup).getByRole('button'));
     await waitFor(() => expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible());
-    fireEvent.change(durationCard().getByRole('slider', { name: '视频时长（秒）' }), {
-      target: { value: '10' },
-    });
+    setDurationSlider(durationCard().getByRole('slider', { name: '视频时长（秒）' }), 10);
     expect(screen.getByRole('dialog', { name: '视频时长' })).toBeVisible();
 
     expect(onParametersChange).toHaveBeenNthCalledWith(1, {

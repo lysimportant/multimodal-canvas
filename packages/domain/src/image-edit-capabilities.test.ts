@@ -62,9 +62,9 @@ describe('参考图公网传输声明', () => {
 
   it('未知或非法声明保持缺省，不回退到更宽松的行为', () => {
     expect(imageEditReferencesRequirePublicUrl(target, 'node_image')).toBe(false);
-    expect(imageEditReferencesRequirePublicUrl({ ...target, targetNodeId: 'other' }, 'node_image')).toBe(
-      false,
-    );
+    expect(
+      imageEditReferencesRequirePublicUrl({ ...target, targetNodeId: 'other' }, 'node_image'),
+    ).toBe(false);
     expect(
       frozenImageEditCapabilitySchema.safeParse({
         declared: true,

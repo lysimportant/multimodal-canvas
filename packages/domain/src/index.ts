@@ -2585,3 +2585,4 @@ export function videoFinalFrameActionId(input: {
     input.targetNodeId ?? 'none',
   ].join(':');
 }
+export * from './canvas-operations.js';

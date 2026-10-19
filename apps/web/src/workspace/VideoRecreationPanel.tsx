@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clapperboard } from 'lucide-react';
 import { Alert, Select, Tabs, Tooltip, Typography } from 'antd';
-import { Button, Textarea } from '@multimodal-canvas/ui';
+import { Button, Textarea, FilePicker } from '@multimodal-canvas/ui';
 import {
   getVideoRecreationIssue,
   parseVideoRecreationTemplate,
@@ -782,15 +782,11 @@ export function VideoRecreationPanel(props: VideoRecreationPanelProps) {
             >
               上传{label}图片
             </Button>
-            <input
-              hidden
-              type="file"
+            <FilePicker
               aria-label={`上传${label}图片`}
               accept="image/*"
               disabled={locked || duplicates.length > 1}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = '';
+              onFilesSelected={([file]) => {
                 void upload(file, target);
               }}
             />

@@ -1,0 +1,20 @@
+.mc-home-faq-list.ant-collapse > .ant-collapse-item {
+  border-bottom: 1px solid var(--home-line);
+}
+
+.mc-home-faq-list.ant-collapse > .ant-collapse-item > .ant-collapse-header {
+  align-items: center;
+  padding: 20px 8px 20px 0;
+  color: var(--home-ink);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.mc-home-faq-list .ant-collapse-expand-icon {
+  color: var(--home-green);
+}
+
+.mc-home-faq-list.ant-collapse .ant-collapse-body {
+  padding: 0;
+}

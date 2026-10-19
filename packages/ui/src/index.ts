@@ -9,6 +9,7 @@ export {
   type DialogContentProps,
 } from './dialog';
 export { Input, type InputProps } from './input';
+export { FilePicker, type FilePickerHandle, type FilePickerProps } from './file-picker';
 export { Textarea, type TextareaProps } from './textarea';
 export { UiProvider } from './provider';
 export { cn } from './utils';

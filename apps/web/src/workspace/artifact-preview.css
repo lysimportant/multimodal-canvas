@@ -537,6 +537,38 @@
   padding: 8px;
 }
 
+/* Alert 的 section 默认会伸展、actions 带起始边距；卡片状态需要整体居中。 */
+.flow-node-runtime-state.ant-alert,
+.artifact-preview-state.ant-alert {
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+}
+
+.flow-node-runtime-state.ant-alert > .ant-alert-icon,
+.artifact-preview-state.ant-alert > .ant-alert-icon {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.flow-node-runtime-state.ant-alert > .ant-alert-section,
+.artifact-preview-state.ant-alert > .ant-alert-section {
+  flex: 0 1 auto;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
+  text-align: center;
+}
+
+.flow-node-runtime-state.ant-alert > .ant-alert-actions,
+.artifact-preview-state.ant-alert > .ant-alert-actions {
+  margin: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+}
+
 .flow-node-runtime-state.is-error,
 .flow-node-status.is-error {
   color: #a33a32;
@@ -554,7 +586,7 @@
   max-width: 100%;
   overflow: auto;
   overflow-wrap: anywhere;
-  text-align: left;
+  text-align: center;
   white-space: pre-wrap;
 }
 

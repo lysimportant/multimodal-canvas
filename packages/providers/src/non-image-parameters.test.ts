@@ -200,10 +200,200 @@ describe('开放的 New API 请求参数', () => {
       const serialized = JSON.stringify(body);
       for (let index = 0; index < 4; index += 1)
         expect(serialized).toContain(`https://assets.example/source-${index}`);
+      const content = (body.metadata as { content: Array<{ role?: string }> }).content;
+      expect(content.map((item) => item.role)).toEqual([
+        'first_frame',
+        'reference_video',
+        'reference_audio',
+      ]);
       expect(snapshot.parameters).toEqual(parameters);
       expect(harness.onProviderJob.mock.calls[0]![0]).toMatchObject({
         payload: { phase: 'submitting', modelAlias: 'future/video-model' },
       });
+    },
+  );
+
+  it.each(
+    (['MiniMax-H3', 'minimax-h3'] as const).flatMap((model) =>
+      (['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const).map((contract) => ({
+        model,
+        contract,
+      })),
+    ),
+  )('$model / $contract 将上传视频 content 映射为 reference_video', async ({ model, contract }) => {
+    const snapshot = snapshotFor('video', { duration: 8, resolution: '768P' }, model);
+    snapshot.nodes[0]!.data.videoMode = 'omni_reference';
+    snapshot.inputs = [
+      {
+        nodeId: 'uploaded-video',
+        role: 'content',
+        sortOrder: 0,
+        sourceAssetId: 'asset-video',
+        sourceAssetVersion: 3,
+        snapshot: {
+          id: 'uploaded-video',
+          type: 'video',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Uploaded video',
+            mode: 'source',
+            mediaType: 'video',
+            contentUrl: 'https://assets.example/uploaded-v3.mp4',
+            mimeType: 'video/mp4',
+          },
+        },
+      },
+    ];
+    const before = structuredClone(snapshot);
+    const harness = videoHarness(contract);
+
+    await harness.provider.execute({ snapshot, onProviderJob: harness.onProviderJob });
+
+    const body = requestBody(harness.fetchImpl.mock.calls[0]![1]);
+    const content = (body.metadata as { content: Array<Record<string, unknown>> }).content;
+    expect(content.filter((item) => item.type === 'video_url')).toEqual([
+      {
+        type: 'video_url',
+        role: 'reference_video',
+        video_url: { url: 'https://assets.example/uploaded-v3.mp4' },
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain('"role":"content"');
+    expect(snapshot).toEqual(before);
+  });
+
+  it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
+    '%s 的 metadata.content 不能覆盖或重新注入视频内部角色',
+    async (contract) => {
+      const parameters = {
+        duration: 8,
+        resolution: '768P',
+        metadata: {
+          vendor_flag: false,
+          content: [
+            {
+              type: 'video_url',
+              role: 'content',
+              video_url: { url: 'https://assets.example/parameter-video.mp4' },
+            },
+          ],
+        },
+      };
+      const snapshot = snapshotFor('video', parameters, 'MiniMax-H3');
+      snapshot.nodes[0]!.data.videoMode = 'omni_reference';
+      snapshot.inputs = [
+        {
+          nodeId: 'linked-video',
+          role: 'content',
+          sortOrder: 0,
+          snapshot: {
+            id: 'linked-video',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Linked video',
+              mode: 'source',
+              mediaType: 'video',
+              contentUrl: 'https://assets.example/linked-video.mp4',
+              mimeType: 'video/mp4',
+            },
+          },
+        },
+      ];
+      const before = structuredClone(snapshot);
+      const harness = videoHarness(contract);
+
+      await harness.provider.execute({ snapshot, onProviderJob: harness.onProviderJob });
+
+      const body = requestBody(harness.fetchImpl.mock.calls[0]![1]);
+      const metadata = body.metadata as {
+        vendor_flag: boolean;
+        content: Array<Record<string, unknown>>;
+      };
+      expect(metadata.vendor_flag).toBe(false);
+      const videos = metadata.content.filter((item) => item.type === 'video_url');
+      expect(videos.map((item) => item.role)).toEqual(['reference_video', 'reference_video']);
+      expect(videos.map((item) => (item.video_url as { url: string }).url).sort()).toEqual([
+        'https://assets.example/linked-video.mp4',
+        'https://assets.example/parameter-video.mp4',
+      ]);
+      expect(snapshot).toEqual(before);
+    },
+  );
+
+  it('未知模型保留 metadata.content 的显式供应商媒体角色', async () => {
+    const snapshot = snapshotFor(
+      'video',
+      {
+        metadata: {
+          content: [
+            {
+              type: 'video_url',
+              role: 'vendor_motion',
+              video_url: { url: 'https://assets.example/vendor-video.mp4' },
+            },
+          ],
+        },
+      },
+      'future/vendor-video',
+    );
+    const harness = videoHarness('newapi-video-v1');
+
+    await harness.provider.execute({ snapshot, onProviderJob: harness.onProviderJob });
+
+    expect(requestBody(harness.fetchImpl.mock.calls[0]![1])).toMatchObject({
+      metadata: {
+        content: [
+          {
+            type: 'video_url',
+            role: 'vendor_motion',
+            video_url: { url: 'https://assets.example/vendor-video.mp4' },
+          },
+        ],
+      },
+    });
+  });
+
+  it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
+    '%s 收到 unsupported video_url role 400 时不重试或切换创建路径',
+    async (contract) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: { code: 'new_api_error', message: 'unsupported video_url role' },
+          }),
+          {
+            status: 400,
+            headers: {
+              'content-type': 'application/json',
+              'x-request-id': 'synthetic-video-role-request',
+            },
+          },
+        ),
+      );
+      const provider = new NewApiVideoProvider({
+        baseUrl: 'https://newapi.example/v1',
+        apiKey: 'synthetic-parameter-test-key',
+        videoContract: contract,
+        fetchImpl,
+      });
+
+      const error = await provider
+        .execute({
+          snapshot: snapshotFor('video', {}, 'MiniMax-H3'),
+          onProviderJob: vi.fn(),
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        status: 400,
+        code: 'new_api_error',
+        requestId: 'synthetic-video-role-request',
+        retryable: false,
+      });
+      expect(String(error)).toContain('unsupported video_url role');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(fetchImpl.mock.calls[0]![1]?.method).toBe('POST');
     },
   );
 });

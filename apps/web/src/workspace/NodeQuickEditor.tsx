@@ -12,7 +12,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import { Checkbox, Popover, Select, Typography, type SelectProps } from 'antd';
+import { Checkbox, Popover, Select, Slider, Typography, type SelectProps } from 'antd';
 import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 
 import type {
@@ -1880,9 +1880,9 @@ function VideoDurationControl({
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const focusOnOpenRef = useRef(false);
+  const sliderInteractingRef = useRef(false);
   const automatic = value === '-1';
   const sliderMin = VIDEO_DURATION_RANGE.min;
   const sliderMax = VIDEO_DURATION_RANGE.max;
@@ -1907,7 +1907,7 @@ function VideoDurationControl({
     if (!container || !focusOnOpenRef.current) return;
     focusOnOpenRef.current = false;
     container
-      .querySelector<HTMLInputElement>('input[type="range"]:not(:disabled)')
+      .querySelector<HTMLElement>('[role="slider"]:not([aria-disabled="true"])')
       ?.focus({ preventScroll: true });
   };
 
@@ -1916,6 +1916,7 @@ function VideoDurationControl({
     setOpen(false);
     setPinned(false);
     focusOnOpenRef.current = false;
+    sliderInteractingRef.current = false;
   };
 
   return (
@@ -1933,7 +1934,7 @@ function VideoDurationControl({
           close();
           triggerRef.current?.focus({ preventScroll: true });
         } else if (contentRef.current?.contains(event.target as Node)) {
-          // 方向键、Home/End 和 Tab 交给原生滑块，不触发画布快捷键。
+          // 方向键、Home/End 和 Tab 交给组件库滑块，不触发画布快捷键。
           event.stopPropagation();
         }
       }}
@@ -1961,10 +1962,21 @@ function VideoDurationControl({
             className="node-quick-editor-duration-card"
             ref={(container) => {
               contentRef.current = container;
+              // Slider 未提供描述与校验属性的透传接口，把它们放到实际可聚焦的手柄上。
+              const handle = container?.querySelector<HTMLElement>('[role="slider"]');
+              handle?.setAttribute('aria-invalid', String(Boolean(issue)));
+              handle?.setAttribute(
+                'aria-describedby',
+                [inputId + '-hint', issue ? inputId + '-issue' : undefined]
+                  .filter(Boolean)
+                  .join(' '),
+              );
               focusSlider(container);
             }}
             onFocusCapture={() => setPinned(true)}
             onBlur={(event) => {
+              // Slider 拖动开始时会暂时 blur，结束后恢复手柄焦点。
+              if (sliderInteractingRef.current && !event.relatedTarget) return;
               if (
                 !event.currentTarget.contains(event.relatedTarget) &&
                 event.relatedTarget !== triggerRef.current
@@ -1986,52 +1998,65 @@ function VideoDurationControl({
               disabled={inputDisabled}
               onChange={(event) => onChange(event.currentTarget.value)}
             />
-            <div className="node-quick-editor-duration-range">
-              <input
-                ref={inputRef}
+            <div
+              className="node-quick-editor-duration-range"
+              onMouseDownCapture={(event) => {
+                sliderInteractingRef.current =
+                  !inputDisabled && Boolean((event.target as HTMLElement).closest('.ant-slider'));
+              }}
+              onTouchStartCapture={(event) => {
+                sliderInteractingRef.current =
+                  !inputDisabled && Boolean((event.target as HTMLElement).closest('.ant-slider'));
+              }}
+              onClickCapture={(event) => {
+                // 点击历史值的参考圆点同样属于显式选择；轨道点击由 Slider 计算位置。
+                if (
+                  !inputDisabled &&
+                  String(sliderValue) !== value &&
+                  (event.target as HTMLElement).closest('[role="slider"]')
+                )
+                  onChange(String(sliderValue));
+              }}
+              onKeyDownCapture={(event) => {
+                if (isImeKeyboardEvent(event)) {
+                  event.stopPropagation();
+                  return;
+                }
+                if (
+                  inputDisabled ||
+                  (fixedDuration && !outsideSlider) ||
+                  !(event.target as HTMLElement).closest('[role="slider"]')
+                )
+                  return;
+                // 参考值已在端点时 Slider 不触发 change，仍保存用户显式选中的端点。
+                if (event.key === 'Home' || event.key === 'End') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onChange(String(event.key === 'Home' ? sliderMin : sliderMax));
+                }
+              }}
+            >
+              <Slider
                 id={inputId}
-                className="node-quick-editor-duration-slider"
-                type="range"
                 min={sliderMin}
                 max={sliderMax}
                 step={1}
                 value={sliderValue}
-                style={
-                  {
-                    '--duration-progress':
-                      ((sliderValue - sliderMin) / (sliderMax - sliderMin)) * 100 + '%',
-                  } as CSSProperties
-                }
-                aria-label="视频时长（秒）"
-                aria-valuetext={
+                tooltip={{ open: false }}
+                ariaLabelForHandle="视频时长（秒）"
+                ariaValueTextFormatterForHandle={() =>
                   fixedDuration && !outsideSlider
                     ? selectionLabel
                     : selectionLabel + '，滑块参考起点 ' + sliderValue + ' 秒'
                 }
-                aria-invalid={Boolean(issue)}
-                aria-describedby={[inputId + '-hint', issue ? inputId + '-issue' : undefined]
-                  .filter(Boolean)
-                  .join(' ')}
                 disabled={inputDisabled}
-                onChange={(event) => onChange(event.currentTarget.value)}
-                onClick={(event) => {
-                  // 历史值与滑块参考点不同，点击当前圆点也属于显式选择。
-                  if (!inputDisabled && event.currentTarget.value !== value) {
-                    onChange(event.currentTarget.value);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    inputDisabled ||
-                    isImeKeyboardEvent(event) ||
-                    (fixedDuration && !outsideSlider)
-                  )
-                    return;
-                  // 原生 Home/End 停在参考端点时不触发 change，仍须保存用户的选择。
-                  if (event.key === 'Home' || event.key === 'End') {
-                    event.preventDefault();
-                    onChange(String(event.key === 'Home' ? sliderMin : sliderMax));
-                  }
+                onChange={(nextValue) => onChange(String(nextValue))}
+                onChangeComplete={() => {
+                  sliderInteractingRef.current = false;
+                  if (!inputDisabled)
+                    contentRef.current
+                      ?.querySelector<HTMLElement>('[role="slider"]')
+                      ?.focus({ preventScroll: true });
                 }}
               />
               <div className="node-quick-editor-duration-scale" aria-hidden="true">

@@ -99,11 +99,12 @@ test('homepage has stable desktop layouts, real image pixels and working entry p
       fullPage: true,
     });
   }
-  const faq = page.locator('.mc-home-faq-list details').first();
-  const question = faq.locator('summary');
+  const faq = page.locator('.mc-home-faq-list .ant-collapse-item').first();
+  const question = faq.getByRole('button', { name: 'LoveTV 会自动调用 API 或开始生成吗？' });
   await question.focus();
   await page.keyboard.press('Enter');
-  await expect(faq).toHaveAttribute('open', '');
+  await expect(question).toHaveAttribute('aria-expanded', 'true');
+  await expect(faq.locator('.ant-collapse-body')).toContainText('不会。分析、提示词优化');
   await page.getByRole('link', { name: '进入工作台', exact: true }).click();
   expect(
     await page.evaluate(() => (window as Window & { __homeNavigation?: string }).__homeNavigation),

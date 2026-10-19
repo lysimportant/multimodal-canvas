@@ -1,4 +1,9 @@
-import { Button as UiButton, Input as UiInput } from '@multimodal-canvas/ui';
+import {
+  Button as UiButton,
+  Input as UiInput,
+  FilePicker,
+  type FilePickerHandle,
+} from '@multimodal-canvas/ui';
 import {
   AudioLines,
   Check,
@@ -201,7 +206,7 @@ export function ResourceMentionEditor({
   const pickerPopoverRef = useRef<GetRef<typeof Popover>>(null);
   const pickerAnchorRef = useRef<HTMLSpanElement>(null);
   const pickerDismissedRef = useRef(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<FilePickerHandle>(null);
   const caretRef = useRef(initialText.length);
   const [trigger, setTrigger] = useState<{ start: number; query: string } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -1638,16 +1643,12 @@ export function ResourceMentionEditor({
             </div>
           );
         })}
-        <input
+        <FilePicker
           ref={fileInputRef}
-          type="file"
           accept="image/*,video/*,audio/*,text/plain,text/markdown,.txt,.md"
-          hidden
           multiple
           disabled={disabled || !onUploadResource || uploading}
-          onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? []);
-            event.currentTarget.value = '';
+          onFilesSelected={(files) => {
             void handleUploadFiles(files);
           }}
         />

@@ -1,4 +1,4 @@
-import { Typography } from 'antd';
+import { Select, Typography } from 'antd';
 import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { AudioLines, LoaderCircle, Pause, Play, Repeat2, RotateCcw } from 'lucide-react';
 
@@ -193,21 +193,24 @@ function MediaPlayerSession({
         </Button>
         <label>
           倍速
-          <select
+          <Select
             aria-label="播放速度"
             value={rate}
-            onChange={(event) => {
-              const value = Number(event.target.value);
+            size="small"
+            style={{ minWidth: 76 }}
+            styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+            getPopupContainer={(trigger: HTMLElement) =>
+              trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+            }
+            options={[0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((value) => ({
+              value,
+              label: `${value}×`,
+            }))}
+            onChange={(value) => {
               if (mediaRef.current) mediaRef.current.playbackRate = value;
               setRate(value);
             }}
-          >
-            {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((value) => (
-              <option key={value} value={value}>
-                {value}×
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <Button
           type="button"

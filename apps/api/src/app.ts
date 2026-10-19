@@ -1,4 +1,6 @@
 import { accountError } from './account-errors';
+import { AgentAccessService, AGENT_TOKEN_PREFIX, type AgentAccessClaims } from './agent-access';
+import { registerCanvasAgentRoutes, isAgentRequestAllowed } from './canvas-agent-routes';
 import { AssetThumbnailService, sendAssetThumbnail } from './asset-thumbnails';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
@@ -267,6 +269,7 @@ const assetListQuerySchema = z.object({
 
 type RunRequestBody = {
   projectId: string;
+  canvasRevision?: number;
   modelAlias?: string;
   credentialId?: string;
   idempotencyKey?: string;
@@ -276,6 +279,7 @@ type RunRequestBody = {
 
 const runRequestBodySchema = z.object({
   projectId: z.string().min(1),
+  canvasRevision: z.number().int().nonnegative().optional(),
 
   modelAlias: z.string().trim().min(1).max(160).optional(),
   credentialId: z.string().uuid().optional(),
@@ -831,9 +835,23 @@ async function resolveRunAssetRefs(input: {
       throw new RunAssetFreezeError('asset_unavailable', `节点 ${node.id} 的手动输出缺少资产引用`);
     }
     if (!assetId) continue;
+    // 画布已明确绑定的版本是创作输入的一部分；无版本旧 URL 仍沿用 latest。
+    const versionPrefix = `/v1/assets/${encodeURIComponent(assetId)}/versions/`;
+    let boundVersion: number | undefined;
+    if (node.data.contentUrl?.startsWith(versionPrefix)) {
+      const versionPath = node.data.contentUrl.slice(versionPrefix.length);
+      const match = /^([1-9]\d*)\/content$/.exec(versionPath);
+      if (!match || !Number.isSafeInteger(Number(match[1])))
+        throw new RunAssetFreezeError(
+          'asset_version_unavailable',
+          `节点 ${node.id} 的素材版本无效`,
+        );
+      boundVersion = Number(match[1]);
+    }
     const pinnedVersion =
       input.sourceVersions?.[node.id] ??
-      (pinnedSource?.sourceNodeId === node.id ? pinnedSource.version : undefined);
+      (pinnedSource?.sourceNodeId === node.id ? pinnedSource.version : undefined) ??
+      boundVersion;
     const resolved = await loadAsset(assetId, pinnedVersion);
     if (resolved.mediaType !== node.data.mediaType) {
       throw new RunAssetFreezeError(
@@ -1353,6 +1371,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const requireJwtExpiration = process.env.NODE_ENV === 'production';
   const requestPrincipals = new WeakMap<object, AuthPrincipal>();
   const requestSessions = new WeakMap<object, AuthenticatedSession>();
+  const agentAccess = jwtSecret
+    ? new AgentAccessService({ store: authStore, secret: jwtSecret })
+    : undefined;
+  const requestAgentScopes = new WeakMap<object, AgentAccessClaims>();
   const maxActiveRunsPerProject = parsePositiveInt(process.env.RUN_MAX_ACTIVE_PER_PROJECT);
   const rateLimitPerMinute = parsePositiveInt(process.env.API_RATE_LIMIT_PER_MINUTE);
   const authRateLimitPerMinute = parsePositiveInt(process.env.API_AUTH_RATE_LIMIT_PER_MINUTE) ?? 10;
@@ -1538,6 +1560,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (token !== null) return reply.code(401).send({ error: 'invalid or expired access URL' });
       }
     }
+    const isMcpRequest = /^\/v1\/projects\/[^/]+\/mcp$/.test(pathname);
+    if (isMcpRequest) {
+      const origin = request.headers.origin;
+      const allowedOrigins = options.newApiAccount
+        ? [new URL(options.newApiAccount.options.webUrl).origin]
+        : corsConfig.origins;
+      if (
+        (origin && !allowedOrigins.includes(origin)) ||
+        request.headers['sec-fetch-site'] === 'cross-site'
+      )
+        return reply
+          .code(403)
+          .send({ code: 'origin_rejected', error: 'MCP request origin is not allowed' });
+      if (!extractBearerToken(request.headers.authorization)?.startsWith(AGENT_TOKEN_PREFIX))
+        return reply
+          .code(401)
+          .send({ code: 'agent_token_required', error: '请使用项目连接面板签发的 Agent 令牌' });
+    }
     if (!authToken && !jwtSecret) {
       if (process.env.NODE_ENV === 'production') {
         return reply
@@ -1582,20 +1622,39 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         });
       }
     }
-    const result: AuthenticationResult = refreshSession
+    const bearerToken = extractBearerToken(request.headers.authorization);
+    let agentAuthentication: Awaited<ReturnType<AgentAccessService['verify']>>;
+    if (bearerToken?.startsWith(AGENT_TOKEN_PREFIX)) {
+      agentAuthentication = await agentAccess?.verify(bearerToken);
+      if (!agentAuthentication)
+        return reply
+          .code(401)
+          .send({ code: 'invalid_agent_token', error: 'Agent 连接已失效或被撤销' });
+      requestAgentScopes.set(request, agentAuthentication.claims);
+    }
+    const result: AuthenticationResult = agentAuthentication
       ? {
           ok: true,
           principal: {
             method: 'jwt',
-            userId: refreshSession.user.id,
-            sessionId: refreshSession.session.id,
+            userId: agentAuthentication.claims.userId,
+            sessionId: agentAuthentication.claims.id,
           },
         }
-      : authenticateBearer(request.headers.authorization, {
-          apiToken: authToken,
-          jwtSecret,
-          requireExpiration: requireJwtExpiration,
-        });
+      : refreshSession
+        ? {
+            ok: true,
+            principal: {
+              method: 'jwt',
+              userId: refreshSession.user.id,
+              sessionId: refreshSession.session.id,
+            },
+          }
+        : authenticateBearer(request.headers.authorization, {
+            apiToken: authToken,
+            jwtSecret,
+            requireExpiration: requireJwtExpiration,
+          });
     if (!result.ok) {
       const codes = {
         missing: 'authentication_missing',
@@ -1612,12 +1671,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           .code(401)
           .send({ error: 'authentication required', code: 'authentication_missing' });
       try {
-        const session = refreshSession ?? (await authService.verifyAccessToken(accessToken));
+        const session =
+          agentAuthentication?.session ??
+          refreshSession ??
+          (await authService.verifyAccessToken(accessToken));
         if (options.newApiAccount) {
           const identity = await options.newApiAccount.identity(session.user.id);
           if (
             identity.status === 'unavailable' &&
             !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
+            !isMcpRequest &&
             !isLocalAssetAccessRequest(request.method, pathname) &&
             ![
               '/v1/account/newapi/sync',
@@ -1692,12 +1755,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           { err: sanitizeExceptionForObservability(error) },
           'authentication user lookup failed',
         );
-        return reply
-          .code(503)
-          .send({
-            error: 'authentication service unavailable',
-            code: 'authentication_unavailable',
-          });
+        return reply.code(503).send({
+          error: 'authentication service unavailable',
+          code: 'authentication_unavailable',
+        });
       }
     }
     requestPrincipals.set(request, result.principal);
@@ -1785,6 +1846,36 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (options.newApiAccount && !requestSessions.has(request))
         throw new NewApiAccountError('authentication_required', '请使用 New API 登录', 401);
     }
+  });
+
+  app.addHook('preHandler', async (request, reply) => {
+    const scope = requestAgentScopes.get(request);
+    if (
+      scope &&
+      (!(await projectStore.get(scope.projectId, { ownerId: scope.userId })) ||
+        !(await isAgentRequestAllowed(request, scope, runService)))
+    )
+      return reply
+        .code(403)
+        .send({ code: 'agent_scope_denied', error: '该连接无权执行此操作或访问此项目' });
+  });
+
+  registerCanvasAgentRoutes(app, {
+    access: agentAccess,
+    projectStore,
+    assetStore,
+    runService,
+    principals: requestPrincipals,
+    sessions: requestSessions,
+    validateMentions: async (canvas, projectId, ownerId, requestId) => {
+      try {
+        await resolvePromptMentionRefs({ assetStore, canvas, projectId, ownerId, requestId });
+      } catch (error) {
+        if (error instanceof ResourceMentionFreezeError)
+          throw new ProjectStoreError('invalid_asset', '素材引用无效，请重新读取画布和素材版本');
+        throw error;
+      }
+    },
   });
 
   app.get('/v1/auth/me', async (request, reply) => {
@@ -2538,6 +2629,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       let publishing = false;
       let bytesWritten = 0;
       let responseLimitReached = false;
+      let lastCanvasRevision: number | undefined;
       const lastSeen = new Map<string, string>();
       const writeRaw = (chunk: string, options: { bypassLimit?: boolean } = {}) => {
         if (closed) return;
@@ -2599,6 +2691,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (closed || publishing) return;
         publishing = true;
         try {
+          const canvas = await projectStore.getCanvas(
+            projectId,
+            projectScope(requestPrincipals, request),
+          );
+          if (canvas && canvas.revision !== lastCanvasRevision) {
+            lastCanvasRevision = canvas.revision;
+            write('canvas.updated', { projectId, revision: canvas.revision });
+          }
           const runs = await runService.listByProject(projectId);
           for (const run of runs) {
             if (run.snapshot.reversePrompt || run.snapshot.promptOptimization) continue;
@@ -3196,6 +3296,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const body: RunRequestBody = {
       projectId: parsedBody.data.projectId,
+      ...(parsedBody.data.canvasRevision === undefined
+        ? {}
+        : { canvasRevision: parsedBody.data.canvasRevision }),
       ...(parsedBody.data.modelAlias ? { modelAlias: parsedBody.data.modelAlias } : {}),
       ...(parsedBody.data.credentialId ? { credentialId: parsedBody.data.credentialId } : {}),
       ...(parsedBody.data.idempotencyKey ? { idempotencyKey: parsedBody.data.idempotencyKey } : {}),
@@ -3212,6 +3315,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const canvas = await projectStore.getCanvas(body.projectId, scope);
     if (!canvas) return reply.code(404).send({ error: 'project not found' });
+    if (body.canvasRevision !== undefined && body.canvasRevision !== canvas.revision)
+      return reply.code(409).send({
+        code: 'revision_conflict',
+        error: '画布已发生变化，请重新读取后提交',
+        revision: canvas.revision,
+      });
     if (canvas.nodes.find((node) => node.id === request.params.nodeId)?.data.videoRecreationDraft)
       return reply.code(400).send({
         error: '请先选择参考视频并完成分析',

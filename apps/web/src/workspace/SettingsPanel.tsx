@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Select, Tabs, Typography } from 'antd';
+import { Select, Table, Tabs, Typography } from 'antd';
 import {
   AudioLines,
   ExternalLink,
@@ -796,27 +796,23 @@ export function SettingsPanel({
             </Button>
           </div>
           <div className="settings-models-table-wrap">
-            <table className="settings-models-table">
-              <thead>
-                <tr>
-                  <th>分组</th>
-                  <th>状态</th>
-                  <th>模型</th>
-                </tr>
-              </thead>
-              <tbody>
-                {account?.groups.map((group) => (
-                  <tr key={group.group}>
-                    <td>
-                      <code>{group.group}</code>
-                    </td>
-                    <td>{group.error || group.status}</td>
-                    <td>{group.modelCount ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!account?.groups.length && <p className="settings-status">当前没有可用分组。</p>}
+            <Table
+              className="settings-models-table"
+              size="small"
+              rowKey="group"
+              pagination={false}
+              dataSource={account?.groups ?? []}
+              locale={{ emptyText: '当前没有可用分组。' }}
+              columns={[
+                {
+                  title: '分组',
+                  dataIndex: 'group',
+                  render: (value: string) => <Typography.Text code>{value}</Typography.Text>,
+                },
+                { title: '状态', render: (_, group) => group.error || group.status },
+                { title: '模型', dataIndex: 'modelCount', render: (value?: number) => value ?? 0 },
+              ]}
+            />
           </div>
           <label className="settings-field">
             <span>节点超时时间（毫秒）</span>

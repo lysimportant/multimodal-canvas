@@ -6,7 +6,7 @@ import {
   type Asset,
   type VideoRecreationConfig,
 } from '@multimodal-canvas/domain';
-import { Button } from '@multimodal-canvas/ui';
+import { Button, FilePicker, type FilePickerHandle } from '@multimodal-canvas/ui';
 
 /** 空复刻节点的冻结视频来源选择器；选择或上传均不会自动分析。 */
 export type VideoRecreationSourcePickerProps = {
@@ -29,7 +29,7 @@ export function VideoRecreationSourcePicker({
   onBind,
 }: VideoRecreationSourcePickerProps) {
   const [selectedId, setSelectedId] = useState('');
-  const fileInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<FilePickerHandle>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string>();
   const videos = assets.filter((asset) => asset.mediaType === 'video' && asset.status === 'ready');
@@ -113,16 +113,12 @@ export function VideoRecreationSourcePicker({
               <Upload size={16} aria-hidden="true" />
               上传视频
             </Button>
-            <input
-              hidden
+            <FilePicker
               ref={fileInput}
-              type="file"
               accept="video/*"
               aria-label="上传参考视频"
               disabled={working}
-              onChange={async (event) => {
-                const file = event.target.files?.[0];
-                event.target.value = '';
+              onFilesSelected={async ([file]) => {
                 if (!file || working) return;
                 setWorking(true);
                 setError(undefined);

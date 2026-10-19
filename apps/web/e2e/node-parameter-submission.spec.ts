@@ -465,10 +465,10 @@ async function openDuration(page: Page, limits = { min: 5, max: 30 }) {
   const slider = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
   await expect(card).toBeVisible();
   await expect(card).toBeInViewport({ ratio: 1 });
-  await expect(slider).toHaveAttribute('type', 'range');
-  await expect(slider).toHaveAttribute('min', String(limits.min));
-  await expect(slider).toHaveAttribute('max', String(limits.max));
-  await expect(slider).toHaveAttribute('step', '1');
+  await expect(slider).toHaveClass(/ant-slider-handle/);
+  await expect(slider).toHaveAttribute('aria-valuemin', String(limits.min));
+  await expect(slider).toHaveAttribute('aria-valuemax', String(limits.max));
+  await expect(slider).toHaveAttribute('aria-orientation', 'horizontal');
   await expect(slider).toBeInViewport({ ratio: 1 });
   await expect
     .poll(() =>
@@ -484,22 +484,23 @@ async function openDuration(page: Page, limits = { min: 5, max: 30 }) {
   return { trigger, card, slider };
 }
 
-/** 从当前原生滑块手柄拖至轨道内侧，返回浏览器产生的整数秒数；不注入 value 或事件。 */
+/** 从 Slider 手柄拖至轨道内侧，返回实际产生的整数秒数；不注入 value 或事件。 */
 async function dragDuration(page: Page, slider: Locator) {
-  const before = Number(await slider.inputValue());
+  const before = Number(await slider.getAttribute('aria-valuenow'));
   const bounds = await slider.boundingBox();
-  if (!bounds) throw new Error('视频时长滑块没有可拖动的屏幕区域');
-  const trackLeft = bounds.x + 10;
-  const trackWidth = bounds.width - 20;
+  const rail = await slider.locator('..').locator('.ant-slider-rail').boundingBox();
+  if (!bounds || !rail) throw new Error('视频时长滑块没有可拖动的屏幕区域');
+  const trackLeft = rail.x;
+  const trackWidth = rail.width;
   const centerY = bounds.y + bounds.height / 2;
-  await page.mouse.move(trackLeft + ((before - 5) / 25) * trackWidth, centerY);
+  await page.mouse.move(bounds.x + bounds.width / 2, centerY);
   await page.mouse.down();
   try {
     await page.mouse.move(trackLeft + trackWidth * 0.72, centerY, { steps: 16 });
   } finally {
     await page.mouse.up();
   }
-  const seconds = Number(await slider.inputValue());
+  const seconds = Number(await slider.getAttribute('aria-valuenow'));
   expect(Number.isSafeInteger(seconds)).toBe(true);
   expect(seconds).toBeGreaterThan(5);
   expect(seconds).toBeLessThan(30);
@@ -828,9 +829,9 @@ for (const viewport of [
         });
         await expect(card.getByRole('button', { name: '自动时长', exact: true })).toHaveCount(0);
         await slider.press('Home');
-        for (let step = Number(await slider.inputValue()); step < 8; step += 1)
+        for (let step = Number(await slider.getAttribute('aria-valuenow')); step < 8; step += 1)
           await slider.press('ArrowRight');
-        await expect(slider).toHaveValue('8');
+        await expect(slider).toHaveAttribute('aria-valuenow', '8');
         await trigger.click();
         await choose(page, '视频清晰度', new RegExp(scenario.resolution, 'i'));
         await choose(
@@ -976,7 +977,7 @@ test.describe('Image2Pro 参数与调用', () => {
       await slider.focus();
       await slider.press('Home');
       for (let step = 0; step < 4; step += 1) await slider.press('ArrowRight');
-      await expect(slider).toHaveValue('8');
+      await expect(slider).toHaveAttribute('aria-valuenow', '8');
       await trigger.click();
       await choose(page, '视频清晰度', /4k/i);
       await choose(page, '视频比例', /21:9/);
@@ -1149,7 +1150,7 @@ test.describe('Image2Pro 参数与调用', () => {
       const { trigger, slider } = await openDuration(page, { min: 4, max: 12 });
       await slider.focus();
       await slider.press('End');
-      await expect(slider).toHaveValue('12');
+      await expect(slider).toHaveAttribute('aria-valuenow', '12');
       await trigger.click();
       await page.getByRole('combobox', { name: /^视频清晰度：/ }).click();
       await expect(page.getByRole('option', { name: /720p/i })).toBeVisible();
@@ -1582,7 +1583,7 @@ for (const viewport of [
         await openParameters(page);
         const { trigger, card, slider } = await openDuration(page);
         await expect(trigger).toHaveAccessibleName('时长（秒）：10 秒');
-        await expect(slider).toHaveValue('10');
+        await expect(slider).toHaveAttribute('aria-valuenow', '10');
         await expect(slider).toHaveAttribute('aria-invalid', 'false');
         expect(fixture.patches).toHaveLength(0);
         await page.screenshot({
@@ -1596,15 +1597,15 @@ for (const viewport of [
           .toBe(draggedSeconds);
         await expect(trigger).toHaveAccessibleName(`时长（秒）：${draggedSeconds} 秒`);
         await slider.press('Home');
-        await expect(slider).toHaveValue('5');
+        await expect(slider).toHaveAttribute('aria-valuenow', '5');
         await slider.press('ArrowRight');
-        await expect(slider).toHaveValue('6');
+        await expect(slider).toHaveAttribute('aria-valuenow', '6');
         await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters?.duration).toBe(6);
 
         for (const seconds of [5, 30]) {
           await slider.press(seconds === 5 ? 'Home' : 'End');
           await slider.press(seconds === 5 ? 'ArrowLeft' : 'ArrowRight');
-          await expect(slider).toHaveValue(String(seconds));
+          await expect(slider).toHaveAttribute('aria-valuenow', String(seconds));
           await expect(trigger).toHaveAccessibleName(`时长（秒）：${seconds} 秒`);
           await expect
             .poll(() => fixture.canvas().nodes[0]!.data.parameters?.duration)
@@ -1632,7 +1633,7 @@ for (const viewport of [
         await selectNode(page);
         await openParameters(page);
         await openDuration(page);
-        await expect(slider).toHaveValue('30');
+        await expect(slider).toHaveAttribute('aria-valuenow', '30');
         await expect(trigger).toHaveAccessibleName('时长（秒）：30 秒');
         expect(fixture.submissions).toHaveLength(2);
         expect(fixture.errors).toEqual([]);
@@ -1652,7 +1653,7 @@ for (const viewport of [
       const { trigger, card, slider } = await openDuration(page);
       await expect(slider).toHaveAccessibleDescription(/当前模型支持 4–15 秒/);
       await slider.press('End');
-      await expect(slider).toHaveValue('30');
+      await expect(slider).toHaveAttribute('aria-valuenow', '30');
       await expect(trigger).toHaveAccessibleName('时长（秒）：30 秒');
       await expect(slider).toHaveAttribute('aria-invalid', 'true');
       await expect(card.getByRole('status').filter({ hasText: '4 至 15 秒' })).toBeVisible();
@@ -1664,7 +1665,7 @@ for (const viewport of [
       await selectNode(page);
       await openParameters(page);
       await openDuration(page);
-      await expect(slider).toHaveValue('30');
+      await expect(slider).toHaveAttribute('aria-valuenow', '30');
       await expect(slider).toHaveAttribute('aria-invalid', 'true');
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
       await page.screenshot({
@@ -1674,7 +1675,7 @@ for (const viewport of [
       expect(fixture.submissions).toHaveLength(0);
       await slider.press('Home');
       for (let step = 0; step < 10; step++) await slider.press('ArrowRight');
-      await expect(slider).toHaveValue('15');
+      await expect(slider).toHaveAttribute('aria-valuenow', '15');
       await expect(slider).toHaveAttribute('aria-invalid', 'false');
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
       await slider.press('Escape');
@@ -1710,7 +1711,7 @@ for (const viewport of [
         await openParameters(page);
         const { trigger, card, slider } = await openDuration(page);
         await expect(trigger).toHaveAccessibleName(`时长（秒）：${label}`);
-        await expect(slider).toHaveValue(reference);
+        await expect(slider).toHaveAttribute('aria-valuenow', reference);
         await expect(slider).toHaveAttribute(
           'aria-valuetext',
           `${label}，滑块参考起点 ${reference} 秒`,
@@ -1735,7 +1736,7 @@ for (const viewport of [
         await openParameters(page);
         await openDuration(page);
         await expect(trigger).toHaveAccessibleName(`时长（秒）：${label}`);
-        await expect(slider).toHaveValue(reference);
+        await expect(slider).toHaveAttribute('aria-valuenow', reference);
         expect(fixture.canvas().nodes[0]!.data.parameters).toEqual(parameters);
         expect(fixture.patches).toHaveLength(0);
         await slider.press('Escape');
@@ -1764,7 +1765,7 @@ for (const viewport of [
       const { trigger, card, slider } = await openDuration(page);
       const automatic = card.getByRole('button', { name: '自动时长', exact: true });
       await expect(trigger).toHaveAccessibleName('时长（秒）：自动');
-      await expect(slider).toHaveValue('10');
+      await expect(slider).toHaveAttribute('aria-valuenow', '10');
       await expect(slider).toHaveAttribute('aria-valuetext', '自动，滑块参考起点 10 秒');
       await expect(slider).toHaveAccessibleDescription(/当前为自动时长.*拖动后改用固定秒数/);
       await expect(automatic).toHaveAttribute('aria-pressed', 'true');
@@ -1784,7 +1785,7 @@ for (const viewport of [
       await openDuration(page);
       await slider.press('Home');
       await slider.press('ArrowRight');
-      await expect(slider).toHaveValue('6');
+      await expect(slider).toHaveAttribute('aria-valuenow', '6');
       await expect(automatic).toHaveAttribute('aria-pressed', 'false');
       await expect(trigger).toHaveAccessibleName('时长（秒）：6 秒');
       await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters?.duration).toBe(6);
@@ -1809,7 +1810,7 @@ for (const viewport of [
       await selectNode(page);
       await openParameters(page);
       await openDuration(page);
-      await expect(slider).toHaveValue('6');
+      await expect(slider).toHaveAttribute('aria-valuenow', '6');
       await expect(automatic).toHaveAttribute('aria-pressed', 'false');
       expect(fixture.errors).toEqual([]);
     });
@@ -1837,7 +1838,7 @@ for (const viewport of [
       await selectNode(page);
       await openParameters(page);
       await openDuration(page);
-      await expect(slider).toHaveValue('10');
+      await expect(slider).toHaveAttribute('aria-valuenow', '10');
       await expect(slider).toHaveAttribute('aria-valuetext', '未设置，滑块参考起点 10 秒');
       await expect(card.getByRole('button', { name: '清除时长', exact: true })).toBeDisabled();
       expect(fixture.patches).toHaveLength(savedPatches);
@@ -1927,7 +1928,7 @@ for (const viewport of [
           await openParameters(page);
           const { trigger, card, slider } = await openDuration(page);
           await expect(trigger).toHaveAccessibleName('时长（秒）：10 秒');
-          await expect(slider).toHaveValue('10');
+          await expect(slider).toHaveAttribute('aria-valuenow', '10');
           await expect(slider).toHaveAttribute('aria-invalid', String(Boolean(directory.issue)));
           if (directory.issue) {
             await expect(card.getByRole('status').filter({ hasText: directory.issue })).toHaveText(
@@ -1942,7 +1943,7 @@ for (const viewport of [
           await openParameters(page);
           await openDuration(page);
           await expect(trigger).toHaveAccessibleName('时长（秒）：10 秒');
-          await expect(slider).toHaveValue('10');
+          await expect(slider).toHaveAttribute('aria-valuenow', '10');
           await expect(slider).toHaveAttribute('aria-invalid', String(Boolean(directory.issue)));
           expect(fixture.canvas().nodes[0]!.data.parameters).toEqual(savedNode.data.parameters);
           expect(fixture.patches).toHaveLength(savedPatches);
@@ -1994,7 +1995,7 @@ for (const viewport of [
       await openParameters(page);
       const { trigger, card, slider } = await openDuration(page);
       await expect(trigger).toHaveAccessibleName('时长（秒）：自动');
-      await expect(slider).toHaveValue('10');
+      await expect(slider).toHaveAttribute('aria-valuenow', '10');
       await expect(slider).toHaveAttribute('aria-valuetext', '自动，滑块参考起点 10 秒');
       await expect(card.getByRole('button', { name: '自动时长', exact: true })).toHaveAttribute(
         'aria-pressed',
@@ -2067,7 +2068,7 @@ for (const viewport of [
       expect(savedPatches).toBeGreaterThan(0);
       await openDuration(page);
       await expect(trigger).toHaveAccessibleName('时长（秒）：未设置');
-      await expect(slider).toHaveValue('10');
+      await expect(slider).toHaveAttribute('aria-valuenow', '10');
       await expect(slider).toHaveAttribute('aria-invalid', 'true');
       await expect(card.getByRole('status').filter({ hasText: issue })).toHaveText(issue);
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
@@ -2111,22 +2112,15 @@ for (const viewport of [
         });
         await openParameters(page);
         const { trigger, slider } = await openDuration(page);
-        await expect(slider).toHaveValue(String(legacy.seconds));
+        await expect(slider).toHaveAttribute('aria-valuenow', String(legacy.seconds));
         await expect(slider).toHaveAttribute('aria-valuetext', /滑块参考起点/);
         expect(fixture.patches).toHaveLength(0);
         if (legacy.action === 'Home') {
           await slider.press('Home');
         } else {
-          const bounds = await slider.boundingBox();
-          if (!bounds) throw new Error('视频时长参考点没有可点击的屏幕区域');
-          await slider.click({
-            position: {
-              x: 10 + ((legacy.seconds - 5) / 25) * (bounds.width - 20),
-              y: bounds.height / 2,
-            },
-          });
+          await slider.click();
         }
-        await expect(slider).toHaveValue(String(legacy.seconds));
+        await expect(slider).toHaveAttribute('aria-valuenow', String(legacy.seconds));
         await expect(trigger).toHaveAccessibleName(`时长（秒）：${legacy.seconds} 秒`);
         await expect(slider).toHaveAttribute('aria-valuetext', `${legacy.seconds} 秒`);
         await expect
@@ -2139,7 +2133,7 @@ for (const viewport of [
         await openParameters(page);
         await openDuration(page);
         await expect(trigger).toHaveAccessibleName(`时长（秒）：${legacy.seconds} 秒`);
-        await expect(slider).toHaveValue(String(legacy.seconds));
+        await expect(slider).toHaveAttribute('aria-valuenow', String(legacy.seconds));
         expect(fixture.patches).toHaveLength(savedPatches);
         await slider.press('Escape');
         await page.getByRole('button', { name: '媒体参数', exact: true }).click();
@@ -2167,7 +2161,7 @@ for (const viewport of [
       const { slider, trigger } = await openDuration(page);
       await slider.press('Home');
       for (let step = 0; step < 5; step++) await slider.press('ArrowRight');
-      await expect(slider).toHaveValue('10');
+      await expect(slider).toHaveAttribute('aria-valuenow', '10');
       await expect(trigger).toHaveAccessibleName('时长（秒）：10 秒');
       await expect.poll(() => fixture.canvas().nodes[0]!.data.parameters?.duration).toBe(10);
       await slider.press('Escape');

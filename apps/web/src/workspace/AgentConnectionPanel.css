@@ -1,0 +1,81 @@
+.agent-connection-content,
+.agent-connection-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.agent-connection-content {
+  gap: 24px;
+}
+
+.agent-connection-section > .ant-typography {
+  margin: 0;
+}
+
+.agent-connection-section > .ant-btn {
+  align-self: flex-start;
+}
+
+.agent-connection-controls,
+.agent-connection-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-connection-heading {
+  justify-content: space-between;
+}
+
+.agent-connection-heading h5 {
+  margin: 0;
+}
+
+.agent-connection-expiry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-connection-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-connection-list > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--mc-border);
+}
+
+.agent-connection-record {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.agent-connection-template.ant-input {
+  margin-bottom: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  resize: none;
+}
+
+@media (max-width: 600px) {
+  .agent-connection-panel .ant-drawer-body {
+    padding: 16px;
+  }
+}

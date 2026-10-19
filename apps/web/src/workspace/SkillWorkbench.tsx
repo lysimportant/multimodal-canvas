@@ -14,6 +14,8 @@ import {
   DialogTitle,
   Input,
   Textarea,
+  FilePicker,
+  type FilePickerHandle,
 } from '@multimodal-canvas/ui';
 import { AutoComplete, Checkbox, Select, Tooltip, Typography } from 'antd';
 import {
@@ -322,7 +324,7 @@ function SkillContextResources({
   onAssetsChange,
   onUploadResource,
 }: SkillContextResourcesProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<FilePickerHandle>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const upload = onUploadResource ?? uploadSkillWorkbenchAsset;
@@ -364,17 +366,13 @@ function SkillContextResources({
         >
           {uploading ? '上传中…' : '添加文件或图片'}
         </Button>
-        <input
+        <FilePicker
           ref={fileInputRef}
-          className="skill-context-file-input"
-          type="file"
           aria-label="上传 Skill 优化上下文"
           accept="image/*,text/*,audio/*,video/*,.txt,.md,.json"
           multiple
           disabled={disabled || uploading}
-          onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? []);
-            event.currentTarget.value = '';
+          onFilesSelected={(files) => {
             void uploadFiles(files);
           }}
         />

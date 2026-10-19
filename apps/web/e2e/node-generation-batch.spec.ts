@@ -695,15 +695,18 @@ test('目录能力不限制视频模型和 15、30、17 秒参数，只有明确
   const card = page.getByRole('dialog', { name: '视频时长', exact: true });
   const seconds = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
   await expect(page.getByRole('option', { name: '16 秒', exact: true })).toHaveCount(0);
-  await expect(seconds).toHaveAttribute('type', 'range');
-  await expect(seconds).toHaveAttribute('min', '5');
-  await expect(seconds).toHaveAttribute('max', '30');
-  await expect(seconds).toHaveAttribute('step', '1');
-  await expect(seconds).toHaveValue('10');
+  await expect(seconds).toHaveClass(/ant-slider-handle/);
+  await expect(seconds).toHaveAttribute('aria-valuemin', '5');
+  await expect(seconds).toHaveAttribute('aria-valuemax', '30');
+  await expect(seconds).toHaveAttribute('aria-orientation', 'horizontal');
+  await expect(seconds).toHaveAttribute('aria-valuenow', '10');
   await expect(card.getByRole('button', { name: '清除时长', exact: true })).toBeDisabled();
   await seconds.press('Home');
-  for (let second = 5; second < 15; second++) await seconds.press('ArrowRight');
-  await expect(seconds).toHaveValue('15');
+  for (let second = 5; second < 15; second++) {
+    await seconds.press('ArrowRight');
+    await expect(seconds).toHaveAttribute('aria-valuenow', String(second + 1));
+  }
+  await expect(seconds).toHaveAttribute('aria-valuenow', '15');
   expect(fixture.submissions).toHaveLength(0);
   await seconds.press('Escape');
   await page.keyboard.press('Escape');
@@ -720,7 +723,7 @@ test('目录能力不限制视频模型和 15、30、17 秒参数，只有明确
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await duration.click();
   await seconds.press('End');
-  await expect(seconds).toHaveValue('30');
+  await expect(seconds).toHaveAttribute('aria-valuenow', '30');
   await expect(seconds).toHaveAttribute('aria-invalid', 'false');
   await expect(editor.getByRole('button', { name: '生成', exact: true })).toBeEnabled();
   await page.screenshot({ path: testInfo.outputPath('video-open-seconds.png') });
@@ -735,7 +738,7 @@ test('目录能力不限制视频模型和 15、30、17 秒参数，只有明确
   await duration.click();
   await seconds.press('Home');
   for (let second = 5; second < 17; second++) await seconds.press('ArrowRight');
-  await expect(seconds).toHaveValue('17');
+  await expect(seconds).toHaveAttribute('aria-valuenow', '17');
   await expect(seconds).toHaveAttribute('aria-invalid', 'false');
   expect(fixture.submissions).toHaveLength(2);
   await page.screenshot({ path: testInfo.outputPath('video-slider-seconds.png') });
@@ -758,7 +761,7 @@ test('目录能力不限制视频模型和 15、30、17 秒参数，只有明确
   await editor.getByRole('button', { name: '媒体参数', exact: true }).click();
   await expect(duration).toHaveAccessibleName('时长（秒）：17 秒');
   await duration.click();
-  await expect(seconds).toHaveValue('17');
+  await expect(seconds).toHaveAttribute('aria-valuenow', '17');
   expect(fixture.canvas().nodes[0].data.parameters).toEqual({
     ...preservedParameters,
     duration: 17,

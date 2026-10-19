@@ -22,6 +22,7 @@ import {
   imageEditReferencesRequirePublicUrl,
   imageEditSourceSchema,
   normalizeImageOutputParameters,
+  portRoles,
   resolveImageOutputParameters,
   precheckVideoGenerationInputs,
   renderPromptDocument,
@@ -2362,6 +2363,14 @@ function moonVideoPayload(
   return payload;
 }
 
+/** 将画布媒体角色归一为视频供应商 content 合同中的角色。 */
+function providerVideoMediaRole(mediaType: MediaType, role: string): string {
+  if (mediaType === 'image' && (role === 'firstFrame' || role === 'first_frame'))
+    return 'first_frame';
+  if (mediaType === 'image' && (role === 'lastFrame' || role === 'last_frame')) return 'last_frame';
+  return `reference_${mediaType}`;
+}
+
 /**
  * 将官方供应商与 Moon 已确认的视频输入映射到 New API 任务插件协议；未知参数和不合法组合在 POST 前失败。
  * H3/Seedance 使用 metadata.content，Wan3 使用 metadata.input.media；角色不会互相降级。
@@ -2411,12 +2420,7 @@ function officialVideoPayload(
   const orderedMedia = orderedVideoMedia(snapshot, inputs);
   const media = orderedMedia.map((input) => {
     const mediaType = input.snapshot.data.mediaType;
-    const role =
-      input.role === 'firstFrame'
-        ? 'first_frame'
-        : input.role === 'lastFrame'
-          ? 'last_frame'
-          : `reference_${mediaType}`;
+    const role = providerVideoMediaRole(mediaType, input.role);
     const url = officialVideoReferenceUrl(input, family, snapshot.modelAlias);
     return family === 'wan3'
       ? { type: role, url }
@@ -5437,10 +5441,20 @@ function openVideoRequestBody(
       body[key] = [...(mapped[key] as unknown[]), ...value];
     else body[key] = value;
   }
-  const metadata = {
-    ...(isRecord(mapped.metadata) ? mapped.metadata : {}),
-    ...(isRecord(parameters.metadata) ? parameters.metadata : {}),
-  };
+  const mappedMetadata = isRecord(mapped.metadata) ? mapped.metadata : {};
+  const parameterMetadata = isRecord(parameters.metadata) ? parameters.metadata : {};
+  const metadata = { ...mappedMetadata, ...parameterMetadata };
+  const strictMetadataRoles = ['moon-minimax-h3', 'minimax-h3'].includes(
+    videoFamilyForModel(snapshot.modelAlias),
+  );
+  const mappedContent = Array.isArray(mappedMetadata.content)
+    ? normalizeVideoMetadataContent(mappedMetadata.content, strictMetadataRoles)
+    : [];
+  const parameterContent = Array.isArray(parameterMetadata.content)
+    ? normalizeVideoMetadataContent(parameterMetadata.content, strictMetadataRoles)
+    : [];
+  if (mappedContent.length || parameterContent.length)
+    metadata.content = [...mappedContent, ...parameterContent];
   const mode = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.videoMode;
   if (
     !isRecord(mapped.metadata) &&
@@ -5459,7 +5473,7 @@ function openVideoRequestBody(
       ? { type: 'text', role: input.role, text: inputTextValue(input, 'video') }
       : {
           type: input.snapshot.data.mediaType + '_url',
-          role: input.role,
+          role: providerVideoMediaRole(input.snapshot.data.mediaType, input.role),
           [input.snapshot.data.mediaType + '_url']: {
             url: officialVideoReferenceUrl(input, 'open', snapshot.modelAlias),
           },
@@ -5470,7 +5484,7 @@ function openVideoRequestBody(
     for (const input of [...inputs.referenceVideos, ...inputs.referenceAudios])
       extra.push({
         type: input.snapshot.data.mediaType + '_url',
-        role: input.role,
+        role: providerVideoMediaRole(input.snapshot.data.mediaType, input.role),
         [input.snapshot.data.mediaType + '_url']: {
           url: officialVideoReferenceUrl(input, 'open', snapshot.modelAlias),
         },
@@ -5482,4 +5496,29 @@ function openVideoRequestBody(
     metadata.content = [...(Array.isArray(metadata.content) ? metadata.content : []), ...extra];
   if (Object.keys(metadata).length) body.metadata = metadata;
   return body;
+}
+
+/** 规范化开放 metadata.content 中的画布角色；未知模型保留显式供应商扩展角色。 */
+function normalizeVideoMetadataContent(
+  content: readonly unknown[],
+  strictProviderRoles: boolean,
+): unknown[] {
+  return content.map((item) => {
+    if (!isRecord(item)) return item;
+    const mediaType =
+      item.type === 'image_url'
+        ? 'image'
+        : item.type === 'video_url'
+          ? 'video'
+          : item.type === 'audio_url'
+            ? 'audio'
+            : undefined;
+    if (!mediaType) return item;
+    const role = normalizeErrorField(item.role);
+    if (!strictProviderRoles && role && !portRoles.includes(role as PortRole)) return item;
+    return {
+      ...item,
+      role: providerVideoMediaRole(mediaType, role ?? ''),
+    };
+  });
 }

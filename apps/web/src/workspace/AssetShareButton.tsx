@@ -451,7 +451,7 @@ export function AssetShareButton({ asset, presentation = 'viewer' }: AssetShareB
       ) : currentShare ? (
         <>
           <div className="asset-share-copy-row">
-            <input
+            <Input
               aria-label="分享链接"
               value={currentShare.url}
               readOnly

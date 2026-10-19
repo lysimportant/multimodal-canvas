@@ -2713,7 +2713,7 @@ test('四类节点都可以填写提示词、运行并显示对应结果预览',
       await expect(page.getByRole('button', { name: '生成', exact: true })).toBeDisabled();
       await slider.press('Home');
       for (let second = 5; second < 8; second++) await slider.press('ArrowRight');
-      await expect(slider).toHaveValue('8');
+      await expect(slider).toHaveAttribute('aria-valuenow', '8');
       await expect(slider).toHaveAttribute('aria-invalid', 'false');
       await slider.press('Escape');
       await page.keyboard.press('Escape');
@@ -2985,9 +2985,9 @@ for (const model of [
       const card = page.getByRole('dialog', { name: '视频时长', exact: true });
       const slider = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
       await expect(slider).toBeVisible();
-      await expect(slider).toHaveAttribute('min', '5');
-      await expect(slider).toHaveAttribute('max', '30');
-      await expect(slider).toHaveAttribute('step', '1');
+      await expect(slider).toHaveAttribute('aria-valuemin', '5');
+      await expect(slider).toHaveAttribute('aria-valuemax', '30');
+      await expect(slider).toHaveAttribute('aria-orientation', 'horizontal');
       const savedAutomaticDuration = page.waitForResponse(
         (response) =>
           response.request().method() === 'PATCH' &&
@@ -3228,12 +3228,12 @@ test('PC 视频仅显示清晰度比例时长，新建保存刷新与提交不�
   await panel.getByRole('button', { name: '时长（秒）：10 秒', exact: true }).click();
   const card = page.getByRole('dialog', { name: '视频时长', exact: true });
   const slider = card.getByRole('slider', { name: '视频时长（秒）', exact: true });
-  await expect(slider).toHaveValue('10');
+  await expect(slider).toHaveAttribute('aria-valuenow', '10');
   await expect(slider).toHaveAttribute('aria-invalid', 'true');
   await page.screenshot({ path: testInfo.outputPath('video-default-10-unsupported.png') });
   await slider.press('Home');
   for (let second = 5; second < 8; second++) await slider.press('ArrowRight');
-  await expect(slider).toHaveValue('8');
+  await expect(slider).toHaveAttribute('aria-valuenow', '8');
   await expect(slider).toHaveAttribute('aria-invalid', 'false');
   await expect(run).toBeEnabled();
   await slider.press('Escape');
@@ -3371,7 +3371,7 @@ for (const viewport of [
       .getByRole('slider', { name: '视频时长（秒）', exact: true });
     await slider.press('Home');
     for (let second = 5; second < 8; second++) await slider.press('ArrowRight');
-    await expect(slider).toHaveValue('8');
+    await expect(slider).toHaveAttribute('aria-valuenow', '8');
     await slider.press('Escape');
     await page.mouse.move(1, 1);
     await panel.getByRole('button', { name: '收起媒体参数' }).click();

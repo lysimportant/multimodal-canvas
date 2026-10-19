@@ -421,7 +421,8 @@ describe('项目参考资料选择窗口', () => {
     expect(onResourceAttach).toHaveBeenCalledExactlyOnceWith(asset);
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
     expect(dialog).toBeVisible();
-    await user.upload(input, file);
+    // Upload 会重建选择器；再次上传必须操作当前挂载的 input。
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('本地文件上传失败');
     expect(onUploadResource).toHaveBeenCalledTimes(2);
     expect(onResourceAttach).toHaveBeenCalledOnce();

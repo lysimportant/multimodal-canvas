@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { Textarea } from '@multimodal-canvas/ui';
 import { useImeDraft } from './ime';
 
 /** 编辑模型中的单个引用位置；只用于编辑器内部，不写入提示词正文。 */
@@ -422,10 +423,10 @@ export const InlinePromptInput = forwardRef<InlinePromptInputHandle, InlinePromp
         }));
       onChange(next, ...selectionRef.current, references);
     };
-    // 无引用的普通提示词保留原生 textarea；首次插入引用后保持富文本输入，避免删光时切换焦点。
+    // 普通提示词使用组件库文本域；首次插入引用后保持富文本输入，避免删光时切换焦点。
     if (!richRef.current)
       return (
-        <textarea
+        <Textarea
           ref={(element) => {
             elementRef.current = element;
           }}

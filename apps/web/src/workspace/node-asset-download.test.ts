@@ -130,9 +130,12 @@ describe('节点媒体下载', () => {
 
   it('取消请求保留 AbortError 供节点忽略旧结果', async () => {
     const abort = new AbortController();
-    abort.abort();
     const cause = new DOMException('Aborted', 'AbortError');
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(cause));
+    // 已取消请求在 apiFetch 前置检查时拒绝，不会进入底层 fetch。
+    abort.abort(cause);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
     await expect(fetchNodeAssetDownload(makeAsset(), abort.signal)).rejects.toBe(cause);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

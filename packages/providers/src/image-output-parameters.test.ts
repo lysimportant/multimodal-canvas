@@ -298,7 +298,8 @@ describe('公网参考图的 edits 合同', () => {
     const second = structuredClone(first);
     second.id = 'source-image-2';
     second.data.assetId = 'synthetic-image-2';
-    second.data.contentUrl = 'https://canvas.example.test/v1/provider-assets/two/versions/1/content';
+    second.data.contentUrl =
+      'https://canvas.example.test/v1/provider-assets/two/versions/1/content';
     snapshot.nodes.push(second);
     snapshot.inputs.push({
       ...snapshot.inputs[0]!,

@@ -1,5 +1,5 @@
 import { Button } from '@multimodal-canvas/ui';
-import { Tooltip } from 'antd';
+import { Collapse, Tooltip } from 'antd';
 import {
   ArrowDown,
   ArrowRight,
@@ -28,6 +28,7 @@ import { HomeRevealField } from './HomeRevealField';
 import { PageFrame } from './PageFrame';
 
 import './home-page.css';
+import './home-faq.css';
 
 /** 首页路由，用于保持公共导航的选中状态。 */
 const homeRoute: AppRoute = { id: 'home', pathname: '/' };
@@ -322,14 +323,16 @@ export function HomePage({ continueProject, onNavigate }: HomePageProps) {
             <h2 id="home-faq-title">常见问题</h2>
             <p>这里说明首页会做什么，也说明哪些操作不会自动发生。</p>
           </div>
-          <div className="mc-home-faq-list">
-            {homeFaqItems.map((item) => (
-              <details key={item.question}>
-                <summary>{item.question}</summary>
-                <p>{item.answer}</p>
-              </details>
-            ))}
-          </div>
+          <Collapse
+            className="mc-home-faq-list"
+            ghost
+            expandIconPlacement="end"
+            items={homeFaqItems.map((item) => ({
+              key: item.question,
+              label: item.question,
+              children: <p>{item.answer}</p>,
+            }))}
+          />
         </section>
         <section className="mc-home-final-cta" data-home-reveal>
           <div className="mc-page-container">

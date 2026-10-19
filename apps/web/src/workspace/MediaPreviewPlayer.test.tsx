@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MediaPreviewPlayer } from './MediaPreviewPlayer';
 
@@ -46,7 +47,9 @@ describe('共用媒体预览播放器', () => {
       expect(media.paused).toBe(false);
       fireEvent.click(screen.getByRole('button', { name: '暂停' + label }));
       expect(media.paused).toBe(true);
-      fireEvent.change(screen.getByLabelText('播放速度'), { target: { value: '1.5' } });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('combobox', { name: '播放速度' }));
+      await user.click(screen.getByText('1.5×'));
       expect(media.playbackRate).toBe(1.5);
       fireEvent.click(screen.getByRole('button', { name: '循环播放' }));
       expect(media.loop).toBe(true);
@@ -90,16 +93,18 @@ describe('共用媒体预览播放器', () => {
     await act(async () => reject(new Error('旧视频拒绝播放')));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByLabelText('新视频')).toHaveAttribute('src', '/new');
-    expect(screen.getByLabelText('播放速度')).toHaveValue('1');
+    expect(screen.getByLabelText('播放速度').closest('.ant-select')).toHaveTextContent('1×');
   });
 
-  it('解码失败可重建媒体重试，并保留选择的倍速', () => {
+  it('解码失败可重建媒体重试，并保留选择的倍速', async () => {
     const onError = vi.fn();
     render(
       <MediaPreviewPlayer kind="video" src="/synthetic-media" name="视频" onError={onError} />,
     );
     const media = screen.getByLabelText('视频');
-    fireEvent.change(screen.getByLabelText('播放速度'), { target: { value: '2' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: '播放速度' }));
+    await user.click(screen.getByText('2×'));
     fireEvent.error(media);
     expect(onError).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('alert')).toHaveTextContent('视频加载失败');

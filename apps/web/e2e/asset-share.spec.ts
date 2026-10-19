@@ -698,7 +698,8 @@ test('1280x480 视频 Dialog 播放操作完整且关闭后停止，不撑大节
     .toBeGreaterThan(0);
   await pause.click();
   await expect.poll(() => media.evaluate((element: HTMLVideoElement) => element.paused)).toBe(true);
-  await viewer.getByLabel('播放速度', { exact: true }).selectOption('1.5');
+  await viewer.getByRole('combobox', { name: '播放速度', exact: true }).click();
+  await viewer.getByRole('option', { name: '1.5×', exact: true }).click();
   expect(await media.evaluate((element: HTMLVideoElement) => element.playbackRate)).toBe(1.5);
   await expect(viewer.getByLabel('播放速度', { exact: true })).toBeInViewport();
   const box = await viewer.boundingBox();
@@ -792,7 +793,8 @@ test('1366x768 匿名页展示视频、音频、文字并明确显示失效链�
       await expect
         .poll(() => media.evaluate((element: HTMLMediaElement) => element.paused))
         .toBe(true);
-      await page.getByLabel('播放速度', { exact: true }).selectOption('1.5');
+      await page.getByRole('combobox', { name: '播放速度', exact: true }).click();
+      await page.getByRole('option', { name: '1.5×', exact: true }).click();
       expect(await media.evaluate((element: HTMLMediaElement) => element.playbackRate)).toBe(1.5);
       await page.getByRole('button', { name: '循环播放', exact: true }).click();
       expect(await media.evaluate((element: HTMLMediaElement) => element.loop)).toBe(true);
