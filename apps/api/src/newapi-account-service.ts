@@ -4,6 +4,7 @@ import { Prisma, PrismaClient, type NewApiIdentity, type NewApiGroupBinding } fr
 import { CredentialEncryptionKeyring } from '@multimodal-canvas/credential-crypto';
 import {
   isGeminiChatImageModel,
+  IMAGE2PRO_IMAGE_TASK_CONTRACT,
   GLOBALSTORE_IMAGE_CONTRACT,
   GLOBALSTORE_VIDEO_CONTRACT,
   runSnapshotSchema,
@@ -976,7 +977,9 @@ export class NewApiAccountService {
           isGeminiChatImageModel(modelAlias) &&
           (!model?.contract || model.contract === 'openai-images')
             ? 'openai-chat-completions'
-            : (model?.contract ?? defaultContract),
+            : node.data.mediaType === 'image' && modelAlias.includes('无限制')
+              ? IMAGE2PRO_IMAGE_TASK_CONTRACT
+              : (model?.contract ?? defaultContract),
         authority: authority(binding.identity, binding),
       };
     }

@@ -11,12 +11,23 @@ import type { AuthenticatedSession } from './auth-service';
 import type { AssetStore } from './assets';
 import { ProjectStoreError, type ProjectStore } from './projects';
 import type { RunService } from './runs';
-import { AgentAccessService, type AgentAccessClaims } from './agent-access';
+import {
+  AgentAccessService,
+  AgentAccessConnectionLimitError,
+  type AgentAccessClaims,
+} from './agent-access';
+import { AgentUrlConnectionLimitError, type AgentUrlConnections } from './agent-url-connections';
 import { canvasAgentTools, executeCanvasTool } from './canvas-agent-tools';
 import { registerCanvasMcp, CanvasMcpToolError } from './canvas-mcp';
+import {
+  LocalAgentConnections,
+  LocalAgentConnectionLimitError,
+  localAgentAvailability,
+} from './local-agent-connections';
 
 type Options = {
   access?: AgentAccessService;
+  urlConnections?: AgentUrlConnections;
   projectStore: ProjectStore;
   assetStore: AssetStore;
   runService: RunService;
@@ -32,7 +43,7 @@ type Options = {
 type ProjectParams = { projectId: string };
 const connectionSchema = z
   .object({
-    allowGeneration: z.boolean().default(false),
+    allowGeneration: z.boolean().default(true),
     expiresInHours: z.number().int().min(1).max(24).default(8),
   })
   .strict();
@@ -101,6 +112,8 @@ function referencedAssetIds(canvas: CanvasDocument): Set<string> {
 /** 注册项目连接与共用画布操作 API；只签发受当前登录授权期限约束的项目令牌。 */
 export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options): void {
   const { projectStore, assetStore, access } = options;
+  const localConnections = access ? new LocalAgentConnections(app, access) : undefined;
+  app.addHook('preClose', async () => localConnections?.close());
   const mcpPath = (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/mcp`;
   const scopeOf = (request: FastifyRequest) => ({
     ownerId: options.principals.get(request)?.userId,
@@ -126,6 +139,154 @@ export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options
     }
     return (await projectExists(request, reply)) ? session : undefined;
   };
+
+  app.get<{ Params: ProjectParams }>(
+    '/v1/projects/:projectId/agent-url-connections',
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+      if (!session) return;
+      return reply.header('cache-control', 'no-store').send({
+        available: true,
+        connections: await options.urlConnections!.list(session.user.id, request.params.projectId),
+      });
+    },
+  );
+  app.post<{ Params: ProjectParams }>(
+    '/v1/projects/:projectId/agent-url-connections',
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+      if (!session) return;
+      reply.header('cache-control', 'no-store');
+      const parsed = connectionSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'invalid_input', error: '连接权限或有效期无效' });
+      try {
+        await options.urlConnections!.list(session.user.id, request.params.projectId);
+        const connection = await options.urlConnections!.create({
+          ...parsed.data,
+          userId: session.user.id,
+          projectId: request.params.projectId,
+          authorizedUntil: session.session.absoluteExpiresAt ?? session.session.expiresAt,
+        });
+        return reply.code(201).send({ connection });
+      } catch (error) {
+        if (
+          error instanceof AgentAccessConnectionLimitError ||
+          error instanceof AgentUrlConnectionLimitError
+        )
+          return reply.code(409).send({
+            code: 'connection_limit',
+            error: 'Agent 连接数量已达上限，请先撤销不用的连接',
+          });
+        request.log.warn({ code: 'agent_url_create_failed' }, '创建 Agent 连接地址失败');
+        return reply.code(503).send({
+          code: 'agent_connection_unavailable',
+          error: '无法创建 Agent 连接地址，请稍后重试',
+        });
+      }
+    },
+  );
+  app.delete<{ Params: ProjectParams & { connectionId: string } }>(
+    '/v1/projects/:projectId/agent-url-connections/:connectionId',
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+      if (!session) return;
+      reply.header('cache-control', 'no-store');
+      if (
+        !z.string().uuid().safeParse(request.params.connectionId).success ||
+        !(await options.urlConnections!.revoke(
+          session.user.id,
+          request.params.projectId,
+          request.params.connectionId,
+        ))
+      )
+        return reply.code(404).send({ error: 'connection not found' });
+      return reply.code(204).send();
+    },
+  );
+
+  app.get<{ Params: ProjectParams }>(
+    '/v1/projects/:projectId/local-agent-connections',
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+      if (!session) return;
+      reply.header('cache-control', 'no-store');
+      const availability = localAgentAvailability(app, request);
+      return {
+        ...availability,
+        connections: availability.available
+          ? await localConnections!.list(session.user.id, request.params.projectId)
+          : [],
+      };
+    },
+  );
+  app.post<{ Params: ProjectParams }>(
+    '/v1/projects/:projectId/local-agent-connections',
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+      if (!session) return;
+      reply.header('cache-control', 'no-store');
+      const availability = localAgentAvailability(app, request);
+      if (!availability.available)
+        return reply
+          .code(403)
+          .send({ code: 'local_connection_unavailable', error: availability.reason });
+      const parsed = connectionSchema.safeParse(request.body);
+      if (!parsed.success)
+        return reply.code(400).send({ code: 'invalid_input', error: '连接权限或有效期无效' });
+      await localConnections!.list(session.user.id, request.params.projectId);
+      if ((await access!.list(session.user.id, request.params.projectId)).length >= 20)
+        return reply.code(409).send({
+          code: 'connection_limit',
+          error: '当前项目最多保留20个有效连接，请先撤销不用的连接',
+        });
+      try {
+        const connection = await localConnections!.create({
+          ...parsed.data,
+          userId: session.user.id,
+          projectId: request.params.projectId,
+          authorizedUntil: session.session.absoluteExpiresAt ?? session.session.expiresAt,
+        });
+        return reply.code(201).send({ connection });
+      } catch (error) {
+        if (
+          error instanceof LocalAgentConnectionLimitError ||
+          error instanceof AgentAccessConnectionLimitError
+        )
+          return reply
+            .code(409)
+            .send({ code: 'connection_limit', error: '本地连接数量已达上限，请先撤销不用的连接' });
+        request.log.warn({ code: 'local_mcp_create_failed' }, '创建本地 Agent 连接失败');
+        return reply.code(503).send({
+          code: 'local_connection_unavailable',
+          error: '无法启动本机 MCP 服务，请稍后重试',
+        });
+      }
+    },
+  );
+  app.delete<{ Params: ProjectParams & { connectionId: string } }>(
+    '/v1/projects/:projectId/local-agent-connections/:connectionId',
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+      if (!session) return;
+      reply.header('cache-control', 'no-store');
+      const availability = localAgentAvailability(app, request);
+      if (!availability.available)
+        return reply
+          .code(403)
+          .send({ code: 'local_connection_unavailable', error: availability.reason });
+      if (
+        !z.string().uuid().safeParse(request.params.connectionId).success ||
+        !(await localConnections!.revoke(
+          session.user.id,
+          request.params.projectId,
+          request.params.connectionId,
+        ))
+      )
+        return reply.code(404).send({ error: 'connection not found' });
+      return reply.code(204).send();
+    },
+  );
 
   app.get<{ Params: ProjectParams }>(
     '/v1/projects/:projectId/agent-connections',

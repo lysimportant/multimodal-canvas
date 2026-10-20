@@ -4,6 +4,7 @@ import { UnrecoverableError } from 'bullmq';
 import {
   GLOBALSTORE_IMAGE_CONTRACT,
   GLOBALSTORE_VIDEO_CONTRACT,
+  IMAGE2PRO_IMAGE_TASK_CONTRACT,
   type ProviderJob,
   type RunJobData,
   type RunSnapshot,
@@ -69,7 +70,11 @@ const authority = {
 };
 
 /** 创建单节点冻结快照；是否包含新执行授权由测试显式决定。 */
-function snapshot(mediaType: 'image' | 'video', authorized: boolean): RunSnapshot {
+function snapshot(
+  mediaType: 'image' | 'video',
+  authorized: boolean,
+  imageContract = 'openai-images',
+): RunSnapshot {
   const credentialId = '123e4567-e89b-42d3-a456-426614174211';
   const value: RunSnapshot = {
     projectId: '123e4567-e89b-42d3-a456-426614174210',
@@ -101,9 +106,10 @@ function snapshot(mediaType: 'image' | 'video', authorized: boolean): RunSnapsho
       target: {
         credentialId,
         credentialVersion: 1,
+        provider: 'newapi',
         modelAlias: value.modelAlias,
         mediaType,
-        contract: mediaType === 'video' ? 'newapi-unified-v1' : 'openai-images',
+        contract: mediaType === 'video' ? 'newapi-unified-v1' : imageContract,
         authority,
       },
     };
@@ -1101,5 +1107,162 @@ describe('Worker 中性执行授权', () => {
         (entry) => entry.status === 'succeeded' && entry.payload?.deliveryState === 'archived',
       ),
     ).toBe(true);
+  });
+
+  it('Image2Pro 图片只读恢复仅查询冻结合同下已有任务 ID', async () => {
+    const contract = IMAGE2PRO_IMAGE_TASK_CONTRACT;
+    const providerJob: ProviderJob = {
+      ...createProviderJobRecord('123e4567-e89b-42d3-a456-426614174215', 'newapi', 'submitted', 35),
+      platformJobId: 'image-task-1',
+      payload: { contract, phase: 'polling' },
+    };
+    const f = fixture(snapshot('image', true, contract), providerJob);
+    f.job.data.retrieveOnly = true;
+    f.options.persistence!.isCancellationRequested = async () => false;
+    const execution = singleSendAuthorization().execution;
+    createRunWorker({ ...f.options, execution });
+
+    await expect(queueState.processor?.(f.job)).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(execution.beginSend).toHaveBeenCalledWith(
+      expect.objectContaining({ resumePlatformJobId: 'image-task-1' }),
+    );
+    expect(f.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeOnly: true,
+        providerJob: expect.objectContaining({
+          platformJobId: 'image-task-1',
+          payload: expect.objectContaining({ contract, phase: 'polling' }),
+        }),
+      }),
+    );
+    expect(f.creationCalls()).toBe(0);
+    expect(f.resumeCalls()).toBe(1);
+  });
+
+  it.each([
+    {
+      name: '缺少平台 ID',
+      platformJobId: undefined,
+      contract: IMAGE2PRO_IMAGE_TASK_CONTRACT,
+      phase: 'submitted',
+    },
+    {
+      name: '创建中回执带指纹但没有平台 ID',
+      platformJobId: undefined,
+      contract: IMAGE2PRO_IMAGE_TASK_CONTRACT,
+      phase: 'submitting',
+      requestFingerprint: 'a'.repeat(64),
+    },
+    {
+      name: '冻结合同冲突',
+      platformJobId: 'image-task-1',
+      contract: 'openai-images',
+      phase: 'polling',
+    },
+    {
+      name: '任务阶段未知',
+      platformJobId: 'image-task-1',
+      contract: IMAGE2PRO_IMAGE_TASK_CONTRACT,
+      phase: 'waiting-something',
+    },
+  ])(
+    'Image2Pro 只读恢复遇到 $name 时拒绝重新提交',
+    async ({ platformJobId, contract, phase, requestFingerprint }) => {
+      const providerJob: ProviderJob = {
+        ...createProviderJobRecord(
+          '123e4567-e89b-42d3-a456-426614174215',
+          'newapi',
+          'submitted',
+          35,
+        ),
+        ...(platformJobId ? { platformJobId } : {}),
+        payload: { contract, phase, ...(requestFingerprint ? { requestFingerprint } : {}) },
+      };
+      const f = fixture(snapshot('image', true, IMAGE2PRO_IMAGE_TASK_CONTRACT), providerJob);
+      f.job.data.retrieveOnly = true;
+      f.options.persistence!.isCancellationRequested = async () => false;
+      const execution = singleSendAuthorization().execution;
+      createRunWorker({ ...f.options, execution });
+
+      await expect(queueState.processor?.(f.job)).rejects.toBeInstanceOf(UnrecoverableError);
+
+      expect(execution.beginSend).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.creationCalls()).toBe(0);
+      expect(f.resumeCalls()).toBe(0);
+    },
+  );
+
+  it('Image2Pro 图片创建中收到取消时先持久化任务 ID，再返回取消且不重新创建', async () => {
+    const contract = IMAGE2PRO_IMAGE_TASK_CONTRACT;
+    const f = fixture(snapshot('image', true, contract));
+    f.options.cancellationPollMs = 5;
+    let request: WorkerProviderRequest | undefined;
+    let markPostStarted!: () => void;
+    let releaseTaskReceipt!: () => void;
+    const postStarted = new Promise<void>((resolve) => {
+      markPostStarted = resolve;
+    });
+    const receiptBarrier = new Promise<void>((resolve) => {
+      releaseTaskReceipt = resolve;
+    });
+    f.execute.mockImplementation(async (currentRequest) => {
+      request = currentRequest;
+      await reportRequestPrompt({
+        ...currentRequest,
+        provider: 'newapi',
+        mediaType: 'image',
+        requestIdentity: 'POST /v1/images/tasks#1',
+        format: 'plain',
+        parts: [{ order: 0, text: 'Synthetic generation' }],
+        resources: [],
+      });
+      await currentRequest.onProviderJob?.({
+        provider: 'newapi',
+        status: 'submitted',
+        progress: 0,
+        payload: { contract, phase: 'submitting' },
+      });
+      markPostStarted();
+      await receiptBarrier;
+      await currentRequest.onProviderJob?.({
+        provider: 'newapi',
+        platformJobId: 'image-task-accepted',
+        status: 'submitted',
+        progress: 5,
+        payload: { contract, phase: 'submitted' },
+      });
+      await new Promise<void>((resolve) => {
+        if (currentRequest.signal?.aborted) return resolve();
+        currentRequest.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      throw new Error('worker cancellation requested');
+    });
+    const execution = singleSendAuthorization().execution;
+    createRunWorker({ ...f.options, execution });
+    const processing = queueState.processor!(f.job);
+
+    await postStarted;
+    f.job.data.cancelRequested = true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(request?.signal?.aborted).toBe(false);
+    releaseTaskReceipt();
+    await vi.waitFor(() =>
+      expect(
+        [...f.persisted.values()].some(
+          (providerJob) => providerJob.platformJobId === 'image-task-accepted',
+        ),
+      ).toBe(true),
+    );
+    await vi.waitFor(() => expect(request?.signal?.aborted).toBe(true));
+
+    await expect(processing).resolves.toMatchObject({
+      status: 'cancelled',
+      providerJob: { platformJobId: 'image-task-accepted', status: 'cancelled' },
+    });
+    expect(f.job.data.providerJob?.platformJobId).toBe('image-task-accepted');
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.creationCalls()).toBe(0);
   });
 });

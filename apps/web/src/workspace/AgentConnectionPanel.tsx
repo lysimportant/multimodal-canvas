@@ -1,7 +1,6 @@
 import {
   Alert,
   Button,
-  Checkbox,
   Drawer,
   Empty,
   Input,
@@ -23,6 +22,7 @@ type AgentConnection = {
   allowGeneration: boolean;
   createdAt: string;
   expiresAt: string;
+  mcpUrl: string;
 };
 
 export type AgentConnectionPanelProps = {
@@ -34,9 +34,37 @@ export type AgentConnectionPanelProps = {
 /** 只把本组件的固定提示展示到界面，不回显网络错误或响应正文中的敏感内容。 */
 class AgentConnectionError extends Error {}
 
-/** 只接受当前项目的服务端连接记录；不从列表恢复或推断任何令牌。 */
-function readConnection(value: unknown, projectId: string): AgentConnection {
-  const item = value as Partial<AgentConnection> | null;
+type ConnectionMode = 'local' | 'server';
+
+/** 服务端地址只接受当前项目路径及单个连接键；部署前缀来自受信任的 API 配置。 */
+function serverConnectionUrl(path: unknown, projectId: string): string {
+  const prefix = `/v1/projects/${encodeURIComponent(projectId)}/mcp?connection=`;
+  if (
+    typeof path !== 'string' ||
+    !path.startsWith(prefix) ||
+    !/^[A-Za-z0-9_-]{43}$/.test(path.slice(prefix.length))
+  )
+    throw new AgentConnectionError('服务器连接地址无效，请重试');
+  let base: URL;
+  try {
+    base = new URL(API_BASE_URL || '/', window.location.origin);
+  } catch {
+    throw new AgentConnectionError('服务器连接地址无效，请重试');
+  }
+  if (
+    !['http:', 'https:'].includes(base.protocol) ||
+    base.username ||
+    base.password ||
+    base.search ||
+    base.hash
+  )
+    throw new AgentConnectionError('服务器连接地址无效，请重试');
+  return `${base.origin}${base.pathname.replace(/\/$/, '')}${path}`;
+}
+
+/** 只接受当前项目的本机回环地址或服务器相对路径，不信任任意 URL。 */
+function readConnection(value: unknown, projectId: string, mode: ConnectionMode): AgentConnection {
+  const item = value as (Partial<AgentConnection> & { mcpPath?: unknown }) | null;
   if (
     !item ||
     typeof item.id !== 'string' ||
@@ -49,17 +77,14 @@ function readConnection(value: unknown, projectId: string): AgentConnection {
     !Number.isFinite(Date.parse(item.expiresAt))
   )
     throw new AgentConnectionError('连接响应无效，请重试');
+  if (mode === 'server')
+    return { ...item, mcpUrl: serverConnectionUrl(item.mcpPath, projectId) } as AgentConnection;
+  const address =
+    typeof item.mcpUrl === 'string' &&
+    /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/mcp$/.exec(item.mcpUrl);
+  if (!address || Number(address[1]) > 65535)
+    throw new AgentConnectionError('本地连接地址无效，请重试');
   return item as AgentConnection;
-}
-
-/** MCP 路径始终绑定当前 API 服务，模板不会把授权发送到接口返回的外部地址。 */
-function connectionUrl(path: unknown): string {
-  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//'))
-    throw new AgentConnectionError('连接地址无效，请重试');
-  const base = new URL(API_BASE_URL, window.location.href);
-  const url = new URL(path, base);
-  if (url.origin !== base.origin) throw new AgentConnectionError('连接地址无效，请重试');
-  return url.href;
 }
 
 function requestError(response: Response): Error {
@@ -72,7 +97,7 @@ function requestError(response: Response): Error {
   );
 }
 
-/** 关闭、换项目或换账户时卸载授权会话，令牌不进入浏览器持久存储。 */
+/** 关闭、换项目或换账户时卸载界面会话；关闭面板不会停止已启用的连接。 */
 export function AgentConnectionPanel({ projectId, open, onClose }: AgentConnectionPanelProps) {
   const [authGeneration, setAuthGeneration] = useState(getAuthSessionGeneration);
   useEffect(() => subscribeAuthSession(() => setAuthGeneration(getAuthSessionGeneration())), []);
@@ -97,10 +122,10 @@ function ConnectionSession({
   onClose: () => void;
 }) {
   const [connections, setConnections] = useState<AgentConnection[]>([]);
-  const [mcpUrl, setMcpUrl] = useState<string>();
-  const [token, setToken] = useState<{ value: string; connectionId: string }>();
+  const [selectedId, setSelectedId] = useState<string>();
+  const [available, setAvailable] = useState(false);
+  const [mode, setMode] = useState<ConnectionMode>('local');
   const [hours, setHours] = useState<number | null>(8);
-  const [allowGeneration, setAllowGeneration] = useState(false);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [revoking, setRevoking] = useState<string>();
@@ -110,11 +135,17 @@ function ConnectionSession({
   const live = useRef(true);
   const lifecycle = useRef(0);
   const requests = useRef(new Set<AbortController>());
-  const endpoint = `${API_BASE_URL.replace(/\/$/, '')}/v1/projects/${encodeURIComponent(projectId)}/agent-connections`;
+  const projectEndpoint = `${API_BASE_URL.replace(/\/$/, '')}/v1/projects/${encodeURIComponent(projectId)}`;
+  const endpoint = `${projectEndpoint}/${mode === 'local' ? 'local-agent-connections' : 'agent-url-connections'}`;
+  const modeLabel = mode === 'local' ? '本地' : '服务器';
   const active = (epoch = lifecycle.current) =>
     live.current && epoch === lifecycle.current && getAuthSessionGeneration() === authGeneration;
   const busy = loading || creating || revoking !== undefined;
   const validHours = hours !== null && Number.isInteger(hours) && hours >= 1 && hours <= 24;
+  const selected = connections.find(
+    (connection) => connection.id === selectedId && Date.parse(connection.expiresAt) > Date.now(),
+  );
+  const mcpUrl = available ? selected?.mcpUrl : undefined;
 
   const invalidate = () => {
     live.current = false;
@@ -146,14 +177,31 @@ function ConnectionSession({
     setLoading(true);
     setError(undefined);
     try {
-      const result = await request(endpoint);
+      let result = await request(`${projectEndpoint}/local-agent-connections`);
       if (!active(epoch)) return;
-      if (!result || !Array.isArray(result.connections))
+      if (!result || typeof result.available !== 'boolean' || !Array.isArray(result.connections))
         throw new AgentConnectionError('连接响应无效，请重试');
-      const items = result.connections.map((item: unknown) => readConnection(item, projectId));
-      const url = connectionUrl(result.mcpPath);
+      let nextMode: ConnectionMode = 'local';
+      if (!result.available) {
+        nextMode = 'server';
+        result = await request(`${projectEndpoint}/agent-url-connections`);
+        if (!active(epoch)) return;
+        if (!result || typeof result.available !== 'boolean' || !Array.isArray(result.connections))
+          throw new AgentConnectionError('连接响应无效，请重试');
+      }
+      const items = result.connections.map((item: unknown) =>
+        readConnection(item, projectId, nextMode),
+      );
       setConnections(items);
-      setMcpUrl(url);
+      setAvailable(result.available);
+      setMode(nextMode);
+      setSelectedId((current) =>
+        items.some(
+          (item: AgentConnection) => item.id === current && Date.parse(item.expiresAt) > Date.now(),
+        )
+          ? current
+          : items.find((item: AgentConnection) => Date.parse(item.expiresAt) > Date.now())?.id,
+      );
     } catch (reason) {
       if (active(epoch))
         setError(reason instanceof AgentConnectionError ? reason.message : '连接加载失败，请重试');
@@ -170,29 +218,26 @@ function ConnectionSession({
   }, []);
 
   const create = async () => {
-    if (busy || !validHours || !active()) return;
+    if (busy || !available || !validHours || !active()) return;
     const epoch = lifecycle.current;
     setCreating(true);
     setError(undefined);
     setNotice(undefined);
-    setToken(undefined);
     try {
       const result = await request(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allowGeneration, expiresInHours: hours }),
+        body: JSON.stringify({ expiresInHours: hours }),
       });
       if (!active(epoch)) return;
-      if (!result || typeof result.token !== 'string' || !result.token)
-        throw new AgentConnectionError('连接响应无效，请重试');
-      const connection = readConnection(result.connection, projectId);
-      const url = connectionUrl(result.mcpPath);
+      if (!result) throw new AgentConnectionError('连接响应无效，请重试');
+      const connection = readConnection(result.connection, projectId, mode);
       setConnections((items) => [connection, ...items.filter((item) => item.id !== connection.id)]);
-      setMcpUrl(url);
-      setToken({ value: result.token, connectionId: connection.id });
+      setSelectedId(connection.id);
+      setNotice(`${modeLabel}连接已启用`);
     } catch (reason) {
       if (active(epoch))
-        setError(reason instanceof AgentConnectionError ? reason.message : '创建连接失败，请重试');
+        setError(reason instanceof AgentConnectionError ? reason.message : '启用连接失败，请重试');
     } finally {
       if (active(epoch)) setCreating(false);
     }
@@ -208,11 +253,17 @@ function ConnectionSession({
       await request(`${endpoint}/${encodeURIComponent(connectionId)}`, { method: 'DELETE' });
       if (!active(epoch)) return;
       setConnections((items) => items.filter((item) => item.id !== connectionId));
-      setToken((current) => (current?.connectionId === connectionId ? undefined : current));
-      setNotice('连接已撤销');
+      setSelectedId((current) =>
+        current === connectionId
+          ? connections.find(
+              (item) => item.id !== connectionId && Date.parse(item.expiresAt) > Date.now(),
+            )?.id
+          : current,
+      );
+      setNotice('连接已停止');
     } catch (reason) {
       if (active(epoch))
-        setError(reason instanceof AgentConnectionError ? reason.message : '撤销连接失败，请重试');
+        setError(reason instanceof AgentConnectionError ? reason.message : '停止连接失败，请重试');
     } finally {
       if (active(epoch)) setRevoking(undefined);
     }
@@ -232,11 +283,7 @@ function ConnectionSession({
   };
 
   const codexTemplate = mcpUrl
-    ? [
-        '[mcp_servers.canvas]',
-        `url = ${JSON.stringify(mcpUrl)}`,
-        'bearer_token_env_var = "CANVAS_AGENT_TOKEN"',
-      ].join('\n')
+    ? ['[mcp_servers.canvas]', `url = ${JSON.stringify(mcpUrl)}`].join('\n')
     : '';
   const harnessTemplate = mcpUrl
     ? [
@@ -247,8 +294,6 @@ function ConnectionSession({
         '        serverName: canvas',
         '        transport: streamable-http',
         `        url: ${JSON.stringify(mcpUrl)}`,
-        '        headers:',
-        "          Authorization: !!js '`Bearer ${process.env.CANVAS_AGENT_TOKEN}`'",
       ].join('\n')
     : '';
 
@@ -263,7 +308,6 @@ function ConnectionSession({
       rootClassName="agent-connection-panel"
       onClose={() => {
         invalidate();
-        setToken(undefined);
         setNotice(undefined);
         setClosed(true);
         onClose();
@@ -271,8 +315,12 @@ function ConnectionSession({
     >
       <div className="agent-connection-content">
         <Typography.Paragraph>
-          允许外部 Agent 读取当前项目并编辑画布；发起生成需单独授权。
+          连接 Codex、DeepSeek Harness 等 Agent
+          后，即可创建节点、连线、调整参数、运行和取消当前画布任务，无需额外令牌。
         </Typography.Paragraph>
+        {!loading && !available && !error && (
+          <Alert type="info" showIcon title="连接暂不可用，请刷新列表重试" />
+        )}
         {error && (
           <Alert
             type="error"
@@ -286,8 +334,8 @@ function ConnectionSession({
           />
         )}
         {notice && <Alert type="success" showIcon title={<span role="status">{notice}</span>} />}
-        <section aria-label="创建 Agent 连接" className="agent-connection-section">
-          <Typography.Title level={5}>创建连接</Typography.Title>
+        <section aria-label={`启用${modeLabel} Agent 连接`} className="agent-connection-section">
+          <Typography.Title level={5}>{modeLabel}连接</Typography.Title>
           <div className="agent-connection-controls">
             <label className="agent-connection-expiry">
               有效期（小时）
@@ -298,16 +346,9 @@ function ConnectionSession({
                 precision={0}
                 value={hours}
                 onChange={setHours}
-                disabled={busy}
+                disabled={busy || !available}
               />
             </label>
-            <Checkbox
-              checked={allowGeneration}
-              disabled={busy}
-              onChange={(event) => setAllowGeneration(event.target.checked)}
-            >
-              允许发起生成
-            </Checkbox>
           </div>
           {!validHours && (
             <Typography.Text type="danger">有效期须为 1 至 24 小时的整数</Typography.Text>
@@ -315,35 +356,28 @@ function ConnectionSession({
           <Button
             type="primary"
             loading={creating}
-            disabled={busy || !validHours || !mcpUrl}
+            disabled={busy || !validHours || !available}
             onClick={() => void create()}
           >
-            创建连接令牌
+            启用{modeLabel}连接
           </Button>
+          <Typography.Text type="secondary">
+            关闭面板后连接继续有效；停止连接或有效期结束后失效。画布 API
+            重启后需重新启用并更新配置。
+          </Typography.Text>
         </section>
-        {token && (
-          <section aria-label="本次连接令牌" className="agent-connection-section">
-            <Typography.Text strong>连接令牌仅在本次面板中展示</Typography.Text>
-            <Typography.Text type="secondary">
-              关闭后无法再次查看。将令牌设为 Agent 进程的 CANVAS_AGENT_TOKEN 环境变量。
-            </Typography.Text>
-            <Input.Password
-              aria-label="Agent 连接令牌"
-              value={token.value}
-              readOnly
-              autoComplete="off"
-            />
-            <Button onClick={() => void copy(token.value, '令牌')}>复制令牌</Button>
-          </section>
-        )}
         {mcpUrl && (
           <section aria-label="Agent 接入配置" className="agent-connection-section">
             <Typography.Title level={5}>接入配置</Typography.Title>
+            {mode === 'server' && (
+              <Alert
+                type="info"
+                showIcon
+                title="服务器地址已包含当前项目的连接凭据，无需额外 Token，请妥善保管。"
+              />
+            )}
             <Input aria-label="MCP 服务地址" value={mcpUrl} readOnly />
             <Button onClick={() => void copy(mcpUrl, '服务地址')}>复制服务地址</Button>
-            <Typography.Text type="secondary">
-              模板通过环境变量读取令牌，不包含令牌本身。
-            </Typography.Text>
             <Tabs
               items={[
                 {
@@ -351,12 +385,15 @@ function ConnectionSession({
                   label: 'Codex',
                   children: (
                     <>
+                      <Typography.Paragraph>
+                        将配置加入受信任项目的 .codex/config.toml，然后在 Codex 中重新加载 MCP。
+                      </Typography.Paragraph>
                       <Input.TextArea
                         className="agent-connection-template"
                         aria-label="Codex 配置模板"
                         readOnly
                         value={codexTemplate}
-                        rows={4}
+                        rows={3}
                       />
                       <Button onClick={() => void copy(codexTemplate, 'Codex 配置')}>
                         复制 Codex 配置
@@ -369,6 +406,10 @@ function ConnectionSession({
                   label: 'DeepSeek Harness',
                   children: (
                     <>
+                      <Typography.Paragraph>
+                        保存为 canvas-mcp.cordis.yml，然后在该目录运行 dsh web --patch
+                        ./canvas-mcp.cordis.yml。
+                      </Typography.Paragraph>
                       <Input.TextArea
                         className="agent-connection-template"
                         aria-label="DeepSeek Harness 配置模板"
@@ -388,7 +429,7 @@ function ConnectionSession({
         )}
         <section aria-label="已授权 Agent 连接" className="agent-connection-section">
           <div className="agent-connection-heading">
-            <Typography.Title level={5}>已授权连接</Typography.Title>
+            <Typography.Title level={5}>已启用连接</Typography.Title>
             <Button disabled={busy} onClick={() => void load()}>
               刷新列表
             </Button>
@@ -407,10 +448,13 @@ function ConnectionSession({
                     <Typography.Text strong>{connection.id}</Typography.Text>
                     <div>
                       <Tag color={connection.allowGeneration ? 'orange' : 'blue'}>
-                        {connection.allowGeneration ? '可编辑并生成' : '可读取并编辑'}
+                        {connection.allowGeneration ? '可编辑并运行任务' : '仅可读取和编辑'}
                       </Tag>
                       {Date.parse(connection.expiresAt) <= Date.now() && <Tag>已过期</Tag>}
                     </div>
+                    {!connection.allowGeneration && (
+                      <Typography.Text type="secondary">停止后重新启用可运行任务</Typography.Text>
+                    )}
                     <Typography.Text type="secondary">
                       创建：{new Date(connection.createdAt).toLocaleString('zh-CN')}
                     </Typography.Text>
@@ -418,15 +462,25 @@ function ConnectionSession({
                       到期：{new Date(connection.expiresAt).toLocaleString('zh-CN')}
                     </Typography.Text>
                   </div>
-                  <Button
-                    danger
-                    aria-label={`撤销连接 ${connection.id}`}
-                    loading={revoking === connection.id}
-                    disabled={busy}
-                    onClick={() => void revoke(connection.id)}
-                  >
-                    撤销
-                  </Button>
+                  <div className="agent-connection-actions">
+                    <Button
+                      aria-label={`查看配置 ${connection.id}`}
+                      disabled={busy || Date.parse(connection.expiresAt) <= Date.now()}
+                      type={selectedId === connection.id ? 'primary' : 'default'}
+                      onClick={() => setSelectedId(connection.id)}
+                    >
+                      查看配置
+                    </Button>
+                    <Button
+                      danger
+                      aria-label={`停止连接 ${connection.id}`}
+                      loading={revoking === connection.id}
+                      disabled={busy}
+                      onClick={() => void revoke(connection.id)}
+                    >
+                      停止
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>

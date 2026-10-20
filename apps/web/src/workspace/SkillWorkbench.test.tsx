@@ -416,10 +416,15 @@ describe('Skill 工作台', () => {
     await screen.findByRole('button', { name: builtin.name });
     await user.click(screen.getByRole('button', { name: '新建 Skill' }));
     expect(screen.getByRole('button', { name: '保存 Skill' })).toBeDisabled();
-    await user.type(screen.getByLabelText('名称'), '章节续写');
-    await user.type(screen.getByLabelText('分类'), '小说创作');
-    await user.type(screen.getByLabelText('说明'), '衔接上一章');
-    await user.type(screen.getByLabelText('指令'), 'Continue the chapter.');
+    // 此处验证保存契约；粘贴完整字段，避免逐字渲染耗尽默认测试时限。
+    await user.click(screen.getByLabelText('名称'));
+    await user.paste('章节续写');
+    await user.click(screen.getByLabelText('分类'));
+    await user.paste('小说创作');
+    await user.click(screen.getByLabelText('说明'));
+    await user.paste('衔接上一章');
+    await user.click(screen.getByLabelText('指令'));
+    await user.paste('Continue the chapter.');
     const created = {
       ...custom,
       id: 'new',
@@ -440,7 +445,7 @@ describe('Skill 工作台', () => {
     });
     expect(screen.getByRole('button', { name: '保存 Skill' })).toBeDisabled();
     await user.clear(screen.getByLabelText('说明'));
-    await user.type(screen.getByLabelText('说明'), '保留伏笔');
+    await user.paste('保留伏笔');
     vi.mocked(updateSkill).mockResolvedValue({ ...created, description: '保留伏笔', revision: 2 });
     await user.click(screen.getByRole('button', { name: '保存 Skill' }));
     expect(updateSkill).toHaveBeenCalledWith('new', {

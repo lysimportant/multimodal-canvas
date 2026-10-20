@@ -1,6 +1,11 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AgentAccessService, AGENT_TOKEN_PREFIX, type AgentAccessClaims } from './agent-access';
+import {
+  AgentAccessService,
+  AgentAccessConnectionLimitError,
+  AGENT_TOKEN_PREFIX,
+  type AgentAccessClaims,
+} from './agent-access';
 import { authenticateBearer, verifyHs256Jwt } from './auth';
 import { AuthService } from './auth-service';
 import { MemoryAuthStore } from './auth-store';
@@ -39,6 +44,82 @@ function decodedClaims(token: string): AgentAccessClaims {
 }
 
 describe('项目 MCP 专用访问令牌', () => {
+  it('未传生成权限时默认开放现有工具，显式false保持受限', async () => {
+    const f = await fixture();
+    const { allowGeneration: _allowGeneration, ...input } = f.input;
+    const full = await f.service.issue(input);
+    const limited = await f.service.issue(f.input);
+    expect(full.connection.allowGeneration).toBe(true);
+    expect((await f.service.verify(full.token))?.claims.allowGeneration).toBe(true);
+    expect(limited.connection.allowGeneration).toBe(false);
+  });
+
+  it('同项目并发签发共用20上限，持久化已有连接也计入且撤销后可补位', async () => {
+    const f = await fixture();
+    const previous = new AgentAccessService({ store: f.store, secret, now: f.now });
+    const existing = await previous.issue(f.input);
+    const results = await Promise.allSettled(
+      Array.from({ length: 24 }, () => f.service.issue(f.input)),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(19);
+    const rejected = results.filter((result) => result.status === 'rejected');
+    expect(rejected).toHaveLength(5);
+    for (const result of rejected)
+      if (result.status === 'rejected')
+        expect(result.reason).toBeInstanceOf(AgentAccessConnectionLimitError);
+    expect(await f.service.list(f.user.id, f.input.projectId)).toHaveLength(20);
+    await f.service.revoke(f.user.id, f.input.projectId, existing.connection.id);
+    await expect(f.service.issue(f.input)).resolves.toBeDefined();
+    expect(await f.service.list(f.user.id, f.input.projectId)).toHaveLength(20);
+  });
+
+  it('跨项目并发也最多签发100个，外部撤销与过期能回收进程名额', async () => {
+    const f = await fixture();
+    const results = await Promise.allSettled(
+      Array.from({ length: 110 }, (_, index) =>
+        f.service.issue({ ...f.input, projectId: `synthetic-project-${index}` }),
+      ),
+    );
+    const issued = results.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    );
+    expect(issued).toHaveLength(100);
+    for (const result of results)
+      if (result.status === 'rejected')
+        expect(result.reason).toBeInstanceOf(AgentAccessConnectionLimitError);
+    await f.store.revokeSession(issued[0]!.connection.id, new Date(f.clock.now));
+    await expect(
+      f.service.issue({ ...f.input, projectId: 'synthetic-replacement' }),
+    ).resolves.toBeDefined();
+    await expect(
+      f.service.issue({ ...f.input, projectId: 'synthetic-still-full' }),
+    ).rejects.toBeInstanceOf(AgentAccessConnectionLimitError);
+    f.clock.now += 8 * HOUR;
+    await expect(
+      f.service.issue({ ...f.input, projectId: 'synthetic-after-expiry' }),
+    ).resolves.toBeDefined();
+  });
+
+  it.each(['logoutAll', 'disabled'] as const)(
+    '100个旧连接%s后无需先访问旧连接即可释放进程名额',
+    async (state) => {
+      const f = await fixture();
+      await Promise.all(
+        Array.from({ length: 100 }, (_, index) =>
+          f.service.issue({ ...f.input, projectId: `synthetic-old-project-${index}` }),
+        ),
+      );
+      if (state === 'logoutAll') expect(await f.auth.logoutAll(f.user.id)).toBe(100);
+      else await f.store.updateUser(f.user.id, { status: 'disabled' });
+      const replacement = await f.service.issue({
+        ...f.input,
+        userId: state === 'disabled' ? f.other.id : f.user.id,
+        projectId: 'synthetic-after-invalidation',
+      });
+      await expect(f.service.verify(replacement.token)).resolves.toBeDefined();
+    },
+  );
+
   it.each([false, true])(
     '签发并校验绑定用户、项目和 allowGeneration=%s，存储只含用途隔离哈希',
     async (allowGeneration) => {

@@ -1,5 +1,11 @@
 import { accountError } from './account-errors';
-import { AgentAccessService, AGENT_TOKEN_PREFIX, type AgentAccessClaims } from './agent-access';
+import {
+  AgentAccessService,
+  AgentAccessConnectionLimitError,
+  AGENT_TOKEN_PREFIX,
+  type AgentAccessClaims,
+} from './agent-access';
+import { AgentUrlConnections } from './agent-url-connections';
 import { registerCanvasAgentRoutes, isAgentRequestAllowed } from './canvas-agent-routes';
 import { AssetThumbnailService, sendAssetThumbnail } from './asset-thumbnails';
 import multipart from '@fastify/multipart';
@@ -1214,6 +1220,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     parseJsonBody(request, raw, done);
   });
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AgentAccessConnectionLimitError)
+      return reply
+        .code(409)
+        .send({ code: 'connection_limit', error: 'Agent 连接数量已达上限，请先撤销不用的连接' });
     if (error instanceof AuthServiceError)
       return reply.code(error.code === 'invalid_input' ? 400 : 401).send({
         code: error.code,
@@ -1374,6 +1384,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const agentAccess = jwtSecret
     ? new AgentAccessService({ store: authStore, secret: jwtSecret })
     : undefined;
+  const agentUrlConnections = agentAccess ? new AgentUrlConnections(agentAccess) : undefined;
+  app.addHook('preClose', async () => agentUrlConnections?.close());
   const requestAgentScopes = new WeakMap<object, AgentAccessClaims>();
   const maxActiveRunsPerProject = parsePositiveInt(process.env.RUN_MAX_ACTIVE_PER_PROJECT);
   const rateLimitPerMinute = parsePositiveInt(process.env.API_RATE_LIMIT_PER_MINUTE);
@@ -1560,8 +1572,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (token !== null) return reply.code(401).send({ error: 'invalid or expired access URL' });
       }
     }
-    const isMcpRequest = /^\/v1\/projects\/[^/]+\/mcp$/.test(pathname);
+    const mcpMatch = /^\/v1\/projects\/([^/]+)\/mcp$/.exec(pathname);
+    const isMcpRequest = mcpMatch !== null;
     if (isMcpRequest) {
+      const query = new URL(request.url, 'http://canvas.local').searchParams;
+      if (query.has('connection')) {
+        reply.header('cache-control', 'no-store').header('referrer-policy', 'no-referrer');
+        if (
+          query.getAll('connection').length !== 1 ||
+          [...query.keys()].length !== 1 ||
+          request.headers.authorization !== undefined ||
+          request.headers.cookie !== undefined
+        )
+          return reply.code(400).send({
+            code: 'ambiguous_agent_connection',
+            error: '请仅使用一个 Agent 连接地址进行认证',
+          });
+        if ('origin' in request.headers || request.headers['sec-fetch-site'] === 'cross-site')
+          return reply
+            .code(403)
+            .send({ code: 'origin_rejected', error: 'Agent 连接地址不允许浏览器跨站访问' });
+        let projectId: string;
+        try {
+          projectId = decodeURIComponent(mcpMatch[1]!);
+        } catch {
+          return reply.code(401).send({
+            code: 'invalid_agent_connection',
+            error: 'Agent 连接地址已失效或不属于此项目',
+          });
+        }
+        const token = await agentUrlConnections?.resolve(projectId, query.get('connection')!);
+        if (!token)
+          return reply.code(401).send({
+            code: 'invalid_agent_connection',
+            error: 'Agent 连接地址已失效或不属于此项目',
+          });
+        request.headers.authorization = `Bearer ${token}`;
+      }
       const origin = request.headers.origin;
       const allowedOrigins = options.newApiAccount
         ? [new URL(options.newApiAccount.options.webUrl).origin]
@@ -1862,6 +1909,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   registerCanvasAgentRoutes(app, {
     access: agentAccess,
+    urlConnections: agentUrlConnections,
     projectStore,
     assetStore,
     runService,

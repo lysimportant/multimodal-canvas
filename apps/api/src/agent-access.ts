@@ -23,6 +23,7 @@ export type AgentConnection = {
   createdAt: string;
   expiresAt: string;
 };
+export class AgentAccessConnectionLimitError extends Error {}
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const storagePrefix = (projectId: string) => `mcp:v1:${digest(projectId)}:`;
@@ -40,6 +41,9 @@ function equal(left: string, right: string): boolean {
  * 不改变普通登录 JWT 合同；MCP 令牌不能作为登录凭据使用或续期。
  */
 export class AgentAccessService {
+  private readonly issuanceQueues = new Map<string, Promise<void>>();
+  private readonly issued = new Map<string, number>();
+  private pendingIssues = 0;
   constructor(private readonly options: { store: AuthStore; secret: string; now?: () => number }) {}
 
   private now() {
@@ -51,10 +55,31 @@ export class AgentAccessService {
       .digest('base64url');
   }
 
-  async issue(input: {
+  issue(input: {
     userId: string;
     projectId: string;
-    allowGeneration: boolean;
+    allowGeneration?: boolean;
+    expiresInHours: number;
+    authorizedUntil: Date;
+  }): Promise<{ token: string; connection: AgentConnection }> {
+    const key = JSON.stringify([input.userId, input.projectId]);
+    const previous = this.issuanceQueues.get(key) ?? Promise.resolve();
+    const operation = previous.then(() => this.issueScoped(input));
+    const settled = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.issuanceQueues.set(key, settled);
+    void settled.then(() => {
+      if (this.issuanceQueues.get(key) === settled) this.issuanceQueues.delete(key);
+    });
+    return operation;
+  }
+
+  private async issueScoped(input: {
+    userId: string;
+    projectId: string;
+    allowGeneration?: boolean;
     expiresInHours: number;
     authorizedUntil: Date;
   }): Promise<{ token: string; connection: AgentConnection }> {
@@ -65,31 +90,62 @@ export class AgentAccessService {
       input.expiresInHours > 24
     )
       throw new Error('Agent connection lifetime must be between 1 and 24 hours');
-    const user = await this.options.store.findUserById(input.userId);
-    if (!user || user.status !== 'active') throw new Error('Active user required');
-    const expiresAt = Math.min(
-      this.now() + input.expiresInHours * 3_600_000,
-      input.authorizedUntil.getTime(),
-    );
-    if (!Number.isFinite(expiresAt) || expiresAt <= this.now())
-      throw new Error('Authorization has expired');
-    const claims = claimsSchema.parse({
-      id: randomUUID(),
-      userId: input.userId,
-      projectId: input.projectId,
-      allowGeneration: input.allowGeneration,
-      expiresAt,
-    });
-    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
-    const token = `${AGENT_TOKEN_PREFIX}${payload}.${this.sign(payload)}`;
-    const session = await this.options.store.createSession({
-      id: claims.id,
-      userId: claims.userId,
-      tokenHash: tokenHash(claims, token),
-      expiresAt: new Date(expiresAt),
-      absoluteExpiresAt: new Date(expiresAt),
-    });
-    return { token, connection: this.summary(session, claims.projectId, claims.allowGeneration) };
+    for (const [id, expiry] of this.issued) if (expiry <= this.now()) this.issued.delete(id);
+    if (this.issued.size + this.pendingIssues >= 100) {
+      const activeUsers = new Map<string, Promise<boolean>>();
+      await Promise.all(
+        [...this.issued.keys()].map(async (id) => {
+          const session = await this.options.store.findSession(id);
+          if (!session || session.revokedAt || session.expiresAt.getTime() <= this.now()) {
+            this.issued.delete(id);
+            return;
+          }
+          let active = activeUsers.get(session.userId);
+          if (!active) {
+            active = this.options.store
+              .findUserById(session.userId)
+              .then((user) => user?.status === 'active');
+            activeUsers.set(session.userId, active);
+          }
+          if (!(await active)) this.issued.delete(id);
+        }),
+      );
+    }
+    if (this.issued.size + this.pendingIssues >= 100)
+      throw new AgentAccessConnectionLimitError('Agent connection limit reached');
+    this.pendingIssues += 1;
+    try {
+      const user = await this.options.store.findUserById(input.userId);
+      if (!user || user.status !== 'active') throw new Error('Active user required');
+      if ((await this.list(input.userId, input.projectId)).length >= 20)
+        throw new AgentAccessConnectionLimitError('Project agent connection limit reached');
+      const expiresAt = Math.min(
+        this.now() + input.expiresInHours * 3_600_000,
+        input.authorizedUntil.getTime(),
+      );
+      if (!Number.isFinite(expiresAt) || expiresAt <= this.now())
+        throw new Error('Authorization has expired');
+      const claims = claimsSchema.parse({
+        id: randomUUID(),
+        userId: input.userId,
+        projectId: input.projectId,
+        allowGeneration: input.allowGeneration === undefined ? true : input.allowGeneration,
+        expiresAt,
+      });
+      const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
+      const token = `${AGENT_TOKEN_PREFIX}${payload}.${this.sign(payload)}`;
+      const session = await this.options.store.createSession({
+        id: claims.id,
+        userId: claims.userId,
+        tokenHash: tokenHash(claims, token),
+        expiresAt: new Date(expiresAt),
+        absoluteExpiresAt: new Date(expiresAt),
+      });
+      this.issued.set(session.id, expiresAt);
+      return { token, connection: this.summary(session, claims.projectId, claims.allowGeneration) };
+    } finally {
+      this.pendingIssues -= 1;
+    }
   }
 
   async verify(
@@ -104,7 +160,10 @@ export class AgentAccessService {
     } catch {
       return undefined;
     }
-    if (claims.expiresAt <= this.now()) return undefined;
+    if (claims.expiresAt <= this.now()) {
+      this.issued.delete(claims.id);
+      return undefined;
+    }
     const session = await this.options.store.findSession(claims.id);
     if (
       !session ||
@@ -112,10 +171,15 @@ export class AgentAccessService {
       session.revokedAt ||
       session.expiresAt.getTime() <= this.now() ||
       !equal(session.tokenHash, tokenHash(claims, token))
-    )
+    ) {
+      this.issued.delete(claims.id);
       return undefined;
+    }
     const user = await this.options.store.findUserById(claims.userId);
-    if (!user || user.status !== 'active') return undefined;
+    if (!user || user.status !== 'active') {
+      this.issued.delete(claims.id);
+      return undefined;
+    }
     await this.options.store.touchSession(session.id, new Date(this.now()));
     return {
       claims,
@@ -159,6 +223,7 @@ export class AgentAccessService {
     )
       return false;
     await this.options.store.revokeSession(id, new Date(this.now()));
+    this.issued.delete(id);
     return true;
   }
 

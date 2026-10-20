@@ -15,6 +15,7 @@ import {
 import {
   GLOBALSTORE_IMAGE_CONTRACT,
   GLOBALSTORE_VIDEO_CONTRACT,
+  IMAGE2PRO_IMAGE_TASK_CONTRACT,
   requestPromptRecordSchema,
   parseReversePromptOutput,
   createMockPromptOptimizationOutput,
@@ -557,21 +558,25 @@ export function createRunWorker(options: {
       let durableCancellationRequested = false;
       /** 上游视频 POST 开始后锁住本地取消，继续等待供应商终态。 */
       let videoSubmissionProtected = hasSubmittedAsyncWork(initialData);
+      /** Image2Pro POST 开始后先等任务 ID 持久化，再允许协作取消中断轮询。 */
+      let image2proSubmissionProtected = false;
       /** 取消一经观察永久生效，后续 Worker 状态写入不能抹去该意图。 */
       const cancellationRequested = async () => {
-        if (videoSubmissionProtected) return false;
+        if (videoSubmissionProtected || image2proSubmissionProtected) return false;
         if (!durableCancellationRequested) {
           const persistedCancellation =
             (await options.persistence?.isCancellationRequested?.(
               initialData.runId,
               retrieveOnlyObserved,
             )) ?? false;
-          if (videoSubmissionProtected) return false;
+          if (videoSubmissionProtected || image2proSubmissionProtected) return false;
           durableCancellationRequested = persistedCancellation;
         }
         if (durableCancellationRequested) return !videoSubmissionProtected;
         const queuedCancellation = await isCancellationRequested(queue, job.id);
-        return videoSubmissionProtected ? false : queuedCancellation;
+        return videoSubmissionProtected || image2proSubmissionProtected
+          ? false
+          : queuedCancellation;
       };
       await cancellationRequested();
       const readJobData = () => {
@@ -1267,11 +1272,35 @@ export function createRunWorker(options: {
             continue;
           }
 
+          const image2proNode = isImage2proImageNode(executionSnapshot, node.id);
+          const uncertainImage2proTask = image2proNode
+            ? providerCandidates.find(hasImage2proTaskEvidence)
+            : undefined;
+          if (
+            uncertainImage2proTask &&
+            !canResumeImage2proProviderJob(uncertainImage2proTask, retrieveOnlyObserved)
+          ) {
+            rejectedCreationErrors.set(
+              node.id,
+              'Image2Pro 图片任务缺少匹配的冻结合同、可查询任务 ID 或已知任务阶段；禁止重新提交',
+            );
+            workflowState = replaceWorkflowNodeState(workflowState, {
+              nodeId: node.id,
+              status: 'failed',
+              providerJob: uncertainImage2proTask,
+            });
+            continue;
+          }
+
           const resumableProviderJob = providerCandidates.find(
             (candidate) =>
               candidate.provider ===
                 nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
-              canResumeProviderJob(candidate, { allowTerminalStatus: retrieveOnlyObserved }),
+              (image2proNode
+                ? canResumeImage2proProviderJob(candidate, retrieveOnlyObserved)
+                : canResumeProviderJob(candidate, {
+                    allowTerminalStatus: retrieveOnlyObserved,
+                  })),
           );
           const rejectedCreation = !resumableProviderJob
             ? providerCandidates.find(
@@ -1364,16 +1393,20 @@ export function createRunWorker(options: {
           const retainedContract = providerJob?.payload?.contract;
           const boundContract = executionSnapshot.executionBindings?.[node.id]?.contract;
           const frozenContract = retainedContract ?? boundContract;
+          const image2proTask =
+            isImage2proImageNode(executionSnapshot, node.id) &&
+            canResumeImage2proProviderJob(providerJob, true);
           if (
             initialData.provider === 'newapi' &&
-            (node.data.mediaType === 'video' || isGlobalStoreNode(executionSnapshot, node.id)) &&
-            canResumeProviderJob(providerJob, { allowTerminalStatus: true }) &&
-            providerJob.provider ===
-              nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
-            (isNewApiVideoContract(frozenContract) ||
-              (isGlobalStoreNode(executionSnapshot, node.id) &&
-                frozenContract === boundContract)) &&
-            (!retainedContract || !boundContract || retainedContract === boundContract) &&
+            (((node.data.mediaType === 'video' || isGlobalStoreNode(executionSnapshot, node.id)) &&
+              canResumeProviderJob(providerJob, { allowTerminalStatus: true }) &&
+              providerJob.provider ===
+                nodeProviderName(executionSnapshot, node.id, initialData.provider) &&
+              (isNewApiVideoContract(frozenContract) ||
+                (isGlobalStoreNode(executionSnapshot, node.id) &&
+                  frozenContract === boundContract)) &&
+              (!retainedContract || !boundContract || retainedContract === boundContract)) ||
+              image2proTask) &&
             !unrecoverableDeliveryNodes.has(node.id)
           )
             continue;
@@ -1696,6 +1729,7 @@ export function createRunWorker(options: {
           const existingNodeProviderJob = nodeState.providerJob;
           const stagedResult = stagedResults.get(node.id);
           const executionContract = executionSnapshot.executionBindings?.[node.id]?.contract;
+          const image2proNode = isImage2proImageNode(executionSnapshot, node.id);
           const now = new Date().toISOString();
           const providerJob: ProviderJob = {
             ...localProviderJob,
@@ -1792,7 +1826,11 @@ export function createRunWorker(options: {
             canResumeProviderJob(existingNodeProviderJob, {
               allowTerminalStatus: retrieveOnlyObserved,
             });
-          const requestAssetResolver = resumeSubmittedVideo ? undefined : assetResolver;
+          const resumeSubmittedImage2pro =
+            image2proNode &&
+            canResumeImage2proProviderJob(existingNodeProviderJob, retrieveOnlyObserved);
+          const resumeSubmittedTask = resumeSubmittedVideo || resumeSubmittedImage2pro;
+          const requestAssetResolver = resumeSubmittedTask ? undefined : assetResolver;
           const versionedNodeSnapshot = assetResolver
             ? withWorkflowAssetVersions(nodeSnapshot, currentWorkflowState)
             : nodeSnapshot;
@@ -1813,16 +1851,18 @@ export function createRunWorker(options: {
               : { ...providerJob, id: requestProviderJobId };
           activeRequestPrompts =
             stagedResult ||
-            canResumeProviderJob(existingNodeProviderJob, {
-              allowTerminalStatus: retrieveOnlyObserved,
-            })
+            (image2proNode
+              ? canResumeImage2proProviderJob(existingNodeProviderJob, retrieveOnlyObserved)
+              : canResumeProviderJob(existingNodeProviderJob, {
+                  allowTerminalStatus: retrieveOnlyObserved,
+                }))
               ? storedRequestPromptIdentities(existingNodeProviderJob, node.id)
               : [];
           /** 在最终请求准备完成后领取发送身份；本地参数拒绝不得留下未知发送记录。 */
           const beginNodeSend = async () => {
             if (await refreshRetrieveOnly()) {
               assertRetrieveOnlyWorkflow(readJobData().workflowState ?? currentWorkflowState);
-              if (!resumeSubmittedVideo)
+              if (!resumeSubmittedTask)
                 throw new UnrecoverableError('只读获取禁止创建新的 Provider 请求');
             }
             const protectVideoSubmission =
@@ -1830,7 +1870,7 @@ export function createRunWorker(options: {
               (node.data.mediaType === 'video' || isGlobalStoreNode(executionSnapshot, node.id));
             if (protectVideoSubmission) videoSubmissionProtected = true;
             if (!runExecution) return;
-            if (!resumeSubmittedVideo && currentData.retryOf) {
+            if (!resumeSubmittedTask && currentData.retryOf) {
               if (!runExecution.assertRetrySafe)
                 throw new Error('缺少原请求发送证据核对；禁止重新生成');
               await runExecution.assertRetrySafe({
@@ -1841,7 +1881,7 @@ export function createRunWorker(options: {
               });
             }
             // 已受理视频沿用原任务；权限修订只约束新的创建请求。
-            if (!resumeSubmittedVideo)
+            if (!resumeSubmittedTask)
               await runExecution.authorizeNode(currentData.runId, node.id, executionSnapshot);
             await runExecution.beginSend({
               runId: currentData.runId,
@@ -1853,6 +1893,8 @@ export function createRunWorker(options: {
                 : {}),
             });
             activeSendIntent = true;
+            if (currentData.provider === 'newapi' && image2proNode && !resumeSubmittedImage2pro)
+              image2proSubmissionProtected = true;
           };
           // 有持久化边界时，Provider 必须在真正发送前把最终请求文本交给 Worker
           // 落库；回调抛错会阻止本次请求，避免已发送但无法追溯。没有持久化适配器
@@ -1928,9 +1970,10 @@ export function createRunWorker(options: {
           );
           if (await cancellationRequested())
             return markCancelled(currentOverallProgress, node.id, activeProviderJob);
-          if (!stagedResult && (!captureRequestPrompt || resumeSubmittedVideo))
+          if (!stagedResult && (!captureRequestPrompt || resumeSubmittedTask))
             await beginNodeSend();
-          const resumeOnly = !stagedResult && (await refreshRetrieveOnly());
+          const resumeOnly =
+            !stagedResult && ((await refreshRetrieveOnly()) || resumeSubmittedImage2pro);
           if (resumeOnly)
             assertRetrieveOnlyWorkflow(readJobData().workflowState ?? currentWorkflowState);
           const returned =
@@ -2030,6 +2073,12 @@ export function createRunWorker(options: {
                       : { providerJob: callbackData.providerJob }),
                   });
                   await persistProviderJobStrict(merged);
+                  if (
+                    image2proNode &&
+                    merged.payload?.contract === IMAGE2PRO_IMAGE_TASK_CONTRACT &&
+                    merged.platformJobId?.trim()
+                  )
+                    image2proSubmissionProtected = false;
                   if (merged.platformJobId)
                     await runExecution?.finishSend({
                       runId: currentData.runId,
@@ -3091,6 +3140,43 @@ function isGlobalStoreNode(snapshot: RunSnapshot, nodeId: string): boolean {
   return binding.mediaType === 'image'
     ? binding.contract === GLOBALSTORE_IMAGE_CONTRACT
     : binding.mediaType === 'video' && binding.contract === GLOBALSTORE_VIDEO_CONTRACT;
+}
+
+function isImage2proImageNode(snapshot: RunSnapshot, nodeId: string): boolean {
+  const binding = snapshot.executionBindings?.[nodeId];
+  return (
+    binding?.provider === 'newapi' &&
+    binding.mediaType === 'image' &&
+    binding.contract === IMAGE2PRO_IMAGE_TASK_CONTRACT
+  );
+}
+
+const IMAGE2PRO_QUERYABLE_PHASES = new Set(['submitted', 'polling', 'completed', 'failed']);
+
+function canResumeImage2proProviderJob(
+  providerJob: ProviderJob | undefined,
+  allowTerminalStatus = false,
+): providerJob is ProviderJob {
+  const phase = providerJob?.payload?.phase;
+  return (
+    providerJob?.provider === 'newapi' &&
+    providerJob.platformJobId?.trim() !== undefined &&
+    providerJob.payload?.contract === IMAGE2PRO_IMAGE_TASK_CONTRACT &&
+    typeof phase === 'string' &&
+    IMAGE2PRO_QUERYABLE_PHASES.has(phase) &&
+    canResumeProviderJob(providerJob, { allowTerminalStatus })
+  );
+}
+
+function hasImage2proTaskEvidence(providerJob: ProviderJob): boolean {
+  const phase = providerJob.payload?.phase;
+  return Boolean(
+    providerJob.platformJobId?.trim() ||
+    typeof phase === 'string' ||
+    providerJob.payload?.sendStatus === 'unknown' ||
+    ['submitted', 'running', 'succeeded', 'cancelled'].includes(providerJob.status) ||
+    (providerJob.status === 'failed' && providerJob.payload?.sendStatus !== 'failed'),
+  );
 }
 
 function nodeProviderName(snapshot: RunSnapshot, nodeId: string, fallback: string): string {

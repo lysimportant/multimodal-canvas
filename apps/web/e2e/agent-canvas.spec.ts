@@ -14,6 +14,8 @@ type Connection = {
   allowGeneration: boolean;
   createdAt: string;
   expiresAt: string;
+  mcpUrl?: string;
+  mcpPath?: string;
 };
 
 function deferred() {
@@ -38,14 +40,16 @@ async function installAgentFixture(page: Page, baseURL: string | undefined) {
   let canvas = isolation.canvas();
   canvas.nodes[0]!.data.label = initialLabel;
   const canvasWrites: CanvasDocument[] = [];
-  const connectionCreates: { allowGeneration: boolean; expiresInHours: number }[] = [];
+  const connectionCreates: { expiresInHours: number }[] = [];
   const revoked: string[] = [];
   let connections: Connection[] = [];
   let connectionCounter = 0;
+  let localAvailable = true;
   let saveGate: ReturnType<typeof deferred> | undefined;
   let pendingSave = false;
   const canvasPath = `/v1/projects/${project.id}/canvas`;
-  const connectionPath = `/v1/projects/${project.id}/agent-connections`;
+  const connectionPath = `/v1/projects/${project.id}/local-agent-connections`;
+  const serverConnectionPath = `/v1/projects/${project.id}/agent-url-connections`;
   await page.addInitScript(() => {
     localStorage.setItem('multimodal-canvas:resource-panel-collapsed', 'true');
     localStorage.setItem('multimodal-canvas:resource-panel-drawer-version', '1');
@@ -72,34 +76,44 @@ async function installAgentFixture(page: Page, baseURL: string | undefined) {
       }
       return route.fulfill({ json: { canvas: saved } });
     }
-    if (url.pathname === connectionPath) {
+    if (url.pathname === connectionPath || url.pathname === serverConnectionPath) {
+      const server = url.pathname === serverConnectionPath;
       if (method === 'GET')
-        return route.fulfill({ json: { connections, mcpPath: '/v1/agent/mcp' } });
+        return route.fulfill({
+          json: {
+            available: server || localAvailable,
+            ...(server || localAvailable ? {} : { reason: 'local_api_required' }),
+            connections: server || localAvailable ? connections : [],
+          },
+        });
       if (method !== 'POST') return route.fallback();
       const body = request.postDataJSON() as {
-        allowGeneration: boolean;
         expiresInHours: number;
       };
       connectionCreates.push(body);
       const connection: Connection = {
         id: `synthetic-connection-${++connectionCounter}`,
         projectId: project.id,
-        allowGeneration: body.allowGeneration,
+        allowGeneration: true,
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + body.expiresInHours * 3_600_000).toISOString(),
+        ...(server
+          ? {
+              mcpPath: `/v1/projects/${encodeURIComponent(project.id)}/mcp?connection=${'A'.repeat(42)}${connectionCounter}`,
+            }
+          : { mcpUrl: `http://127.0.0.1:${49151 + connectionCounter}/mcp` }),
       };
       connections = [connection, ...connections];
       return route.fulfill({
         status: 201,
-        json: {
-          connection,
-          token: `synthetic-agent-e2e-token-${connectionCounter}`,
-          mcpPath: '/v1/agent/mcp',
-        },
+        json: { connection },
       });
     }
-    if (url.pathname.startsWith(`${connectionPath}/`) && method === 'DELETE') {
-      const id = decodeURIComponent(url.pathname.slice(connectionPath.length + 1));
+    const managementPath = [connectionPath, serverConnectionPath].find((path) =>
+      url.pathname.startsWith(`${path}/`),
+    );
+    if (managementPath && method === 'DELETE') {
+      const id = decodeURIComponent(url.pathname.slice(managementPath.length + 1));
       const exists = connections.some((connection) => connection.id === id);
       if (!exists) return route.fulfill({ status: 404 });
       revoked.push(id);
@@ -113,6 +127,9 @@ async function installAgentFixture(page: Page, baseURL: string | undefined) {
     canvasWrites,
     connectionCreates,
     revoked,
+    setLocalAvailable(available: boolean) {
+      localAvailable = available;
+    },
     canvas: () => structuredClone(canvas),
     updateRemote(update: (document: CanvasDocument) => void) {
       const next = structuredClone(canvas);
@@ -171,7 +188,7 @@ async function expectNoHorizontalOverflow(locator: Locator) {
     .toBeLessThanOrEqual(1);
 }
 
-async function openConnections(page: Page, mobile: boolean) {
+async function openConnections(page: Page, mobile: boolean, server = false) {
   if (mobile) {
     await page.getByRole('button', { name: '打开画布菜单', exact: true }).tap();
     await expect(page.getByRole('dialog', { name: '画布菜单', exact: true })).toBeVisible();
@@ -181,43 +198,41 @@ async function openConnections(page: Page, mobile: boolean) {
   else await trigger.click();
   const panel = page.getByRole('dialog', { name: '连接外部 Agent', exact: true });
   await expect(panel).toBeVisible();
-  await expect(panel.getByRole('button', { name: '创建连接令牌', exact: true })).toBeEnabled();
+  const enable = panel.getByRole('button', {
+    name: server ? '启用服务器连接' : '启用本地连接',
+    exact: true,
+  });
+  await expect(enable).toBeEnabled();
   return panel;
 }
 
 for (const width of [1440, 390, 320]) {
   test.describe(`${width}px Agent 连接`, () => {
     test.use({ viewport: { width, height: width > 600 ? 900 : 844 }, hasTouch: width <= 600 });
-    test('创建和撤销遵循显式授权，模板不含令牌，关闭后清除令牌', async ({ page, agent }) => {
+    test('启用本地连接即可复制无令牌配置，重开可恢复并停止连接', async ({ page, agent }) => {
       const panel = await openConnections(page, width <= 600);
       await expect(panel).toBeInViewport({ ratio: 1 });
       await expectNoHorizontalOverflow(panel);
       await expectNoHorizontalOverflow(page.locator('html'));
-      await expect(panel.getByRole('checkbox', { name: '允许发起生成' })).not.toBeChecked();
+      await expect(panel.getByRole('checkbox')).toHaveCount(0);
       await expect(panel.getByRole('spinbutton', { name: '连接有效期（小时）' })).toHaveValue('8');
-      await panel.getByRole('button', { name: '创建连接令牌', exact: true }).click();
-      const token = 'synthetic-agent-e2e-token-1';
-      await expect(panel.getByLabel('Agent 连接令牌', { exact: true })).toHaveValue(token);
-      expect(agent.connectionCreates).toEqual([{ allowGeneration: false, expiresInHours: 8 }]);
+      await panel.getByRole('button', { name: '启用本地连接', exact: true }).click();
+      const mcpUrl = 'http://127.0.0.1:49152/mcp';
+      await expect(panel.getByRole('textbox', { name: 'MCP 服务地址' })).toHaveValue(mcpUrl);
+      await expect(panel.getByLabel('Agent 连接令牌', { exact: true })).toHaveCount(0);
+      expect(agent.connectionCreates).toEqual([{ expiresInHours: 8 }]);
+      await expect(panel.getByText('可编辑并运行任务', { exact: true })).toBeVisible();
       const codex = await panel.getByRole('textbox', { name: 'Codex 配置模板' }).inputValue();
-      expect(codex).toContain('bearer_token_env_var = "CANVAS_AGENT_TOKEN"');
-      expect(codex).not.toContain(token);
+      expect(codex).toBe(`[mcp_servers.canvas]\nurl = "${mcpUrl}"`);
+      expect(codex).not.toMatch(/token|bearer|Authorization/i);
       await panel.getByRole('tab', { name: 'DeepSeek Harness', exact: true }).click();
       const harness = await panel
         .getByRole('textbox', { name: 'DeepSeek Harness 配置模板' })
         .inputValue();
       expect(harness).toContain('- insert:\n    - id: canvas-mcp');
-      expect(harness).toContain('process.env.CANVAS_AGENT_TOKEN');
-      expect(harness).not.toContain(token);
+      expect(harness).toContain(mcpUrl);
+      expect(harness).not.toMatch(/token|headers|Authorization/i);
       await expectNoHorizontalOverflow(panel);
-      const persistedToken = await page.evaluate(
-        (value) =>
-          [localStorage, sessionStorage].some((storage) =>
-            Object.values(storage).some((item) => String(item).includes(value)),
-          ),
-        token,
-      );
-      expect(persistedToken).toBe(false);
       await panel.getByRole('button', { name: '关闭 Agent 连接', exact: true }).click();
       await expect(panel).toBeHidden();
       await expect(page.getByLabel('Agent 连接令牌', { exact: true })).toHaveCount(0);
@@ -225,19 +240,55 @@ for (const width of [1440, 390, 320]) {
       const reopened = await openConnections(page, width <= 600);
       await expect(reopened.getByLabel('Agent 连接令牌', { exact: true })).toHaveCount(0);
       await expect(reopened.getByText('synthetic-connection-1', { exact: true })).toBeVisible();
-      await reopened.getByRole('button', { name: '撤销连接 synthetic-connection-1' }).click();
+      await expect(reopened.getByRole('textbox', { name: 'Codex 配置模板' })).toHaveValue(codex);
+      await reopened.getByRole('button', { name: '停止连接 synthetic-connection-1' }).click();
       await expect(reopened.getByText('暂无连接', { exact: true })).toBeVisible();
       expect(agent.revoked).toEqual(['synthetic-connection-1']);
 
-      await reopened.getByRole('checkbox', { name: '允许发起生成' }).check();
       await reopened.getByRole('spinbutton', { name: '连接有效期（小时）' }).fill('24');
-      await reopened.getByRole('button', { name: '创建连接令牌', exact: true }).click();
-      await expect(reopened.getByText('可编辑并生成', { exact: true })).toBeVisible();
-      expect(agent.connectionCreates[1]).toEqual({ allowGeneration: true, expiresInHours: 24 });
-      await reopened.getByRole('button', { name: '撤销连接 synthetic-connection-2' }).click();
+      await reopened.getByRole('button', { name: '启用本地连接', exact: true }).click();
+      await expect(reopened.getByText('可编辑并运行任务', { exact: true })).toBeVisible();
+      expect(agent.connectionCreates[1]).toEqual({ expiresInHours: 24 });
+      await reopened.getByRole('button', { name: '停止连接 synthetic-connection-2' }).click();
       await expect(reopened.getByLabel('Agent 连接令牌', { exact: true })).toHaveCount(0);
       await expect(reopened.getByText('暂无连接', { exact: true })).toBeVisible();
       expect(agent.revoked).toEqual(['synthetic-connection-1', 'synthetic-connection-2']);
+      expect(agent.canvasWrites).toHaveLength(0);
+    });
+  });
+}
+
+for (const width of [1440, 390, 320]) {
+  test.describe(`${width}px 服务器 Agent 连接`, () => {
+    test.use({ viewport: { width, height: width > 600 ? 900 : 844 }, hasTouch: width <= 600 });
+    test('自动切换服务器连接，默认可生成，完整配置可恢复并停止', async ({ page, agent }) => {
+      agent.setLocalAvailable(false);
+      const panel = await openConnections(page, width <= 600, true);
+      await expect(panel.getByRole('checkbox')).toHaveCount(0);
+      await panel.getByRole('button', { name: '启用服务器连接', exact: true }).click();
+      await expect(panel.getByText('可编辑并运行任务', { exact: true })).toBeVisible();
+      expect(agent.connectionCreates).toEqual([{ expiresInHours: 8 }]);
+      const mcpUrl = await panel.getByRole('textbox', { name: 'MCP 服务地址' }).inputValue();
+      const apiRoot = (process.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+      expect(mcpUrl).toBe(
+        `${apiRoot}/v1/projects/${encodeURIComponent(project.id)}/mcp?connection=${'A'.repeat(42)}1`,
+      );
+      const codex = `[mcp_servers.canvas]\nurl = "${mcpUrl}"`;
+      await expect(panel.getByRole('textbox', { name: 'Codex 配置模板' })).toHaveValue(codex);
+      await panel.getByRole('tab', { name: 'DeepSeek Harness', exact: true }).click();
+      const harness = await panel
+        .getByRole('textbox', { name: 'DeepSeek Harness 配置模板' })
+        .inputValue();
+      expect(harness).toContain(mcpUrl);
+      expect(harness).not.toMatch(/headers|Authorization|bearer/i);
+      await expectNoHorizontalOverflow(panel);
+      await expectNoHorizontalOverflow(page.locator('html'));
+      await panel.getByRole('button', { name: '关闭 Agent 连接', exact: true }).click();
+      const reopened = await openConnections(page, width <= 600, true);
+      await expect(reopened.getByRole('textbox', { name: 'Codex 配置模板' })).toHaveValue(codex);
+      await reopened.getByRole('button', { name: '停止连接 synthetic-connection-1' }).click();
+      await expect(reopened.getByText('暂无连接', { exact: true })).toBeVisible();
+      expect(agent.revoked).toEqual(['synthetic-connection-1']);
       expect(agent.canvasWrites).toHaveLength(0);
     });
   });

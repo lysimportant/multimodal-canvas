@@ -1,6 +1,7 @@
 export { requestNewApiVideoRefund, videoRefundMessage } from './video-refund.js';
 export type { VideoRefundReason, VideoRefundStatus } from './video-refund.js';
 
+import { createHash } from 'node:crypto';
 import type {
   FrozenPromptMention,
   ImageEditCapability,
@@ -28,6 +29,7 @@ import {
   renderPromptDocument,
   resolveImageEditMaxImages,
   REQUEST_PROMPT_SCHEMA_VERSION,
+  IMAGE2PRO_IMAGE_TASK_CONTRACT,
   videoInputRoleForPromptMention,
   videoFamilyForModel,
   videoModeForPromptMentions,
@@ -146,6 +148,10 @@ export type NewApiProviderOptions = {
   timeoutMs?: number;
   /** Maximum response body buffered from the provider. */
   maxResponseBytes?: number;
+  /** Image2Pro 异步图片任务的轮询间隔，默认遵循文档建议的 5 秒。 */
+  imageTaskPollIntervalMs?: number;
+  /** 测试或受控环境可限制图片任务轮询次数；缺省持续查询至结束或取消。 */
+  imageTaskMaxPollAttempts?: number;
   fetchImpl?: typeof fetch;
   /**
    * Reject plaintext HTTP endpoints. Production also enforces this when the
@@ -460,8 +466,11 @@ type ImageChatProviderRequest = {
 };
 
 /** Honor the frozen protocol; repair the old Images default for known Gemini image models. */
-function imageRequestContract(snapshot: RunSnapshot): 'openai-images' | 'openai-chat-completions' {
+function imageRequestContract(
+  snapshot: RunSnapshot,
+): 'openai-images' | 'openai-chat-completions' | typeof IMAGE2PRO_IMAGE_TASK_CONTRACT {
   const contract = snapshot.executionBindings?.[snapshot.targetNodeId]?.contract;
+  if (contract === IMAGE2PRO_IMAGE_TASK_CONTRACT) return contract;
   if (contract === 'openai-chat-completions') return contract;
   if (contract === undefined || contract === 'openai-images')
     return isGeminiChatImageModel(snapshot.modelAlias)
@@ -482,6 +491,8 @@ export class NewApiProvider {
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly imageTaskPollIntervalMs: number;
+  private readonly imageTaskMaxPollAttempts?: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: NewApiProviderOptions) {
@@ -496,6 +507,15 @@ export class NewApiProvider {
       defaultResponseContentLimit,
       'maxResponseBytes',
     );
+    this.imageTaskPollIntervalMs = nonNegativeInteger(
+      options.imageTaskPollIntervalMs,
+      5_000,
+      'imageTaskPollIntervalMs',
+    );
+    this.imageTaskMaxPollAttempts =
+      options.imageTaskMaxPollAttempts === undefined
+        ? undefined
+        : positiveInteger(options.imageTaskMaxPollAttempts, 1, 'imageTaskMaxPollAttempts');
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -503,6 +523,8 @@ export class NewApiProvider {
     snapshot,
     reportProgress,
     providerJob,
+    resumeOnly,
+    onProviderJob,
     resolvedMentions,
     signal,
     runId,
@@ -522,13 +544,29 @@ export class NewApiProvider {
       });
     }
 
+    const selectedImageContract =
+      target.data.mediaType === 'image' ? imageRequestContract(snapshot) : undefined;
+    if (selectedImageContract === IMAGE2PRO_IMAGE_TASK_CONTRACT) {
+      return this.executeImageTask({
+        snapshot,
+        reportProgress,
+        providerJob,
+        resumeOnly,
+        onProviderJob,
+        resolvedMentions,
+        signal,
+        runId,
+        attempt,
+        onRequestPrompt,
+      });
+    }
+
     // Worker 在请求前持久化本地任务身份，重放时仅保证发送相同的幂等键。
     // 供应商是否识别该键、如何去重尚需契约确认，不能据此自动重试。
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
     const imageChatRequest =
-      target.data.mediaType === 'image' &&
-      imageRequestContract(snapshot) === 'openai-chat-completions'
+      target.data.mediaType === 'image' && selectedImageContract === 'openai-chat-completions'
         ? this.imageChatRequest(
             snapshot,
             target.data.label,
@@ -834,6 +872,621 @@ export class NewApiProvider {
       prompt: mapping.prompt,
       sourceImages: mapping.images,
     };
+  }
+
+  /** Image2Pro 图片任务使用独立白名单协议；参考图只从冻结输入映射。 */
+  private imageTaskRequest(
+    snapshot: RunSnapshot,
+    label: string,
+    nodePrompt?: string,
+    nodePromptDocument?: PromptDocument,
+    resolvedMentions?: readonly ResolvedMention[],
+  ): { body: Record<string, unknown>; prompt: string; sourceImages: ImageSourceInput[] } {
+    const mapping = mapImageGenerationInputs(
+      snapshot,
+      label,
+      nodePrompt,
+      nodePromptDocument,
+      resolvedMentions,
+    );
+    const references = mapping.images.filter((input) => input.role !== 'mask');
+    const masks = mapping.images.filter((input) => input.role === 'mask');
+    if (masks.length > 1) {
+      throw new NewApiProviderError('Image2Pro 图片任务只接受一张蒙版图片', {
+        code: 'IMAGE_TASK_MASK_UNSUPPORTED',
+        retryable: false,
+      });
+    }
+    if (references.length > 16) {
+      throw new NewApiProviderError('Image2Pro 图片任务最多接受 16 张参考图', {
+        code: 'IMAGE_TASK_TOO_MANY_REFERENCES',
+        retryable: false,
+      });
+    }
+    assertImageEditSourceInput(snapshot, { ...mapping, images: references });
+
+    const parameters = providerParameters(snapshot.parameters, 'image', snapshot.modelAlias);
+    const n = parameters.n ?? 1;
+    if (!Number.isSafeInteger(n) || Number(n) < 1 || Number(n) > 4) {
+      throw new NewApiProviderError('Image2Pro 图片任务参数 n 必须是 1–4 的整数', {
+        code: 'INVALID_PROVIDER_PARAMETER',
+        retryable: false,
+      });
+    }
+    if (parameters.response_format !== undefined && parameters.response_format !== 'url') {
+      throw new NewApiProviderError('Image2Pro 图片任务 response_format 仅支持 url 或省略', {
+        code: 'INVALID_PROVIDER_PARAMETER',
+        retryable: false,
+      });
+    }
+    const body: Record<string, unknown> = {
+      model: snapshot.modelAlias,
+      prompt: mapping.prompt,
+      n,
+    };
+    for (const key of [
+      'size',
+      'aspect_ratio',
+      'ratio',
+      'resolution',
+      'image_size',
+      'response_format',
+    ]) {
+      if (parameters[key] !== undefined) body[key] = parameters[key];
+    }
+    // Canvas camelCase aliases are not part of the remote task schema.
+    if (body.aspect_ratio === undefined && parameters.aspectRatio !== undefined)
+      body.aspect_ratio = parameters.aspectRatio;
+    if (body.image_size === undefined && parameters.imageSize !== undefined)
+      body.image_size = parameters.imageSize;
+    if (references.length > 0) {
+      const values = references.map((input) => imageTaskImageValue(input, [this.apiKey]));
+      body.input_image = values.length === 1 ? values[0] : values;
+    }
+    if (masks[0]) body.mask = imageTaskImageValue(masks[0], [this.apiKey]);
+    return { body, prompt: mapping.prompt, sourceImages: [...references, ...masks] };
+  }
+
+  /** 提交或查询 Image2Pro 图片任务；恢复路径只读取已有任务，不会重发 POST。 */
+  private async executeImageTask({
+    snapshot,
+    reportProgress,
+    providerJob: existingProviderJob,
+    resumeOnly,
+    onProviderJob,
+    resolvedMentions,
+    signal,
+    runId,
+    attempt,
+    onRequestPrompt,
+  }: NewApiProviderRequest): Promise<ProviderExecution<StandardProviderOutput>> {
+    const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+    if (!target || target.data.mediaType !== 'image')
+      throw new NewApiProviderError('Image2Pro 图片任务缺少有效图片节点', {
+        code: 'IMAGE_TASK_TARGET_INVALID',
+        retryable: false,
+      });
+    if (existingProviderJob && existingProviderJob.provider !== 'newapi')
+      throw new NewApiProviderError('已有平台任务与 New API Provider 不匹配', {
+        code: 'PROVIDER_MISMATCH',
+        retryable: false,
+      });
+
+    const existingContract = existingProviderJob?.payload?.contract;
+    if (
+      existingProviderJob &&
+      existingContract !== IMAGE2PRO_IMAGE_TASK_CONTRACT &&
+      (existingContract !== undefined ||
+        existingProviderJob.platformJobId !== undefined ||
+        resumeOnly ||
+        isImageTaskPhase(existingProviderJob.payload?.phase))
+    ) {
+      throw new NewApiProviderError('已有图片任务的冻结合同无法识别', {
+        code: 'IMAGE_TASK_CONTRACT_UNSUPPORTED',
+        retryable: false,
+      });
+    }
+    let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
+    const existingPhase = existingProviderJob?.payload?.phase;
+    if (resumeOnly && (!platformJobId || !isImageTaskPhase(existingPhase))) {
+      throw new NewApiProviderError('图片任务只读恢复必须提供有效平台任务 ID 与冻结阶段', {
+        code: 'IMAGE_TASK_RESUME_JOB_REQUIRED',
+        retryable: false,
+      });
+    }
+    if (platformJobId && !isImageTaskPhase(existingPhase)) {
+      throw new NewApiProviderError('已有图片任务阶段无法识别，已阻止重新提交', {
+        code: 'IMAGE_TASK_PHASE_UNSUPPORTED',
+        platformJobId,
+        retryable: false,
+      });
+    }
+
+    const requestIds = imageTaskRequestIds(existingProviderJob);
+    let creationPayload: Record<string, unknown> | undefined;
+    if (!platformJobId) {
+      if (resumeOnly) {
+        throw new NewApiProviderError('图片任务只读恢复禁止创建新任务', {
+          code: 'IMAGE_TASK_RESUME_ONLY',
+          retryable: false,
+        });
+      }
+      const plan = this.imageTaskRequest(
+        snapshot,
+        target.data.label,
+        target.data.prompt,
+        target.data.promptDocument,
+        resolvedMentions,
+      );
+      const requestFingerprint = imageTaskRequestFingerprint(plan.body);
+      if (
+        existingPhase === 'submitting' ||
+        existingProviderJob?.payload?.sendStatus === 'unknown'
+      ) {
+        if (existingProviderJob?.payload?.requestFingerprint !== requestFingerprint) {
+          throw new NewApiProviderError(
+            'Image2Pro 图片创建结果未知，当前请求与原提交不一致；请先核对平台任务状态，不要重发。',
+            {
+              code: 'IMAGE_TASK_SUBMISSION_UNKNOWN',
+              providerPayload: imageTaskPayloadSummary(
+                'submitting',
+                snapshot.modelAlias,
+                undefined,
+                undefined,
+                requestIds,
+              ),
+              retryable: false,
+            },
+          );
+        }
+      }
+      if (Buffer.byteLength(JSON.stringify(plan.body), 'utf8') > 8 * 1024 * 1024) {
+        throw new NewApiProviderError('Image2Pro 图片任务请求体超过 8 MiB 限制', {
+          code: 'IMAGE_TASK_REQUEST_TOO_LARGE',
+          retryable: false,
+        });
+      }
+      if (onRequestPrompt) {
+        await reportRequestPrompt({
+          snapshot,
+          provider: 'newapi',
+          mediaType: 'image',
+          requestIdentity: 'POST /images/tasks#1',
+          onRequestPrompt,
+          runId,
+          attempt,
+          format: 'plain',
+          parts: [{ order: 0, text: plan.prompt }],
+          resources: imagePromptResources(plan.sourceImages, [this.apiKey]),
+        });
+      }
+      const pendingPayload = imageTaskPayloadSummary(
+        'submitting',
+        snapshot.modelAlias,
+        undefined,
+        undefined,
+        requestIds,
+        requestFingerprint,
+      );
+      if (!onProviderJob) {
+        throw new NewApiProviderError('创建图片任务前必须提供任务状态持久化回调', {
+          code: 'IMAGE_TASK_PERSISTENCE_REQUIRED',
+          providerPayload: pendingPayload,
+          retryable: false,
+        });
+      }
+      try {
+        await onProviderJob({
+          provider: 'newapi',
+          status: 'submitted',
+          progress: 0,
+          payload: pendingPayload,
+        });
+      } catch {
+        throw new NewApiProviderError('图片任务提交意图持久化失败', {
+          code: 'IMAGE_TASK_PERSISTENCE_FAILED',
+          providerPayload: pendingPayload,
+          retryable: false,
+        });
+      }
+      throwIfProviderSignalAborted(signal);
+
+      let submission: { payload: Record<string, unknown> } & NewApiRequestIds;
+      try {
+        submission = await this.requestImageTaskJson(
+          `${this.baseUrl}/images/tasks`,
+          'POST',
+          plan.body,
+          imageTaskIdempotencyKey(snapshot, existingProviderJob),
+          signal,
+          snapshot.executionBindings?.[snapshot.targetNodeId]?.authority,
+        );
+      } catch (error) {
+        if (error instanceof NewApiProviderError && !error.retryable) throw error;
+        throw new NewApiProviderError(
+          `${error instanceof Error ? error.message : 'Image2Pro 图片任务创建请求失败'} Image2Pro 图片任务创建结果未知，请先核对平台任务状态；因无法确认任务是否已创建，不要立即重复提交。`,
+          {
+            status: error instanceof NewApiProviderError ? error.status : undefined,
+            code: 'IMAGE_TASK_SUBMISSION_UNKNOWN',
+            requestId: error instanceof NewApiProviderError ? error.requestId : undefined,
+            newApiRequestId:
+              error instanceof NewApiProviderError ? error.newApiRequestId : undefined,
+            providerPayload: pendingPayload,
+            retryable: true,
+          },
+        );
+      }
+      requestIds.requestId = submission.requestId;
+      requestIds.newApiRequestId = submission.newApiRequestId;
+      platformJobId = imageTaskPlatformId(submission.payload);
+      if (!platformJobId) {
+        throw new NewApiProviderError('Image2Pro 图片创建响应缺少平台任务 ID；不要重复提交。', {
+          code: 'IMAGE_TASK_ID_MISSING',
+          ...requestIds,
+          providerPayload: pendingPayload,
+          retryable: true,
+        });
+      }
+      creationPayload = submission.payload;
+    }
+
+    const submittedPayload = imageTaskPayloadSummary(
+      'submitted',
+      snapshot.modelAlias,
+      creationPayload ? imageTaskStatus(creationPayload) : undefined,
+      creationPayload ? imageTaskProgressValue(creationPayload) : undefined,
+      requestIds,
+    );
+    try {
+      await onProviderJob?.({
+        provider: 'newapi',
+        platformJobId,
+        status: 'submitted',
+        progress: Math.max(5, existingProviderJob?.progress ?? 0),
+        payload: submittedPayload,
+      });
+    } catch {
+      throw new NewApiProviderError('图片平台任务 ID 持久化失败', {
+        code: 'IMAGE_TASK_JOB_PERSISTENCE_FAILED',
+        ...requestIds,
+        platformJobId,
+        providerPayload: submittedPayload,
+        retryable: false,
+      });
+    }
+    try {
+      await reportProgress?.(Math.max(5, existingProviderJob?.progress ?? 0));
+    } catch {
+      throw new NewApiProviderError('图片任务进度回调失败', {
+        code: 'IMAGE_TASK_PROGRESS_FAILED',
+        ...requestIds,
+        platformJobId,
+        providerPayload: submittedPayload,
+        retryable: false,
+      });
+    }
+    throwIfProviderSignalAborted(signal, platformJobId);
+
+    let lastStatus: string | undefined;
+    for (
+      let pollAttempt = 1;
+      this.imageTaskMaxPollAttempts === undefined || pollAttempt <= this.imageTaskMaxPollAttempts;
+      pollAttempt += 1
+    ) {
+      if (this.imageTaskPollIntervalMs > 0)
+        await delay(this.imageTaskPollIntervalMs, signal, platformJobId);
+      try {
+        const response = await this.requestImageTaskJson(
+          `${this.baseUrl}/images/tasks/${encodeURIComponent(platformJobId)}`,
+          'GET',
+          undefined,
+          undefined,
+          signal,
+        );
+        requestIds.pollRequestId = response.requestId ?? requestIds.pollRequestId;
+        requestIds.pollNewApiRequestId = response.newApiRequestId ?? requestIds.pollNewApiRequestId;
+        if (
+          imageTaskPlatformId(response.payload) &&
+          imageTaskPlatformId(response.payload) !== platformJobId
+        )
+          throw new NewApiProviderError('Image2Pro 图片查询返回了不同的平台任务身份', {
+            code: 'IMAGE_TASK_ID_MISMATCH',
+            retryable: false,
+          });
+        lastStatus = imageTaskStatus(response.payload);
+        const progress = imageTaskProgressValue(response.payload);
+        const accountingStatus = imageTaskAccountingStatus(response.payload);
+        if (
+          (lastStatus === 'failed' && accountingStatus !== 'refund_pending') ||
+          lastStatus === 'cancelled'
+        ) {
+          const summary = imageTaskPayloadSummary(
+            'failed',
+            snapshot.modelAlias,
+            lastStatus,
+            progress,
+            requestIds,
+          );
+          try {
+            await onProviderJob?.({
+              provider: 'newapi',
+              platformJobId,
+              status: lastStatus,
+              progress: progress ?? existingProviderJob?.progress ?? 5,
+              payload: summary,
+            });
+          } catch {
+            throw new NewApiProviderError('图片任务终态持久化失败', {
+              code: 'IMAGE_TASK_JOB_PERSISTENCE_FAILED',
+              ...requestIds,
+              platformJobId,
+              providerPayload: summary,
+              retryable: false,
+            });
+          }
+          const providerError = extractProviderError(response.payload, [this.apiKey]);
+          throw new NewApiProviderError(
+            formatDetailedProviderError({
+              action: 'Image2Pro 图片生成',
+              code:
+                providerError.code ??
+                (lastStatus === 'cancelled' ? 'IMAGE_TASK_CANCELLED' : 'IMAGE_TASK_FAILED'),
+              requestId: providerError.requestId ?? response.requestId,
+              providerMessage: providerError.message ?? `供应商任务状态为 ${lastStatus}`,
+            }),
+            {
+              code:
+                providerError.code ??
+                (lastStatus === 'cancelled' ? 'IMAGE_TASK_CANCELLED' : 'IMAGE_TASK_FAILED'),
+              ...requestIds,
+              platformJobId,
+              providerPayload: summary,
+              retryable: false,
+            },
+          );
+        }
+        if (lastStatus === 'completed') {
+          let output: ImageProviderOutput;
+          try {
+            output = parseImageOutput(imageTaskOutputPayload(response.payload), {
+              ...snapshot,
+              // The async task whitelist drops unsupported output-format options.
+              parameters: {},
+            });
+          } catch (error) {
+            throw imageTaskJobError(
+              error,
+              platformJobId,
+              imageTaskPayloadSummary(
+                'completed',
+                snapshot.modelAlias,
+                lastStatus,
+                100,
+                requestIds,
+              ),
+              [this.apiKey],
+            );
+          }
+          const completedPayload = imageTaskPayloadSummary(
+            'completed',
+            snapshot.modelAlias,
+            lastStatus,
+            100,
+            requestIds,
+          );
+          try {
+            await onProviderJob?.({
+              provider: 'newapi',
+              platformJobId,
+              status: 'succeeded',
+              progress: 100,
+              payload: completedPayload,
+            });
+          } catch {
+            throw new NewApiProviderError('图片任务完成状态持久化失败', {
+              code: 'IMAGE_TASK_JOB_PERSISTENCE_FAILED',
+              ...requestIds,
+              platformJobId,
+              providerPayload: completedPayload,
+              retryable: false,
+            });
+          }
+          try {
+            await reportProgress?.(100);
+          } catch {
+            throw new NewApiProviderError('图片任务进度回调失败', {
+              code: 'IMAGE_TASK_PROGRESS_FAILED',
+              ...requestIds,
+              platformJobId,
+              providerPayload: completedPayload,
+              retryable: false,
+            });
+          }
+          throwIfProviderSignalAborted(signal, platformJobId);
+          const usage =
+            parseProviderUsage(response.payload) ??
+            (creationPayload ? parseProviderUsage(creationPayload) : undefined);
+          return {
+            result: {
+              provider: 'newapi',
+              summary: `New API 已完成 ${target.data.label}`,
+              targetNodeId: target.id,
+              mediaType: 'image',
+              inputCount: snapshot.inputs.length,
+            },
+            output,
+            providerJob: {
+              provider: 'newapi',
+              platformJobId,
+              status: 'succeeded',
+              progress: 100,
+              payload: completedPayload,
+            },
+            ...(usage ? { usage } : {}),
+          };
+        }
+        if (!isImageTaskInProgress(lastStatus) && accountingStatus !== 'refund_pending') {
+          throw new NewApiProviderError('Image2Pro 图片查询返回了无法识别的任务状态', {
+            code: 'IMAGE_TASK_STATUS_UNKNOWN',
+            ...requestIds,
+            platformJobId,
+            providerPayload: imageTaskPayloadSummary(
+              'polling',
+              snapshot.modelAlias,
+              lastStatus,
+              progress,
+              requestIds,
+            ),
+            retryable: false,
+          });
+        }
+        const pollPayload = imageTaskPayloadSummary(
+          'polling',
+          snapshot.modelAlias,
+          lastStatus,
+          progress,
+          requestIds,
+          undefined,
+          accountingStatus,
+        );
+        try {
+          await onProviderJob?.({
+            provider: 'newapi',
+            platformJobId,
+            status: 'running',
+            progress: Math.min(99, Math.max(5, progress ?? existingProviderJob?.progress ?? 5)),
+            payload: pollPayload,
+          });
+        } catch {
+          throw new NewApiProviderError('图片任务状态持久化失败', {
+            code: 'IMAGE_TASK_JOB_PERSISTENCE_FAILED',
+            ...requestIds,
+            platformJobId,
+            providerPayload: pollPayload,
+            retryable: false,
+          });
+        }
+        try {
+          await reportProgress?.(Math.min(99, Math.max(5, progress ?? 5)));
+        } catch {
+          throw new NewApiProviderError('图片任务进度回调失败', {
+            code: 'IMAGE_TASK_PROGRESS_FAILED',
+            ...requestIds,
+            platformJobId,
+            providerPayload: pollPayload,
+            retryable: false,
+          });
+        }
+        throwIfProviderSignalAborted(signal, platformJobId);
+      } catch (error) {
+        if (
+          error instanceof NewApiProviderError &&
+          error.retryable &&
+          (this.imageTaskMaxPollAttempts === undefined ||
+            pollAttempt < this.imageTaskMaxPollAttempts)
+        )
+          continue;
+        throw imageTaskJobError(
+          error,
+          platformJobId,
+          imageTaskPayloadSummary(
+            'polling',
+            snapshot.modelAlias,
+            lastStatus,
+            undefined,
+            requestIds,
+          ),
+          [this.apiKey],
+        );
+      }
+    }
+    throw new NewApiProviderError('Image2Pro 图片任务仍在处理中，已保留平台任务供后续恢复查询。', {
+      code: 'IMAGE_TASK_POLL_LIMIT',
+      ...requestIds,
+      platformJobId,
+      providerPayload: imageTaskPayloadSummary(
+        'polling',
+        snapshot.modelAlias,
+        lastStatus,
+        undefined,
+        requestIds,
+      ),
+      retryable: true,
+    });
+  }
+
+  /** Image2Pro 任务端点仅使用 JSON，并按现有 Provider 超时/取消边界读取响应。 */
+  private async requestImageTaskJson(
+    url: string,
+    method: 'GET' | 'POST',
+    body?: Record<string, unknown>,
+    idempotencyKey?: string,
+    externalSignal?: AbortSignal,
+    authority?: NewApiExecutionAuthority,
+  ): Promise<{ payload: Record<string, unknown> } & NewApiRequestIds> {
+    const abortContext = createProviderAbortContext(this.timeoutMs, externalSignal);
+    let requestIds: NewApiRequestIds = {};
+    try {
+      throwIfProviderSignalAborted(externalSignal);
+      const response = await this.fetchImpl(url, {
+        method,
+        redirect: 'error',
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          accept: 'application/json',
+          ...(method === 'POST' ? newApiExecutionHeaders(authority) : {}),
+          ...(body ? { 'content-type': 'application/json' } : {}),
+          ...(method === 'POST' && idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
+        },
+        signal: abortContext.signal,
+      });
+      requestIds = responseRequestIds(response, [this.apiKey]);
+      const payload = await readResponsePayload(
+        response,
+        this.maxResponseBytes,
+        abortContext.signal,
+      );
+      throwIfProviderSignalAborted(externalSignal);
+      if (!response.ok)
+        throw providerResponseError(
+          response,
+          payload,
+          [this.apiKey],
+          method === 'POST' ? '图片任务创建' : '图片任务查询',
+        );
+      if (!isRecord(payload) || isBinaryResponsePayload(payload))
+        throw new NewApiProviderError('Image2Pro 图片任务响应不是有效 JSON', {
+          ...requestIds,
+          retryable: false,
+        });
+      const bodyRequestId = [payload.request_id, payload.requestId]
+        .map((value) => sanitizeProviderDiagnosticField(value, [this.apiKey]))
+        .find((value) => value !== undefined);
+      return {
+        payload,
+        ...requestIds,
+        ...(requestIds.requestId || bodyRequestId
+          ? { requestId: requestIds.requestId ?? bodyRequestId }
+          : {}),
+      };
+    } catch (error) {
+      if (error instanceof NewApiProviderError)
+        throw withNewApiRequestIds(error, requestIds, [this.apiKey]);
+      if (abortContext.wasExternallyAborted())
+        throw withNewApiRequestIds(providerCancellationError(), requestIds, [this.apiKey]);
+      const isTimeout = getErrorName(error) === 'AbortError';
+      throw new NewApiProviderError(
+        isTimeout
+          ? 'New API 请求超时'
+          : error instanceof Error
+            ? sanitizeProviderErrorMessage(error.message, [this.apiKey])
+            : 'New API 请求失败',
+        { code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', retryable: true, ...requestIds },
+      );
+    } finally {
+      abortContext.cleanup();
+    }
   }
 
   private audioPayload(
@@ -1810,6 +2463,190 @@ function standardRequestIdempotencyKey(
   return `newapi-${stableIdempotencyHash(
     `${snapshot.projectId}\u0000${snapshot.targetNodeId}\u0000${snapshot.submittedAt}`,
   )}`;
+}
+
+/** Image2Pro requires 1–100 ASCII characters and an alphanumeric first character. */
+function imageTaskIdempotencyKey(
+  snapshot: RunSnapshot,
+  providerJob: ProviderJobUpdate | undefined,
+): string {
+  const localJobId = providerJob?.id?.trim();
+  if (localJobId && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(localJobId)) return localJobId;
+  const identity =
+    localJobId || `${snapshot.projectId}\0${snapshot.targetNodeId}\0${snapshot.submittedAt}`;
+  return `canvas-${createHash('sha256').update(identity).digest('hex')}`;
+}
+
+function imageTaskRequestFingerprint(body: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+type ImageTaskPhase = 'submitting' | 'submitted' | 'polling' | 'completed' | 'failed';
+
+function isImageTaskPhase(value: unknown): value is ImageTaskPhase {
+  return (
+    value === 'submitting' ||
+    value === 'submitted' ||
+    value === 'polling' ||
+    value === 'completed' ||
+    value === 'failed'
+  );
+}
+
+function imageTaskRequestIds(providerJob: ProviderJobUpdate | undefined): NewApiRequestIds {
+  const payload = providerJob?.payload;
+  if (!payload) return {};
+  return {
+    requestId: sanitizeProviderDiagnosticField(payload.requestId),
+    newApiRequestId: verifiedNewApiRequestId(payload.newApiRequestId),
+    pollRequestId: sanitizeProviderDiagnosticField(payload.pollRequestId),
+    pollNewApiRequestId: verifiedNewApiRequestId(payload.pollNewApiRequestId),
+  };
+}
+
+function imageTaskPayloadSummary(
+  phase: ImageTaskPhase,
+  model: string,
+  status?: string,
+  progress?: number,
+  requestIds: NewApiRequestIds = {},
+  requestFingerprint?: string,
+  accountingStatus?: string,
+): Record<string, unknown> {
+  const safeStatus =
+    status && ['queued', 'processing', 'completed', 'failed', 'cancelled'].includes(status)
+      ? status
+      : undefined;
+  const safeAccountingStatus =
+    accountingStatus &&
+    ['not_charged', 'reserved', 'settled', 'refunded', 'refund_pending'].includes(accountingStatus)
+      ? accountingStatus
+      : undefined;
+  return {
+    contract: IMAGE2PRO_IMAGE_TASK_CONTRACT,
+    phase,
+    model,
+    ...(safeStatus ? { status: safeStatus } : {}),
+    ...(typeof progress === 'number' && Number.isFinite(progress)
+      ? { progress: Math.max(0, Math.min(100, Math.round(progress))) }
+      : {}),
+    ...(safeAccountingStatus ? { accountingStatus: safeAccountingStatus } : {}),
+    ...(requestFingerprint ? { requestFingerprint } : {}),
+    ...(requestIds.requestId ? { requestId: requestIds.requestId } : {}),
+    ...(requestIds.newApiRequestId ? { newApiRequestId: requestIds.newApiRequestId } : {}),
+    ...(requestIds.pollRequestId ? { pollRequestId: requestIds.pollRequestId } : {}),
+    ...(requestIds.pollNewApiRequestId
+      ? { pollNewApiRequestId: requestIds.pollNewApiRequestId }
+      : {}),
+  };
+}
+
+function imageTaskPlatformId(payload: Record<string, unknown>): string | undefined {
+  const data = isRecord(payload.data) ? payload.data : undefined;
+  for (const value of [payload.id, payload.task_id, data?.id, data?.task_id]) {
+    const id = normalizeErrorField(value);
+    if (id) return id;
+  }
+  return undefined;
+}
+
+function imageTaskStatus(payload: Record<string, unknown>): string | undefined {
+  const status = normalizeErrorField(payload.status)?.toLowerCase();
+  if (status) return status;
+  const data = isRecord(payload.data) ? payload.data : undefined;
+  return normalizeErrorField(data?.status)?.toLowerCase();
+}
+
+function imageTaskProgressValue(payload: Record<string, unknown>): number | undefined {
+  const value = payload.progress ?? (isRecord(payload.data) ? payload.data.progress : undefined);
+  const parsed =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
+function imageTaskAccountingStatus(payload: Record<string, unknown>): string | undefined {
+  return normalizeErrorField(payload.accounting_status ?? payload.accountingStatus)?.toLowerCase();
+}
+
+function imageTaskOutputPayload(payload: Record<string, unknown>): unknown {
+  if (payload.data !== undefined) return payload;
+  if (isRecord(payload.output)) return payload.output;
+  if (isRecord(payload.result)) return payload.result;
+  return payload;
+}
+
+function isImageTaskInProgress(status: string | undefined): boolean {
+  return (
+    status === 'queued' || status === 'processing' || status === 'pending' || status === 'running'
+  );
+}
+
+function imageTaskJobError(
+  error: unknown,
+  platformJobId: string,
+  providerPayload: Record<string, unknown>,
+  sensitiveValues: readonly string[],
+): NewApiProviderError {
+  if (error instanceof NewApiProviderError) {
+    return new NewApiProviderError(error.message, {
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId,
+      newApiRequestId: error.newApiRequestId,
+      pollRequestId: error.pollRequestId,
+      pollNewApiRequestId: error.pollNewApiRequestId,
+      platformJobId,
+      providerPayload,
+      retryable: error.retryable,
+    });
+  }
+  return new NewApiProviderError(
+    error instanceof Error
+      ? sanitizeProviderErrorMessage(error.message, sensitiveValues)
+      : 'Image2Pro 图片结果解析失败',
+    { code: 'IMAGE_TASK_OUTPUT_INVALID', platformJobId, providerPayload, retryable: false },
+  );
+}
+
+/** Enforce the documented HTTPS URL / image Data URL input contract. */
+function imageTaskImageValue(input: ImageSourceInput, sensitiveValues: readonly string[]): string {
+  const contentUrl = input.snapshot.data.contentUrl;
+  if (!nonEmptyString(contentUrl))
+    throw inputRoleValueError('image', input.role, '可发送的图片内容');
+  const value = contentUrl.trim();
+  const parsed = parseDataUrl(value);
+  const declaredMimeType = normalizedMimeType(input.snapshot.data.mimeType);
+  if (parsed) {
+    const mimeType = validatedMediaMimeType(parsed.mimeType, 'image');
+    if (
+      !mimeType ||
+      !isValidBase64(parsed.base64) ||
+      (declaredMimeType && declaredMimeType !== mimeType)
+    ) {
+      throw inputRoleValueError('image', input.role, '有效且 MIME 匹配的图片内容');
+    }
+    return `data:${mimeType};base64,${validatedMediaBase64(parsed.base64)}`;
+  }
+  let remote: URL;
+  try {
+    remote = new URL(value);
+  } catch {
+    throw inputRoleValueError('image', input.role, 'HTTPS 图片地址或 Data URL');
+  }
+  if (
+    remote.protocol !== 'https:' ||
+    remote.username ||
+    remote.password ||
+    remote.hash ||
+    (declaredMimeType && !declaredMimeType.startsWith('image/'))
+  ) {
+    throw inputRoleValueError('image', input.role, 'HTTPS 图片地址或 Data URL');
+  }
+  if (sanitizeProviderErrorMessage(value, sensitiveValues) !== value) {
+    throw inputRoleValueError('image', input.role, '不包含凭据的 HTTPS 图片地址');
+  }
+  return value;
 }
 
 function stableIdempotencyHash(value: string): string {

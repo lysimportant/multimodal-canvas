@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RunSnapshot } from '@multimodal-canvas/domain';
+import { IMAGE2PRO_IMAGE_TASK_CONTRACT, type RunSnapshot } from '@multimodal-canvas/domain';
 import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 
@@ -49,6 +49,8 @@ describe('New API 本人缓存模型目录', () => {
     ['gemini-3-pro-image-preview', 'openai-images', 'openai-chat-completions'],
     ['gemini-nano-banana-2.1', undefined, 'openai-chat-completions'],
     ['imagen-4.0-generate-001', 'openai-images', 'openai-images'],
+    ['普通图片模型', undefined, 'openai-images'],
+    ['无限制-图片模型', 'openai-images', IMAGE2PRO_IMAGE_TASK_CONTRACT],
   ] as const)('为 %s 冻结正确的图片执行协议', async (modelAlias, catalogContract, expected) => {
     const service = new NewApiAccountService({
       prisma: { aiCredential: { findFirst: vi.fn().mockResolvedValue(null) } },
