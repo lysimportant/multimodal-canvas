@@ -3027,6 +3027,42 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange.mock.lastCall?.[0]).not.toHaveProperty('size');
   });
 
+  it.each([
+    { quality: 'auto' },
+    { image_quality: 'auto' },
+    { imageQuality: 'auto' },
+    { quality: 'auto', image_quality: 'high', imageQuality: 'medium' },
+  ])('清空生成质量后保留尺寸和其他参数，后续编辑不恢复质量 %j', async (quality) => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <StatefulImageEditor
+        initialParameters={{ size: '1152x2048', seed: 0, providerOption: false, ...quality }}
+        onParametersChange={onParametersChange}
+      />,
+    );
+    const qualityGroup = screen.getByText('生成质量').parentElement!;
+    await user.click(within(qualityGroup).getByRole('combobox'));
+    await user.click(selectPopup(qualityGroup).getByRole('option', { name: '未设置' }));
+    expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({
+      size: '1152x2048',
+      seed: 0,
+      providerOption: false,
+    });
+    expect(screen.getByRole('combobox', { name: '生成质量：未设置' })).toBeInTheDocument();
+    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1152 × 2048');
+
+    const ratioGroup = screen.getByText('图片比例').parentElement!;
+    await user.click(within(ratioGroup).getByRole('combobox'));
+    await user.click(selectPopup(ratioGroup).getByRole('option', { name: /^1:1/ }));
+    expect(onParametersChange).toHaveBeenLastCalledWith({
+      size: '2048x2048',
+      seed: 0,
+      providerOption: false,
+    });
+    expect(screen.getByRole('combobox', { name: '生成质量：未设置' })).toBeInTheDocument();
+  });
+
   it('Gemini 图片只显示 1K、2K、4K 尺寸，不显示 GPT Image 的质量控件', async () => {
     const user = userEvent.setup();
     render(

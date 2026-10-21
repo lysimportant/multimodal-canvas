@@ -835,7 +835,7 @@ export function NodeQuickEditor({
               label="生成质量"
               allowCustomValue
               value={imageOutputParameters?.quality ?? readNativeImageQuality(parameters) ?? ''}
-              options={mediaOptions.quality}
+              options={[{ value: '', label: '未设置' }, ...mediaOptions.quality]}
               onChange={(value) => updateImageParameter('quality', value)}
               className="node-quick-editor-select-group"
             />
