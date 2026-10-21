@@ -53,6 +53,7 @@ import {
   type VideoRefundStatus,
   resolveProviderMentions,
   isNewApiVideoContract,
+  isDefiniteNewApiCreationRejection,
   type NewApiProviderRequest,
   type NewApiVideoContract,
 } from '@multimodal-canvas/providers';
@@ -375,14 +376,13 @@ function usableHttpStatus(value: unknown): number | undefined {
  *
  * Provider 调用返回后请求确定为 `sent`；抛错时只有拿到明确证据才判定终态：
  * 携带平台任务 ID 说明创建请求已经送达并成功；只有网关明确拒绝本次请求
- * （4xx，且排除 408/425/429 这类可重试状态）才判定为 `failed`。5xx 与
- * 408/425/429 都可能是网关在 POST 之后才失败，超时、网络中断、本地取消和无法
- * 识别的错误形态同理，一律记为 `unknown`；不确定状态绝不允许触发自动重发创建
+ * （4xx，或可信 Provider 的无渠道/参数拒绝响应，排除 408/425/429）才判定为
+ * `failed`。普通 5xx 与 408/425/429 都可能是网关在 POST 之后才失败，超时、
+ * 网络中断、本地取消和无法识别的错误形态同理，一律记为 `unknown`；不确定状态绝不允许触发自动重发创建
  * 请求（本函数只产出诊断状态，没有任何调用方据此重试）。
  *
- * 判定口径镜像 `packages/providers/src/index.ts` 里未导出的
- * `isDefiniteProviderRejection`（providers 包不导出该函数），改动时必须同步。
- * 这里比它更保守一点：不带可用 HTTP 状态码的错误即使携带 `model_not_found`、
+ * 可信 Provider 的明确拒绝与 providers 包共享判定口径。
+ * 不带可用 HTTP 状态码的错误即使携带 `model_not_found`、
  * `invalid_request_error` 之类的代码也不判为失败，因为没有响应证据就无法排除
  * 请求可能已经被接受，而 `unknown` 是唯一不会引发重发的结论。
  *
@@ -394,6 +394,7 @@ export function requestPromptSendStatusForFailure(
 ): ObservableRequestPromptSendStatus {
   if (!isRecord(error)) return 'unknown';
   if (typeof error.platformJobId === 'string' && error.platformJobId.trim()) return 'sent';
+  if (isDefiniteNewApiCreationRejection(error)) return 'failed';
   const status = usableHttpStatus(error.status);
   if (
     status !== undefined &&
@@ -2759,7 +2760,17 @@ export function createRunWorker(options: {
                 ? { code: rawError.code, retryable: false, error: errorMessage }
                 : {}),
               ...(rejectedCreation
-                ? { sendStatus: 'failed', error: errorMessage }
+                ? {
+                    sendStatus: 'failed',
+                    error: errorMessage,
+                    ...(rawError instanceof NewApiProviderError
+                      ? {
+                          status: rawError.status,
+                          code: rawError.code,
+                          retryable: rawError.retryable,
+                        }
+                      : {}),
+                  }
                 : promptOptimizationOutputError
                   ? { code: PROMPT_OPTIMIZATION_OUTPUT_INVALID, error: errorMessage }
                   : {}),
@@ -3169,6 +3180,13 @@ function canResumeImage2proProviderJob(
 }
 
 function hasImage2proTaskEvidence(providerJob: ProviderJob): boolean {
+  // submitting 只是 POST 前留存的意图；明确拒绝后按原错恢复，不能当作已创建任务。
+  if (
+    !providerJob.platformJobId?.trim() &&
+    providerJob.status === 'failed' &&
+    providerJob.payload?.sendStatus === 'failed'
+  )
+    return false;
   const phase = providerJob.payload?.phase;
   return Boolean(
     providerJob.platformJobId?.trim() ||

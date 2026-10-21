@@ -425,14 +425,27 @@ afterEach(() => {
 });
 
 describe('App 外部画布同步与草稿保护', () => {
-  const draftKey = `multimodal-canvas:canvas:${session.user.id}:${project.id}`;
+  const draftKey = 'multimodal-canvas:canvas:' + session.user.id + ':' + project.id;
 
   function canvasRequests() {
     return fetchMock.mock.calls.filter(
       ([url, init]) => String(url).endsWith('/canvas') && init?.method === 'PATCH',
     );
   }
-  /** 复用真实 App 状态，事件与请求全部由本用例的内存夹具提供。 */
+
+  function backup() {
+    const key = localStorage.getItem(draftKey + ':conflict-backup');
+    return key ? (JSON.parse(localStorage.getItem(key)!) as CanvasDocument) : null;
+  }
+
+  function expectNoSyncControls() {
+    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
+    for (const name of ['获取最新画布', '停止自动同步', '处理画布冲突', '恢复本地副本']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+  }
+
+  /** 事件与请求全部由本用例的内存夹具提供。 */
   function captureEvents() {
     let emit: Parameters<typeof auth.openAuthEventStream>[1];
     vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, onEvent) => {
@@ -471,31 +484,33 @@ describe('App 外部画布同步与草稿保护', () => {
     });
     expect(canvasRequests()).toHaveLength(0);
     expect(screen.getByRole('status', { name: '已同步外部更新' })).toBeInTheDocument();
+    expectNoSyncControls();
   });
 
-  it('读取外部更新期间的新编辑被保留，自动保存和手动保存均受到冲突保护', async () => {
+  it('读取外部更新期间的新编辑先备份，再自动接纳最新画布', async () => {
     const emit = captureEvents();
     await renderCanvas();
     const api = fetchMock.getMockImplementation()!;
     const pending = pendingResponse();
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
-      String(input).endsWith('/canvas') && !init?.method ? pending.promise : api(input, init),
-    );
+    let first = true;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/canvas') && !init?.method && first) {
+        first = false;
+        return pending.promise;
+      }
+      return api(input, init);
+    });
     emit(2);
     fillNode('empty-one', '请求期间的新草稿');
-    await act(async () =>
-      pending.resolve(
-        json({ canvas: { ...canvas, revision: 2, nodes: [emptyNode('remote-only')] } }),
-      ),
-    );
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    expect(view.canvas!.nodes[0].data.prompt).toBe('请求期间的新草稿');
-    expect(view.canvas!.nodes.some((node) => node.id === 'remote-only')).toBe(false);
-    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    canvas = { ...canvas, revision: 2, nodes: [emptyNode('remote-only')] };
+    await act(async () => pending.resolve(json({ canvas })));
+    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('remote-only'));
+    expect(backup()?.nodes[0].data.prompt).toBe('请求期间的新草稿');
     expect(canvasRequests()).toHaveLength(0);
+    expectNoSyncControls();
   });
 
-  it('丢弃乱序响应与其他项目的事件', async () => {
+  it.each([false, true])('丢弃乱序响应与其他项目的事件（旧读取失败=%s）', async (failRead) => {
     const emit = captureEvents();
     await renderCanvas();
     const api = fetchMock.getMockImplementation()!;
@@ -521,178 +536,183 @@ describe('App 外部画布同步与草稿保护', () => {
     await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('newest'));
     await act(async () =>
       pending[0].resolve(
-        json({ canvas: { ...canvas, revision: 2, nodes: [emptyNode('obsolete')] } }),
+        failRead
+          ? json({ error: 'obsolete failure' }, 503)
+          : json({ canvas: { ...canvas, revision: 2, nodes: [emptyNode('obsolete')] } }),
       ),
     );
     expect(view.canvas!.nodes[0].id).toBe('newest');
+    expect(screen.getByRole('status', { name: '已同步外部更新' })).toBeInTheDocument();
     emit(2);
     expect(pending).toHaveLength(2);
   });
 
-  it('冲突可下载、备份后加载远端，并从独立副本恢复本地内容', async () => {
+  it('默认备份本地差异，后续更新与重新打开均自动同步且保留独立副本', async () => {
     const emit = captureEvents();
-    await renderCanvas();
-    fillNode('empty-one', '可恢复的本地内容');
-    canvas = { ...canvas, revision: 2, nodes: [emptyNode('remote-only')] };
-    emit(2);
-    const dialog = await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    await userEvent.click(within(dialog).getByRole('button', { name: '下载本地草稿' }));
-    expect(exports.downloadProjectExport).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: project.id + '-local-draft.json' }),
-    );
-    await userEvent.click(within(dialog).getByRole('button', { name: '备份草稿并加载远端' }));
-    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('remote-only'));
-    const backupKey = localStorage.getItem(
-      `multimodal-canvas:canvas:${session.user.id}:${project.id}:conflict-backup`,
-    )!;
-    expect(JSON.parse(localStorage.getItem(backupKey)!).nodes[0].data.prompt).toBe(
-      '可恢复的本地内容',
-    );
-    await userEvent.click(screen.getByRole('button', { name: '恢复本地副本' }));
-    expect(view.canvas!.nodes[0].data.prompt).toBe('可恢复的本地内容');
-    expect(canvasRequests()).toHaveLength(0);
-    expect(screen.getByRole('button', { name: '处理画布冲突' })).toBeInTheDocument();
-  });
-
-  it('重新打开项目时保留与远端不同的本地草稿，不静默覆盖', async () => {
-    const local = structuredClone(canvas);
-    local.nodes[0].data.prompt = '上次未保存的草稿';
-    localStorage.setItem(
-      `multimodal-canvas:canvas:${session.user.id}:${project.id}`,
-      JSON.stringify(local),
-    );
-    canvas.revision = 2;
-    await renderCanvas(1);
-    expect(view.canvas!.nodes[0].data.prompt).toBe('上次未保存的草稿');
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    expect(canvasRequests()).toHaveLength(0);
-  });
-
-  it('获取最新画布按钮加载点击时的最新修订，后续同步不再提示且保留原副本', async () => {
-    const emit = captureEvents();
-    await renderCanvas();
+    const app = await renderCanvas();
     fillNode('empty-one', '可取回的本地编辑');
-    canvas = { revision: 2, nodes: [emptyNode('remote-at-dialog')], edges: [] };
+    canvas = { revision: 2, nodes: [emptyNode('remote-at-event')], edges: [] };
     emit(2);
-    const dialog = await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    canvas = { ...canvas, revision: 3, nodes: [emptyNode('latest-at-click')] };
-    await userEvent.click(within(dialog).getByRole('button', { name: '获取最新画布，不再提示' }));
-    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-at-click'));
-    expect(localStorage.getItem(draftKey + ':follow-remote')).toBe('true');
+    await screen.findByRole('status', { name: '正在同步最新画布' });
+    canvas = { ...canvas, revision: 3, nodes: [emptyNode('latest-at-load')] };
+    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-at-load'));
     expect(JSON.parse(localStorage.getItem(draftKey)!).revision).toBe(3);
     const backupKey = localStorage.getItem(draftKey + ':conflict-backup')!;
-    expect(JSON.parse(localStorage.getItem(backupKey)!).nodes[0].data.prompt).toBe(
-      '可取回的本地编辑',
-    );
+    expect(backup()?.nodes[0].data.prompt).toBe('可取回的本地编辑');
     canvas = { ...canvas, revision: 4, nodes: [emptyNode('next-update')] };
     emit(4);
     await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('next-update'));
-    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
     expect(localStorage.getItem(draftKey + ':conflict-backup')).toBe(backupKey);
-    expect(canvasRequests()).toHaveLength(0);
-    await userEvent.click(screen.getByRole('button', { name: '恢复本地副本' }));
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    expect(view.canvas!.nodes[0].data.prompt).toBe('可取回的本地编辑');
-    expect(localStorage.getItem(draftKey + ':follow-remote')).toBe('false');
-  });
-
-  it('工具栏可直接获取最新画布，停止自动同步后恢复手动冲突保护', async () => {
-    const emit = captureEvents();
-    await renderCanvas();
-    canvas = { ...canvas, revision: 2 };
-    await userEvent.click(screen.getByRole('button', { name: '获取最新画布' }));
-    await screen.findByRole('button', { name: '停止自动同步' });
-    expect(localStorage.getItem(draftKey + ':follow-remote')).toBe('true');
-    await userEvent.click(screen.getByRole('button', { name: '停止自动同步' }));
-    fillNode('empty-one', '停止同步后的本地内容');
-    canvas = { ...canvas, revision: 3, nodes: [emptyNode('remote-after-stop')] };
-    emit(3);
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    expect(view.canvas!.nodes[0].data.prompt).toBe('停止同步后的本地内容');
-    expect(canvasRequests()).toHaveLength(0);
-  });
-
-  it('记住的自动同步选择在重开时备份旧草稿并直接显示远端', async () => {
-    const local = structuredClone(canvas);
-    local.nodes[0].data.prompt = '重开前的旧草稿';
-    localStorage.setItem(draftKey, JSON.stringify(local));
-    localStorage.setItem(draftKey + ':follow-remote', 'true');
-    canvas = { revision: 5, nodes: [emptyNode('latest-on-reopen')], edges: [] };
+    app.unmount();
     await renderCanvas(1);
-    expect(view.canvas!.nodes[0].id).toBe('latest-on-reopen');
-    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
-    const backupKey = localStorage.getItem(draftKey + ':conflict-backup')!;
-    expect(JSON.parse(localStorage.getItem(backupKey)!).nodes[0].data.prompt).toBe(
-      '重开前的旧草稿',
-    );
-    expect(JSON.parse(localStorage.getItem(draftKey)!).revision).toBe(5);
+    expect(view.canvas!.nodes[0].id).toBe('next-update');
+    expect(backup()?.nodes[0].data.prompt).toBe('可取回的本地编辑');
     expect(canvasRequests()).toHaveLength(0);
+    expectNoSyncControls();
   });
 
-  it('其他画布的自动同步选择不会改变当前画布的草稿保护', async () => {
-    const local = structuredClone(canvas);
-    local.nodes[0].data.prompt = '当前画布草稿';
-    localStorage.setItem(draftKey, JSON.stringify(local));
-    localStorage.setItem(draftKey.replace(project.id, secondProject.id) + ':follow-remote', 'true');
-    canvas.revision = 2;
-    await renderCanvas(1);
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    expect(view.canvas!.nodes[0].data.prompt).toBe('当前画布草稿');
-    expect(screen.queryByRole('button', { name: '停止自动同步' })).not.toBeInTheDocument();
-  });
+  it.each([undefined, 'false', 'true'])(
+    '首次打开默认同步远端，兼容旧同步设置 %s',
+    async (preference) => {
+      const local = structuredClone(canvas);
+      local.nodes[0].data.prompt = '上次未保存的草稿';
+      localStorage.setItem(draftKey, JSON.stringify(local));
+      if (preference) localStorage.setItem(draftKey + ':follow-remote', preference);
+      canvas = { revision: 5, nodes: [emptyNode('latest-on-open')], edges: [] };
+      await renderCanvas(1);
+      expect(view.canvas!.nodes[0].id).toBe('latest-on-open');
+      expect(backup()?.nodes[0].data.prompt).toBe('上次未保存的草稿');
+      expect(JSON.parse(localStorage.getItem(draftKey)!).revision).toBe(5);
+      expect(canvasRequests()).toHaveLength(0);
+      expectNoSyncControls();
+    },
+  );
 
-  it('独立备份失败时不替换本地画布，也不写回远端', async () => {
+  it.each(['初次', '后续'])('%s备份失败保留草稿，存储恢复后自动同步且不弹窗', async (stage) => {
     const emit = captureEvents();
-    await renderCanvas();
-    fillNode('empty-one', '备份失败时必须保留');
-    canvas = { revision: 2, nodes: [emptyNode('remote-only')], edges: [] };
-    emit(2);
-    const dialog = await screen.findByRole('dialog', { name: '画布存在外部更新' });
+    if (stage === '初次') {
+      const local = structuredClone(canvas);
+      local.nodes[0].data.prompt = '备份失败时必须保留';
+      localStorage.setItem(draftKey, JSON.stringify(local));
+    } else {
+      await renderCanvas();
+      fillNode('empty-one', '备份失败时必须保留');
+    }
     const store = Storage.prototype.setItem;
+    let failing = true;
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
-      if (key.includes(':conflict-backup:')) throw new Error('模拟浏览器存储已满');
+      if (failing && key.includes(':conflict-backup:')) throw new Error('模拟存储已满');
       store.call(this, key, value);
     });
-    await userEvent.click(within(dialog).getByRole('button', { name: '获取最新画布，不再提示' }));
-    await screen.findByText('模拟浏览器存储已满');
+    canvas = { revision: 2, nodes: [emptyNode('remote-only')], edges: [] };
+    if (stage === '初次') await renderCanvas(1);
+    else emit(2);
+    await screen.findByRole('status', { name: '最新画布同步失败，本地内容已保留，正在自动重试' });
     expect(view.canvas!.nodes[0].data.prompt).toBe('备份失败时必须保留');
-    expect(localStorage.getItem(draftKey + ':conflict-backup')).toBeNull();
+    expect(backup()).toBeNull();
     expect(canvasRequests()).toHaveLength(0);
+    expectNoSyncControls();
+    failing = false;
+    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('remote-only'), { timeout: 4000 });
+    expect(backup()?.nodes[0].data.prompt).toBe('备份失败时必须保留');
   });
 
-  it('自动同步遇到 409 时备份并接纳远端，不再弹窗或重试覆盖', async () => {
-    await renderCanvas();
-    await userEvent.click(screen.getByRole('button', { name: '获取最新画布' }));
-    await screen.findByRole('button', { name: '停止自动同步' });
+  it('初次远端读取失败保留草稿，网络恢复后自动同步', async () => {
+    const local = structuredClone(canvas);
+    local.nodes[0].data.prompt = '断网前的草稿';
+    localStorage.setItem(draftKey, JSON.stringify(local));
     const api = fetchMock.getMockImplementation()!;
+    let failing = true;
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
-        canvas = { revision: 7, nodes: [emptyNode('latest-after-409')], edges: [] };
-        return Promise.resolve(json({ revision: 7 }, 409));
-      }
+      if (failing && String(input).endsWith('/canvas') && !init?.method)
+        return Promise.resolve(json({ error: 'temporary failure' }, 503));
       return api(input, init);
     });
-    fillNode('empty-one', '409前的编辑');
-    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
-    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-after-409'));
-    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
-    const backupKey = localStorage.getItem(draftKey + ':conflict-backup')!;
-    expect(JSON.parse(localStorage.getItem(backupKey)!).nodes[0].data.prompt).toBe('409前的编辑');
-    expect(canvasRequests()).toHaveLength(1);
+    await renderCanvas(1);
+    expect(view.canvas!.nodes[0].data.prompt).toBe('断网前的草稿');
+    expect(canvasRequests()).toHaveLength(0);
+    canvas = { revision: 3, nodes: [emptyNode('latest-after-reconnect')], edges: [] };
+    failing = false;
+    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-after-reconnect'), {
+      timeout: 4000,
+    });
+    expect(backup()?.nodes[0].data.prompt).toBe('断网前的草稿');
+    expectNoSyncControls();
   });
 
-  it('获取最新画布等待保存回执后再同步，不被迟到旧回执重新锁住', async () => {
+  it('重新聚焦读取失败后自动重试，不需要点击同步', async () => {
+    await renderCanvas();
+    const api = fetchMock.getMockImplementation()!;
+    let failing = true;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (failing && String(input).endsWith('/canvas') && !init?.method)
+        return Promise.resolve(json({ error: 'temporary failure' }, 503));
+      return api(input, init);
+    });
+    fireEvent.focus(window);
+    await screen.findByRole('status', { name: '最新画布同步失败，本地内容已保留，正在自动重试' });
+    canvas = { revision: 2, nodes: [emptyNode('latest-after-retry')], edges: [] };
+    failing = false;
+    await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-after-retry'), {
+      timeout: 4000,
+    });
+    expect(canvasRequests()).toHaveLength(0);
+    expectNoSyncControls();
+  });
+
+  it.each(['none', 'http', 'network'])(
+    '保存409自动备份并同步，不覆盖远端（读取失败类型=%s）',
+    async (readFailure) => {
+      await renderCanvas();
+      const api = fetchMock.getMockImplementation()!;
+      let conflicted = false;
+      let failedRead = false;
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
+          conflicted = true;
+          canvas = { revision: 7, nodes: [emptyNode('latest-after-409')], edges: [] };
+          return Promise.resolve(json({ revision: 7 }, 409));
+        }
+        if (
+          String(input).endsWith('/canvas') &&
+          !init?.method &&
+          conflicted &&
+          readFailure !== 'none' &&
+          !failedRead
+        ) {
+          failedRead = true;
+          if (readFailure === 'network') return Promise.reject(new TypeError('模拟网络离线'));
+          return Promise.resolve(json({ error: 'temporary failure' }, 503));
+        }
+        return api(input, init);
+      });
+      fillNode('empty-one', '409前的编辑');
+      fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+      if (readFailure !== 'none') {
+        await screen.findByRole('status', {
+          name: '最新画布同步失败，本地内容已保留，正在自动重试',
+        });
+        expect(view.canvas!.nodes[0].data.prompt).toBe('409前的编辑');
+      }
+      await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-after-409'), {
+        timeout: 4000,
+      });
+      expect(backup()?.nodes[0].data.prompt).toBe('409前的编辑');
+      expect(canvasRequests()).toHaveLength(1);
+      expectNoSyncControls();
+    },
+  );
+
+  it('自动同步等待保存回执，不被迟到旧回执回退，后续保存使用最新修订', async () => {
     const emit = captureEvents();
     await renderCanvas();
     const api = fetchMock.getMockImplementation()!;
     const saved = pendingResponse();
     let submitted: CanvasDocument | undefined;
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
-        if (!submitted) {
-          submitted = JSON.parse(String(init.body));
-          return saved.promise;
-        }
+      if (String(input).endsWith('/canvas') && init?.method === 'PATCH' && !submitted) {
+        submitted = JSON.parse(String(init.body));
+        return saved.promise;
       }
       return api(input, init);
     });
@@ -701,24 +721,23 @@ describe('App 外部画布同步与草稿保护', () => {
     await waitFor(() => expect(canvasRequests()).toHaveLength(1));
     canvas = { revision: 3, nodes: [emptyNode('latest-after-save')], edges: [] };
     emit(3);
-    const dialog = await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    await userEvent.click(within(dialog).getByRole('button', { name: '获取最新画布，不再提示' }));
+    await screen.findByRole('status', { name: '正在同步最新画布' });
+    expect(view.canvas!.nodes[0].data.prompt).toBe('保存中的本地草稿');
+    fillNode('empty-one', '回执前继续编辑的草稿');
     await act(async () => saved.resolve(json({ canvas: { ...submitted, revision: 2 } })));
     await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-after-save'));
-    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
+    expect(backup()?.nodes[0].data.prompt).toBe('回执前继续编辑的草稿');
     fillNode('latest-after-save', '基于最新修订继续编辑');
     fireEvent.keyDown(window, { key: 's', ctrlKey: true });
     await waitFor(() => expect(canvasRequests()).toHaveLength(2));
     expect(JSON.parse(String(canvasRequests()[1][1]?.body)).revision).toBe(3);
     await screen.findByRole('status', { name: '已保存到项目' });
-    expect(canvas.nodes[0].data.prompt).toBe('基于最新修订继续编辑');
+    expectNoSyncControls();
   });
 
   it('自动同步等待正在输入的编辑框结束，再接纳最新画布', async () => {
     const emit = captureEvents();
     await renderCanvas();
-    await userEvent.click(screen.getByRole('button', { name: '获取最新画布' }));
-    await screen.findByRole('button', { name: '停止自动同步' });
     const editor = document.createElement('textarea');
     document.body.append(editor);
     editor.focus();
@@ -726,7 +745,7 @@ describe('App 外部画布同步与草稿保护', () => {
     emit(2);
     await screen.findByRole('status', { name: '等待编辑结束后同步最新画布' });
     expect(view.canvas!.nodes[0].id).toBe('empty-one');
-    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
+    expectNoSyncControls();
     editor.blur();
     editor.remove();
     await waitFor(() => expect(view.canvas!.nodes[0].id).toBe('latest-after-edit'));
@@ -734,21 +753,26 @@ describe('App 外部画布同步与草稿保护', () => {
   });
 
   it('离开画布后不执行等待最新版本读取的保存请求', async () => {
+    const emit = captureEvents();
     const app = await renderCanvas();
     fillNode('empty-one', '离开前的本地编辑');
+    canvas = { revision: 2, nodes: [emptyNode('remote-after-leave')], edges: [] };
     const api = fetchMock.getMockImplementation()!;
     const latest = pendingResponse();
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
-      String(input).endsWith('/canvas') && !init?.method ? latest.promise : api(input, init),
-    );
-    await userEvent.click(screen.getByRole('button', { name: '获取最新画布' }));
+    let reads = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/canvas') && !init?.method && ++reads > 1) return latest.promise;
+      return api(input, init);
+    });
+    emit(2);
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
     fireEvent.keyDown(window, { key: 's', ctrlKey: true });
     app.unmount();
-    await act(async () => latest.resolve(json({ canvas: { ...canvas, revision: 2 } })));
+    await act(async () => latest.resolve(json({ canvas })));
     expect(canvasRequests()).toHaveLength(0);
   });
 
-  it('本页保存的 SSE 先于回执到达时不误报冲突', async () => {
+  it('本页保存的SSE先于回执到达时不误触发远端替换', async () => {
     const emit = captureEvents();
     await renderCanvas();
     const api = fetchMock.getMockImplementation()!;
@@ -766,35 +790,9 @@ describe('App 外部画布同步与草稿保护', () => {
     emit(2);
     await act(async () => saved.resolve(json({ canvas })));
     await screen.findByRole('status', { name: '已保存到项目' });
-    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
     expect(canvasRequests()).toHaveLength(1);
-  });
-
-  it('保存回执晚于外部更新时保留冲突锁，不把新草稿写回旧修订', async () => {
-    const emit = captureEvents();
-    await renderCanvas();
-    const api = fetchMock.getMockImplementation()!;
-    const saved = pendingResponse();
-    let submitted: CanvasDocument | undefined;
-    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/canvas') && init?.method === 'PATCH') {
-        submitted = JSON.parse(String(init.body));
-        return saved.promise;
-      }
-      return api(input, init);
-    });
-    fillNode('empty-one', '提交中的草稿');
-    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
-    await waitFor(() => expect(canvasRequests()).toHaveLength(1));
-    canvas = { ...canvas, revision: 3, nodes: [emptyNode('external-later')] };
-    emit(3);
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
-    fillNode('empty-one', '仍未保存的新草稿');
-    await act(async () => saved.resolve(json({ canvas: { ...submitted, revision: 2 } })));
-    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
-    expect(canvasRequests()).toHaveLength(1);
-    expect(view.canvas!.nodes[0].data.prompt).toBe('仍未保存的新草稿');
-    expect(screen.getByRole('button', { name: '处理画布冲突' })).toBeInTheDocument();
+    expect(backup()).toBeNull();
+    expectNoSyncControls();
   });
 
   it('切换项目后忽略原项目迟到的画布读取', async () => {
@@ -803,7 +801,7 @@ describe('App 外部画布同步与草稿保护', () => {
     const api = fetchMock.getMockImplementation()!;
     const old = pendingResponse();
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes(`/projects/${project.id}/canvas`) && !init?.method)
+      if (String(input).includes('/projects/' + project.id + '/canvas') && !init?.method)
         return old.promise;
       return api(input, init);
     });
@@ -3493,7 +3491,7 @@ describe('App 历史与共享保存快照', () => {
     expect(pending).toHaveLength(2);
   });
 
-  it('409 远端内容不同则保留本地草稿，后续保存不会覆盖远端', async () => {
+  it('409 远端内容不同时自动接纳远端，备份本地且不重复保存', async () => {
     await renderCanvas();
     const api = fetchMock.getMockImplementation()!;
     const requests: CanvasDocument[] = [];
@@ -3513,15 +3511,15 @@ describe('App 历史与共享保存快照', () => {
     });
     fillNode('empty-one', '冲突前编辑');
     fireEvent.keyDown(window, { key: 's', ctrlKey: true });
-    await screen.findByRole('dialog', { name: '画布存在外部更新' });
+    await screen.findByRole('status', { name: '已同步外部更新' });
     expect(requests).toHaveLength(1);
-    expect(view.canvas!.nodes[0].data.prompt).toBe('冲突前编辑');
-    await userEvent.click(screen.getByRole('button', { name: '保留本地草稿' }));
-    fillNode('empty-one', '冲突后的编辑');
+    expect(view.canvas!.nodes[0].data.prompt).toBeUndefined();
+    const draftKey = `multimodal-canvas:canvas:${session.user.id}:${project.id}`;
+    const backupKey = localStorage.getItem(draftKey + ':conflict-backup')!;
+    expect(JSON.parse(localStorage.getItem(backupKey)!).nodes[0].data.prompt).toBe('冲突前编辑');
     fireEvent.keyDown(window, { key: 's', ctrlKey: true });
-    await waitFor(() => expect(screen.getByRole('button', { name: '处理画布冲突' })).toBeVisible());
     expect(requests).toHaveLength(1);
-    expect(view.canvas!.nodes[0].data.prompt).toBe('冲突后的编辑');
+    expect(screen.queryByRole('dialog', { name: '画布存在外部更新' })).not.toBeInTheDocument();
   });
 
   it('409 远端已包含冻结提交时只确认修订，不重复 PATCH', async () => {

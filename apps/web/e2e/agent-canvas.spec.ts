@@ -40,6 +40,7 @@ async function installAgentFixture(page: Page, baseURL: string | undefined) {
   let canvas = isolation.canvas();
   canvas.nodes[0]!.data.label = initialLabel;
   const canvasWrites: CanvasDocument[] = [];
+  const expectedConsoleErrors: string[] = [];
   const connectionCreates: { expiresInHours: number }[] = [];
   const revoked: string[] = [];
   let connections: Connection[] = [];
@@ -124,6 +125,7 @@ async function installAgentFixture(page: Page, baseURL: string | undefined) {
   });
   return {
     isolation,
+    expectedConsoleErrors,
     canvasWrites,
     connectionCreates,
     revoked,
@@ -166,13 +168,16 @@ const test = base.extend<{ agent: AgentFixture }>({
           connectionCreates: agent.connectionCreates.length,
           connectionRevokes: agent.revoked.length,
           errors: agent.isolation.errors,
+          expectedConsoleErrors: agent.expectedConsoleErrors,
         };
         await testInfo.attach('agent-api-isolation-audit.json', {
           contentType: 'application/json',
           body: JSON.stringify(audit, null, 2),
         });
         expect.soft(audit.blockedRequests, '不得调用真实或未隔离接口').toBe(0);
-        expect.soft(audit.errors, '不得出现浏览器错误或未声明请求').toEqual([]);
+        expect
+          .soft(audit.errors, '浏览器错误必须与明确注入的故障完全一致，不得有额外异常')
+          .toEqual(audit.expectedConsoleErrors);
       }
     },
     { auto: true },
@@ -328,105 +333,47 @@ test.describe('外部画布同步与草稿保护', () => {
     await expect(page.getByRole('dialog', { name: '画布存在外部更新' })).toHaveCount(0);
     expect(agent.canvasWrites).toHaveLength(0);
   });
-
-  test('外部更新遇到本地保存时保留草稿，迟到回执不解锁，备份可恢复', async ({ page, agent }) => {
-    agent.pauseNextSave();
-    const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
-    await node.hover();
-    await page.getByRole('button', { name: `重命名节点：${initialLabel}`, exact: true }).click();
-    const rename = page.getByRole('dialog', { name: '重命名节点', exact: true });
-    await rename.getByRole('textbox', { name: '编辑节点名称', exact: true }).fill(localLabel);
-    await rename.getByRole('button', { name: '保存', exact: true }).click();
-    await expect.poll(agent.isSavePending).toBe(true);
-    agent.updateRemote((canvas) => {
-      canvas.nodes[0]!.data.label = remoteLabel;
-    });
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    const conflict = page.getByRole('dialog', { name: '画布存在外部更新', exact: true });
-    await expect(conflict).toBeVisible();
-    await expect(conflict).toContainText('本地草稿仍完整保留');
-    const readDraft = () =>
-      page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), draftKey);
-    await expect.poll(async () => (await readDraft())?.nodes[0]?.data.label).toBe(localLabel);
-
-    const saveResponse = page.waitForResponse(
-      (response) =>
-        response.request().method() === 'PATCH' &&
-        new URL(response.url()).pathname === `/v1/projects/${project.id}/canvas`,
-    );
-    agent.releaseSave();
-    await saveResponse;
-    await expect.poll(agent.isSavePending).toBe(false);
-    await conflict.getByRole('button', { name: '保留本地草稿', exact: true }).click();
-    await expect(conflict).toBeHidden();
-    await page.keyboard.press('ControlOrMeta+s');
-    await expect(page.getByRole('button', { name: '处理画布冲突', exact: true })).toBeVisible();
-    await expect.poll(async () => (await readDraft())?.nodes[0]?.data.label).toBe(localLabel);
-    expect(agent.canvasWrites).toHaveLength(1);
-    expect(agent.canvas().nodes[0]!.data.label).toBe(remoteLabel);
-
-    await page.getByRole('button', { name: '处理画布冲突', exact: true }).click();
-    await conflict.getByRole('button', { name: '备份草稿并加载远端', exact: true }).click();
-    await expect(conflict).toBeHidden();
-    await expect(node.locator('.flow-node-label-button')).toHaveAttribute(
-      'aria-label',
-      `重命名节点：${remoteLabel}`,
-    );
-    const backup = await page.evaluate((key) => {
-      const backupKey = localStorage.getItem(`${key}:conflict-backup`);
-      return backupKey ? JSON.parse(localStorage.getItem(backupKey) ?? 'null') : null;
-    }, draftKey);
-    expect(backup.nodes[0].data.label).toBe(localLabel);
-    await page.getByRole('button', { name: '恢复本地副本', exact: true }).click();
-    await expect(conflict).toBeVisible();
-    await expect(node.locator('.flow-node-label-button')).toHaveAttribute(
-      'aria-label',
-      `重命名节点：${localLabel}`,
-    );
-    await expect.poll(async () => (await readDraft())?.nodes[0]?.data.label).toBe(localLabel);
-    expect(agent.canvasWrites).toHaveLength(1);
-    expect(agent.canvas().nodes[0]!.data.label).toBe(remoteLabel);
-  });
 });
 
 for (const width of [1440, 390]) {
-  test.describe(`最新画布自动同步 ${width}px`, () => {
+  test.describe('默认自动同步最新画布 ' + width + 'px', () => {
     test.use({ viewport: { width, height: 900 } });
 
-    test('保存竞争后获取最新画布，后续更新和重开不再提示且本地副本可恢复', async ({
-      page,
-      agent,
-    }) => {
+    async function expectNoSyncControls(page: Page) {
+      await expect(page.getByRole('dialog', { name: '画布存在外部更新' })).toHaveCount(0);
+      for (const name of ['获取最新画布', '停止自动同步', '处理画布冲突', '恢复本地副本']) {
+        await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
+      }
+    }
+
+    test('保存竞争自动备份并同步，迟到回执和后续更新不弹窗', async ({ page, agent }) => {
       agent.pauseNextSave();
-      const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
+      const node = page.locator('.react-flow__node[data-id="' + nodeId + '"]');
       await node.hover();
       if (width < 600)
-        await node.getByRole('button', { name: `节点操作：${initialLabel}`, exact: true }).click();
-      await page.getByRole('button', { name: `重命名节点：${initialLabel}`, exact: true }).click();
+        await node.getByRole('button', { name: '节点操作：' + initialLabel, exact: true }).click();
+      await page.getByRole('button', { name: '重命名节点：' + initialLabel, exact: true }).click();
       const rename = page.getByRole('dialog', { name: '重命名节点', exact: true });
       await rename.getByRole('textbox', { name: '编辑节点名称', exact: true }).fill(localLabel);
       await rename.getByRole('button', { name: '保存', exact: true }).click();
       if (width < 600)
         await page
-          .getByRole('button', { name: `关闭节点操作：${localLabel}`, exact: true })
+          .getByRole('button', { name: '关闭节点操作：' + localLabel, exact: true })
           .click();
       await expect.poll(agent.isSavePending).toBe(true);
       agent.updateRemote((canvas) => {
         canvas.nodes[0]!.data.label = remoteLabel;
       });
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      const conflict = page.getByRole('dialog', { name: '画布存在外部更新', exact: true });
-      await expect(conflict).toBeVisible();
-      await conflict.getByRole('button', { name: '获取最新画布，不再提示', exact: true }).click();
+      await expect(page.locator('.save-state')).toHaveAttribute('aria-label', '正在同步最新画布');
+      await expectNoSyncControls(page);
       agent.releaseSave();
-      await expect(conflict).toBeHidden();
       const label = node.locator(width < 600 ? '.flow-node-mobile-trigger' : '.flow-node-header');
-      await expect(label).toHaveAttribute('aria-label', `节点操作：${remoteLabel}`);
-      await expect(page.getByRole('button', { name: '停止自动同步', exact: true })).toBeVisible();
+      await expect(label).toHaveAttribute('aria-label', '节点操作：' + remoteLabel);
 
       const readBackup = () =>
         page.evaluate((key) => {
-          const backupKey = localStorage.getItem(`${key}:conflict-backup`);
+          const backupKey = localStorage.getItem(key + ':conflict-backup');
           return backupKey ? JSON.parse(localStorage.getItem(backupKey) ?? 'null') : null;
         }, draftKey);
       await expect.poll(async () => (await readBackup())?.nodes[0]?.data.label).toBe(localLabel);
@@ -435,44 +382,68 @@ for (const width of [1440, 390]) {
       });
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect(label).toHaveAttribute('aria-label', '节点操作：后续最新名称');
-      await expect(conflict).toBeHidden();
-      await expect.poll(async () => (await readBackup())?.nodes[0]?.data.label).toBe(localLabel);
       await page.reload();
       await expect(label).toHaveAttribute('aria-label', '节点操作：后续最新名称');
-      await expect(conflict).toBeHidden();
-      await expect(page.getByRole('button', { name: '停止自动同步', exact: true })).toBeVisible();
+      await expect.poll(async () => (await readBackup())?.nodes[0]?.data.label).toBe(localLabel);
+      await expectNoSyncControls(page);
       await expectNoHorizontalOverflow(page.locator('html'));
       await expectNoHorizontalOverflow(page.locator('.topbar'));
-
-      await page.getByRole('button', { name: '恢复本地副本', exact: true }).click();
-      await expect(conflict).toBeVisible();
-      await expect(label).toHaveAttribute('aria-label', `节点操作：${localLabel}`);
-      await expect(page.getByRole('button', { name: '停止自动同步', exact: true })).toHaveCount(0);
       expect(agent.canvasWrites).toHaveLength(1);
       expect(agent.canvas().nodes[0]!.data.label).toBe('后续最新名称');
     });
 
-    test('工具栏按钮支持键盘获取最新画布，并可停止自动同步', async ({ page, agent }) => {
+    test('重新打开直接显示最新画布，旧草稿单独备份且忽略旧手动设置', async ({ page, agent }) => {
+      const local = agent.canvas();
+      local.nodes[0]!.data.label = localLabel;
+      // 在新文档启动前种入既有草稿，避免旧页面 pagehide 正常落盘覆盖测试输入。
+      await page.addInitScript(
+        ({ key, local }) => {
+          localStorage.setItem(key, JSON.stringify(local));
+          localStorage.setItem(key + ':follow-remote', 'false');
+        },
+        { key: draftKey, local },
+      );
       agent.updateRemote((canvas) => {
         canvas.nodes[0]!.data.label = remoteLabel;
       });
-      const latest = page.getByRole('button', { name: '获取最新画布', exact: true });
-      await expect(latest).toBeVisible();
-      await latest.focus();
-      await expect(latest).toBeFocused();
-      await page.keyboard.press('Enter');
+      await page.reload();
+      const node = page.locator('.react-flow__node[data-id="' + nodeId + '"]');
       await expect(
-        page
-          .locator(`.react-flow__node[data-id="${nodeId}"]`)
-          .locator(width < 600 ? '.flow-node-mobile-trigger' : '.flow-node-header'),
-      ).toHaveAttribute('aria-label', `节点操作：${remoteLabel}`);
-      const stop = page.getByRole('button', { name: '停止自动同步', exact: true });
-      await expect(stop).toBeVisible();
-      await stop.focus();
-      await page.keyboard.press('Enter');
-      await expect(stop).toHaveCount(0);
-      await expect(page.getByRole('dialog', { name: '画布存在外部更新' })).toHaveCount(0);
-      await expectNoHorizontalOverflow(page.locator('html'));
+        node.locator(width < 600 ? '.flow-node-mobile-trigger' : '.flow-node-header'),
+      ).toHaveAttribute('aria-label', '节点操作：' + remoteLabel);
+      const backup = await page.evaluate((key) => {
+        const backupKey = localStorage.getItem(key + ':conflict-backup');
+        return backupKey ? JSON.parse(localStorage.getItem(backupKey) ?? 'null') : null;
+      }, draftKey);
+      expect(backup.nodes[0].data.label).toBe(localLabel);
+      await expectNoSyncControls(page);
+      expect(agent.canvasWrites).toHaveLength(0);
+    });
+
+    test('读取失败保留画布，恢复后自动重试获取最新且不需要操作按钮', async ({ page, agent }) => {
+      let failing = true;
+      agent.expectedConsoleErrors.push(
+        'Failed to load resource: the server responded with a status of 503 (Service Unavailable)',
+      );
+      await page.route('**/v1/projects/' + project.id + '/canvas', async (route) => {
+        if (failing && route.request().method() === 'GET')
+          return route.fulfill({ status: 503, json: { error: 'synthetic temporary failure' } });
+        return route.fallback();
+      });
+      agent.updateRemote((canvas) => {
+        canvas.nodes[0]!.data.label = remoteLabel;
+      });
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(page.locator('.save-state')).toHaveAttribute(
+        'aria-label',
+        '最新画布同步失败，本地内容已保留，正在自动重试',
+      );
+      failing = false;
+      const node = page.locator('.react-flow__node[data-id="' + nodeId + '"]');
+      await expect(
+        node.locator(width < 600 ? '.flow-node-mobile-trigger' : '.flow-node-header'),
+      ).toHaveAttribute('aria-label', '节点操作：' + remoteLabel);
+      await expectNoSyncControls(page);
       expect(agent.canvasWrites).toHaveLength(0);
     });
   });

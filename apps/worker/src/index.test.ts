@@ -218,6 +218,27 @@ describe('worker provider job boundary', () => {
     expect(requestPromptSendStatusForFailure({ status: 400 })).toBe('failed');
     expect(requestPromptSendStatusForFailure({ status: 401 })).toBe('failed');
     expect(requestPromptSendStatusForFailure({ status: 422 })).toBe('failed');
+    expect(
+      requestPromptSendStatusForFailure(
+        new NewApiProviderError('no available channel', {
+          status: 503,
+          code: 'model_not_found',
+          retryable: false,
+        }),
+      ),
+    ).toBe('failed');
+    expect(
+      requestPromptSendStatusForFailure({ status: 503, code: 'model_not_found', retryable: false }),
+    ).toBe('unknown');
+    expect(
+      requestPromptSendStatusForFailure(
+        new NewApiProviderError('no available channel', {
+          status: 503,
+          code: 'model_not_found',
+          platformJobId: 'accepted-task',
+        }),
+      ),
+    ).toBe('sent');
     // 5xx 与 408/425/429 都可能是 POST 之后才失败，不能当成明确拒绝。
     for (const status of [500, 502, 503, 504, 408, 425, 429]) {
       expect(requestPromptSendStatusForFailure({ status })).toBe('unknown');
@@ -230,6 +251,11 @@ describe('worker provider job boundary', () => {
     // 没有响应证据时，即使带有明确的供应商错误代码也保持不确定。
     expect(requestPromptSendStatusForFailure({ code: 'model_not_found' })).toBe('unknown');
     expect(requestPromptSendStatusForFailure({ code: 'invalid_request_error' })).toBe('unknown');
+    expect(
+      requestPromptSendStatusForFailure(
+        new NewApiProviderError('no available channel', { code: 'model_not_found' }),
+      ),
+    ).toBe('unknown');
     for (const status of [0, 99, 600, '502', Number.NaN]) {
       expect(requestPromptSendStatusForFailure({ status })).toBe('unknown');
     }

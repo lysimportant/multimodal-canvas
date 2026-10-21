@@ -13,6 +13,7 @@ import {
   NewApiProvider,
   NewApiProviderError,
   NewApiVideoProvider,
+  isDefiniteNewApiCreationRejection,
   newApiExecutionHeaders,
   normalizeNewApiBaseUrl,
   resolveProviderMentions,
@@ -60,6 +61,47 @@ describe('New API 执行受理头', () => {
       auto_groups: ['default', '视频分组'],
     });
     expect(newApiExecutionHeaders()).toEqual({});
+  });
+});
+
+describe('New API 创建拒绝证据', () => {
+  it('识别真实 HTTP 明确拒绝，平台任务和未知送达不视为拒绝', () => {
+    expect(
+      isDefiniteNewApiCreationRejection(
+        new NewApiProviderError('no available channel', { status: 503, code: 'model_not_found' }),
+      ),
+    ).toBe(true);
+    expect(
+      isDefiniteNewApiCreationRejection(new NewApiProviderError('invalid model', { status: 400 })),
+    ).toBe(true);
+    for (const status of [undefined, 0, 200, 408, 425, 429, 503.5, 600, Number.NaN]) {
+      expect(
+        isDefiniteNewApiCreationRejection(
+          new NewApiProviderError('no available channel', { status, code: 'model_not_found' }),
+        ),
+      ).toBe(false);
+    }
+    expect(
+      isDefiniteNewApiCreationRejection(
+        new NewApiProviderError('unavailable', { status: 503, retryable: false }),
+      ),
+    ).toBe(false);
+    expect(
+      isDefiniteNewApiCreationRejection(
+        new NewApiProviderError('no available channel', {
+          status: 503,
+          code: 'model_not_found',
+          platformJobId: 'already-created-task',
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isDefiniteNewApiCreationRejection({
+        name: 'NewApiProviderError',
+        status: 503,
+        code: 'model_not_found',
+      }),
+    ).toBe(false);
   });
 });
 
@@ -3118,53 +3160,57 @@ describe('NewApiProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('marks validation errors as non-retryable and preserves provider request IDs', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ error: { message: 'invalid model', code: 'model_not_found' } }),
-        {
-          status: 400,
-          headers: {
-            'content-type': 'application/json',
-            'x-request-id': 'req-invalid-1',
-          },
-        },
-      ),
-    );
-    const provider = new NewApiProvider({
-      baseUrl: 'https://newapi.example.com/v1',
-      apiKey: 'server-secret',
-      fetchImpl,
-    });
-
-    await expect(
-      provider.execute({
-        snapshot: {
-          projectId: 'project_1',
-          canvasRevision: 1,
-          targetNodeId: 'node_text',
-          modelAlias: 'missing-model',
-          parameters: {},
-          submittedAt: '2026-08-24T00:00:00.000Z',
-          nodes: [
-            {
-              id: 'node_text',
-              type: 'text',
-              position: { x: 0, y: 0 },
-              data: { label: 'Text', mediaType: 'text', mode: 'generate' },
+  it.each([400, 503])(
+    'preserves HTTP %s model rejection and provider request IDs',
+    async (status) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({ error: { message: 'invalid model', code: 'model_not_found' } }),
+          {
+            status,
+            headers: {
+              'content-type': 'application/json',
+              'x-request-id': 'req-invalid-1',
             },
-          ],
-          edges: [],
-          inputs: [],
-        },
-      }),
-    ).rejects.toMatchObject({
-      status: 400,
-      code: 'model_not_found',
-      requestId: 'req-invalid-1',
-      retryable: false,
-    });
-  });
+          },
+        ),
+      );
+      const provider = new NewApiProvider({
+        baseUrl: 'https://newapi.example.com/v1',
+        apiKey: 'server-secret',
+        fetchImpl,
+      });
+
+      await expect(
+        provider.execute({
+          snapshot: {
+            projectId: 'project_1',
+            canvasRevision: 1,
+            targetNodeId: 'node_text',
+            modelAlias: 'missing-model',
+            parameters: {},
+            submittedAt: '2026-08-24T00:00:00.000Z',
+            nodes: [
+              {
+                id: 'node_text',
+                type: 'text',
+                position: { x: 0, y: 0 },
+                data: { label: 'Text', mediaType: 'text', mode: 'generate' },
+              },
+            ],
+            edges: [],
+            inputs: [],
+          },
+        }),
+      ).rejects.toMatchObject({
+        status,
+        code: 'model_not_found',
+        requestId: 'req-invalid-1',
+        retryable: false,
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
 
   it('classifies transport failures as retryable without exposing credentials', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('socket closed'));

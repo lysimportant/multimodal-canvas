@@ -486,7 +486,6 @@ input:disabled {
 
 .project-switcher,
 .project-hub-trigger,
-.canvas-conflict-action,
 .project-menu,
 .topbar-actions {
   pointer-events: auto;

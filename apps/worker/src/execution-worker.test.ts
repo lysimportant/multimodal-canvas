@@ -541,11 +541,91 @@ describe('Worker 中性执行授权', () => {
     expect(f.execute).toHaveBeenCalledOnce();
   });
 
-  it.each([undefined, 408, 425, 429, 500])(
+  it.each(['openai-images', IMAGE2PRO_IMAGE_TASK_CONTRACT])(
+    '%s 的真实 503/model_not_found 保留首次拒绝，重放同 Run 不再发送',
+    async (contract) => {
+      const frozen = snapshot('image', true, contract);
+      frozen.parameters = { prompt: 'Synthetic image generation' };
+      const f = fixture(frozen);
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(
+          { error: { code: 'model_not_found', message: 'no available channel for this model' } },
+          {
+            status: 503,
+            headers: {
+              'x-request-id': 'original-rejected-request',
+              'x-oneapi-request-id': 'gateway-rejected-request',
+            },
+          },
+        ),
+      );
+      f.options.provider = new NewApiProvider({
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'synthetic-test-key',
+        fetchImpl,
+      });
+      const authorization = singleSendAuthorization();
+      const updateRun = vi.fn(async () => undefined);
+      const recordPrompt = vi.fn(async () => undefined);
+      const archiver = vi.fn(f.options.resultArchiver!);
+      f.options.persistence!.updateRun = updateRun;
+      f.options.persistence!.recordRequestPromptOutcome = recordPrompt;
+      createRunWorker({
+        ...f.options,
+        resultArchiver: archiver,
+        execution: authorization.execution,
+      });
+
+      const failures = await processWithQueueRetries(f.job);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toBeInstanceOf(UnrecoverableError);
+      expect(failures[0]).toMatchObject({
+        message: expect.stringContaining('model_not_found'),
+        cause: { status: 503, code: 'model_not_found', retryable: false },
+      });
+      expect(updateRun).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'failed', error: expect.stringContaining('HTTP 503') }),
+      );
+      expect(f.job.data.providerJob?.payload).toMatchObject({
+        sendStatus: 'failed',
+        status: 503,
+        code: 'model_not_found',
+        retryable: false,
+        error: expect.stringContaining('no available channel'),
+        requestId: 'original-rejected-request',
+        newApiRequestId: 'gateway-rejected-request',
+      });
+      expect(recordPrompt).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sendStatus: 'failed' }),
+      );
+      expect(authorization.status()).toBe('failed');
+      expect(authorization.execution.finishSend).toHaveBeenCalledOnce();
+      expect(archiver).not.toHaveBeenCalled();
+
+      await expect(queueState.processor!(f.job)).rejects.toMatchObject({
+        name: 'UnrecoverableError',
+        message: (failures[0] as Error).message,
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(authorization.execution.beginSend).toHaveBeenCalledOnce();
+      expect(f.job.data.providerJob?.payload).toMatchObject({
+        status: 503,
+        code: 'model_not_found',
+        retryable: false,
+        error: (failures[0] as Error).message,
+      });
+    },
+  );
+
+  it.each([undefined, 408, 425, 429, 500, 503])(
     '创建送达未知（HTTP %s）时重投仍严格禁止第二次 POST',
     async (status) => {
       const f = fixture(snapshot('image', true));
-      const failure = new NewApiProviderError('creation delivery unknown', { status });
+      const failure = new NewApiProviderError('creation delivery unknown', {
+        status,
+        ...(status === undefined ? { code: 'TIMEOUT' } : {}),
+      });
       const post = rejectCreation(f, failure);
       const authorization = singleSendAuthorization();
       createRunWorker({ ...f.options, execution: authorization.execution });
@@ -630,9 +710,12 @@ describe('Worker 中性执行授权', () => {
     expect(JSON.stringify(f.job.data.providerJob)).not.toContain('No generated image.');
   });
 
-  it('显式新建的授权 retryOf 不继承前驱 Run 的不可重试标记', async () => {
+  it.each([400, 503])('显式新建的授权 retryOf 不继承前驱 Run 的 HTTP %s 拒绝', async (status) => {
     const original = fixture(snapshot('image', true));
-    const failure = new NewApiProviderError('upstream rejected the request', { status: 400 });
+    const failure = new NewApiProviderError('upstream rejected the request', {
+      status,
+      ...(status === 503 ? { code: 'model_not_found', retryable: false } : {}),
+    });
     const originalPost = rejectCreation(original, failure);
     createRunWorker({ ...original.options, execution: singleSendAuthorization().execution });
     await expect(queueState.processor?.(original.job)).rejects.toBeInstanceOf(UnrecoverableError);

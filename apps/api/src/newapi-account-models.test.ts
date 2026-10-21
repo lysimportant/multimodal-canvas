@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { IMAGE2PRO_IMAGE_TASK_CONTRACT, type RunSnapshot } from '@multimodal-canvas/domain';
+import { NewApiProvider } from '@multimodal-canvas/providers';
 import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
 
@@ -50,7 +51,10 @@ describe('New API 本人缓存模型目录', () => {
     ['gemini-nano-banana-2.1', undefined, 'openai-chat-completions'],
     ['imagen-4.0-generate-001', 'openai-images', 'openai-images'],
     ['普通图片模型', undefined, 'openai-images'],
-    ['无限制-图片模型', 'openai-images', IMAGE2PRO_IMAGE_TASK_CONTRACT],
+    ['无限制-Z-Image', 'openai-images', 'openai-images'],
+    ['无限制-图片模型', undefined, 'openai-images'],
+    ['无限制-异步图片模型', IMAGE2PRO_IMAGE_TASK_CONTRACT, IMAGE2PRO_IMAGE_TASK_CONTRACT],
+    ['普通异步图片模型', IMAGE2PRO_IMAGE_TASK_CONTRACT, IMAGE2PRO_IMAGE_TASK_CONTRACT],
   ] as const)('为 %s 冻结正确的图片执行协议', async (modelAlias, catalogContract, expected) => {
     const service = new NewApiAccountService({
       prisma: { aiCredential: { findFirst: vi.fn().mockResolvedValue(null) } },
@@ -99,9 +103,24 @@ describe('New API 本人缓存模型目录', () => {
       edges: [],
       inputs: [],
     };
-    expect((await service.freeze('user', snapshot)).executionBindings?.image?.contract).toBe(
-      expected,
-    );
+    const frozen = await service.freeze('user', snapshot);
+    expect(frozen.executionBindings?.image?.contract).toBe(expected);
+    if (expected === 'openai-images') {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          data: [{ b64_json: Buffer.from('synthetic-image').toString('base64') }],
+        }),
+      );
+      await new NewApiProvider({
+        baseUrl: 'https://newapi.example.test/v1',
+        apiKey: 'synthetic-key',
+        fetchImpl,
+      }).execute({ snapshot: frozen });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(url).toBe('https://newapi.example.test/v1/images/generations');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: modelAlias });
+    }
   });
 
   it('Gemini 生图聊天模型在图片节点目录中可选', async () => {

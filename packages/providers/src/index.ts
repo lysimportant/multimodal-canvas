@@ -3643,6 +3643,25 @@ function isDefiniteProviderRejection(error: {
   );
 }
 
+/**
+ * 创建请求收到可信 HTTP 拒绝响应，且没有已创建的平台任务。
+ * 不以 retryable 标记推断是否送达；缺少响应、临时状态和普通 5xx 均保持未知。
+ */
+export function isDefiniteNewApiCreationRejection(error: unknown): error is NewApiProviderError {
+  return (
+    error instanceof NewApiProviderError &&
+    !error.platformJobId &&
+    error.status !== undefined &&
+    Number.isInteger(error.status) &&
+    error.status >= 400 &&
+    error.status <= 599 &&
+    error.status !== 408 &&
+    error.status !== 425 &&
+    error.status !== 429 &&
+    isDefiniteProviderRejection(error)
+  );
+}
+
 /** 识别 New API “当前分组无渠道”诊断，避免被当成可重试的临时故障。 */
 function isNoAvailableChannel(code?: string, message?: string): boolean {
   const haystack = `${code ?? ''} ${message ?? ''}`;
