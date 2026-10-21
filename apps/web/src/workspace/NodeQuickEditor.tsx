@@ -1527,9 +1527,10 @@ function getMediaSummary(
       {
         label: '分辨率',
         value:
-          formatImageSize(options.imageResolutionValue) ||
-          normalizeCurrentOptionValue(options.imageResolutionValue) ||
-          '未设置',
+          imageResolutionTierLabel(normalizeCurrentOptionValue(options.imageResolutionValue)) ??
+          (formatImageSize(options.imageResolutionValue) ||
+            normalizeCurrentOptionValue(options.imageResolutionValue) ||
+            '未设置'),
       },
       {
         label: '比例',
@@ -1749,12 +1750,26 @@ function imageAspectRatioForSize(size: string | undefined): string | undefined {
   return undefined;
 }
 
-/** 将保存值或菜单值格式化为用户可读的完整像素，不显示历史 K 档。 */
+/** 将保存值或菜单值格式化为用户可读的完整像素。 */
 function formatImageSize(value: unknown): string {
   const normalized = normalizeCurrentOptionValue(value);
   if (normalized === 'auto') return '自动';
-  const match = /^(\d+)x(\d+)$/.exec(normalized);
+  const match = /^(\d+)x(\d+)$/i.exec(normalized);
   return match ? `${match[1]} × ${match[2]}` : '';
+}
+
+/** 将常用长边像素值映射为清晰度档位；非标准尺寸仍显示完整像素。 */
+function imageResolutionTierLabel(value: string): string | undefined {
+  const match = /^(\d+)x(\d+)$/i.exec(value);
+  if (!match) return undefined;
+  const longEdge = Math.max(Number(match[1]), Number(match[2]));
+  const tier = new Map([
+    [1024, '1K'],
+    [2048, '2K'],
+    [3072, '3K'],
+    [3840, '4K'],
+  ]);
+  return tier.get(longEdge);
 }
 
 /** 把目录 K 档或原生像素转换成唯一的官方 size 菜单项。 */
@@ -2357,7 +2372,7 @@ function QuickOptionMenu({
 
 /**
  * 新建节点或显式选择模型时补齐编辑默认值，已有参数及未知字段始终保留。
- * 目录仅提供默认选项，不依据媒体能力删改用户值；历史节点加载不调用此函数。
+ * 目录仅提供尺寸等默认选项；可选图片 quality 由用户明确选择，历史节点加载不调用此函数。
  */
 export function applyNodeGenerationDefaults(
   data: AssetFlowNode['data'],
@@ -2383,10 +2398,8 @@ export function applyNodeGenerationDefaults(
       parameters.aspect_ratio !== undefined ||
       parameters.ratio !== undefined;
     if (!hasStoredImageOutput) {
-      const size = firstAvailableOption(options.resolution),
-        quality = firstAvailableOption(options.quality);
+      const size = firstAvailableOption(options.resolution);
       if (size !== undefined) parameters.size = size;
-      if (quality !== undefined) parameters.quality = quality;
     }
   } else if (mediaType === 'video') {
     for (const field of ['resolution', 'aspectRatio'] as const) {
@@ -2536,9 +2549,7 @@ function getMediaOptions(
     });
   const declaredImageSizes = imageSizeOptions(sizeSource, imageTierAspectRatio, resolvedModelAlias);
   const fallbackImageSizes = imageSizeOptions(
-    isGeminiImage
-      ? legacyImageResolutionTiers.filter((option) => option.value !== '3k')
-      : legacyImageResolutionTiers,
+    legacyImageResolutionTiers.filter((option) => option.value !== '3k'),
     imageTierAspectRatio,
     resolvedModelAlias,
   );
@@ -2574,7 +2585,10 @@ function getMediaOptions(
   if (mediaType === 'image') {
     for (const option of resolution) {
       const display = formatImageSize(option.value);
-      if (display) option.label = display;
+      if (!display) continue;
+      const tierLabel = imageResolutionTierLabel(option.value);
+      option.label = tierLabel ?? display;
+      if (tierLabel) option.description = [display, option.description].filter(Boolean).join(' · ');
     }
   }
   const aspectRatio = ensureCurrentOption(
@@ -2613,16 +2627,7 @@ function getMediaOptions(
     parameters.duration ?? parameters.seconds ?? parameters.durationSeconds,
     'duration',
   );
-  const quality = ensureCurrentOption(
-    mergeOptions(
-      nativeQuality,
-      allowLegacyFallback
-        ? ['auto', 'low', 'medium', 'high'].map((value) => ({ value, label: value }))
-        : [],
-    ),
-    readNativeImageQuality(parameters),
-    'quality',
-  );
+  const quality = ensureCurrentOption(nativeQuality, readNativeImageQuality(parameters), 'quality');
   return {
     quality,
     videoResolutionSupported: true,
@@ -2631,7 +2636,7 @@ function getMediaOptions(
     duration,
     imageResolutionValue,
     imageAspectRatioValue,
-    hasNativeImageQuality: !isGeminiImage && (allowLegacyFallback || Boolean(nativeQuality.length)),
+    hasNativeImageQuality: !isGeminiImage && quality.length > 0,
   };
 }
 

@@ -40,7 +40,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual(original.parameters);
   });
 
-  it('新图片把目录 K 档和比例转换为官方像素尺寸，原生质量独立保存', () => {
+  it('新图片把目录 K 档和比例转换为官方像素尺寸，不自动设置可选质量', () => {
     const configured = applyNodeGenerationDefaults(
       data('image'),
       model('image', {
@@ -51,7 +51,6 @@ describe('applyNodeGenerationDefaults', () => {
     );
     expect(configured.parameters).toEqual({
       size: '1152x2048',
-      quality: 'high',
     });
     expect(configured.parameters).not.toHaveProperty('resolution');
     expect(configured.parameters).not.toHaveProperty('aspectRatio');
@@ -94,23 +93,26 @@ describe('applyNodeGenerationDefaults', () => {
     expect(original.parameters).toBeUndefined();
   });
 
-  it('跳过空项、重复项和目录禁用项，只把原生质量保存为 quality', () => {
-    const configured = applyNodeGenerationDefaults(
-      data('image'),
-      model('image', {
-        quality: [
-          '',
-          { value: 'low', disabled: true },
-          'medium',
-          'medium',
-          { value: 'high', enabled: false },
-          'ultra',
-        ],
-        aspectRatios: [{ value: '1:1', available: false }, '16:9'],
-      }),
-    );
-    expect(configured.parameters).toEqual({ quality: 'medium' });
-  });
+  it.each(['auto', 'high', 'medium'])(
+    '目录质量首项为 %s 时也不自动生成 quality 参数',
+    (quality) => {
+      const configured = applyNodeGenerationDefaults(
+        data('image'),
+        model('image', {
+          quality: [
+            '',
+            { value: 'low', disabled: true },
+            quality,
+            quality,
+            { value: 'high', enabled: false },
+            'ultra',
+          ],
+          aspectRatios: [{ value: '1:1', available: false }, '16:9'],
+        }),
+      );
+      expect(configured.parameters).toEqual({});
+    },
+  );
 
   it('已有参数、未知字段与历史推理强度不被默认值覆盖', () => {
     const original = {
