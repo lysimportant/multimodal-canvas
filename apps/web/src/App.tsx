@@ -870,6 +870,11 @@ function WorkspaceApp({
   const [showCanvasConflict, setShowCanvasConflict] = useState(false);
   const [resolvingCanvasConflict, setResolvingCanvasConflict] = useState(false);
   const [canvasConflictBackup, setCanvasConflictBackup] = useState<CanvasApiDocument | null>(null);
+  const [followRemoteCanvas, setFollowRemoteCanvas] = useState(false);
+  const followRemoteCanvasRef = useRef(false);
+  const remoteCanvasLoadRef = useRef<Promise<void> | null>(null);
+  const latestCanvasLoaderRef = useRef<(() => Promise<void>) | null>(null);
+  const latestCanvasRetryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [unreadableCanvasDraft, setUnreadableCanvasDraft] = useState(false);
   const refreshedResultAssetKeysRef = useRef(new Set<string>());
   const runRecordsRef = useRef<Record<string, RunRecord>>({});
@@ -997,6 +1002,7 @@ function WorkspaceApp({
     syncNodeLocks();
     return () => {
       lifecycle.active = false;
+      clearTimeout(latestCanvasRetryRef.current);
       if (runPollingLifecycleRef.current === lifecycle) {
         nodeRunControlStore.clearAll();
         nodeRunOperationByNodeRef.current.clear();
@@ -1852,19 +1858,50 @@ function WorkspaceApp({
     );
   }, [includeArchivedProjects, refreshProjects]);
 
-  /** 冲突锁独立于提示框；关闭提示后也不能自动覆盖较新的远端文档。 */
-  const presentCanvasConflict = useCallback((document: CanvasApiDocument) => {
-    if (canvasConflictRef.current && canvasConflictRef.current.revision >= document.revision)
-      return;
-    canvasConflictRef.current = document;
-    setCanvasConflict(document);
-    setShowCanvasConflict(true);
-    setSaveState('存在外部更新，本地草稿已保留');
+  const queueLatestCanvas = useCallback(() => {
+    clearTimeout(latestCanvasRetryRef.current);
+    latestCanvasRetryRef.current = setTimeout(() => {
+      void latestCanvasLoaderRef.current?.();
+    }, 300);
   }, []);
+
+  /** 独立副本只在存在本地差异时创建，正常远端同步不会覆盖恢复入口。 */
+  const backupCanvasDraft = useCallback(
+    (encoded: string, targetProjectId: string) => {
+      const draftKey = canvasDraftKey(targetProjectId, authUser?.id);
+      const backupKey = draftKey + ':conflict-backup:' + crypto.randomUUID();
+      localStorage.setItem(backupKey, encoded);
+      localStorage.setItem(draftKey + ':conflict-backup', backupKey);
+      setCanvasConflictBackup(JSON.parse(encoded) as CanvasApiDocument);
+    },
+    [authUser?.id],
+  );
+
+  /** 冲突锁独立于提示框；自动同步模式在保存结束后备份并获取最新文档。 */
+  const presentCanvasConflict = useCallback(
+    (document: CanvasApiDocument) => {
+      if (canvasConflictRef.current && canvasConflictRef.current.revision >= document.revision)
+        return;
+      canvasConflictRef.current = document;
+      setCanvasConflict(document);
+      if (followRemoteCanvasRef.current) {
+        setShowCanvasConflict(false);
+        setSaveState('正在获取最新画布');
+        queueLatestCanvas();
+        return;
+      }
+      setShowCanvasConflict(true);
+      setSaveState('存在外部更新，本地草稿已保留');
+    },
+    [queueLatestCanvas],
+  );
 
   /** 接纳远端文档时同步 refs，避免同一轮保存或事件读取旧图。 */
   const applyRemoteCanvas = useCallback(
     (document: CanvasApiDocument) => {
+      // 先持久化接纳的版本，立即刷新页面也不会再次恢复旧草稿。
+      if (projectId)
+        localStorage.setItem(canvasDraftKey(projectId, authUser?.id), JSON.stringify(document));
       const next = mergeRemoteCanvasRuntime(
         document,
         currentCanvasSnapshot(),
@@ -1889,7 +1926,7 @@ function WorkspaceApp({
       resizingNodeIdsRef.current.clear();
       setSaveState('已同步外部更新');
     },
-    [currentCanvasSnapshot, seedAssets, setEdges, setNodes],
+    [authUser?.id, currentCanvasSnapshot, projectId, seedAssets, setEdges, setNodes],
   );
 
   /** SSE 只传修订号；合并响应时再次检查草稿、保存锁和生命周期。 */
@@ -1912,7 +1949,7 @@ function WorkspaceApp({
       const authGeneration = getAuthSessionGeneration();
       const response = await apiFetch(
         `${API_BASE_URL}/v1/projects/${projectId}/canvas`,
-        undefined,
+        { cache: 'no-store' },
         {
           expectedAuthGeneration: authGeneration,
         },
@@ -1934,6 +1971,12 @@ function WorkspaceApp({
       // 本页保存的 SSE 可能比 PATCH 回执更早到达；匹配冻结提交就只等回执。
       if (savingSnapshotRef.current && remoteCanvasMatches(remote, savingSnapshotRef.current))
         return;
+      if (followRemoteCanvasRef.current) {
+        // 同步入口统一等待保存与编辑结束，不能将旧 PATCH 回执用于新文档。
+        queueLatestCanvas();
+        return;
+      }
+      if (remoteCanvasLoadRef.current) return;
       const editor =
         document.activeElement instanceof HTMLElement &&
         Boolean(
@@ -1953,13 +1996,30 @@ function WorkspaceApp({
       if (canvasConflictRef.current) return;
       applyRemoteCanvas(remote);
     },
-    [applyRemoteCanvas, currentCanvasSnapshot, isCanvasReady, presentCanvasConflict, projectId],
+    [
+      applyRemoteCanvas,
+      currentCanvasSnapshot,
+      isCanvasReady,
+      presentCanvasConflict,
+      projectId,
+      queueLatestCanvas,
+    ],
   );
 
   const loadProjectCanvas = useCallback(
     async (requestedProjectId?: string, project?: ProjectSummary) => {
       setIsCanvasReady(false);
       setIsProjectLoading(true);
+      clearTimeout(latestCanvasRetryRef.current);
+      remoteCanvasLoadRef.current = null;
+      ++canvasSyncRequestRef.current;
+      expectedCanvasRevisionRef.current = 0;
+      canvasConflictRef.current = null;
+      setCanvasConflict(null);
+      setShowCanvasConflict(false);
+      setCanvasConflictBackup(null);
+      followRemoteCanvasRef.current = false;
+      setFollowRemoteCanvas(false);
       try {
         let currentProjectId = requestedProjectId ?? localStorage.getItem(PROJECT_STORAGE_KEY);
         let currentProject = project;
@@ -1985,7 +2045,9 @@ function WorkspaceApp({
           localStorage.setItem(PROJECT_STORAGE_KEY, currentProjectId);
         }
 
-        const response = await apiFetch(`${API_BASE_URL}/v1/projects/${currentProjectId}/canvas`);
+        const response = await apiFetch(`${API_BASE_URL}/v1/projects/${currentProjectId}/canvas`, {
+          cache: 'no-store',
+        });
         if (!response.ok) throw new Error('画布加载失败');
         const result = (await response.json()) as { canvas: CanvasApiDocument };
         setProjectId(currentProjectId);
@@ -1999,6 +2061,7 @@ function WorkspaceApp({
         }
         localStorage.setItem(PROJECT_STORAGE_KEY, currentProjectId);
         const draftKey = canvasDraftKey(currentProjectId, authUser?.id);
+        expectedCanvasRevisionRef.current = result.canvas.revision;
         let localDraft: CanvasApiDocument | undefined;
         try {
           const stored = localStorage.getItem(draftKey);
@@ -2010,6 +2073,14 @@ function WorkspaceApp({
           const backupKey = localStorage.getItem(draftKey + ':conflict-backup');
           const backup = backupKey ? localStorage.getItem(backupKey) : null;
           if (backup) setCanvasConflictBackup(JSON.parse(backup) as CanvasApiDocument);
+          const follow = localStorage.getItem(draftKey + ':follow-remote') === 'true';
+          followRemoteCanvasRef.current = follow;
+          setFollowRemoteCanvas(follow);
+          if (follow && localDraft) {
+            backupCanvasDraft(JSON.stringify(localDraft), currentProjectId);
+            localStorage.setItem(draftKey, JSON.stringify(result.canvas));
+            localDraft = undefined;
+          }
         } catch {
           setUnreadableCanvasDraft(true);
           setNotice({
@@ -2080,7 +2151,15 @@ function WorkspaceApp({
         setIsProjectLoading(false);
       }
     },
-    [authUser?.id, initialProject.id, presentCanvasConflict, seedAssets, setEdges, setNodes],
+    [
+      authUser?.id,
+      backupCanvasDraft,
+      initialProject.id,
+      presentCanvasConflict,
+      seedAssets,
+      setEdges,
+      setNodes,
+    ],
   );
 
   useEffect(() => {
@@ -2116,12 +2195,24 @@ function WorkspaceApp({
 
   const saveCanvas = useCallback(async () => {
     if (!projectId) return;
+    const lifecycle = runPollingLifecycleRef.current;
+    const authGeneration = getAuthSessionGeneration();
     // 多个等待者唤醒后必须重新检查锁，否则它们会同时 PATCH 同一修订。
-    while (saveRequestRef.current) await saveRequestRef.current;
+    while (saveRequestRef.current || remoteCanvasLoadRef.current)
+      await (saveRequestRef.current ?? remoteCanvasLoadRef.current);
+    if (
+      !lifecycle.active ||
+      projectIdRef.current !== projectId ||
+      getAuthSessionGeneration() !== authGeneration
+    )
+      return;
+    if (canvasConflictRef.current && followRemoteCanvasRef.current) {
+      queueLatestCanvas();
+      return;
+    }
     if (canvasConflictRef.current)
       throw new Error('画布存在外部更新，请先处理冲突；本地草稿已保留');
     if (!canvasDirtyRef.current) return;
-    const lifecycle = runPollingLifecycleRef.current;
     const request = (async () => {
       const snapshot = persistenceRef.current.capture(currentCanvasSnapshot());
       savingSnapshotRef.current = snapshot.source;
@@ -2150,6 +2241,7 @@ function WorkspaceApp({
         if (!lifecycle.active || projectIdRef.current !== projectId) return;
         if (!remoteCanvasMatches(latestResult.canvas, snapshot.source)) {
           presentCanvasConflict(latestResult.canvas);
+          if (followRemoteCanvasRef.current) return;
           throw new Error('画布存在外部更新，请先处理冲突；本地草稿已保留');
         }
         canvasRevisionRef.current = latestResult.canvas.revision;
@@ -2163,6 +2255,10 @@ function WorkspaceApp({
       setCanvasRevision(result.canvas.revision);
       canvasDirtyRef.current = !snapshot.matches(currentCanvasSnapshot());
       if (canvasConflictRef.current) {
+        if (followRemoteCanvasRef.current) {
+          queueLatestCanvas();
+          return;
+        }
         setSaveState('存在外部更新，本地草稿已保留');
         throw new Error('画布存在外部更新，请先处理冲突；本地草稿已保留');
       }
@@ -2177,54 +2273,127 @@ function WorkspaceApp({
         savingSnapshotRef.current = null;
       }
     }
-  }, [projectId, currentCanvasSnapshot, presentCanvasConflict]);
+  }, [projectId, currentCanvasSnapshot, presentCanvasConflict, queueLatestCanvas]);
 
   /** 切换远端前保存独立恢复副本；备份失败时不替换页面中的任何内容。 */
-  const loadRemoteAfterBackup = useCallback(async () => {
-    if (!projectId || resolvingCanvasConflict) return;
-    setResolvingCanvasConflict(true);
-    const lifecycle = runPollingLifecycleRef.current;
-    try {
-      await saveRequestRef.current?.catch(() => undefined);
-      const response = await apiFetch(`${API_BASE_URL}/v1/projects/${projectId}/canvas`);
-      const result = (await response.json()) as { canvas?: CanvasApiDocument };
-      if (!response.ok || !result.canvas) throw new Error('远端画布读取失败，仍保留本地草稿');
-      if (!lifecycle.active || projectIdRef.current !== projectId) return;
-      if (
-        result.canvas.revision <
-        Math.max(
-          canvasRevisionRef.current,
-          expectedCanvasRevisionRef.current,
-          canvasConflictRef.current?.revision ?? 0,
-        )
-      )
-        throw new Error('远端又有更新，请重新加载；本地草稿仍保留');
-      const encoded = persistenceRef.current
-        .capture(currentCanvasSnapshot())
-        .serialize(canvasRevisionRef.current);
-      const draftKey = canvasDraftKey(projectId, authUser?.id);
-      const backupKey = draftKey + ':conflict-backup:' + crypto.randomUUID();
-      localStorage.setItem(backupKey, encoded);
-      localStorage.setItem(draftKey + ':conflict-backup', backupKey);
-      setCanvasConflictBackup(JSON.parse(encoded) as CanvasApiDocument);
-      ++canvasSyncRequestRef.current;
-      applyRemoteCanvas(result.canvas);
-    } catch (error) {
-      setNotice({
-        kind: 'error',
-        message: error instanceof Error ? error.message : '草稿备份失败，未替换当前画布',
+  const loadRemoteAfterBackup = useCallback(
+    async (enableFollow = false) => {
+      if (!projectId) return;
+      if (remoteCanvasLoadRef.current) return remoteCanvasLoadRef.current;
+      const lifecycle = runPollingLifecycleRef.current;
+      const authGeneration = getAuthSessionGeneration();
+      const isCurrent = () =>
+        lifecycle.active &&
+        projectIdRef.current === projectId &&
+        getAuthSessionGeneration() === authGeneration;
+      const request = Promise.resolve().then(async () => {
+        try {
+          if (enableFollow) {
+            localStorage.setItem(
+              canvasDraftKey(projectId, authUser?.id) + ':follow-remote',
+              'true',
+            );
+            followRemoteCanvasRef.current = true;
+            setFollowRemoteCanvas(true);
+            setShowCanvasConflict(false);
+          }
+          clearTimeout(latestCanvasRetryRef.current);
+          ++canvasSyncRequestRef.current;
+          await saveRequestRef.current?.catch(() => undefined);
+          if (!isCurrent()) return;
+          const isEditing = () =>
+            nodeContentLocksRef.current.size > 0 ||
+            nodesRef.current.some((node) => node.dragging || node.resizing) ||
+            (document.activeElement instanceof HTMLElement &&
+              Boolean(
+                document.activeElement.closest(
+                  'input, textarea, [contenteditable="true"], .node-quick-editor, .artifact-preview-text-editor, .flow-node-label-input',
+                ),
+              ));
+          if (isEditing()) {
+            setSaveState('等待编辑结束后同步最新画布');
+            queueLatestCanvas();
+            return;
+          }
+          const response = await apiFetch(
+            `${API_BASE_URL}/v1/projects/${projectId}/canvas`,
+            {
+              cache: 'no-store',
+            },
+            { expectedAuthGeneration: authGeneration },
+          );
+          const result = (await response.json()) as { canvas?: CanvasApiDocument };
+          if (!response.ok || !result.canvas) throw new Error('远端画布读取失败，仍保留本地草稿');
+          if (!isCurrent()) return;
+          if (isEditing()) {
+            setSaveState('等待编辑结束后同步最新画布');
+            queueLatestCanvas();
+            return;
+          }
+          if (
+            result.canvas.revision <
+            Math.max(
+              canvasRevisionRef.current,
+              expectedCanvasRevisionRef.current,
+              canvasConflictRef.current?.revision ?? 0,
+            )
+          )
+            throw new Error('远端又有更新，请重新加载；本地草稿仍保留');
+          if (
+            (!enableFollow || canvasDirtyRef.current || canvasConflictRef.current) &&
+            !remoteCanvasMatches(result.canvas, currentCanvasSnapshot())
+          ) {
+            const encoded = persistenceRef.current
+              .capture(currentCanvasSnapshot())
+              .serialize(canvasRevisionRef.current);
+            backupCanvasDraft(encoded, projectId);
+          }
+          ++canvasSyncRequestRef.current;
+          applyRemoteCanvas(result.canvas);
+        } catch (error) {
+          if (!isCurrent()) return;
+          setSaveState('最新画布同步失败，本地内容已保留');
+          setNotice({
+            kind: 'error',
+            message: error instanceof Error ? error.message : '草稿备份失败，未替换当前画布',
+          });
+        } finally {
+          if (isCurrent()) setResolvingCanvasConflict(false);
+        }
       });
-    } finally {
-      if (lifecycle.active) setResolvingCanvasConflict(false);
+      remoteCanvasLoadRef.current = request;
+      setResolvingCanvasConflict(true);
+      try {
+        await request;
+      } finally {
+        if (remoteCanvasLoadRef.current === request) remoteCanvasLoadRef.current = null;
+      }
+    },
+    [
+      applyRemoteCanvas,
+      authUser?.id,
+      currentCanvasSnapshot,
+      backupCanvasDraft,
+      projectId,
+      queueLatestCanvas,
+      setNotice,
+    ],
+  );
+  latestCanvasLoaderRef.current = () => loadRemoteAfterBackup(followRemoteCanvasRef.current);
+
+  const stopFollowingRemoteCanvas = useCallback(() => {
+    if (!projectId) return false;
+    try {
+      localStorage.setItem(canvasDraftKey(projectId, authUser?.id) + ':follow-remote', 'false');
+      followRemoteCanvasRef.current = false;
+      setFollowRemoteCanvas(false);
+      clearTimeout(latestCanvasRetryRef.current);
+      return true;
+    } catch {
+      setNotice({ kind: 'error', message: '自动同步设置保存失败，请重试' });
+      return false;
     }
-  }, [
-    applyRemoteCanvas,
-    authUser?.id,
-    currentCanvasSnapshot,
-    projectId,
-    resolvingCanvasConflict,
-    setNotice,
-  ]);
+  }, [authUser?.id, projectId, setNotice]);
 
   /** 恢复副本用于继续查看和取回内容；保留远端冲突锁，绝不自动推回旧图。 */
   const restoreConflictBackup = useCallback(() => {
@@ -2232,6 +2401,7 @@ function WorkspaceApp({
       setNotice({ kind: 'error', message: '请先保存当前编辑，再恢复本地副本' });
       return;
     }
+    if (remoteCanvasLoadRef.current || !stopFollowingRemoteCanvas()) return;
     const remote = JSON.parse(
       persistenceRef.current.capture(currentCanvasSnapshot()).serialize(canvasRevisionRef.current),
     ) as CanvasApiDocument;
@@ -2253,6 +2423,7 @@ function WorkspaceApp({
     setEdges,
     setNodes,
     setNotice,
+    stopFollowingRemoteCanvas,
   ]);
 
   /**
@@ -2395,6 +2566,8 @@ function WorkspaceApp({
         await saveCanvas();
       } catch (error) {
         setSaveState(canvasConflictRef.current ? '存在外部更新，本地草稿已保留' : '本地草稿已保存');
+        // 冲突已有专用弹窗和处理入口，不再叠加遮挡工具栏的重复错误提示。
+        if (canvasConflictRef.current) return;
         setNotice({
           kind: 'error',
           message: error instanceof Error ? error.message : '画布保存失败',
@@ -3851,6 +4024,10 @@ function WorkspaceApp({
       if (command && key === 's') {
         event.preventDefault();
         void saveCanvas().catch((error: unknown) => {
+          if (canvasConflictRef.current) {
+            setSaveState('存在外部更新，本地草稿已保留');
+            return;
+          }
           setSaveState('保存失败');
           setNotice({
             kind: 'error',
@@ -5653,6 +5830,27 @@ function WorkspaceApp({
               {saveState.includes('保存') ? <Check size={13} aria-hidden="true" /> : null}
               <span className="save-state-label">{saveState}</span>
             </span>
+            <UiButton
+              type="button"
+              className="canvas-conflict-action"
+              title="备份本地差异并获取最新画布，后续远端更新自动同步"
+              disabled={!isCanvasReady || isProjectLoading || resolvingCanvasConflict}
+              onClick={() => void loadRemoteAfterBackup(true)}
+            >
+              获取最新画布
+            </UiButton>
+            {followRemoteCanvas ? (
+              <UiButton
+                type="button"
+                className="canvas-conflict-action"
+                disabled={resolvingCanvasConflict}
+                onClick={() => {
+                  if (stopFollowingRemoteCanvas()) setSaveState('已停止自动同步最新画布');
+                }}
+              >
+                停止自动同步
+              </UiButton>
+            ) : null}
             {canvasConflict ? (
               <UiButton
                 type="button"
@@ -5952,6 +6150,9 @@ function WorkspaceApp({
             远端画布已更新。本地草稿仍完整保留，自动保存已暂停，避免互相覆盖。
             加载远端前会保存独立副本，之后可通过「恢复本地副本」取回。
           </Typography.Paragraph>
+          <Typography.Paragraph>
+            选择「获取最新画布，不再提示」后，此画布将自动同步远端更新，本地差异仍会先保存为可恢复副本。
+          </Typography.Paragraph>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             <UiButton
               type="button"
@@ -5987,6 +6188,13 @@ function WorkspaceApp({
               onClick={() => void loadRemoteAfterBackup()}
             >
               {resolvingCanvasConflict ? '正在备份并加载' : '备份草稿并加载远端'}
+            </UiButton>
+            <UiButton
+              type="button"
+              disabled={resolvingCanvasConflict}
+              onClick={() => void loadRemoteAfterBackup(true)}
+            >
+              获取最新画布，不再提示
             </UiButton>
           </div>
         </Modal>
