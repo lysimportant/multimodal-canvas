@@ -41,6 +41,27 @@ function setup(message: Record<string, unknown>) {
 }
 
 describe('Gemini chat image generation', () => {
+  it.each(['1K', '2K', '4K'])('sends native %s directly through image_config', async (size) => {
+    const { provider, fetchImpl } = setup({ images: [{ image_url: { url: dataUrl } }] });
+    const input = snapshot();
+    input.parameters = { size, aspectRatio: '9:16' };
+    await provider.execute({ snapshot: input });
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.extra_body.google.image_config).toEqual({ image_size: size, aspect_ratio: '9:16' });
+    expect(body).not.toHaveProperty('size');
+    expect(body).not.toHaveProperty('aspect_ratio');
+  });
+
+  it('does not invent a resolution when only the ratio is selected', async () => {
+    const { provider, fetchImpl } = setup({ images: [{ image_url: { url: dataUrl } }] });
+    const input = snapshot();
+    input.parameters = { aspectRatio: '16:9' };
+    await provider.execute({ snapshot: input });
+    expect(
+      JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).extra_body.google.image_config,
+    ).toEqual({ aspect_ratio: '16:9' });
+  });
+
   it.each([
     'gemini-3-pro-image-preview',
     'gemini-3.1-flash-image-preview',

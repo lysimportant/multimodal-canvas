@@ -4959,7 +4959,19 @@ function providerParameters(
   }
   if (mediaType === 'image') {
     try {
-      return normalizeImageOutputParameters(providerParameters, modelAlias);
+      const normalized = normalizeImageOutputParameters(providerParameters, modelAlias);
+      if (
+        /^(?:[1-4]K|auto)$/.test(String(normalized.size ?? '')) ||
+        normalized.size === undefined
+      ) {
+        const ratio = normalized.aspect_ratio ?? normalized.aspectRatio ?? normalized.ratio;
+        if (ratio !== undefined) {
+          delete normalized.aspectRatio;
+          delete normalized.ratio;
+          normalized.aspect_ratio = ratio;
+        }
+      }
+      return normalized;
     } catch (error) {
       if (!(error instanceof ImageOutputParameterError)) throw error;
       throw new NewApiProviderError(error.message, {
@@ -5039,13 +5051,31 @@ const geminiImageAspectRatios = [
   '21:9',
 ] as const;
 
-/** Convert the canvas pixel size into Gemini's documented aspect-ratio and image-size enums. */
+/** Native tiers go directly to Gemini; legacy pixels remain compatible. */
 function geminiImageConfig(
   parameters: Record<string, unknown>,
 ):
-  | { aspect_ratio: (typeof geminiImageAspectRatios)[number]; image_size: '1K' | '2K' | '4K' }
+  | { aspect_ratio?: (typeof geminiImageAspectRatios)[number]; image_size?: '1K' | '2K' | '4K' }
   | undefined {
   const size = parameters.size;
+  if (size === undefined || (typeof size === 'string' && /^[1-4]k$/i.test(size))) {
+    const tier = typeof size === 'string' ? size.toUpperCase() : undefined;
+    if (tier && !['1K', '2K', '4K'].includes(tier))
+      throw invalidProviderParameter('image', 'size', 'Gemini 图片清晰度仅支持 1K、2K、4K');
+    const ratio = parameters.aspect_ratio ?? parameters.aspectRatio ?? parameters.ratio;
+    if (ratio !== undefined && !geminiImageAspectRatios.some((candidate) => candidate === ratio))
+      throw invalidProviderParameter(
+        'image',
+        'aspect_ratio',
+        'Gemini 图片比例不受支持，请选择标准比例',
+      );
+    return tier || ratio
+      ? {
+          ...(tier ? { image_size: tier as '1K' | '2K' | '4K' } : {}),
+          ...(ratio ? { aspect_ratio: ratio as (typeof geminiImageAspectRatios)[number] } : {}),
+        }
+      : undefined;
+  }
   if (size === undefined || (typeof size === 'string' && size.trim().toLowerCase() === 'auto'))
     return undefined;
   if (typeof size !== 'string')

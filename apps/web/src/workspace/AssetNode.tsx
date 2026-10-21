@@ -1412,10 +1412,14 @@ export function AssetNode({
                         : '原图尺寸待获取'}
                     </dd>
                   </div>
-                  {requestedSize?.width && requestedSize.height ? (
+                  {requestedSize?.size ? (
                     <div>
                       <dt>当前设置</dt>
-                      <dd>{`${requestedSize.width}×${requestedSize.height}`}</dd>
+                      <dd>
+                        {requestedSize.size === 'auto'
+                          ? '自动'
+                          : requestedSize.size.replace('x', '×')}
+                      </dd>
                     </div>
                   ) : null}
                   {selectedImageSize?.issue ? (

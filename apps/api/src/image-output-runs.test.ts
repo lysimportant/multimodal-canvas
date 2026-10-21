@@ -25,7 +25,11 @@ afterEach(async () => {
 });
 
 /** 构造已授权节点及可选参考图片；所有凭据和图片内容均为合成测试值。 */
-async function setup(parameters: Record<string, unknown>, edit = false) {
+async function setup(
+  parameters: Record<string, unknown>,
+  edit = false,
+  modelAlias = 'gpt-image-2.5-sunburst',
+) {
   const projectStore = new MemoryProjectStore();
   const assetStore = new MemoryAssetStore();
   const authStore = new MemoryAuthStore();
@@ -42,7 +46,7 @@ async function setup(parameters: Record<string, unknown>, edit = false) {
   });
   const credential = settingsStore.listCredentials()[0]!;
   settingsStore.replaceModels(
-    ['gpt-image-2.5-sunburst', 'gpt-image-1'].map((id) => ({
+    [...new Set(['gpt-image-2.5-sunburst', 'gpt-image-1', modelAlias])].map((id) => ({
       id,
       name: id,
       mediaTypes: ['image'],
@@ -61,7 +65,7 @@ async function setup(parameters: Record<string, unknown>, edit = false) {
           label: 'Synthetic target',
           mediaType: 'image',
           mode: 'generate',
-          modelAlias: 'gpt-image-2.5-sunburst',
+          modelAlias,
           credentialId: credential.id,
           prompt: 'Create a portrait.',
           parameters,
@@ -149,6 +153,31 @@ async function finished(service: MemoryRunService, id: string): Promise<RunRecor
 }
 
 describe.each([false, true])('image output HTTP to provider (edit=%s)', (edit) => {
+  it.each(['1K', '2K', '4K'])(
+    'keeps unrestricted %s through save, run snapshot and provider request',
+    async (size) => {
+      const parameters = { size, aspectRatio: '9:16' };
+      const fixture = await setup(parameters, edit, '完全无限制-Z-Image');
+      const response = await fixture.app.inject({
+        method: 'POST',
+        url: '/v1/nodes/image-target/runs',
+        headers: fixture.headers,
+        payload: { projectId: fixture.project.id },
+      });
+      expect(response.statusCode, response.body).toBe(202);
+      const run = await finished(fixture.runService, response.json().run.id);
+      expect(run.status, JSON.stringify(run.error)).toBe('succeeded');
+      expect(run.snapshot.parameters).toEqual(parameters);
+      expect(fixture.fetchImpl).toHaveBeenCalledOnce();
+      const init = fixture.fetchImpl.mock.calls[0]![1]!;
+      const body = edit
+        ? Object.fromEntries((init.body as FormData).entries())
+        : JSON.parse(init.body as string);
+      expect(body).toMatchObject({ size, aspect_ratio: '9:16' });
+      expect(body).not.toHaveProperty('quality');
+    },
+  );
+
   it.each([
     { quality: '4k', aspectRatio: '9:16' },
     { resolution: '4k', quality: 'xhigh', aspectRatio: '9:16' },

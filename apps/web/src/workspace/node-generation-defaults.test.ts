@@ -40,25 +40,20 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual(original.parameters);
   });
 
-  it('新图片把目录 K 档和比例转换为官方像素尺寸，不自动设置可选质量', () => {
-    const configured = applyNodeGenerationDefaults(
-      data('image'),
-      model('image', {
-        resolutions: ['2k', '4k'],
-        quality: ['high', 'medium'],
-        aspectRatios: ['9:16'],
-      }),
-    );
-    expect(configured.parameters).toEqual({
-      size: '1152x2048',
-    });
-    expect(configured.parameters).not.toHaveProperty('resolution');
-    expect(configured.parameters).not.toHaveProperty('aspectRatio');
+  it.each([
+    { resolutions: ['1k', '2k', '4k'], aspectRatios: ['9:16'] },
+    { sizes: ['1024x1024', '2048x1152', '3840x2160'] },
+    { quality: ['1k', '2k', '4k'] },
+  ])('新图片不因目录档位或像素能力自动写入图片尺寸 %j', (capabilities) => {
+    const configured = applyNodeGenerationDefaults(data('image'), model('image', capabilities));
+    expect(configured.parameters).toEqual({});
   });
 
   it.each([
     { quality: '4k', aspectRatio: '9:16' },
     { image_quality: '4k', aspect_ratio: '9:16' },
+    { resolution: '4k', aspectRatio: '16:9', quality: 'high' },
+    { size: '2K', aspectRatio: '16:9', custom: false },
     { size: '1536x1024', quality: 'high' },
     { resolution: '1536x1024', quality: 'high' },
   ])('显式切模型不会把新默认清晰度或比例加入历史尺寸 %j', (parameters) => {
@@ -70,6 +65,19 @@ describe('applyNodeGenerationDefaults', () => {
     expect(configured.parameters).toEqual(parameters);
     expect(original.parameters).toEqual(parameters);
   });
+
+  it.each(['gpt-image-1', 'dall-e-3', '完全无限制-gpt-image-1', 'gemini-3-pro-image-preview'])(
+    '新图片模型 %s 不因协议或目录建议自动保存尺寸和比例',
+    (modelAlias) => {
+      const original = { ...data('image'), modelAlias };
+      const configured = applyNodeGenerationDefaults(original, {
+        ...model('image', { sizes: ['1k', '2k', '4k', '1024x1024'], aspectRatios: ['1:1'] }),
+        id: modelAlias,
+      });
+      expect(configured.parameters).toEqual({});
+      expect(original.parameters).toBeUndefined();
+    },
+  );
 
   it('明确事务初始化媒体首项和 10 秒，目录不含 10 时不暗改成首项秒数', () => {
     const original = data('video');
@@ -370,7 +378,7 @@ describe('applyNodeGenerationDefaults', () => {
     expect(previous.data.parameters).toEqual(parameters);
   });
 
-  it('目录文案是默认值时仍用实际档位计算像素', () => {
+  it('目录首项标签为默认值时也不自动保存 K 档像素', () => {
     const configured = applyNodeGenerationDefaults(
       data('image'),
       model('image', {
@@ -381,6 +389,6 @@ describe('applyNodeGenerationDefaults', () => {
         aspectRatios: ['1:1'],
       }),
     );
-    expect(configured.parameters).toEqual({ size: '1024x1024' });
+    expect(configured.parameters).toEqual({});
   });
 });

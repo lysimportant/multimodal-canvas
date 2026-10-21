@@ -1671,6 +1671,24 @@ describe('AssetNode result presentation', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('原生 K 档显示当前设置，不把档位当作固定像素比较', async () => {
+    mockThumbnail(1672, 941);
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        modelAlias: '完全无限制-Z-Image',
+        parameters: { size: '2K', aspectRatio: '16:9' },
+        resultAsset: { assetId: 'result-image', version: 1, mimeType: 'image/png' },
+        runStatus: 'succeeded',
+      }),
+    );
+    await screen.findByRole('img');
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const dialog = await screen.findByRole('dialog', { name: '节点信息' });
+    expect(dialog).toHaveTextContent('当前设置2K');
+    expect(dialog).not.toHaveTextContent('未达到所选');
+  });
+
   it('图片显示实际像素，低于所选尺寸时提示但仍下载原文件', async () => {
     mockThumbnail(1672, 941);
     const download = { blob: new Blob(['original']), filename: '原图.png' };

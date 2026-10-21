@@ -30,10 +30,7 @@ describe('resolveImageOutputParameters', () => {
       { resolution: '3k' },
       { size: '3072x3072', width: 3072, height: 3072, resolution: '3k', aspectRatio: '1:1' },
     ],
-    [
-      { aspectRatio: '9:16' },
-      { size: '576x1024', width: 576, height: 1024, resolution: '1k', aspectRatio: '9:16' },
-    ],
+    [{ aspectRatio: '9:16' }, { aspectRatio: '9:16' }],
     [
       { size: '1536x1024', image_quality: 'high' },
       { size: '1536x1024', width: 1536, height: 1024, quality: 'high' },
@@ -87,10 +84,6 @@ describe('resolveImageOutputParameters', () => {
     [
       { quality: '8k', aspectRatio: '16:9' },
       {
-        size: '1024x576',
-        width: 1024,
-        height: 576,
-        resolution: '1k',
         aspectRatio: '16:9',
         quality: '8k',
       },
@@ -102,7 +95,7 @@ describe('resolveImageOutputParameters', () => {
     ],
     [
       { resolution: 'auto', aspectRatio: '9:16' },
-      { size: '576x1024', width: 576, height: 1024, resolution: '1k', aspectRatio: '9:16' },
+      { size: 'auto', aspectRatio: '9:16' },
     ],
     [{ size: 'future-size', aspectRatio: 'auto' }, { size: 'future-size' }],
     [
@@ -155,6 +148,63 @@ describe('automatic size model compatibility', () => {
   );
 });
 
+describe('native image size tiers', () => {
+  it.each(['1K', '2k', '4K'])(
+    'preserves %s and its independent ratio without invented pixels',
+    (size) => {
+      const parameters = { image_size: size, aspectRatio: '9:16', quality: 'high', seed: 0 };
+      const before = structuredClone(parameters);
+      const normalized = normalizeImageOutputParameters(parameters, '完全无限制-Z-Image');
+      expect(normalized).toEqual({
+        size: size.toUpperCase(),
+        aspectRatio: '9:16',
+        quality: 'high',
+        seed: 0,
+      });
+      expect(resolveImageOutputParameters(normalized)).toEqual({
+        size: size.toUpperCase(),
+        resolution: size.toLowerCase(),
+        aspectRatio: '9:16',
+        quality: 'high',
+      });
+      expect(normalizeImageOutputParameters(normalized)).toEqual(normalized);
+      expect(parameters).toEqual(before);
+    },
+  );
+
+  it('converts a native tier only for an exact official OpenAI model', () => {
+    const parameters = { size: '4K', aspectRatio: '9:16' };
+    expect(normalizeImageOutputParameters(parameters, 'gpt-image-2')).toEqual({
+      size: '2160x3840',
+    });
+    expect(normalizeImageOutputParameters(parameters, '完全无限制-gpt-image-2')).toEqual(
+      parameters,
+    );
+  });
+});
+
+describe('official native tier limits', () => {
+  it.each([
+    ['gpt-image-1', '2K', '1:1'],
+    ['dall-e-3', '4K', '16:9'],
+    ['gpt-image-2', '4K', '1:1'],
+    ['gpt-image-2', '2K', 'adaptive'],
+    ['gpt-image-1', 'auto', '16:9'],
+  ])('does not invent unsupported official dimensions for %s', (model, size, aspectRatio) => {
+    expect(() => normalizeImageOutputParameters({ size, aspectRatio }, model)).toThrow(
+      ImageOutputParameterError,
+    );
+  });
+  it('requires a pixel size when only an official OpenAI ratio is selected', () => {
+    expect(() => resolveImageOutputParameters({ aspectRatio: '9:16' }, 'gpt-image-2')).toThrow(
+      ImageOutputParameterError,
+    );
+    expect(resolveImageOutputParameters({ aspectRatio: '9:16' }, '完全无限制-Z-Image')).toEqual({
+      aspectRatio: '9:16',
+    });
+  });
+});
+
 describe('normalizeImageOutputParameters', () => {
   it.each([
     { aspectRatio: 'panorama', seed: 0 },
@@ -175,15 +225,18 @@ describe('normalizeImageOutputParameters', () => {
     expect(parameters).toEqual(before);
   });
 
-  it('仅比例产生的对齐像素可重复规范化，结果不会再次舍入或补入参数', () => {
+  it('仅设置比例不补入 1024 像素，重复规范化保持原值', () => {
     const normalized = normalizeImageOutputParameters({ aspectRatio: '21:9', seed: 0 });
-    expect(normalized).toEqual({ size: '1024x432', seed: 0 });
+    expect(normalized).toEqual({ aspectRatio: '21:9', seed: 0 });
     expect(normalizeImageOutputParameters(normalized)).toEqual(normalized);
   });
 
   it.each([
     [{ resolution: 'auto', quality: '4k', aspectRatio: '9:16' }, { size: '2160x3840' }],
-    [{ resolution: 'auto', aspectRatio: '9:16' }, { size: '576x1024' }],
+    [
+      { resolution: 'auto', aspectRatio: '9:16' },
+      { size: 'auto', aspectRatio: '9:16' },
+    ],
     [
       { resolution: '4k', aspect_ratio: 'auto' },
       { resolution: '4k', aspect_ratio: 'auto', size: 'auto' },
@@ -199,9 +252,9 @@ describe('normalizeImageOutputParameters', () => {
   });
 
   it('数值比例过于极端时明确报错，不生成零像素或静默换比例', () => {
-    expect(() => normalizeImageOutputParameters({ aspectRatio: '1:1000000' })).toThrow(
-      ImageOutputParameterError,
-    );
+    expect(() =>
+      normalizeImageOutputParameters({ resolution: '1k', aspectRatio: '1:1000000' }),
+    ).toThrow(ImageOutputParameterError);
   });
 
   it('只保留官方 size 与真实 quality，并原样保留其它字段和假值', () => {

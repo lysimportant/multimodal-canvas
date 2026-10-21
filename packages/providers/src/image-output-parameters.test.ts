@@ -105,6 +105,37 @@ const cases = [
 ] as const;
 
 describe.each([false, true])('image output parameters (edit=%s)', (edit) => {
+  it.each(['1K', '2K', '4K'])(
+    'sends unrestricted %s unchanged in the actual request',
+    async (size) => {
+      const { provider, fetchImpl } = imageProvider();
+      const snapshot = imageSnapshot({ size, aspectRatio: '9:16', seed: 0 }, edit);
+      snapshot.modelAlias = '完全无限制-Z-Image';
+      const before = structuredClone(snapshot);
+      await provider.execute({ snapshot });
+      const init = fetchImpl.mock.calls[0]![1]!;
+      const body = edit
+        ? Object.fromEntries((init.body as FormData).entries())
+        : JSON.parse(init.body as string);
+      expect(body).toMatchObject({ size, aspect_ratio: '9:16', seed: edit ? '0' : 0 });
+      for (const key of ['quality', 'resolution', 'aspectRatio', 'width', 'height'])
+        expect(body).not.toHaveProperty(key);
+      expect(snapshot).toEqual(before);
+    },
+  );
+
+  it('maps an official OpenAI tier into pixels at the provider boundary', async () => {
+    const { provider, fetchImpl } = imageProvider();
+    await provider.execute({ snapshot: imageSnapshot({ size: '2K', aspectRatio: '16:9' }, edit) });
+    const init = fetchImpl.mock.calls[0]![1]!;
+    const body = edit
+      ? Object.fromEntries((init.body as FormData).entries())
+      : JSON.parse(init.body as string);
+    expect(body.size).toBe('2048x1152');
+    expect(body).not.toHaveProperty('aspectRatio');
+    expect(body).not.toHaveProperty('aspect_ratio');
+  });
+
   it('sends canonical size and native quality without dimension aliases', async () => {
     const { provider, fetchImpl } = imageProvider();
     const snapshot = imageSnapshot({ size: '2160x3840', quality: 'high' }, edit);

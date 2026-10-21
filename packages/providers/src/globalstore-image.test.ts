@@ -118,6 +118,21 @@ describe('GlobalStore 图片异步合同', () => {
     await expect(third.provider.execute(third.request)).rejects.toThrow('不是真实受支持图片');
   });
   it.each([
+    [
+      'banana_c2',
+      { size: '4K', aspectRatio: '9:16' },
+      { model: 'banana_c2', aspect_ratio: '9:16', resolution: '4K' },
+    ],
+    [
+      'banana2',
+      { size: '2K', aspectRatio: '16:9' },
+      { model: 'banana2', aspect_ratio: '16:9', resolution: '2k' },
+    ],
+    [
+      'gpt-image-2',
+      { size: '1K', aspectRatio: '1:1' },
+      { model: 'gpt-image-2', size: '1024x1024' },
+    ],
     ['seedream-5.0', { size: '2048x2048' }, { model: 'seedream-5.0', size: '2048x2048' }],
     [
       'seedream-5.0',

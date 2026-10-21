@@ -228,15 +228,17 @@ function StatefulImageEditor({
   initialParameters,
   onParametersChange,
   models,
+  modelAlias = 'image-model',
 }: Pick<NodeQuickEditorProps, 'onParametersChange'> &
   Partial<Pick<NodeQuickEditorProps, 'models'>> & {
     initialParameters: Record<string, unknown>;
+    modelAlias?: string;
   }) {
   const [parameters, setParameters] = useState(initialParameters);
   return (
     <NodeQuickEditor
       {...makeProps({
-        node: { ...imageNode, data: { ...imageNode.data, parameters } },
+        node: { ...imageNode, data: { ...imageNode.data, modelAlias, parameters } },
         models,
       })}
       onParametersChange={(next) => {
@@ -2333,7 +2335,9 @@ describe('NodeQuickEditor', () => {
     expect(onParametersChange).not.toHaveBeenCalled();
   });
 
-  it('参数选项文案为默认值时触发器显示实际取值', () => {
+  it('目录默认值标签不自动保存 K 档，显式选择仅保存协议档位', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
     const catalog: NodeQuickEditorProps['models'] = [
       {
         id: 'image-model',
@@ -2352,10 +2356,15 @@ describe('NodeQuickEditor', () => {
         catalog[0],
       ),
     };
-    render(<NodeQuickEditor {...makeProps({ node, models: catalog })} />);
+    render(<NodeQuickEditor {...makeProps({ node, models: catalog, onParametersChange })} />);
     expect(screen.queryByText('默认值')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '媒体参数' })).toHaveTextContent('1K');
-    expect(screen.getByRole('combobox', { name: '图片分辨率：1K' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '图片分辨率：未设置' })).toBeInTheDocument();
+    expect(onParametersChange).not.toHaveBeenCalled();
+    const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '1K' })).toBeInTheDocument();
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '1K' }));
+    expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({ size: '1K' });
   });
 
   it('比例通过真实 Select 支持键盘和点击，收起参数页会移除 portal', async () => {
@@ -2371,7 +2380,7 @@ describe('NodeQuickEditor', () => {
       document.body,
     );
     fireEvent.keyDown(trigger, { key: 'Enter', keyCode: 13, which: 13 });
-    expect(onParametersChange).toHaveBeenCalledWith({ size: '1024x1024' });
+    expect(onParametersChange).toHaveBeenCalledWith({ aspectRatio: '1:1' });
     await user.click(trigger);
     await user.click(screen.getByRole('button', { name: '收起媒体参数' }));
     await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
@@ -2868,7 +2877,7 @@ describe('NodeQuickEditor', () => {
     ['4k', '9:16', '2160 × 3840'],
     ['4k', '21:9', '3840 × 1648'],
   ])(
-    '旧图片档位 %s 与比例 %s 显示 K 档并保留请求像素，不在打开时迁移',
+    '旧图片档位 %s 与比例 %s 显示 K 档并保留请求尺寸，不在打开时迁移',
     (quality, aspectRatio, pixels) => {
       const onParametersChange = vi.fn();
       const parameters = { quality, aspectRatio };
@@ -2880,7 +2889,7 @@ describe('NodeQuickEditor', () => {
           })}
         />,
       );
-      expect(screen.getByLabelText('请求像素')).toHaveTextContent(pixels);
+      expect(screen.getByLabelText('请求尺寸')).toHaveTextContent(pixels);
       expect(
         screen.getByRole('combobox', { name: '图片分辨率：' + quality.toUpperCase() }),
       ).toBeInTheDocument();
@@ -2893,7 +2902,8 @@ describe('NodeQuickEditor', () => {
   it.each([
     [{}, '未设置', '未设置'],
     [{ size: 'auto' }, '自动', '自动'],
-    [{ aspectRatio: '9:16' }, '576 × 1024', '1K'],
+    [{ aspectRatio: '9:16' }, '未设置', '未设置'],
+    [{ size: '2K', aspectRatio: '16:9' }, '2K', '2K'],
     [{ resolution: '1536x1024' }, '1536 × 1024', '1536 × 1024'],
     [{ imageQuality: '4k', aspect_ratio: '21:9' }, '3840 × 1648', '4K'],
   ])('未设置、自动尺寸和历史别名按共享合同只读显示 %j', (parameters, pixels, label) => {
@@ -2906,7 +2916,7 @@ describe('NodeQuickEditor', () => {
         })}
       />,
     );
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent(pixels);
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent(pixels);
     if (pixels !== '未设置') {
       expect(screen.getByRole('combobox', { name: '图片分辨率：' + label })).toBeInTheDocument();
     }
@@ -2982,17 +2992,17 @@ describe('NodeQuickEditor', () => {
         }}
       />,
     );
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('2160 × 3840');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('2160 × 3840');
     expect(screen.getByRole('combobox', { name: '图片分辨率：4K' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '生成质量：HIGH' })).toBeInTheDocument();
   });
 
-  it('无质量声明时隐藏生成质量，选择 2K 保持比例并保存实际像素', async () => {
+  it('无质量声明时隐藏生成质量，选择 2K 保持比例并保存协议档位', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
       <StatefulImageEditor
-        initialParameters={{ size: '1024x576', seed: 0, providerOption: false }}
+        initialParameters={{ aspectRatio: '16:9', seed: 0, providerOption: false }}
         onParametersChange={onParametersChange}
       />,
     );
@@ -3002,14 +3012,15 @@ describe('NodeQuickEditor', () => {
     expect(
       selectPopup(resolutionGroup).queryByRole('option', { name: /3K|3072/ }),
     ).not.toBeInTheDocument();
-    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: /^2K 2048 × 1152/ }));
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '2K' }));
     expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({
-      size: '2048x1152',
+      size: '2K',
+      aspectRatio: '16:9',
       seed: 0,
       providerOption: false,
     });
     expect(screen.getByRole('combobox', { name: '图片分辨率：2K' })).toBeInTheDocument();
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('2048 × 1152');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('2K');
     expect(screen.queryByText('生成质量')).not.toBeInTheDocument();
   });
 
@@ -3032,9 +3043,10 @@ describe('NodeQuickEditor', () => {
     );
     const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: /^3K 3072 × 1728/ }));
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '3K' }));
     expect(onParametersChange).toHaveBeenLastCalledWith({
-      size: '3072x1728',
+      size: '3K',
+      aspectRatio: '16:9',
       providerOption: false,
     });
     expect(screen.getByRole('combobox', { name: '图片分辨率：3K' })).toBeInTheDocument();
@@ -3046,6 +3058,79 @@ describe('NodeQuickEditor', () => {
     });
     expect(screen.getByRole('combobox', { name: '图片分辨率：1536 × 1024' })).toBeInTheDocument();
   });
+
+  it.each(['image-model', '完全无限制-gpt-image-1', 'gemini-3-pro-image-preview'])(
+    '图片模型 %s 从历史像素切换 K 档后保留比例，连续切比例不改写 K 档',
+    async (modelAlias) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      render(
+        <StatefulImageEditor
+          modelAlias={modelAlias}
+          initialParameters={{ size: '1152x2048', quality: 'high', seed: 0, custom: false }}
+          onParametersChange={onParametersChange}
+          models={[{ id: modelAlias, name: modelAlias, mediaTypes: ['image'] }]}
+        />,
+      );
+      const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
+      const ratioGroup = screen.getByText('图片比例').parentElement!;
+      for (const tier of ['1K', '2K', '4K']) {
+        await user.click(within(resolutionGroup).getByRole('combobox'));
+        const option = selectPopup(resolutionGroup).getByRole('option', { name: tier });
+        expect(option).toHaveTextContent(new RegExp('^' + tier + '$'));
+        await user.click(option);
+        expect(onParametersChange).toHaveBeenLastCalledWith({
+          size: tier,
+          aspectRatio: '9:16',
+          quality: 'high',
+          seed: 0,
+          custom: false,
+        });
+        expect(screen.getByLabelText('请求尺寸')).toHaveTextContent(new RegExp('^' + tier + '$'));
+      }
+      await user.click(within(ratioGroup).getByRole('combobox'));
+      await user.click(selectPopup(ratioGroup).getByRole('option', { name: /^16:9/ }));
+      expect(onParametersChange).toHaveBeenLastCalledWith({
+        size: '4K',
+        aspectRatio: '16:9',
+        quality: 'high',
+        seed: 0,
+        custom: false,
+      });
+      expect(screen.getByRole('combobox', { name: '图片分辨率：4K' })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: '图片比例：16:9' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '媒体参数' })).toHaveAttribute(
+        'title',
+        '分辨率：4K · 比例：16:9',
+      );
+    },
+  );
+
+  it.each(['gpt-image-1', 'dall-e-3'])(
+    '精确官方图片模型 %s 显式选择 K 档仍保存对应像素尺寸',
+    async (modelAlias) => {
+      const user = userEvent.setup();
+      const onParametersChange = vi.fn();
+      render(
+        <StatefulImageEditor
+          modelAlias={modelAlias}
+          initialParameters={{ aspectRatio: '1:1', providerOption: false }}
+          onParametersChange={onParametersChange}
+          models={[{ id: modelAlias, name: modelAlias, mediaTypes: ['image'] }]}
+        />,
+      );
+      const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
+      await user.click(within(resolutionGroup).getByRole('combobox'));
+      await user.click(
+        selectPopup(resolutionGroup).getByRole('option', { name: /^1K 1024 × 1024/ }),
+      );
+      expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({
+        size: '1024x1024',
+        providerOption: false,
+      });
+      expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('1024 × 1024');
+    },
+  );
 
   it('目录声明的质量可清空且不补充未声明的质量档位', async () => {
     const user = userEvent.setup();
@@ -3077,10 +3162,10 @@ describe('NodeQuickEditor', () => {
       providerOption: false,
     });
     expect(screen.getByRole('combobox', { name: '生成质量：未设置' })).toBeInTheDocument();
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1152 × 2048');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('1152 × 2048');
   });
 
-  it('只有原生 quality 目录时仍提供像素和比例，选择 AUTO 不写入自动尺寸', async () => {
+  it('只有原生 quality 目录时仍提供 K 档和比例，选择 AUTO 不写入自动尺寸', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -3104,14 +3189,8 @@ describe('NodeQuickEditor', () => {
 
     const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    for (const [tier, pixels] of [
-      ['1K', '1024 × 1024'],
-      ['2K', '2048 × 2048'],
-      ['4K', '3840 × 3840'],
-    ]) {
-      expect(
-        selectPopup(resolutionGroup).getByRole('option', { name: new RegExp(tier + ' ' + pixels) }),
-      ).toBeInTheDocument();
+    for (const tier of ['1K', '2K', '4K']) {
+      expect(selectPopup(resolutionGroup).getByRole('option', { name: tier })).toBeInTheDocument();
     }
     expect(
       selectPopup(resolutionGroup).queryByRole('option', { name: /3K|3072/ }),
@@ -3159,7 +3238,7 @@ describe('NodeQuickEditor', () => {
       providerOption: false,
     });
     expect(screen.queryByText('生成质量')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1152 × 2048');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('1152 × 2048');
 
     const ratioGroup = screen.getByText('图片比例').parentElement!;
     await user.click(within(ratioGroup).getByRole('combobox'));
@@ -3195,13 +3274,11 @@ describe('NodeQuickEditor', () => {
 
     const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    for (const pixels of ['1024 × 1024', '2048 × 2048', '3840 × 3840']) {
-      expect(
-        selectPopup(resolutionGroup).getByRole('option', { name: new RegExp(pixels) }),
-      ).toBeInTheDocument();
+    for (const tier of ['1K', '2K', '4K']) {
+      expect(selectPopup(resolutionGroup).getByRole('option', { name: tier })).toBeInTheDocument();
     }
     expect(
-      selectPopup(resolutionGroup).queryByRole('option', { name: /3072 × 3072/ }),
+      selectPopup(resolutionGroup).queryByRole('option', { name: /3K|3072/ }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText('生成质量')).not.toBeInTheDocument();
   });
@@ -3228,7 +3305,7 @@ describe('NodeQuickEditor', () => {
     expect(selectPopup(resolutionGroup).getByRole('option', { name: '自动' })).toBeInTheDocument();
   });
 
-  it('修改分辨率只保存 size，清除全部旧像素别名并保留原生质量与未知字段', async () => {
+  it('修改分辨率保存 K 档和比例，清除旧像素别名并保留原生质量与未知字段', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     const parameters = {
@@ -3247,11 +3324,10 @@ describe('NodeQuickEditor', () => {
     const { rerender } = render(<NodeQuickEditor {...props} />);
     const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    await user.click(
-      selectPopup(resolutionGroup).getByRole('option', { name: '4K 3840 × 3840 · 极致' }),
-    );
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '4K' }));
     expect(onParametersChange).toHaveBeenCalledWith({
-      size: '3840x3840',
+      size: '4K',
+      aspectRatio: '1:1',
       quality: 'high',
       providerOption: 'preserved',
     });
@@ -3264,7 +3340,7 @@ describe('NodeQuickEditor', () => {
         }}
       />,
     );
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('3840 × 3840');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('4K');
     expect(parameters.size).toBe('1024x1024');
   });
 
@@ -3290,7 +3366,7 @@ describe('NodeQuickEditor', () => {
       },
     });
     const { rerender } = render(<NodeQuickEditor {...props} />);
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1024 × 1024');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('1024 × 1024');
     expect(screen.queryByText(/图片参数.*冲突/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
@@ -3311,14 +3387,14 @@ describe('NodeQuickEditor', () => {
         }}
       />,
     );
-    expect(screen.getByLabelText('请求像素')).toHaveTextContent('1024 × 432');
+    expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('1024 × 432');
     expect(screen.getByRole('button', { name: '生成' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '新节点' })).toBeEnabled();
     expect(props.onRun).not.toHaveBeenCalled();
     expect(props.onRunNewNode).not.toHaveBeenCalled();
   });
 
-  it('选择图片比例保持当前长边并按 16 px 对齐，只回传官方 size', async () => {
+  it('官方图片模型选择比例保持当前长边并按 16 px 对齐，只回传像素 size', async () => {
     const user = userEvent.setup();
     const onParametersChange = vi.fn();
     render(
@@ -3329,6 +3405,7 @@ describe('NodeQuickEditor', () => {
             ...imageNode,
             data: {
               ...imageNode.data,
+              modelAlias: 'gpt-image-2',
               parameters: {
                 quality: '2k',
                 aspectRatio: '16:9',
@@ -3490,7 +3567,7 @@ describe('NodeQuickEditor', () => {
         expect(
           within(ratioGroup).getByRole('combobox', { name: '图片比例：' + ratio }),
         ).toBeInTheDocument();
-        expect(screen.getByLabelText('请求像素')).toHaveTextContent(
+        expect(screen.getByLabelText('请求尺寸')).toHaveTextContent(
           sizes[index]!.replace('x', ' × '),
         );
         expect(screen.getByRole('button', { name: '媒体参数' })).toHaveAttribute(
@@ -3560,7 +3637,7 @@ describe('NodeQuickEditor', () => {
     [
       { quality: '4k', aspectRatio: 'adaptive' },
       { resolution: '4k', aspectRatio: 'adaptive', quality: 'high' },
-      '4k',
+      '4K',
       'adaptive',
     ],
     [
@@ -3657,7 +3734,7 @@ describe('NodeQuickEditor', () => {
       expect(onParametersChange).toHaveBeenCalledExactlyOnceWith(expected);
       expect(screen.getByRole('combobox', { name: '图片比例：auto' })).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: '图片分辨率：自动' })).toBeInTheDocument();
-      expect(screen.getByLabelText('请求像素')).toHaveTextContent('自动');
+      expect(screen.getByLabelText('请求尺寸')).toHaveTextContent('自动');
       expect(screen.getByRole('button', { name: '媒体参数' })).toHaveAttribute(
         'title',
         '分辨率：自动 · 比例：auto',
@@ -3702,9 +3779,9 @@ describe('NodeQuickEditor', () => {
     });
     const resolutionGroup = screen.getByText('图片分辨率').parentElement!;
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: /^2K 2048 × 1360/ }));
+    await user.click(selectPopup(resolutionGroup).getByRole('option', { name: '2K' }));
     expect(onParametersChange).toHaveBeenLastCalledWith({
-      size: '2048x1360',
+      size: '2K',
       aspectRatio: '1.5:1',
       quality: 'high',
       seed: 0,

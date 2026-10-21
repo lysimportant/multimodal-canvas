@@ -83,57 +83,63 @@ function provider(fetchImpl: typeof fetch, maxPollAttempts = 2): NewApiProvider 
 }
 
 describe('Image2Pro 异步图片任务协议', () => {
-  it('参考图使用 input_image，并只发送文档支持的参数', async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(response({ id: 'task-1', status: 'queued' }, 202))
-      .mockResolvedValueOnce(
-        response({
-          id: 'task-1',
-          status: 'completed',
-          data: [{ url: 'https://cdn.example/generated.png' }],
-        }),
-      );
-    await provider(fetchImpl).execute({
-      snapshot: imageSnapshot(
-        {
-          n: 1,
-          aspectRatio: '3:2',
-          quality: 'high',
-          background: 'transparent',
-          output_format: 'webp',
-          output_compression: 80,
-        },
-        [referenceImageInput('https://assets.example/reference.png')],
-      ),
-      providerJob: { id: 'provider-job-1', provider: 'newapi' },
-      onProviderJob: vi.fn(),
-    });
+  it.each([undefined, '1K', '2K', '4K'])(
+    '参考图使用 input_image，分辨率 %s 保留原档位且不补默认像素',
+    async (size) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(response({ id: 'task-1', status: 'queued' }, 202))
+        .mockResolvedValueOnce(
+          response({
+            id: 'task-1',
+            status: 'completed',
+            data: [{ url: 'https://cdn.example/generated.png' }],
+          }),
+        );
+      await provider(fetchImpl).execute({
+        snapshot: imageSnapshot(
+          {
+            n: 1,
+            ...(size ? { size } : {}),
+            aspectRatio: '3:2',
+            quality: 'high',
+            background: 'transparent',
+            output_format: 'webp',
+            output_compression: 80,
+          },
+          [referenceImageInput('https://assets.example/reference.png')],
+        ),
+        providerJob: { id: 'provider-job-1', provider: 'newapi' },
+        onProviderJob: vi.fn(),
+      });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe('https://image2pro.example/v1/images/tasks');
-    expect(init?.method).toBe('POST');
-    expect(init?.headers).toMatchObject({ 'content-type': 'application/json' });
-    expect(new Headers(init?.headers).get('idempotency-key')).toMatch(
-      /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/,
-    );
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({
-      model: 'unlimited-image-v1',
-      prompt: '保持主体，生成蓝色海报',
-      n: 1,
-      size: '1024x688',
-      input_image: 'https://assets.example/reference.png',
-    });
-    expect(body).not.toHaveProperty('quality');
-    expect(body).not.toHaveProperty('background');
-    expect(body).not.toHaveProperty('output_format');
-    expect(body).not.toHaveProperty('output_compression');
-    expect(body).not.toHaveProperty('aspect_ratio');
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe('https://image2pro.example/v1/images/tasks/task-1');
-    expect(fetchImpl.mock.calls[1]?.[1]?.method).toBe('GET');
-  });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(url).toBe('https://image2pro.example/v1/images/tasks');
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ 'content-type': 'application/json' });
+      expect(new Headers(init?.headers).get('idempotency-key')).toMatch(
+        /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/,
+      );
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        model: 'unlimited-image-v1',
+        prompt: '保持主体，生成蓝色海报',
+        n: 1,
+        aspect_ratio: '3:2',
+        input_image: 'https://assets.example/reference.png',
+      });
+      expect(body).not.toHaveProperty('quality');
+      expect(body).not.toHaveProperty('background');
+      expect(body).not.toHaveProperty('output_format');
+      expect(body).not.toHaveProperty('output_compression');
+      if (size) expect(body.size).toBe(size);
+      else expect(body).not.toHaveProperty('size');
+      expect(body).not.toHaveProperty('aspectRatio');
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe('https://image2pro.example/v1/images/tasks/task-1');
+      expect(fetchImpl.mock.calls[1]?.[1]?.method).toBe('GET');
+    },
+  );
 
   it('已有平台 ID 的恢复只查询，不重复 POST', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

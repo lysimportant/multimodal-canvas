@@ -1,4 +1,8 @@
-import { GLOBALSTORE_IMAGE_CONTRACT, renderPromptDocument } from '@multimodal-canvas/domain';
+import {
+  GLOBALSTORE_IMAGE_CONTRACT,
+  renderPromptDocument,
+  resolveImageOutputParameters,
+} from '@multimodal-canvas/domain';
 import { reportRequestPrompt } from './index.js';
 import type { NewApiProviderRequest, ProviderExecution, ProviderJobUpdate } from './index.js';
 
@@ -223,6 +227,21 @@ function globalStoreImageParameters(
       throw new Error('GlobalStore 图片 size 与 resolution 别名冲突');
     size = size ?? resolution;
     resolution = undefined;
+  }
+
+  // The editor stores native tiers in size; Model Center uses resolution instead.
+  if (size && /^[1-4]k$/i.test(size)) {
+    if (resolution && resolution.toLowerCase() !== size.toLowerCase())
+      throw new Error('GlobalStore 图片 size 与 resolution 参数冲突');
+    resolution = size;
+    size = undefined;
+    if (spec.requiredSize) {
+      if (!spec.resolutions.some((value) => value.toLowerCase() === resolution!.toLowerCase()))
+        throw new Error(`GlobalStore ${spec.model} 不支持该 resolution`);
+      size = resolveImageOutputParameters({ resolution, aspectRatio: aspectRatio ?? '1:1' }).size;
+      resolution = undefined;
+      aspectRatio = undefined;
+    }
   }
 
   let nativeQuality: string | undefined;

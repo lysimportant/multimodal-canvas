@@ -33,6 +33,8 @@ import {
   isGeminiChatImageModel,
   normalizeImageOutputParameters,
   resolveImageOutputParameters,
+  usesOpenAIImagePixelSize,
+  openAIImageSizeSuggestions,
   isValidGenerationCount,
   resolveVideoCompletionAction,
   videoModeDescriptions,
@@ -81,7 +83,7 @@ export type InferenceStrength = string;
  * 未识别的字段会原样保留，便于不同模型在父层扩展自己的参数。
  */
 export type NodeMediaParameters = Record<string, unknown> & {
-  /** Images 接口官方尺寸；新编辑只写 WIDTHxHEIGHT 或 auto。 */
+  /** 原生 K 档、明确的像素尺寸或 auto；Provider 按各自协议发送。 */
   size?: string;
   /** 供应商原生质量；历史 K 档仅兼容读取，显式编辑后并入 size。 */
   quality?: string;
@@ -590,7 +592,7 @@ export function NodeQuickEditor({
   };
 
   /**
-   * 图片参数只有在用户明确编辑时收敛为官方 size 和原生 quality。
+   * 图片参数只有在用户明确编辑时收敛为 size 和原生 quality。
    * 只收敛明确编辑的字段和可完成转换的别名，保留未知档位与自定义比例。
    */
   const updateImageParameter = (key: 'size' | 'aspectRatio' | 'quality', value: string) => {
@@ -603,6 +605,11 @@ export function NodeQuickEditor({
       const nativeQuality = readNativeImageQuality(parameters);
       if (nativeQuality) next.quality = nativeQuality;
       if (value) next.size = value;
+      if (/^[1-4]k$/i.test(value)) {
+        const ratio =
+          compatibleImageOutputParameters?.aspectRatio ?? imageAspectRatioForSize(currentSize);
+        if (ratio) next.aspectRatio = ratio;
+      }
     }
     if (key === 'aspectRatio') {
       delete next.aspectRatio;
@@ -614,10 +621,7 @@ export function NodeQuickEditor({
             compatibleImageOutputParameters.height ?? 0,
           ) || 1024
         : 1024;
-      const canDeriveSize =
-        compatibleImageOutputParameters?.width !== undefined ||
-        (compatibleImageOutputParameters?.resolution === undefined &&
-          (currentSize === undefined || currentSize === 'auto'));
+      const canDeriveSize = compatibleImageOutputParameters?.width !== undefined;
       const nextSize = canDeriveSize
         ? imageSizeForRatio(longEdge, value, currentModel)?.size
         : undefined;
@@ -842,10 +846,10 @@ export function NodeQuickEditor({
           )}
           <p
             className="node-quick-editor-image-size"
-            title="发送给图片接口的请求像素；实际输出取决于上游对该尺寸的支持。"
+            title="发送给图片接口的分辨率档位或像素尺寸；实际输出由模型决定。"
           >
-            <span>请求像素</span>
-            <output aria-label="请求像素" aria-live="polite">
+            <span>请求尺寸</span>
+            <output aria-label="请求尺寸" aria-live="polite">
               {imageOutputParameters?.size
                 ? imageOutputParameters.size === 'auto'
                   ? '自动'
@@ -1754,6 +1758,7 @@ function imageAspectRatioForSize(size: string | undefined): string | undefined {
 function formatImageSize(value: unknown): string {
   const normalized = normalizeCurrentOptionValue(value);
   if (normalized === 'auto') return '自动';
+  if (/^[1-4]k$/i.test(normalized)) return normalized.toUpperCase();
   const match = /^(\d+)x(\d+)$/i.exec(normalized);
   return match ? `${match[1]} × ${match[2]}` : '';
 }
@@ -1772,12 +1777,15 @@ function imageResolutionTierLabel(value: string): string | undefined {
   return tier.get(longEdge);
 }
 
-/** 把目录 K 档或原生像素转换成唯一的官方 size 菜单项。 */
+/** 代理模型保留原生 K 档；精确官方 OpenAI 模型才将菜单档位换算为像素。 */
 function imageSizeOption(
   option: MediaOption,
   aspectRatio: string,
   modelAlias?: string,
 ): MediaOption | undefined {
+  if (/^[1-4]k$/i.test(option.value) && !usesOpenAIImagePixelSize(modelAlias)) {
+    return { value: option.value.toUpperCase(), label: option.value.toUpperCase() };
+  }
   const compatible = readImageResolutionParameter(option.value);
   if (normalizeCurrentOptionValue(option.value).toLowerCase() === 'auto') {
     return {
@@ -1790,10 +1798,13 @@ function imageSizeOption(
   let size = compatible.size;
   if (compatible.resolution) {
     try {
-      size = resolveImageOutputParameters({
-        resolution: compatible.resolution,
-        aspectRatio,
-      }).size!;
+      size = resolveImageOutputParameters(
+        {
+          size: compatible.resolution,
+          aspectRatio,
+        },
+        modelAlias,
+      ).size!;
       if (!size) return undefined;
     } catch (error) {
       if (!(error instanceof ImageOutputParameterError)) throw error;
@@ -2372,7 +2383,7 @@ function QuickOptionMenu({
 
 /**
  * 新建节点或显式选择模型时补齐编辑默认值，已有参数及未知字段始终保留。
- * 目录仅提供尺寸等默认选项；可选图片 quality 由用户明确选择，历史节点加载不调用此函数。
+ * 图片尺寸和 quality 由用户明确选择；目录只提供建议，历史节点加载不调用此函数。
  */
 export function applyNodeGenerationDefaults(
   data: AssetFlowNode['data'],
@@ -2390,18 +2401,7 @@ export function applyNodeGenerationDefaults(
     parameters.duration = VIDEO_DURATION_RANGE.default;
   if (!model) return { ...data, parameters };
   const options = getMediaOptions(model, mediaType, {}, false, model.id);
-  if (mediaType === 'image') {
-    const hasStoredImageOutput =
-      imageSizeParameterAliases.some((alias) => parameters[alias] !== undefined) ||
-      imageQualityParameterAliases.some((alias) => parameters[alias] !== undefined) ||
-      parameters.aspectRatio !== undefined ||
-      parameters.aspect_ratio !== undefined ||
-      parameters.ratio !== undefined;
-    if (!hasStoredImageOutput) {
-      const size = firstAvailableOption(options.resolution);
-      if (size !== undefined) parameters.size = size;
-    }
-  } else if (mediaType === 'video') {
+  if (mediaType === 'video') {
     for (const field of ['resolution', 'aspectRatio'] as const) {
       const aliases =
         field === 'resolution'
@@ -2485,6 +2485,7 @@ function mergeOptions(...sources: readonly MediaOption[][]): MediaOption[] {
 function geminiImageSizeOptions(options: readonly MediaOption[]): MediaOption[] {
   return options.filter((option) => {
     if (option.value === 'auto') return true;
+    if (/^[124]K$/.test(option.value)) return true;
     const size = /^(\d+)x(\d+)$/i.exec(option.value);
     return size !== null && [1024, 2048, 3840].includes(Math.max(Number(size[1]), Number(size[2])));
   });
@@ -2548,8 +2549,10 @@ function getMediaOptions(
       return resolution !== undefined && resolution !== 'auto';
     });
   const declaredImageSizes = imageSizeOptions(sizeSource, imageTierAspectRatio, resolvedModelAlias);
+  const officialPixelSizes = openAIImageSizeSuggestions(resolvedModelAlias);
   const fallbackImageSizes = imageSizeOptions(
-    legacyImageResolutionTiers.filter((option) => option.value !== '3k'),
+    officialPixelSizes?.map((value) => ({ value, label: value })) ??
+      legacyImageResolutionTiers.filter((option) => option.value !== '3k'),
     imageTierAspectRatio,
     resolvedModelAlias,
   );
