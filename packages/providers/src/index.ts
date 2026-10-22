@@ -30,6 +30,7 @@ import {
   resolveImageEditMaxImages,
   REQUEST_PROMPT_SCHEMA_VERSION,
   IMAGE2PRO_IMAGE_TASK_CONTRACT,
+  IMAGE2PRO_IMAGE_EDIT_CONTRACT,
   videoInputRoleForPromptMention,
   videoFamilyForModel,
   videoModeForPromptMentions,
@@ -468,9 +469,14 @@ type ImageChatProviderRequest = {
 /** Honor the frozen protocol; repair the old Images default for known Gemini image models. */
 function imageRequestContract(
   snapshot: RunSnapshot,
-): 'openai-images' | 'openai-chat-completions' | typeof IMAGE2PRO_IMAGE_TASK_CONTRACT {
+):
+  | 'openai-images'
+  | 'openai-chat-completions'
+  | typeof IMAGE2PRO_IMAGE_TASK_CONTRACT
+  | typeof IMAGE2PRO_IMAGE_EDIT_CONTRACT {
   const contract = snapshot.executionBindings?.[snapshot.targetNodeId]?.contract;
   if (contract === IMAGE2PRO_IMAGE_TASK_CONTRACT) return contract;
+  if (contract === IMAGE2PRO_IMAGE_EDIT_CONTRACT) return contract;
   if (contract === 'openai-chat-completions') return contract;
   if (contract === undefined || contract === 'openai-images')
     return isGeminiChatImageModel(snapshot.modelAlias)
@@ -565,8 +571,27 @@ export class NewApiProvider {
     // 供应商是否识别该键、如何去重尚需契约确认，不能据此自动重试。
     const idempotencyKey = standardRequestIdempotencyKey(snapshot, providerJob);
 
+    // 只在官方端点或显式合同下启用，不能按同名模型改变其他供应商的编辑请求。
+    let image2proEditRequest: ImageProviderRequest | undefined;
+    if (
+      target.data.mediaType === 'image' &&
+      (selectedImageContract === IMAGE2PRO_IMAGE_EDIT_CONTRACT ||
+        new URL(this.baseUrl).origin === 'https://api.image2pro.top')
+    ) {
+      const mapping = mapImageGenerationInputs(
+        snapshot,
+        target.data.label,
+        target.data.prompt,
+        target.data.promptDocument,
+        resolvedMentions,
+      );
+      if (mapping.images.length)
+        image2proEditRequest = this.image2proEditRequest(snapshot, mapping);
+    }
     const imageChatRequest =
-      target.data.mediaType === 'image' && selectedImageContract === 'openai-chat-completions'
+      target.data.mediaType === 'image' &&
+      !image2proEditRequest &&
+      selectedImageContract === 'openai-chat-completions'
         ? this.imageChatRequest(
             snapshot,
             target.data.label,
@@ -576,7 +601,8 @@ export class NewApiProvider {
           )
         : undefined;
     const imageRequest =
-      target.data.mediaType === 'image' && !imageChatRequest
+      image2proEditRequest ??
+      (target.data.mediaType === 'image' && !imageChatRequest
         ? this.imageRequest(
             snapshot,
             target.data.label,
@@ -584,7 +610,7 @@ export class NewApiProvider {
             target.data.promptDocument,
             resolvedMentions,
           )
-        : undefined;
+        : undefined);
     // 请求体只组装一次：请求记录与真实发送必须取自同一份结果，不重新渲染提示词。
     let plan: {
       path: string;
@@ -669,7 +695,10 @@ export class NewApiProvider {
           : target.data.mediaType === 'image'
             ? imageChatRequest
               ? parseChatImageOutput(response.payload, snapshot)
-              : parseImageOutput(response.payload, snapshot)
+              : parseImageOutput(
+                  response.payload,
+                  image2proEditRequest ? { ...snapshot, parameters: {} } : snapshot,
+                )
             : parseAudioOutput(response.payload, snapshot);
       await reportProgress?.(100);
       throwIfProviderSignalAborted(signal);
@@ -840,6 +869,72 @@ export class NewApiProvider {
       form.append(field, image.file, image.filename);
     }
     return { path: '/images/edits', body: form, sourceImages: mapping.images };
+  }
+
+  /** Image2Pro 的同步编辑独立映射 JSON 参考图，不复用其他渠道的 multipart/像素约束。 */
+  private image2proEditRequest(
+    snapshot: RunSnapshot,
+    mapping: ImageGenerationMapping,
+  ): ImageProviderRequest {
+    const references = mapping.images.filter((input) => input.role !== 'mask');
+    const masks = mapping.images.filter((input) => input.role === 'mask');
+    if (!references.length || references.length > 16 || masks.length > 1) {
+      throw new NewApiProviderError('Image2Pro 图生图需要 1–16 张参考图，最多一张蒙版', {
+        code: 'INVALID_PROVIDER_PARAMETER',
+        retryable: false,
+      });
+    }
+    const parameters = snapshot.parameters;
+    const n = parameters.n ?? 1;
+    if (!Number.isSafeInteger(n) || Number(n) < 1 || Number(n) > 4) {
+      throw invalidProviderParameter('image', 'n', 'Image2Pro 仅支持 1–4 的整数');
+    }
+    // 画布一次执行只接收一个结果，不发送会产生无法保存的额外付费图片的请求。
+    if (n !== 1) {
+      throw invalidProviderParameter('image', 'n', '画布当前单次仅接收一张图片，请使用 1');
+    }
+    const body: Record<string, unknown> = {
+      model: snapshot.modelAlias,
+      prompt: mapping.prompt,
+      n,
+      input_image: references.map((input) => imageTaskImageValue(input, [this.apiKey])),
+    };
+    // 官方文档分别接收像素 size、比例和分辨率档位，不套用同名 OpenAI 模型的限制。
+    const ratio = parameters.aspect_ratio ?? parameters.aspectRatio ?? parameters.ratio;
+    if (ratio !== undefined) body.aspect_ratio = ratio;
+    const imageSize = parameters.image_size ?? parameters.imageSize;
+    if (imageSize !== undefined) body.image_size = imageSize;
+    const resolution = parameters.resolution;
+    const pixelResolution = typeof resolution === 'string' && /^\d+\s*[x×]\s*\d+$/.test(resolution);
+    const size = parameters.size ?? (pixelResolution ? resolution : undefined);
+    if (typeof size === 'string' && /^[1-4]k$/i.test(size)) {
+      body.resolution = size.toUpperCase();
+    } else if (size !== undefined) {
+      body.size = typeof size === 'string' ? size.replace(/\s*[x×]\s*/i, 'x') : size;
+    }
+    if (resolution !== undefined && !pixelResolution) body.resolution = resolution;
+    if (
+      body.resolution === undefined &&
+      typeof parameters.quality === 'string' &&
+      /^[1-4]k$/i.test(parameters.quality)
+    ) {
+      body.resolution = parameters.quality.toUpperCase();
+    }
+    if (parameters.response_format !== undefined) body.response_format = parameters.response_format;
+    if (masks[0]) {
+      const mask = imageTaskImageValue(masks[0], [this.apiKey]);
+      const mimeType =
+        parseDataUrl(mask)?.mimeType ?? normalizedMimeType(masks[0].snapshot.data.mimeType);
+      if (mimeType && mimeType !== 'image/png') {
+        throw invalidProviderParameter('image', 'mask', 'Image2Pro 蒙版必须是 PNG');
+      }
+      body.mask = mask;
+    }
+    return {
+      path: '/images/edits',
+      body,
+      sourceImages: [...references, ...masks],
+    };
   }
 
   private imageChatRequest(

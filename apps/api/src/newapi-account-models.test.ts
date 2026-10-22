@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { IMAGE2PRO_IMAGE_TASK_CONTRACT, type RunSnapshot } from '@multimodal-canvas/domain';
+import {
+  IMAGE2PRO_IMAGE_EDIT_CONTRACT,
+  IMAGE2PRO_IMAGE_TASK_CONTRACT,
+  type RunSnapshot,
+} from '@multimodal-canvas/domain';
 import { NewApiProvider } from '@multimodal-canvas/providers';
 import { NewApiAccountService } from './newapi-account-service';
 import { NewApiAccountSettings, newApiRequestUser } from './newapi-account-settings';
@@ -55,6 +59,8 @@ describe('New API 本人缓存模型目录', () => {
     ['无限制-图片模型', undefined, 'openai-images'],
     ['无限制-异步图片模型', IMAGE2PRO_IMAGE_TASK_CONTRACT, IMAGE2PRO_IMAGE_TASK_CONTRACT],
     ['普通异步图片模型', IMAGE2PRO_IMAGE_TASK_CONTRACT, IMAGE2PRO_IMAGE_TASK_CONTRACT],
+    ['gpt-image-2.5-flare', IMAGE2PRO_IMAGE_EDIT_CONTRACT, IMAGE2PRO_IMAGE_EDIT_CONTRACT],
+    ['Nano-banana-2.1', IMAGE2PRO_IMAGE_EDIT_CONTRACT, IMAGE2PRO_IMAGE_EDIT_CONTRACT],
   ] as const)('为 %s 冻结正确的图片执行协议', async (modelAlias, catalogContract, expected) => {
     const service = new NewApiAccountService({
       prisma: { aiCredential: { findFirst: vi.fn().mockResolvedValue(null) } },

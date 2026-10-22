@@ -619,7 +619,7 @@ describe('Worker 中性执行授权', () => {
   );
 
   it.each([undefined, 408, 425, 429, 500, 503])(
-    '创建送达未知（HTTP %s）时重投仍严格禁止第二次 POST',
+    '图片创建送达未知（HTTP %s）时停止无效重投并保留首次错误',
     async (status) => {
       const f = fixture(snapshot('image', true));
       const failure = new NewApiProviderError('creation delivery unknown', {
@@ -631,15 +631,107 @@ describe('Worker 中性执行授权', () => {
       createRunWorker({ ...f.options, execution: authorization.execution });
 
       const failures = await processWithQueueRetries(f.job);
-      await expect(queueState.processor?.(f.job)).rejects.toThrow('禁止重复创建');
+      await expect(queueState.processor?.(f.job)).rejects.toMatchObject({
+        name: 'UnrecoverableError',
+        message: failure.message,
+      });
 
-      expect(failures[0]).toBe(failure);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        name: 'UnrecoverableError',
+        message: failure.message,
+        cause: failure,
+      });
       expect(authorization.status()).toBe('unknown');
+      expect(authorization.execution.beginSend).toHaveBeenCalledOnce();
       expect(authorization.execution.finishSend).toHaveBeenCalledOnce();
       expect(authorization.execution.finishSend).toHaveBeenCalledWith(
         expect.objectContaining({ nodeId: 'target', status: 'unknown' }),
       );
       expect(post).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['queue-replay', 'database-replay'] as const)(
+    '真实 503/api_error 在 %s 中保留原错和请求 ID，不重复提交图片',
+    async (mode) => {
+      const frozen = snapshot('image', true);
+      frozen.parameters = { prompt: 'Synthetic image generation' };
+      const f = fixture(frozen);
+      const initialData = structuredClone(f.job.data);
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(
+          { error: { code: 'api_error', message: 'No available compatible accounts' } },
+          {
+            status: 503,
+            headers: {
+              'x-request-id': 'original-unavailable-request',
+              'x-oneapi-request-id': 'gateway-unavailable-request',
+            },
+          },
+        ),
+      );
+      f.options.provider = new NewApiProvider({
+        baseUrl: 'https://provider.example/v1',
+        apiKey: 'synthetic-test-key',
+        fetchImpl,
+      });
+      const authorization = singleSendAuthorization();
+      const updateRun = vi.fn(async () => undefined);
+      const recordPrompt = vi.fn(async () => undefined);
+      const archiver = vi.fn(f.options.resultArchiver!);
+      f.options.persistence!.updateRun = updateRun;
+      f.options.persistence!.recordRequestPromptOutcome = recordPrompt;
+      const options = {
+        ...f.options,
+        resultArchiver: archiver,
+        execution: authorization.execution,
+      };
+      createRunWorker(options);
+
+      const failures = await processWithQueueRetries(f.job);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        name: 'UnrecoverableError',
+        message: expect.stringContaining('No available compatible accounts'),
+        cause: { status: 503, code: 'api_error', retryable: true },
+      });
+      const originalError = (failures[0] as Error).message;
+      const originalPayload = structuredClone(f.job.data.providerJob?.payload);
+      expect(originalPayload).toMatchObject({
+        sendStatus: 'unknown',
+        status: 503,
+        code: 'api_error',
+        error: originalError,
+        requestId: 'original-unavailable-request',
+        newApiRequestId: 'gateway-unavailable-request',
+      });
+      expect(recordPrompt).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sendStatus: 'unknown' }),
+      );
+
+      if (mode === 'database-replay') {
+        const persistedJobs = structuredClone([...f.persisted.values()]);
+        f.job.data = initialData;
+        options.persistence!.findProviderJobsByRunId = async (runId) =>
+          runId === initialData.runId ? persistedJobs : [];
+        createRunWorker(options);
+      }
+      await expect(queueState.processor!(f.job)).rejects.toMatchObject({
+        name: 'UnrecoverableError',
+        message: originalError,
+      });
+
+      expect(updateRun).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'failed', error: originalError }),
+      );
+      expect(f.job.data.providerJob?.payload).toEqual(originalPayload);
+      expect(authorization.status()).toBe('unknown');
+      expect(authorization.execution.beginSend).toHaveBeenCalledOnce();
+      expect(authorization.execution.finishSend).toHaveBeenCalledOnce();
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(archiver).not.toHaveBeenCalled();
     },
   );
 
@@ -789,22 +881,29 @@ describe('Worker 中性执行授权', () => {
     expect(f.resumeCalls()).toBe(1);
   });
 
-  it('发送前本地校验失败不创建发送记录，重复消费仍保留原错误', async () => {
-    const f = fixture(snapshot('video', true));
-    f.execute.mockRejectedValue(new Error('首尾帧模式需要同时连接首帧和尾帧'));
-    const execution: WorkerExecutionAuthorization = {
-      authorizeRun: vi.fn(async () => undefined),
-      authorizeNode: vi.fn(async () => undefined),
-      beginSend: vi.fn(async () => undefined),
-      finishSend: vi.fn(async () => undefined),
-    };
-    createRunWorker({ ...f.options, execution });
-    await expect(queueState.processor?.(f.job)).rejects.toThrow('首尾帧模式需要同时连接首帧和尾帧');
-    await expect(queueState.processor?.(f.job)).rejects.toThrow('首尾帧模式需要同时连接首帧和尾帧');
-    expect(execution.beginSend).not.toHaveBeenCalled();
-    expect(execution.finishSend).not.toHaveBeenCalled();
-    expect(f.creationCalls()).toBe(0);
-  });
+  it.each(['image', 'video'] as const)(
+    '%s 发送前校验失败不创建发送记录，重放保留原错',
+    async (mediaType) => {
+      const f = fixture(snapshot(mediaType, true));
+      f.execute.mockRejectedValue(new Error('首尾帧模式需要同时连接首帧和尾帧'));
+      const execution: WorkerExecutionAuthorization = {
+        authorizeRun: vi.fn(async () => undefined),
+        authorizeNode: vi.fn(async () => undefined),
+        beginSend: vi.fn(async () => undefined),
+        finishSend: vi.fn(async () => undefined),
+      };
+      createRunWorker({ ...f.options, execution });
+      await expect(queueState.processor?.(f.job)).rejects.toThrow(
+        '首尾帧模式需要同时连接首帧和尾帧',
+      );
+      await expect(queueState.processor?.(f.job)).rejects.toThrow(
+        '首尾帧模式需要同时连接首帧和尾帧',
+      );
+      expect(execution.beginSend).not.toHaveBeenCalled();
+      expect(execution.finishSend).not.toHaveBeenCalled();
+      expect(f.creationCalls()).toBe(0);
+    },
+  );
 
   it('最终请求落库后发送授权失效仍阻止 Provider POST', async () => {
     const f = fixture(snapshot('image', true));

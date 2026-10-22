@@ -1022,8 +1022,8 @@ export function createRunWorker(options: {
       const promptOptimizationOutputErrors = new Map<string, string>();
       /** 返回或归档证据已存在但结果不可恢复时，只能核实原请求，不能自动重新生成。 */
       const unrecoverableDeliveryNodes = new Set<string>();
-      /** 同一 Run 已明确拒绝的创建请求保留原错；不拦截新 Run 的显式重试。 */
-      const rejectedCreationErrors = new Map<string, string>();
+      /** 同一 Run 无法重发的创建请求保留原错；不拦截新 Run 的显式重试。 */
+      const terminalCreationErrors = new Map<string, string>();
       /** 只在进程内持有解密结果；队列中始终仅保留恢复身份。 */
       const stagedResults = new Map<
         string,
@@ -1057,7 +1057,7 @@ export function createRunWorker(options: {
             (candidate) => candidate.payload?.refundStatus,
           );
           if (refundedCandidate) {
-            rejectedCreationErrors.set(
+            terminalCreationErrors.set(
               node.id,
               String(
                 refundedCandidate.payload?.error ?? '视频任务已终止，禁止恢复已取消或退款的任务',
@@ -1273,6 +1273,30 @@ export function createRunWorker(options: {
             continue;
           }
 
+          // 送达未知的图片创建没有可查询任务或可恢复响应；同 Run 重放只保留
+          // 首次错误，不重新领取发送，也不把 unknown 改成允许显式重发的 failed。
+          const uncertainImageCreation =
+            node.data.mediaType === 'image'
+              ? providerCandidates.find(
+                  (candidate) =>
+                    candidate.id === localProviderJob.id &&
+                    candidate.status === 'failed' &&
+                    !candidate.platformJobId &&
+                    candidate.payload?.sendStatus === 'unknown' &&
+                    typeof candidate.payload.error === 'string',
+                )
+              : undefined;
+          const uncertainImageCreationMessage = uncertainImageCreation?.payload?.error;
+          if (uncertainImageCreation && typeof uncertainImageCreationMessage === 'string') {
+            terminalCreationErrors.set(node.id, uncertainImageCreationMessage);
+            workflowState = replaceWorkflowNodeState(workflowState, {
+              nodeId: node.id,
+              status: 'failed',
+              providerJob: uncertainImageCreation,
+            });
+            continue;
+          }
+
           const image2proNode = isImage2proImageNode(executionSnapshot, node.id);
           const uncertainImage2proTask = image2proNode
             ? providerCandidates.find(hasImage2proTaskEvidence)
@@ -1281,7 +1305,7 @@ export function createRunWorker(options: {
             uncertainImage2proTask &&
             !canResumeImage2proProviderJob(uncertainImage2proTask, retrieveOnlyObserved)
           ) {
-            rejectedCreationErrors.set(
+            terminalCreationErrors.set(
               node.id,
               'Image2Pro 图片任务缺少匹配的冻结合同、可查询任务 ID 或已知任务阶段；禁止重新提交',
             );
@@ -1316,7 +1340,7 @@ export function createRunWorker(options: {
             : undefined;
           const rejectionMessage = rejectedCreation?.payload?.error;
           if (rejectedCreation && typeof rejectionMessage === 'string') {
-            rejectedCreationErrors.set(node.id, rejectionMessage);
+            terminalCreationErrors.set(node.id, rejectionMessage);
             workflowState = replaceWorkflowNodeState(workflowState, {
               nodeId: node.id,
               status: 'failed',
@@ -1669,11 +1693,11 @@ export function createRunWorker(options: {
           ) {
             continue;
           }
-          const rejectedCreationError = rejectedCreationErrors.get(node.id);
-          if (rejectedCreationError !== undefined) {
+          const terminalCreationError = terminalCreationErrors.get(node.id);
+          if (terminalCreationError !== undefined) {
             activeNodeId = node.id;
             activeProviderJob = nodeState.providerJob;
-            throw new UnrecoverableError(rejectedCreationError);
+            throw new UnrecoverableError(terminalCreationError);
           }
           const promptOptimizationOutputError = promptOptimizationOutputErrors.get(node.id);
           if (promptOptimizationOutputError !== undefined) {
@@ -2637,13 +2661,19 @@ export function createRunWorker(options: {
           activeProviderJob?.payload?.deliveryState !== 'received' &&
           activeProviderJob?.payload?.deliveryState !== 'archived';
         let error = redactTransientAssetData(rawError);
-        // 仅明确拒绝且没有结果或平台任务可恢复的创建请求终止队列重试。
-        const rejectedCreation =
+        const unrecoverableCreation =
           activeSendIntent &&
           !activeProviderJob?.platformJobId &&
           activeProviderJob?.payload?.deliveryState !== 'received' &&
-          activeProviderJob?.payload?.deliveryState !== 'archived' &&
-          requestPromptSendStatusForFailure(rawError) === 'failed';
+          activeProviderJob?.payload?.deliveryState !== 'archived';
+        const creationSendStatus = requestPromptSendStatusForFailure(rawError);
+        const rejectedCreation = unrecoverableCreation && creationSendStatus === 'failed';
+        // 图片 POST 送达未知时重投无法取回同步响应，发送栅栏也禁止再次创建。
+        // 终止队列重试并持久化原错；unknown 发送终态继续阻止新 Run 重发。
+        const terminalImageCreationFailure =
+          unrecoverableCreation &&
+          executionSnapshot.nodes.find((node) => node.id === activeNodeId)?.data.mediaType ===
+            'image';
         if (
           !promptOptimizationOutputError &&
           activeArchivePhase &&
@@ -2759,9 +2789,9 @@ export function createRunWorker(options: {
               ...(terminalImageFailure && rawError instanceof NewApiProviderError
                 ? { code: rawError.code, retryable: false, error: errorMessage }
                 : {}),
-              ...(rejectedCreation
+              ...(rejectedCreation || terminalImageCreationFailure
                 ? {
-                    sendStatus: 'failed',
+                    sendStatus: creationSendStatus,
                     error: errorMessage,
                     ...(rawError instanceof NewApiProviderError
                       ? {
@@ -2836,6 +2866,7 @@ export function createRunWorker(options: {
         finishRunSpan('error', 'failed');
         if (
           rejectedCreation ||
+          terminalImageCreationFailure ||
           terminalImageFailure ||
           promptOptimizationOutputError ||
           terminalVideoFailure
