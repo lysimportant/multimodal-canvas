@@ -2,10 +2,102 @@ import { describe, expect, it } from 'vitest';
 import {
   buildVideoPromptReferences,
   orderVideoPromptMedia,
+  renderVideoPromptReferenceDocument,
+  VideoPromptReferenceMappingError,
+  videoPromptTokenFamilyForModel,
   type VideoPromptMediaDescriptor,
 } from './video-prompt-references.js';
+import type { PromptDocument, PromptMention } from './index.js';
 
 describe('video prompt references', () => {
+  const mention: PromptMention = {
+    type: 'mention',
+    mentionId: 'inline-image',
+    assetId: 'image-asset',
+    assetVersion: 1,
+    mediaType: 'image',
+    label: '文件显示名不参与转换',
+    inline: true,
+  };
+
+  it.each([
+    ['doubao-seedance-2-5-260628', '图 1'],
+    ['wan3.0-video', '图1'],
+    ['MiniMax-H3', '<Picture 1>'],
+    ['grok-imagine-video-1.5.1', 'Image 1'],
+  ])('renders %s references with the same tokens used for submission', (modelAlias, token) => {
+    const refs = buildVideoPromptReferences(
+      [{ ...mention, role: 'referenceImage', mediaType: 'image' as const }],
+      videoPromptTokenFamilyForModel(modelAlias),
+    );
+    const document: PromptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '使用' },
+        { ...mention, entityName: ' 小明 ', binding: { entityName: '不覆盖' } },
+        { type: 'text', text: '和' },
+        { ...mention, mentionId: 'repeat', binding: { entityName: ' 成年小明 ' } },
+      ],
+    };
+    const before = structuredClone(document);
+    expect(renderVideoPromptReferenceDocument(document, refs, { modelAlias }).blocks).toEqual([
+      { type: 'text', text: '使用' },
+      { type: 'text', text: `${token}（小明）` },
+      { type: 'text', text: '和' },
+      { type: 'text', text: `${token}（成年小明）` },
+    ]);
+    expect(document).toEqual(before);
+  });
+
+  it('honors frozen versions, skips execution-only blocks and separates following digits', () => {
+    const refs = buildVideoPromptReferences(
+      [{ ...mention, assetVersion: 2, role: 'referenceImage', mediaType: 'image' as const }],
+      'wan',
+    );
+    const legacy = { ...mention, inline: undefined, mentionId: 'legacy' };
+    const textMention = { ...mention, mediaType: 'text' as const, mentionId: 'text' };
+    const document: PromptDocument = {
+      version: 1,
+      blocks: [
+        mention,
+        { ...mention, executionOnly: true, mentionId: 'execution' },
+        { type: 'text', text: '' },
+        { type: 'text', text: '２人同行' },
+        legacy,
+        textMention,
+      ],
+    };
+    expect(
+      renderVideoPromptReferenceDocument(document, refs, {
+        modelAlias: 'wan3.0-video',
+        videoMode: 'omni_reference',
+        resolveAssetVersion: () => 2,
+      }).blocks,
+    ).toEqual([
+      { type: 'text', text: '图1 ' },
+      { type: 'text', text: '' },
+      { type: 'text', text: '' },
+      { type: 'text', text: '２人同行' },
+      legacy,
+      textMention,
+    ]);
+    expect(() => renderVideoPromptReferenceDocument(document, refs, {})).toThrow(
+      VideoPromptReferenceMappingError,
+    );
+  });
+
+  it('reports the unmapped mention instead of guessing its material identity', () => {
+    const document: PromptDocument = { version: 1, blocks: [mention] };
+    try {
+      renderVideoPromptReferenceDocument(document, [], {});
+      throw new Error('Expected an unmapped reference error');
+    } catch (error) {
+      expect(error).toBeInstanceOf(VideoPromptReferenceMappingError);
+      expect((error as VideoPromptReferenceMappingError).mention).toBe(mention);
+      expect((error as Error).message).toBe('视频引用没有对应的实际发送素材');
+    }
+  });
+
   it('counts each media type independently and reuses only the same asset version and role', () => {
     const items: VideoPromptMediaDescriptor[] = [
       { assetId: 'a', assetVersion: 1, mediaType: 'image', role: 'referenceImage' },

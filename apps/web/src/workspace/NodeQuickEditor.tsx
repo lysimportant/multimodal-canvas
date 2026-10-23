@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { Checkbox, Popover, Select, Slider, Typography, type SelectProps } from 'antd';
-import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 
 import type {
   Asset,
@@ -32,6 +32,7 @@ import {
   ImageOutputParameterError,
   isGeminiChatImageModel,
   normalizeImageOutputParameters,
+  parseVideoReferenceCapability,
   resolveImageOutputParameters,
   usesOpenAIImagePixelSize,
   openAIImageSizeSuggestions,
@@ -52,6 +53,7 @@ import {
 } from '@multimodal-canvas/ui';
 import type { AssetFlowNode } from '../canvas-utils';
 import { TextPromptEditor } from '../TextPromptEditor';
+import { VideoPromptPreview } from './VideoPromptPreview';
 import { VideoRecreationPanel } from './VideoRecreationPanel';
 import { VideoRecreationSourcePicker } from './VideoRecreationSourcePicker';
 import { recreationGenerationIssue } from './video-recreation-node';
@@ -351,6 +353,13 @@ export function NodeQuickEditor({
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   /** 同一节点在快速面板和 Dialog 之间共用父层保存的文档。 */
   const [expandedEditorOpen, setExpandedEditorOpen] = useState(false);
+  const [promptDraft, setPromptDraft] = useState<{ nodeId: string; document: PromptDocument }>();
+  const observePromptDraft = useCallback(
+    (document: PromptDocument) => {
+      setPromptDraft({ nodeId: node.id, document });
+    },
+    [node.id],
+  );
   /** 复刻右栏与放大窗口共用节点的结构化提示词和保存回调。 */
   const [recreationPromptOpen, setRecreationPromptOpen] = useState(false);
   const [recreationPromptSaving, setRecreationPromptSaving] = useState(false);
@@ -384,6 +393,9 @@ export function NodeQuickEditor({
   const currentCredentialId = node.data.credentialId;
   const availableModels = models;
   const selectedModel = findSelectedModel(availableModels, storedModelAlias, currentCredentialId);
+  const videoReferences = parseVideoReferenceCapability(
+    selectedModel?.capabilities?.videoReferences,
+  );
   const currentModel = storedModelAlias;
   const currentModelIsMissing =
     Boolean(currentModel) &&
@@ -671,6 +683,7 @@ export function NodeQuickEditor({
     <div className="node-quick-editor-field node-quick-editor-prompt">
       <TextPromptEditor
         nodeId={node.id}
+        onDraftDocumentChange={node.data.mediaType === 'video' ? observePromptDraft : undefined}
         value={node.data.prompt ?? ''}
         promptDocument={node.data.promptDocument}
         assets={assets}
@@ -681,6 +694,8 @@ export function NodeQuickEditor({
             ? {
                 modelAlias: node.data.modelAlias,
                 videoMode: node.data.videoMode,
+                parameters: node.data.parameters,
+                videoReferences,
               }
             : undefined
         }
@@ -1121,6 +1136,27 @@ export function NodeQuickEditor({
   const controls = (
     <div className="node-quick-editor-controls">
       <div className="node-quick-editor-run-group">
+        {node.data.mediaType === 'video' && (
+          <VideoPromptPreview
+            key={node.id}
+            document={
+              promptDraft?.nodeId === node.id
+                ? promptDraft.document
+                : (node.data.promptDocument ?? {
+                    version: 1,
+                    blocks: [{ type: 'text', text: node.data.prompt ?? '' }],
+                  })
+            }
+            context={{
+              modelAlias: node.data.modelAlias,
+              videoMode: node.data.videoMode,
+              parameters: node.data.parameters,
+              videoReferences,
+            }}
+            connectedAssets={connectedAssets}
+            resourceRefs={node.data.resourceRefs}
+          />
+        )}
         {skillPanel}
         <NodeParameterSelect
           label="生成数量"

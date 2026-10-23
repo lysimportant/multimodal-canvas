@@ -70,6 +70,8 @@ import type { ProjectResourceSearch, ProjectResourceSearchPage } from './project
 
 /** 编辑器可接收的资源提及文档变更。 */
 export type ResourceMentionEditorProps = {
+  /** 只读草稿观察，不触发持久化，供同一工具栏的提交正文预览使用。 */
+  onDraftDocumentChange?: (document: PromptDocument) => void;
   /** 节点 ID，用于在切换节点时重置本地编辑状态。 */
   nodeId: string;
   /** 兼容旧画布的纯文本提示词。没有文档时它会转换为一个文字块。 */
@@ -166,6 +168,7 @@ const RESOURCE_FILTERS = ['all', 'image', 'video', 'audio', 'text'] as const;
  * 纯文本也可以继续工作。
  */
 export function ResourceMentionEditor({
+  onDraftDocumentChange,
   nodeId,
   value = '',
   promptDocument,
@@ -202,6 +205,9 @@ export function ResourceMentionEditor({
   const [text, setText] = useState(initialText);
   const [inputResetKey, setInputResetKey] = useState(0);
   const [ranges, setRanges] = useState<MentionRange[]>(initialRanges);
+  useEffect(() => {
+    onDraftDocumentChange?.(documentFromRanges(text, ranges));
+  }, [text, ranges, onDraftDocumentChange]);
   const textRef = useRef(initialText);
   const rangesRef = useRef<MentionRange[]>(initialRanges);
   const textareaRef = useRef<InlinePromptInputHandle>(null);

@@ -8,6 +8,7 @@ import {
   isUnadaptedYuanliuVideoModel,
   unadaptedYuanliuVideoModelReason,
 } from './yuanliu-video-contract.js';
+import { videoReferenceCapabilitySchema } from './video-reference-capability.js';
 export * from './video-recreation.js';
 export * from './moon-video-contract.js';
 export * from './image-chat-contract.js';
@@ -1289,6 +1290,8 @@ export const runExecutionBindingSchema = z
     /** 缺省为旧 New API 合同；不注入默认值，以保留历史快照指纹。 */
     provider: z.enum(['newapi', 'globalstore']).optional(),
     authority: newApiExecutionAuthoritySchema.optional(),
+    /** 视频参考素材能力由已授权模型目录冻结；旧绑定缺省该字段。 */
+    videoReferences: videoReferenceCapabilitySchema.optional(),
   })
   .superRefine((binding, context) => {
     if (binding.provider === 'globalstore') {
@@ -2578,3 +2581,4 @@ export function videoFinalFrameActionId(input: {
 }
 export * from './canvas-operations.js';
 export * from './video-prompt-references.js';
+export * from './video-reference-capability.js';

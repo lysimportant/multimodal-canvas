@@ -18,6 +18,7 @@ import {
 
 /** 共享提示词入口参数；资源顺序与参考资料选择状态由父层持久化和控制。 */
 type TextPromptEditorProps = {
+  onDraftDocumentChange?: (document: PromptDocument) => void;
   nodeId: string;
   value: string;
   placeholder?: string;
@@ -68,6 +69,7 @@ type TextPromptEditorProps = {
  * ResourceMentionEditor 统一实现，确保快速编辑器和检查器使用同一套逻辑。
  */
 export function TextPromptEditor({
+  onDraftDocumentChange,
   nodeId,
   value,
   placeholder = '输入提示词',
@@ -142,6 +144,7 @@ export function TextPromptEditor({
         onSearchProjectResources={onSearchProjectResources}
         connectedAssets={connectedAssets}
         referenceLabels={referenceLabels}
+        onDraftDocumentChange={onDraftDocumentChange}
         referencePickActive={referencePickActive}
         onReferencePickToggle={onReferencePickToggle}
         resourceRefs={resourceRefs}

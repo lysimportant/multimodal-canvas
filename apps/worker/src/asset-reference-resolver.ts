@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import {
   imageEditReferencesRequirePublicUrl,
   imageEditSourceSchema,
+  parseVideoReferenceCapability,
   runSnapshotSchema,
   type FrozenPromptMention,
   type MediaType,
@@ -812,6 +813,19 @@ function providerAssetUrlPolicy(
     // 上游明确拒绝 base64 与文件字节：拿不到签名能力时必须在请求前失败，而不是内联转发。
     return imageEditReferencesRequirePublicUrl(snapshot, consumerNodeId) ? 'required' : 'data';
   }
+  const binding = snapshot.executionBindings?.[consumerNodeId];
+  const modelAlias =
+    consumerNodeId === snapshot.targetNodeId ? snapshot.modelAlias : consumer?.data.modelAlias;
+  if (
+    consumer?.data.mediaType === 'video' &&
+    mediaType !== 'text' &&
+    binding?.mediaType === 'video' &&
+    binding.provider !== 'globalstore' &&
+    binding.modelAlias === modelAlias &&
+    binding.contract === 'newapi-video-v1' &&
+    parseVideoReferenceCapability(binding.videoReferences)
+  )
+    return 'required';
   return consumer?.data.mediaType === 'video' && mediaType !== 'text' ? 'preferred' : 'data';
 }
 

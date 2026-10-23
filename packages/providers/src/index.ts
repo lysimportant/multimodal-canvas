@@ -26,8 +26,12 @@ import {
   portRoles,
   resolveImageOutputParameters,
   precheckVideoGenerationInputs,
+  parseVideoReferenceCapability,
   renderPromptDocument,
   buildVideoPromptReferences,
+  renderVideoPromptReferenceDocument,
+  VideoPromptReferenceMappingError,
+  videoPromptTokenFamilyForModel,
   orderVideoPromptMedia,
   videoPromptReferenceIdentity,
   resolveImageEditMaxImages,
@@ -3074,6 +3078,91 @@ function openaiVideoPayload(
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
+  const videoReferences = frozenVideoReferences(snapshot);
+  if (videoReferences) {
+    const parameterMetadata = isRecord(snapshot.parameters.metadata)
+      ? snapshot.parameters.metadata
+      : {};
+    if (
+      [
+        'images',
+        'image',
+        'input_reference',
+        'first_frame',
+        'last_frame',
+        'start_frame',
+        'end_frame',
+        'reference_images',
+        'videos',
+        'audios',
+        'reference_videos',
+        'reference_audios',
+        'content',
+        'input',
+      ].some(
+        (key) => snapshot.parameters[key] !== undefined || parameterMetadata[key] !== undefined,
+      )
+    )
+      throw new NewApiProviderError(
+        '渠道参考素材请通过资源条或连线提供，不能混入未追踪的媒体参数',
+        {
+          code: 'VIDEO_REFERENCE_ORDER_AMBIGUOUS',
+          retryable: false,
+        },
+      );
+    const media = orderedVideoMedia(snapshot, inputs);
+    const counts = { image: 0, video: 0, audio: 0 };
+    for (const input of media) {
+      const mediaType = input.snapshot.data.mediaType as keyof typeof counts;
+      counts[mediaType]++;
+    }
+    if (
+      counts.image > videoReferences.maxImages ||
+      counts.video > videoReferences.maxVideos ||
+      counts.audio > videoReferences.maxAudios
+    )
+      throw new NewApiProviderError(
+        `参考素材超过渠道上限：图片 ${videoReferences.maxImages}、视频 ${videoReferences.maxVideos}、音频 ${videoReferences.maxAudios}`,
+        { code: 'VIDEO_REFERENCE_LIMIT_EXCEEDED', retryable: false },
+      );
+    // 渠道契约优先于模型名称；每类素材顺序由同一 orderedVideoMedia 决定。
+    const prompt = resolveRequiredVideoPrompt(
+      snapshot,
+      label,
+      nodePrompt,
+      inputs.prompt,
+      nodePromptDocument,
+    );
+    return {
+      model: snapshot.modelAlias,
+      prompt,
+      ...(inputs.negativePrompt
+        ? { negative_prompt: inputTextValue(inputs.negativePrompt, 'video') }
+        : {}),
+      metadata: {
+        content: [
+          { type: 'text', text: prompt },
+          ...media.map((input) => {
+            const mediaType = input.snapshot.data.mediaType;
+            const url = officialVideoReferenceUrl(input, 'seedance-video', snapshot.modelAlias);
+            if (!url.startsWith('https://'))
+              throw new NewApiProviderError(
+                '该渠道参考素材需要公网 HTTPS 地址，请配置素材访问域名',
+                {
+                  code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
+                  retryable: false,
+                },
+              );
+            return {
+              type: `${mediaType}_url`,
+              role: providerVideoMediaRole(mediaType, input.role),
+              [`${mediaType}_url`]: { url },
+            };
+          }),
+        ],
+      },
+    };
+  }
   if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
     return yuanliuVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   }
@@ -3099,6 +3188,20 @@ function openaiVideoPayload(
     payload.last_frame = payload.last_frame.url.trim();
   }
   return payload;
+}
+
+/** 只消费服务端冻结的匹配节点契约，不从用户参数或模型名称推断渠道。 */
+function frozenVideoReferences(snapshot: RunSnapshot) {
+  const binding = snapshot.executionBindings?.[snapshot.targetNodeId];
+  if (
+    !binding ||
+    binding.provider === 'globalstore' ||
+    binding.mediaType !== 'video' ||
+    binding.modelAlias !== snapshot.modelAlias ||
+    binding.contract !== 'newapi-video-v1'
+  )
+    return undefined;
+  return parseVideoReferenceCapability(binding.videoReferences);
 }
 
 /**
@@ -3393,6 +3496,8 @@ function renderVideoPromptReferences(
       'image',
       'input_reference',
       'first_frame',
+      'start_frame',
+      'end_frame',
       'last_frame',
       'reference_images',
       'videos',
@@ -3410,6 +3515,7 @@ function renderVideoPromptReferences(
   }
   const family = videoFamilyForModel(snapshot.modelAlias);
   const supportsReferenceOrder =
+    (contract === 'newapi-video-v1' && Boolean(frozenVideoReferences(snapshot))) ||
     family === 'grok-imagine-video-1.5' ||
     (contract === 'newapi-video-v1' &&
       (['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5', 'yuanliu'].includes(
@@ -3425,13 +3531,6 @@ function renderVideoPromptReferences(
       },
     );
   }
-  const tokenFamily = family.includes('seedance')
-    ? 'seedance'
-    : family.startsWith('wan')
-      ? 'wan'
-      : family.includes('minimax-h3')
-        ? 'h3'
-        : 'generic';
   const references = buildVideoPromptReferences(
     orderedVideoMedia(snapshot, inputs).map((input) => ({
       assetId: input.sourceAssetId ?? input.snapshot.data.assetId ?? input.nodeId,
@@ -3439,58 +3538,33 @@ function renderVideoPromptReferences(
       mediaType: input.snapshot.data.mediaType as 'image' | 'video' | 'audio',
       role: input.role,
     })),
-    tokenFamily,
+    frozenVideoReferences(snapshot)
+      ? 'generic'
+      : videoPromptTokenFamilyForModel(snapshot.modelAlias),
     { deduplicate: hasInlineReferences },
   );
-  const byIdentity = new Map(references.map((item) => [item.identity, item]));
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-  return {
-    ...document,
-    blocks: document.blocks.map((block, blockIndex) => {
-      if (block.type === 'text') return block;
-      if (block.executionOnly) return { type: 'text' as const, text: '' };
-      if (!block.inline || block.mediaType === 'text') return block;
-      const frozen = snapshot.promptMentions?.find(
-        (mention) =>
-          (mention.nodeId ?? snapshot.targetNodeId) === snapshot.targetNodeId &&
-          mention.mentionId === block.mentionId,
+  try {
+    return renderVideoPromptReferenceDocument(document, references, {
+      modelAlias: snapshot.modelAlias,
+      videoMode: target?.data.videoMode,
+      resolveAssetVersion: (block) =>
+        snapshot.promptMentions?.find(
+          (mention) =>
+            (mention.nodeId ?? snapshot.targetNodeId) === snapshot.targetNodeId &&
+            mention.mentionId === block.mentionId,
+        )?.assetVersion,
+    });
+  } catch (error) {
+    if (error instanceof VideoPromptReferenceMappingError)
+      throw promptMentionMappingError(
+        snapshot,
+        error.mention,
+        'RESOURCE_MENTION_RESOLUTION_INVALID',
+        error.message,
       );
-      const role = videoInputRoleForPromptMention(
-        block.mediaType,
-        target?.data.videoMode,
-        snapshot.modelAlias,
-      );
-      const reference = byIdentity.get(
-        videoPromptReferenceIdentity({
-          assetId: block.assetId,
-          assetVersion: frozen?.assetVersion ?? block.assetVersion,
-          mediaType: block.mediaType,
-          role,
-        }),
-      );
-      if (!reference)
-        throw promptMentionMappingError(
-          snapshot,
-          block,
-          'RESOURCE_MENTION_RESOLUTION_INVALID',
-          '视频引用没有对应的实际发送素材',
-        );
-      // 显式命名只绑定当前引用，不从文件显示名或语义角色猜测主体。
-      const entityName = block.entityName?.trim() || block.binding?.entityName?.trim();
-      let text = entityName ? `${reference.token}（${entityName}）` : reference.token;
-      const nextBlock = document.blocks
-        .slice(blockIndex + 1)
-        .find((next) => (next.type === 'text' ? next.text.length > 0 : !next.executionOnly));
-      // 只隔开插入编号和紧随其后的数字，避免“图1”+“2人”变成“图12人”。
-      if (
-        /\p{Decimal_Number}$/u.test(text) &&
-        nextBlock?.type === 'text' &&
-        /^\p{Decimal_Number}/u.test(nextBlock.text)
-      )
-        text += ' ';
-      return { type: 'text' as const, text };
-    }),
-  };
+    throw error;
+  }
 }
 
 /** 校验已确认视频模型参考素材的媒体类型与传输方式；URL 由 Worker 按冻结版本提供。 */

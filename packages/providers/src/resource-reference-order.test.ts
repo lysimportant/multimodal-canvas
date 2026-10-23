@@ -213,6 +213,145 @@ async function captureVideo(
 }
 
 describe('视频内联引用模型编号', () => {
+  const channelCapability = {
+    version: 1,
+    adapter: 'seedance-video',
+    maxImages: 30,
+    maxVideos: 10,
+    maxAudios: 10,
+    tokenSyntax: 'numbered-media',
+  } as const;
+
+  function channelSnapshot(modelAlias = '/future/channel-model'): RunSnapshot {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = modelAlias;
+    snapshot.executionBindings = {
+      target: {
+        credentialId: 'synthetic-credential',
+        credentialVersion: 1,
+        modelAlias,
+        mediaType: 'video',
+        contract: 'newapi-video-v1',
+        videoReferences: channelCapability,
+      },
+    };
+    return snapshot;
+  }
+
+  it.each(['/seadanco2.5/KL', '/future/channel-model', 'wan3.0-video'])(
+    '%s 按渠道契约编号并保留混合媒体顺序',
+    async (model) => {
+      const snapshot = channelSnapshot(model);
+      addMentions(snapshot, [
+        { assetId: 'a', assetVersion: 1 },
+        { assetId: 'b', assetVersion: 1 },
+        { assetId: 'clip', assetVersion: 1, mediaType: 'video' },
+        { assetId: 'voice', assetVersion: 1, mediaType: 'audio' },
+        { assetId: 'a', assetVersion: 1 },
+      ]);
+      snapshot.nodes[0]!.data.resourceRefs = [reference('b', 1), reference('a', 1)];
+      snapshot.nodes[0]!.data.promptDocument!.blocks =
+        snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+          block.type === 'mention'
+            ? { ...block, inline: true, contentUrl: `https://assets.invalid/${block.assetId}` }
+            : block,
+        );
+      const before = structuredClone(snapshot);
+      const { body, record } = await captureVideo(snapshot);
+      expect(body.prompt).toBe('Use Image 2 / Image 1 / Video 1 / Audio 1 / Image 2 / ');
+      expect(body.metadata.content).toEqual([
+        { type: 'text', text: body.prompt },
+        {
+          type: 'image_url',
+          role: 'reference_image',
+          image_url: { url: 'https://assets.invalid/b' },
+        },
+        {
+          type: 'image_url',
+          role: 'reference_image',
+          image_url: { url: 'https://assets.invalid/a' },
+        },
+        {
+          type: 'video_url',
+          role: 'reference_video',
+          video_url: { url: 'https://assets.invalid/clip' },
+        },
+        {
+          type: 'audio_url',
+          role: 'reference_audio',
+          audio_url: { url: 'https://assets.invalid/voice' },
+        },
+      ]);
+      expect(body.reference_images).toBeUndefined();
+      expect(record.resources.map((item) => item.assetId)).toEqual(['b', 'a', 'clip', 'voice']);
+      expect(snapshot).toEqual(before);
+    },
+  );
+
+  it('渠道默认接受 30/10/10 个素材', async () => {
+    const snapshot = channelSnapshot();
+    for (const [mediaType, count, role] of [
+      ['image', 30, 'referenceImage'],
+      ['video', 10, 'content'],
+      ['audio', 10, 'audioTrack'],
+    ] as const) {
+      for (let index = 0; index < count; index++) {
+        const input = linkedInput(
+          `${mediaType}-${index}`,
+          1,
+          snapshot.inputs.length,
+          role,
+          mediaType,
+        );
+        input.snapshot.data.contentUrl = `https://assets.invalid/${mediaType}-${index}`;
+        snapshot.inputs.push(input);
+      }
+    }
+    const { body } = await captureVideo(snapshot);
+    expect(body.metadata.content).toHaveLength(51);
+  });
+
+  it.each(['image', 'video', 'audio'] as const)('%s 超限在发送前失败', async (mediaType) => {
+    const snapshot = channelSnapshot();
+    const role =
+      mediaType === 'image' ? 'referenceImage' : mediaType === 'video' ? 'content' : 'audioTrack';
+    for (let index = 0; index < (mediaType === 'image' ? 31 : 11); index++) {
+      const input = linkedInput(`${mediaType}-${index}`, 1, index, role, mediaType);
+      input.snapshot.data.contentUrl = `https://assets.invalid/${mediaType}-${index}`;
+      snapshot.inputs.push(input);
+    }
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://provider.invalid/v1',
+        apiKey: 'synthetic',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      }).execute({ snapshot, onProviderJob: vi.fn() }),
+    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_LIMIT_EXCEEDED' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('渠道拒绝 data URL 和未追踪媒体参数', async () => {
+    for (const untracked of [false, true]) {
+      const snapshot = channelSnapshot();
+      snapshot.inputs = [linkedInput('a', 1, 0)];
+      if (untracked) snapshot.parameters.start_frame = 'https://assets.invalid/untracked';
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://provider.invalid/v1',
+          apiKey: 'synthetic',
+          videoContract: 'newapi-video-v1',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob: vi.fn() }),
+      ).rejects.toMatchObject({
+        code: untracked ? 'VIDEO_REFERENCE_ORDER_AMBIGUOUS' : 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
   it.each([
     ['doubao-seedance-2-5-260628', '图 1', '图 2', '视频 1', '音频 1'],
     ['wan3.0-video', '图1', '图2', '视频1', '音频1'],

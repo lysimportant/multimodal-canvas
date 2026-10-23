@@ -2529,6 +2529,54 @@ describe('createRunWorker asset hydration boundary', () => {
     await expect(resolver.resolve(snapshot, { userId })).rejects.toThrow(/公网 HTTPS/);
   });
 
+  it.each([false, true])('渠道视频参考必须使用 HTTPS 签名地址（签名器：%s）', async (hasSigner) => {
+    const content = Buffer.from('synthetic channel reference');
+    const snapshot = withTestExecutionBindings(
+      referenceSnapshot({
+        sourceMediaType: 'image',
+        targetMediaType: 'video',
+        role: 'referenceImage',
+        assetId: imageAssetId,
+        modelAlias: '/future/channel-video',
+      }),
+    );
+    snapshot.executionBindings![snapshot.targetNodeId]!.videoReferences = {
+      version: 1,
+      adapter: 'seedance-video',
+      tokenSyntax: 'numbered-media',
+      maxImages: 30,
+      maxVideos: 10,
+      maxAudios: 10,
+    };
+    const before = structuredClone(snapshot);
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/png', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+    const resolver = new StoredAssetReferenceResolver(
+      repository,
+      blobStore,
+      hasSigner
+        ? {
+            providerAssetUrlSigner: createProviderAssetUrlSignerFromEnvironment({
+              CANVAS_WEB_URL: 'https://canvas.example.com',
+              API_JWT_SECRET: 'synthetic-site-secret',
+            })!,
+          }
+        : {},
+    );
+    if (hasSigner) {
+      const hydrated = await resolver.resolve(snapshot, { userId });
+      expect(hydrated.inputs[0]!.snapshot.data.contentUrl).toMatch(
+        /^https:\/\/canvas\.example\.com\/v1\/provider-assets\//,
+      );
+      expect(hydrated.executionBindings).toEqual(snapshot.executionBindings);
+    } else {
+      await expect(resolver.resolve(snapshot, { userId })).rejects.toThrow(/公网 HTTPS/);
+    }
+    expect(snapshot).toEqual(before);
+  });
+
   it('redacts transient asset bytes when a provider echoes its request in an error', async () => {
     const content = Buffer.from('never persist this prompt', 'utf8');
     const durableSnapshot = referenceSnapshot({ assetId: textAssetId });

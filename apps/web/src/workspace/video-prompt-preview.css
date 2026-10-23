@@ -1,0 +1,58 @@
+.video-prompt-preview-trigger.video-prompt-preview-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  color: var(--mc-text-muted);
+  font-size: 11px;
+}
+
+.ant-modal-root .ant-modal.video-prompt-preview-dialog.ui-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 100%;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  background: var(--mc-surface, #fff);
+  opacity: 1;
+}
+
+@container (max-width: 440px) {
+  .node-quick-editor-run-group .video-prompt-preview-trigger {
+    width: 32px;
+    padding: 0;
+  }
+
+  .node-quick-editor-run-group .video-prompt-preview-trigger > span {
+    display: none;
+  }
+}
+
+.video-prompt-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.video-prompt-preview-description {
+  color: var(--mc-text-muted);
+  font-size: 12px;
+}
+
+.video-prompt-preview-text {
+  max-height: 60dvh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--mc-surface-soft);
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  color: var(--mc-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  user-select: text;
+}

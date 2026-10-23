@@ -3,6 +3,7 @@ import {
   collectVideoInputSet,
   getExecutionPromptDocument,
   orderVideoPromptMedia,
+  videoPromptTokenFamilyForModel,
   videoInputRoleForPromptMention,
   videoPromptReferenceIdentity,
   yuanliuVideoContractForModel,
@@ -11,12 +12,15 @@ import {
   type RunInputSnapshot,
   type VideoMode,
   type VideoPromptMediaDescriptor,
+  type VideoReferenceCapability,
 } from '@multimodal-canvas/domain';
 import type { ConnectedPromptAsset } from './connected-prompt-assets';
 
 export type VideoPromptReferenceContext = {
   modelAlias?: string;
   videoMode?: VideoMode;
+  parameters?: Record<string, unknown>;
+  videoReferences?: VideoReferenceCapability;
 };
 
 /** 将前端冻结身份投影成执行层输入；编号与请求共用分类、排序和标记函数。 */
@@ -26,6 +30,32 @@ export function videoPromptReferenceLabels(
   connectedAssets: readonly ConnectedPromptAsset[] = [],
   resourceRefs: readonly NodeResourceRef[] = [],
 ): ReadonlyMap<string, readonly string[]> {
+  const labels = new Map<string, string[]>();
+  try {
+    for (const reference of collectVideoPromptReferences(
+      context,
+      document,
+      connectedAssets,
+      resourceRefs,
+    )) {
+      const key = JSON.stringify([reference.assetId, reference.assetVersion]);
+      const previous = labels.get(key) ?? [];
+      if (!previous.includes(reference.displayLabel)) previous.push(reference.displayLabel);
+      labels.set(key, previous);
+    }
+  } catch {
+    // 编辑过程中无效输入不猜编号；打开真实提示词时再显示具体问题。
+  }
+  return labels;
+}
+
+/** 预览和资源标签共用实际发送顺序；无法分类时显式报错。 */
+export function collectVideoPromptReferences(
+  context: VideoPromptReferenceContext,
+  document: PromptDocument | undefined,
+  connectedAssets: readonly ConnectedPromptAsset[] = [],
+  resourceRefs: readonly NodeResourceRef[] = [],
+) {
   const inputs: RunInputSnapshot[] = [];
   for (const asset of connectedAssets) {
     if (asset.versionUnavailable || asset.assetVersion === undefined) continue;
@@ -92,7 +122,7 @@ export function videoPromptReferenceLabels(
     context.videoMode ??
     (yuanliuVideoContractForModel(context.modelAlias) ? 'omni_reference' : undefined);
   const { inputSet, issues } = collectVideoInputSet(inputs, mode);
-  if (issues.length) return new Map();
+  if (issues.length) throw new Error(issues[0]!.message);
   const selected = [
     inputSet.firstFrame,
     inputSet.lastFrame,
@@ -136,12 +166,21 @@ export function videoPromptReferenceLabels(
     seen.add(key);
     return true;
   });
-  const labels = new Map<string, string[]>();
-  for (const reference of buildVideoPromptReferences(ordered, 'generic', { deduplicate })) {
-    const key = JSON.stringify([reference.assetId, reference.assetVersion]);
-    const previous = labels.get(key) ?? [];
-    if (!previous.includes(reference.displayLabel)) previous.push(reference.displayLabel);
-    labels.set(key, previous);
+  if (context.videoReferences) {
+    for (const [mediaType, limitKey, label] of [
+      ['image', 'maxImages', '图片'],
+      ['video', 'maxVideos', '视频'],
+      ['audio', 'maxAudios', '音频'],
+    ] as const) {
+      const count = ordered.filter((item) => item.mediaType === mediaType).length;
+      const limit = context.videoReferences[limitKey];
+      if (count > limit)
+        throw new Error(`当前模型最多支持 ${limit} 个${label}参考素材，当前为 ${count} 个。`);
+    }
   }
-  return labels;
+  return buildVideoPromptReferences(
+    ordered,
+    context.videoReferences ? 'generic' : videoPromptTokenFamilyForModel(context.modelAlias),
+    { deduplicate },
+  );
 }

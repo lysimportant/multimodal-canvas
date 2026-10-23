@@ -1,4 +1,11 @@
-import type { NodeResourceRef } from './index.js';
+import {
+  videoFamilyForModel,
+  videoInputRoleForPromptMention,
+  type NodeResourceRef,
+  type PromptDocument,
+  type PromptMention,
+  type VideoMode,
+} from './index.js';
 
 export type VideoPromptMediaDescriptor = {
   assetId: string;
@@ -8,6 +15,75 @@ export type VideoPromptMediaDescriptor = {
 };
 
 export type VideoPromptTokenFamily = 'seedance' | 'wan' | 'h3' | 'generic';
+
+/** 预览和 Provider 使用同一套模型素材编号语法。 */
+export function videoPromptTokenFamilyForModel(modelAlias?: string): VideoPromptTokenFamily {
+  const family = videoFamilyForModel(modelAlias);
+  return family.includes('seedance')
+    ? 'seedance'
+    : family.startsWith('wan')
+      ? 'wan'
+      : family.includes('minimax-h3')
+        ? 'h3'
+        : 'generic';
+}
+
+export class VideoPromptReferenceMappingError extends Error {
+  constructor(readonly mention: PromptMention) {
+    super('视频引用没有对应的实际发送素材');
+    this.name = 'VideoPromptReferenceMappingError';
+  }
+}
+
+/**
+ * 按最终发送素材身份替换内联提及，不推测文件名或修改普通正文。
+ * Provider 可提供冻结版本解析器；预览使用当前文档中已解析的资产版本。
+ */
+export function renderVideoPromptReferenceDocument(
+  document: PromptDocument,
+  references: readonly { identity: string; token: string }[],
+  context: {
+    modelAlias?: string;
+    videoMode?: VideoMode;
+    resolveAssetVersion?: (mention: PromptMention) => number | undefined;
+  },
+): PromptDocument {
+  const byIdentity = new Map(references.map((item) => [item.identity, item]));
+  return {
+    ...document,
+    blocks: document.blocks.map((block, blockIndex) => {
+      if (block.type === 'text') return block;
+      if (block.executionOnly) return { type: 'text' as const, text: '' };
+      if (!block.inline || block.mediaType === 'text') return block;
+      const reference = byIdentity.get(
+        videoPromptReferenceIdentity({
+          assetId: block.assetId,
+          assetVersion: context.resolveAssetVersion?.(block) ?? block.assetVersion,
+          mediaType: block.mediaType,
+          role: videoInputRoleForPromptMention(
+            block.mediaType,
+            context.videoMode,
+            context.modelAlias,
+          ),
+        }),
+      );
+      if (!reference) throw new VideoPromptReferenceMappingError(block);
+      const entityName = block.entityName?.trim() || block.binding?.entityName?.trim();
+      let text = entityName ? `${reference.token}（${entityName}）` : reference.token;
+      const nextBlock = document.blocks
+        .slice(blockIndex + 1)
+        .find((next) => (next.type === 'text' ? next.text.length > 0 : !next.executionOnly));
+      // 避免“图1”+“2人”合并成“图12人”，同时保留其余正文空白。
+      if (
+        /\p{Decimal_Number}$/u.test(text) &&
+        nextBlock?.type === 'text' &&
+        /^\p{Decimal_Number}/u.test(nextBlock.text)
+      )
+        text += ' ';
+      return { type: 'text' as const, text };
+    }),
+  };
+}
 
 /** 资产版本和输入角色共同标识实际发送项；显示名不参与身份。 */
 export function videoPromptReferenceIdentity(item: VideoPromptMediaDescriptor): string {

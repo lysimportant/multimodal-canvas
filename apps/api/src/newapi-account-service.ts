@@ -6,6 +6,7 @@ import {
   isGeminiChatImageModel,
   GLOBALSTORE_IMAGE_CONTRACT,
   GLOBALSTORE_VIDEO_CONTRACT,
+  parseVideoReferenceCapability,
   runSnapshotSchema,
   type MediaType,
   type NewApiExecutionAuthority,
@@ -966,17 +967,26 @@ export class NewApiAccountService {
             : node.data.mediaType === 'audio'
               ? 'openai-audio'
               : 'openai-chat-completions';
+      const contract =
+        node.data.mediaType === 'image' &&
+        isGeminiChatImageModel(modelAlias) &&
+        (!model?.contract || model.contract === 'openai-images')
+          ? 'openai-chat-completions'
+          : (model?.contract ?? defaultContract);
+      // 只采用已授权目录的能力声明，旧目录或非法声明保持历史行为。
+      const videoReferences =
+        node.data.mediaType === 'video' &&
+        contract === 'newapi-video-v1' &&
+        model?.media_type === 'video'
+          ? parseVideoReferenceCapability(model.capabilities?.videoReferences)
+          : undefined;
       executionBindings[nodeId] = {
         credentialId: reference.credentialId,
         credentialVersion: reference.credentialVersion,
         modelAlias,
         mediaType: node.data.mediaType,
-        contract:
-          node.data.mediaType === 'image' &&
-          isGeminiChatImageModel(modelAlias) &&
-          (!model?.contract || model.contract === 'openai-images')
-            ? 'openai-chat-completions'
-            : (model?.contract ?? defaultContract),
+        contract,
+        ...(videoReferences ? { videoReferences } : {}),
         authority: authority(binding.identity, binding),
       };
     }
