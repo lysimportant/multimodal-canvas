@@ -120,9 +120,11 @@ async function installPrivateFixture(
   requests: RequestRecord[],
   mediaType: 'image' | 'video' = 'image',
   password?: string,
+  metadata?: Record<string, unknown>,
 ) {
   const asset = {
     ...privateAsset,
+    ...(metadata ? { metadata } : {}),
     mediaType,
     mimeType: mediaType === 'video' ? 'video/mp4' : privateAsset.mimeType,
   };
@@ -356,6 +358,49 @@ function expectPublicOnly(
 
 function appUrl(path: string) {
   return new URL(path, test.info().project.use.baseURL!).toString();
+}
+
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`资源销毁时间 ${viewport.width}px 可用键盘和触屏打开且无溢出`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const errors = captureErrors(page);
+    await installPrivateFixture(page, [], 'image', undefined, {
+      generatedAt: '2099-10-23T00:00:00Z',
+      expiresAt: '2099-10-26T00:00:00Z',
+      retentionHours: 72,
+    });
+    await page.goto('/projects/' + project.id);
+    const node = page.locator('.react-flow__node[data-id="share-image-node"]');
+    await expect(node).toBeVisible({ timeout: 25_000 });
+    if (viewport.width < 901)
+      await node.getByRole('button', { name: '节点操作：秋日观察图' }).click();
+    else await node.hover();
+    const trigger = page.getByRole('button', { name: '查看销毁时间：秋日观察图' });
+    if (viewport.width < 901) await trigger.click();
+    else await trigger.focus();
+    const dialog = page.getByRole('group', { name: '资源销毁时间', exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText(/生成资源仅保留 72 小时/)).toBeVisible();
+    await expect(dialog.locator('time')).toHaveAttribute('datetime', '2099-10-26T00:00:00.000Z');
+    await expect
+      .poll(async () => {
+        const box = await dialog.boundingBox();
+        return Boolean(box && box.x >= 0 && box.x + box.width <= viewport.width);
+      })
+      .toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`retention-${viewport.width}.png`),
+      animations: 'disabled',
+    });
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    expect(errors).toEqual([]);
+  });
 }
 
 test('Dialog 自定义分享密码，匿名解锁后查看图片，刷新重新锁定', async ({

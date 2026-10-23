@@ -71,6 +71,11 @@ export async function applyVideoFinalFrame(
         message: '末帧提取需要可用的 FFmpeg',
       };
     }
+    const source = await input.prisma.asset.findUnique({
+      where: { id: input.archived.assetId },
+      select: { metadata: true },
+    });
+    assertNotExpired(asRecord(source?.metadata));
     const frame = await (extractor ?? defaultExtractor)({
       content: input.content,
       mimeType: input.videoMimeType,
@@ -80,6 +85,7 @@ export async function applyVideoFinalFrame(
     if (frame.content.byteLength === 0 || frame.content.byteLength > input.maxBytes) {
       throw new Error('invalid final frame');
     }
+    assertNotExpired(asRecord(source?.metadata));
 
     const previewKey = input.contentKey + '.derivatives/final_frame';
     await input.blobStore.put(previewKey, frame.content, JPEG_MIME);
@@ -177,6 +183,7 @@ async function createFinalFrameImageAsset(
     include: { versions: { orderBy: { version: 'desc' }, take: 1 } },
   });
   if (existing) {
+    assertNotExpired(asRecord(existing.metadata));
     return {
       assetId,
       version: existing.versions[0]?.version ?? 1,
@@ -189,6 +196,13 @@ async function createFinalFrameImageAsset(
   const node = input.snapshot.nodes.find((item) => item.id === input.snapshot.targetNodeId);
   const label = (node?.data.label ?? '视频') + '末帧';
   await input.prisma.$transaction(async (transaction) => {
+    const generatedAt = new Date();
+    const retention = {
+      generated: true,
+      generatedAt: generatedAt.toISOString(),
+      expiresAt: new Date(generatedAt.getTime() + 72 * 60 * 60 * 1000).toISOString(),
+      retentionHours: 72,
+    };
     await transaction.asset.create({
       data: {
         id: assetId,
@@ -201,6 +215,7 @@ async function createFinalFrameImageAsset(
         sha256: digest,
         contentKey,
         metadata: {
+          ...retention,
           derivativeKind: 'final_frame',
           sourceVideoAssetId: input.archived.assetId,
           sourceVideoAssetVersion: input.archived.version ?? 1,
@@ -217,11 +232,18 @@ async function createFinalFrameImageAsset(
         sizeBytes: BigInt(content.byteLength),
         sha256: digest,
         contentKey,
-        metadata: { derivativeKind: 'final_frame', sourceRunId: input.runId },
+        metadata: { ...retention, derivativeKind: 'final_frame', sourceRunId: input.runId },
       },
     });
   });
   return { assetId, version: 1, contentUrl: '/v1/assets/' + assetId };
+}
+
+function assertNotExpired(metadata: Record<string, unknown> | undefined): void {
+  const expiresAt = typeof metadata?.expiresAt === 'string' ? Date.parse(metadata.expiresAt) : NaN;
+  if (metadata?.expiredAt || (Number.isFinite(expiresAt) && expiresAt <= Date.now())) {
+    throw new Error('生成资源已到期销毁，请重新生成');
+  }
 }
 
 async function applyFinalFrameCanvasAction(

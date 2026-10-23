@@ -115,11 +115,14 @@ import {
   type FlowEdge,
 } from './canvas-utils';
 import {
+  assertUploadSize,
   buildUploadCompletePayload,
   buildUploadInitPayload,
   resolveCompleteUrl,
   resolveUploadUrl,
   sha256Hex,
+  uploadFailureMessage,
+  UPLOAD_TIMEOUT_MS,
 } from './upload-utils';
 import { createUniqueNodeLabel } from './app-contract-utils';
 import { getNodePlacementRightOf } from './workspace/canvas-position';
@@ -601,6 +604,18 @@ const themeOptions: Array<{ value: CanvasTheme; label: string; swatch: string }>
 ];
 
 async function uploadAsset(file: File, onProgress: (progress: number) => void) {
+  assertUploadSize(file);
+  try {
+    return await performUploadAsset(file, onProgress);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new Error(`${file.name} 上传超时，请检查网络后重试`);
+    }
+    throw error;
+  }
+}
+
+async function performUploadAsset(file: File, onProgress: (progress: number) => void) {
   const content = new Uint8Array(await file.arrayBuffer());
   const sha256 = await sha256Hex(content);
   const mimeType = file.type || 'application/octet-stream';
@@ -614,6 +629,7 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(buildUploadInitPayload(metadata)),
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   const initResult = (await initResponse.json().catch(() => ({}))) as {
     uploadId?: string;
@@ -627,7 +643,7 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     !initResult.uploadUrl ||
     !initResult.completeUrl
   ) {
-    throw new Error(initResult.error ?? `${file.name} 上传初始化失败`);
+    throw new Error(uploadFailureMessage(file.name, initResponse.status, initResult.error));
   }
 
   const uploadGeneration = getAuthSessionGeneration();
@@ -636,19 +652,21 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     const request = new XMLHttpRequest();
     request.open('PUT', resolveUploadUrl(initResult.uploadUrl!, API_BASE_URL));
     request.withCredentials = true;
+    request.timeout = UPLOAD_TIMEOUT_MS;
     request.setRequestHeader('content-type', 'application/octet-stream');
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 90));
     };
     request.onerror = () => reject(new Error(`${file.name} 上传请求失败`));
+    request.ontimeout = () => reject(new Error(`${file.name} 上传超时，请检查网络后重试`));
     request.onload = () => {
       if (request.status < 200 || request.status >= 300) {
         if (request.status === 401) {
           void verifyUnauthorized(API_BASE_URL, uploadGeneration, uploadExpiresAt);
-          reject(new Error(`${file.name} 上传失败（${request.status}）`));
+          reject(new Error(uploadFailureMessage(file.name, request.status)));
           return;
         }
-        reject(new Error(`${file.name} 上传失败（${request.status}）`));
+        reject(new Error(uploadFailureMessage(file.name, request.status)));
         return;
       }
       onProgress(90);
@@ -663,6 +681,7 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(buildUploadCompletePayload(initResult.uploadId, metadata)),
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     },
   );
   const completeResult = (await completeResponse.json().catch(() => ({}))) as {
@@ -670,7 +689,7 @@ async function uploadAsset(file: File, onProgress: (progress: number) => void) {
     error?: string;
   };
   if (!completeResponse.ok || !completeResult.asset) {
-    throw new Error(completeResult.error ?? `${file.name} 上传完成确认失败`);
+    throw new Error(uploadFailureMessage(file.name, completeResponse.status, completeResult.error));
   }
   onProgress(100);
   return completeResult.asset;
@@ -2839,6 +2858,7 @@ function WorkspaceApp({
       setNotice(null);
       const uploaded: Asset[] = [];
       try {
+        files.forEach(assertUploadSize);
         for (const file of files) {
           uploaded.push(await uploadAsset(file, setUploadProgress));
         }

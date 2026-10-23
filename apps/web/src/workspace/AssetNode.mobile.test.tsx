@@ -32,9 +32,13 @@ vi.mock('@xyflow/react', () => ({
 }));
 vi.mock('./AssetPreview', () => ({ AssetPreview: () => <div>资源预览</div> }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 beforeEach(() => {
   viewport.mobile = true;
+  vi.stubEnv('NODE_ENV', 'development');
 });
 
 /** 所有写入都是测试回调；使用合成资产，不加载真实媒体或请求服务。 */
@@ -81,6 +85,23 @@ function fixture(overrides: Partial<AssetFlowNode['data']> = {}) {
 }
 
 describe('手机节点操作面板', () => {
+  it('手机抽屉可打开销毁时间并提示 72 小时保留期', async () => {
+    fixture({
+      resultAsset: {
+        assetId: 'retained-mobile',
+        version: 1,
+        metadata: {
+          expiresAt: '2099-10-26T00:00:00Z',
+          generatedAt: '2099-10-23T00:00:00Z',
+        },
+      },
+    });
+    await userEvent.click(screen.getByRole('button', { name: '节点操作：手机图片' }));
+    await userEvent.click(screen.getByRole('button', { name: '查看销毁时间：手机图片' }));
+    const expiry = await screen.findByRole('group', { name: '资源销毁时间' });
+    await waitFor(() => expect(within(expiry).getByText(/生成资源仅保留 72 小时/)).toBeVisible());
+    expect(screen.getByRole('dialog', { name: '节点操作：手机图片' })).toBeVisible();
+  });
   it('默认只保留一个 Antd 入口，悬停和选中不展开按钮条', async () => {
     const view = fixture();
     const node = view.container.querySelector<HTMLElement>('.flow-asset-node')!;

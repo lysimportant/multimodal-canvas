@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertUploadSize,
   buildUploadCompletePayload,
   buildUploadInitPayload,
   isApiOriginUrl,
   resolveCompleteUrl,
   resolveUploadUrl,
   sha256Hex,
+  uploadFailureMessage,
+  MAX_UPLOAD_SIZE_BYTES,
 } from './upload-utils';
 
 const metadata = {
@@ -17,6 +20,23 @@ const metadata = {
 };
 
 describe('upload protocol helpers', () => {
+  it('accepts exactly 512 MB and rejects larger files before reading content', () => {
+    expect(() =>
+      assertUploadSize({ name: 'boundary.bin', size: MAX_UPLOAD_SIZE_BYTES }),
+    ).not.toThrow();
+    expect(() => assertUploadSize({ name: 'large.bin', size: MAX_UPLOAD_SIZE_BYTES + 1 })).toThrow(
+      '512 MB',
+    );
+  });
+
+  it('explains upload timeout, expired sessions and rejected sizes in Chinese', () => {
+    expect(uploadFailureMessage('a.png', 410, 'upload_expired')).toContain('上传会话已过期');
+    expect(uploadFailureMessage('a.png', 413)).toContain('512 MB');
+    expect(uploadFailureMessage('a.png', 408)).toContain('上传超时');
+    expect(uploadFailureMessage('a.png', 504)).toContain('上传超时');
+    expect(uploadFailureMessage('a.png', 401)).toContain('重新登录');
+    expect(uploadFailureMessage('a.png', 500, '服务器繁忙')).toBe('服务器繁忙');
+  });
   it('computes the lowercase SHA-256 digest used for upload deduplication', async () => {
     expect(await sha256Hex(new TextEncoder().encode('hello'))).toBe(metadata.sha256);
   });

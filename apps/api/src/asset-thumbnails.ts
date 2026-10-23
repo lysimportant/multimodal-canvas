@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isGeneratedAssetExpired } from './asset-retention-policy';
 import type { FastifyReply } from 'fastify';
 import { sanitizeExceptionForObservability } from '@multimodal-canvas/observability';
 import type { Asset } from '@multimodal-canvas/domain';
@@ -187,7 +188,7 @@ export class AssetThumbnailService {
       const asset = version
         ? undefined
         : (await this.store.list(input.scope)).find((entry) => entry.id === input.assetId);
-      if (!version && !asset) throw notFound();
+      if ((!version && !asset) || isGeneratedAssetExpired(asset?.metadata)) throw notFound();
       const identity = version
         ? [
             version.id,

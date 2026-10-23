@@ -60,6 +60,24 @@ function panelProps(
   };
 }
 
+describe('生成资源到期', () => {
+  afterEach(cleanup);
+  it('到期卡片禁止预览、拖拽和加入画布，并保留中文提醒', async () => {
+    const props = panelProps({
+      assets: [{ ...assets[2], metadata: { expiresAt: '2020-10-26T00:00:00Z' } }],
+    });
+    render(<ResourcePanel {...props} />);
+    expect(screen.getByText('生成资源已到期，请重新生成')).toBeVisible();
+    expect(screen.getByRole('button', { name: '添加 图片参考 到画布' })).toBeDisabled();
+    const preview = screen.getByRole('button', { name: '预览 图片参考' });
+    expect(preview).toHaveAttribute('aria-disabled', 'true');
+    expect(preview.closest('article')).toHaveAttribute('draggable', 'false');
+    await userEvent.click(preview);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(props.onAddAsset).not.toHaveBeenCalled();
+  });
+});
+
 const assets: Asset[] = [
   {
     id: 'asset-cn',

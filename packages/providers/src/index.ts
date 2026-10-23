@@ -34,13 +34,10 @@ import {
   videoInputRoleForPromptMention,
   videoFamilyForModel,
   videoModeForPromptMentions,
-  image2proVideoContractForModel,
   isGeminiChatImageModel,
   yuanliuVideoContractForModel,
   resolveYuanliuVideoParameters,
-  resolveImage2proVideoParameters,
   moonVideoContractForModel,
-  type Image2proVideoModelContract,
   type MoonVideoModelContract,
 } from '@multimodal-canvas/domain';
 import { isGlobalStoreVideoModel } from './globalstore-video.js';
@@ -1838,7 +1835,6 @@ export class NewApiVideoProvider {
     const contract = resolveVideoContract(existingProviderJob, this.videoContract);
     const unified = contract === 'newapi-unified-v1';
     const openaiVideo = contract === 'newapi-video-v1';
-    const image2pro = Boolean(image2proVideoContractForModel(snapshot.modelAlias));
     const yuanliu = Boolean(yuanliuVideoContractForModel(snapshot.modelAlias));
     let platformJobId = normalizeErrorField(existingProviderJob?.platformJobId);
     const jobsPath = videoJobsPath(contract);
@@ -2116,7 +2112,7 @@ export class NewApiVideoProvider {
         requestIds.pollNewApiRequestId =
           statusResponse.newApiRequestId ?? requestIds.pollNewApiRequestId;
         const polledId = videoPlatformId(statusResponse.payload, contract, snapshot.modelAlias);
-        if ((unified || (openaiVideo && (image2pro || yuanliu))) && polledId !== platformJobId) {
+        if ((unified || (openaiVideo && yuanliu)) && polledId !== platformJobId) {
           throw new NewApiProviderError('New API 视频查询返回了不同的平台任务身份', {
             code: 'VIDEO_TASK_ID_MISMATCH',
             retryable: false,
@@ -2910,7 +2906,7 @@ function videoPlatformId(
 ): string | undefined {
   if (contract === 'newapi-unified-v1') return normalizeErrorField(payload.task_id);
   if (contract === 'newapi-video-v1') {
-    return image2proVideoContractForModel(modelAlias) || yuanliuVideoContractForModel(modelAlias)
+    return yuanliuVideoContractForModel(modelAlias)
       ? normalizeErrorField(payload.id)
       : extractOpenAiVideoId(payload);
   }
@@ -3072,17 +3068,6 @@ function openaiVideoPayload(
   if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
     return yuanliuVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   }
-  const image2proContract = image2proVideoContractForModel(snapshot.modelAlias);
-  if (image2proContract) {
-    return image2proVideoPayload(
-      snapshot,
-      label,
-      nodePrompt,
-      inputs,
-      nodePromptDocument,
-      image2proContract,
-    );
-  }
   const moonContract = moonVideoContractForModel(snapshot.modelAlias);
   if (moonContract) {
     return moonVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument, moonContract);
@@ -3154,63 +3139,6 @@ function yuanliuVideoPayload(
       content: [{ type: 'text', text: prompt }, ...media],
       ...(media.length ? { omni_reference_task_type: 'reference' } : {}),
     },
-  };
-}
-
-/**
- * 将 Image2Pro 已确认的官方参数及冻结素材写入顶层 content；地址沿用 /v1/videos。
- * @param snapshot 已冻结的精确模型与参数，duration/seconds/durationSeconds 必须显式给出。
- * @param label 目标节点名称，仅用于现有提示词解析。
- * @param nodePrompt 节点保存的提示词，和文档或提示词连线按既有规则互斥。
- * @param inputs 通过 Domain 预检并应用资源顺序的输入。
- * @param nodePromptDocument 保留资源提及正文的冻结文档。
- * @param contract 精确模型对应的已确认参数与媒体边界。
- * @returns New API /v1/videos 的 JSON 创建体；保留素材顺序、首尾帧角色及显式 false。
- * @throws 未适配字段、冲突别名、非法时长/比例或过长提示词在发送前失败。
- */
-function image2proVideoPayload(
-  snapshot: RunSnapshot,
-  label: string,
-  nodePrompt: string | undefined,
-  inputs: VideoInputMapping,
-  nodePromptDocument: PromptDocument | undefined,
-  contract: Image2proVideoModelContract,
-): Record<string, unknown> {
-  let source = resolvePromptSource(snapshot, label, nodePrompt, 'video', nodePromptDocument);
-  if (contract.requiresPrompt && !source.value.trim()) source = { value: '', explicit: false };
-  const prompt =
-    source.explicit || inputs.prompt
-      ? resolveMappedPromptInput(source, inputs.prompt, 'video')
-      : '';
-  const { seconds, resolution, aspectRatio, ...flags } = resolveImage2proVideoParameters(
-    snapshot.parameters,
-    snapshot.modelAlias,
-  );
-  const media = orderedVideoMedia(snapshot, inputs).map((input) => {
-    const mediaType = input.snapshot.data.mediaType;
-    const url = officialVideoReferenceUrl(
-      input,
-      contract.supportsVideoDataUrl ? 'image2pro' : 'seedance-2',
-      snapshot.modelAlias,
-    );
-    return {
-      type: `${mediaType}_url`,
-      [`${mediaType}_url`]: { url },
-      role:
-        input.role === 'firstFrame'
-          ? 'first_frame'
-          : input.role === 'lastFrame'
-            ? 'last_frame'
-            : `reference_${mediaType}`,
-    };
-  });
-  return {
-    model: snapshot.modelAlias,
-    content: [...(prompt.trim() ? [{ type: 'text', text: prompt }] : []), ...media],
-    ...(seconds !== undefined ? { duration: seconds } : {}),
-    resolution: resolution ?? contract.defaultResolution,
-    ratio: aspectRatio ?? 'adaptive',
-    ...flags,
   };
 }
 
@@ -6138,9 +6066,8 @@ function mapVideoInputs(
   extraInputs: readonly RunInputSnapshot[] = [],
 ): VideoInputMapping {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
-  const contract = image2proVideoContractForModel(snapshot.modelAlias);
   let parameters = snapshot.parameters;
-  if (contract?.requiresPrompt || yuanliuVideoContractForModel(snapshot.modelAlias)) {
+  if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
     let source = resolvePromptSource(
       snapshot,
       target?.data.label ?? '',

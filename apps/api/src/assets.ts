@@ -11,9 +11,10 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import type { Asset, AssetStatus, MediaType } from '@multimodal-canvas/domain';
 import type { AssetByteRange } from './asset-shares';
+import { isGeneratedAssetExpired, type AssetExpirationResult } from './asset-retention-policy';
 
 /** 授权后的内容源；长度为实际对象字节数，open 只在 GET 时调用。 */
 export type AssetContentSource = {
@@ -488,6 +489,8 @@ export type StoredAssetDerivative = {
 };
 
 export interface AssetStore {
+  /** 删除到期生成资源的全部字节，保留元数据墓碑供用户识别；失败留待下次重试。 */
+  expireGeneratedAssets?(now?: number): Promise<AssetExpirationResult>;
   create(input: CreateAssetInput): Promise<StoredAsset>;
   list(scope?: AssetScope, options?: AssetListOptions): Promise<Asset[]>;
   /** 按授权范围的先后顺序去重分页；旧仓库未实现时，API 可继续使用 list/count。 */
@@ -571,6 +574,22 @@ export class MemoryAssetStore implements AssetStore {
     string,
     Map<number, AssetVersionRecord & { content: Buffer }>
   >();
+
+  async expireGeneratedAssets(now = Date.now()): Promise<AssetExpirationResult> {
+    let deleted = 0;
+    for (const [id, asset] of this.assets) {
+      if (!isGeneratedAssetExpired(asset.metadata, now) || asset.metadata?.expiredAt) continue;
+      this.assets.set(id, {
+        ...asset,
+        content: Buffer.alloc(0),
+        metadata: { ...asset.metadata, expiredAt: new Date(now).toISOString() },
+      });
+      this.versions.delete(id);
+      this.derivatives.delete(id);
+      deleted++;
+    }
+    return { deleted, failed: 0 };
+  }
 
   async create(input: CreateAssetInput): Promise<StoredAsset> {
     const id = `asset_${randomUUID()}`;
@@ -709,7 +728,7 @@ export class MemoryAssetStore implements AssetStore {
 
   async get(id: string, scope: AssetScope = {}): Promise<StoredAsset | undefined> {
     const asset = this.assets.get(id);
-    return asset && this.matchesScope(id, scope)
+    return asset && !isGeneratedAssetExpired(asset.metadata) && this.matchesScope(id, scope)
       ? withLatestAssetVersion(
           { ...asset, content: Buffer.from(asset.content) },
           this.latestVersionFor(id),
@@ -723,11 +742,13 @@ export class MemoryAssetStore implements AssetStore {
     scope: AssetScope = {},
   ): Promise<AssetContentSource | undefined> {
     const asset = this.assets.get(id);
-    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata) || !this.matchesScope(id, scope))
+      return undefined;
     return {
       sizeBytes: asset.content.byteLength,
       open: async (range) => {
-        if (this.assets.get(id) !== asset) return undefined;
+        if (this.assets.get(id) !== asset || isGeneratedAssetExpired(asset.metadata))
+          return undefined;
         const content = range ? asset.content.subarray(range.start, range.end + 1) : asset.content;
         return Readable.from([Buffer.from(content)]);
       },
@@ -754,7 +775,12 @@ export class MemoryAssetStore implements AssetStore {
     selector: AssetContentSelector = {},
     scope: AssetScope = {},
   ): Promise<boolean> {
-    if (!this.assets.has(id) || !this.matchesScope(id, scope)) return false;
+    if (
+      !this.assets.has(id) ||
+      isGeneratedAssetExpired(this.assets.get(id)?.metadata) ||
+      !this.matchesScope(id, scope)
+    )
+      return false;
     if (selector.version !== undefined && selector.derivative !== undefined) return false;
     if (selector.version !== undefined)
       return this.versions.get(id)?.has(selector.version) ?? false;
@@ -784,7 +810,8 @@ export class MemoryAssetStore implements AssetStore {
     scope: AssetScope = {},
   ): Promise<AssetVersionRecord | undefined> {
     const asset = this.assets.get(assetId);
-    if (!asset || !this.matchesScope(assetId, scope)) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata) || !this.matchesScope(assetId, scope))
+      return undefined;
     const versionMap = this.versions.get(assetId) ?? new Map();
     const version = Math.max(0, ...versionMap.keys()) + 1;
     const createdAt = new Date().toISOString();
@@ -817,7 +844,12 @@ export class MemoryAssetStore implements AssetStore {
   }
 
   async listVersions(assetId: string, scope: AssetScope = {}): Promise<AssetVersionRecord[]> {
-    if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return [];
+    if (
+      !this.assets.has(assetId) ||
+      isGeneratedAssetExpired(this.assets.get(assetId)?.metadata) ||
+      !this.matchesScope(assetId, scope)
+    )
+      return [];
     return [...(this.versions.get(assetId)?.values() ?? [])]
       .sort((left, right) => left.version - right.version)
       .map(({ content: _content, ...record }) => record);
@@ -828,7 +860,12 @@ export class MemoryAssetStore implements AssetStore {
     version: number,
     scope: AssetScope = {},
   ): Promise<Buffer | undefined> {
-    if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return undefined;
+    if (
+      !this.assets.has(assetId) ||
+      isGeneratedAssetExpired(this.assets.get(assetId)?.metadata) ||
+      !this.matchesScope(assetId, scope)
+    )
+      return undefined;
     const record = this.versions.get(assetId)?.get(version);
     return record ? Buffer.from(record.content) : undefined;
   }
@@ -839,13 +876,22 @@ export class MemoryAssetStore implements AssetStore {
     version: number,
     scope: AssetScope = {},
   ): Promise<AssetContentSource | undefined> {
-    if (!this.assets.has(assetId) || !this.matchesScope(assetId, scope)) return undefined;
+    if (
+      !this.assets.has(assetId) ||
+      isGeneratedAssetExpired(this.assets.get(assetId)?.metadata) ||
+      !this.matchesScope(assetId, scope)
+    )
+      return undefined;
     const record = this.versions.get(assetId)?.get(version);
     if (!record) return undefined;
     return {
       sizeBytes: record.content.byteLength,
       open: async (range) => {
-        if (this.versions.get(assetId)?.get(version) !== record) return undefined;
+        if (
+          this.versions.get(assetId)?.get(version) !== record ||
+          isGeneratedAssetExpired(this.assets.get(assetId)?.metadata)
+        )
+          return undefined;
         const content = range
           ? record.content.subarray(range.start, range.end + 1)
           : record.content;
@@ -859,7 +905,8 @@ export class MemoryAssetStore implements AssetStore {
     kind: string,
     scope: AssetScope = {},
   ): Promise<StoredAssetDerivative | undefined> {
-    if (!this.matchesScope(id, scope)) return undefined;
+    if (isGeneratedAssetExpired(this.assets.get(id)?.metadata) || !this.matchesScope(id, scope))
+      return undefined;
     const derivative = this.derivatives.get(id)?.get(kind);
     return derivative ? { ...derivative, content: Buffer.from(derivative.content) } : undefined;
   }
@@ -870,7 +917,8 @@ export class MemoryAssetStore implements AssetStore {
     scope: AssetScope = {},
   ): Promise<StoredAsset | undefined> {
     const asset = this.assets.get(id);
-    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata) || !this.matchesScope(id, scope))
+      return undefined;
     const next: StoredAsset = {
       ...asset,
       ...(input.name === undefined ? {} : { name: input.name }),
@@ -888,7 +936,8 @@ export class MemoryAssetStore implements AssetStore {
     scope: AssetScope = {},
   ): Promise<StoredAsset | undefined> {
     const asset = this.assets.get(id);
-    if (!asset || !this.matchesScope(id, scope)) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata) || !this.matchesScope(id, scope))
+      return undefined;
     const next: StoredAsset = {
       ...asset,
       status: archived ? 'archived' : 'ready',
@@ -943,6 +992,62 @@ export class PrismaAssetStore implements AssetStore {
     this.ownerId = options.ownerId;
     this.keyPrefix = trimPrefix(options.keyPrefix ?? 'assets');
     this.contentUrl = options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/content`);
+  }
+
+  /** 分批扫描带策略标记的资源；对象全部删除后才写完成标记，故障可幂等重试。 */
+  async expireGeneratedAssets(now = Date.now()): Promise<AssetExpirationResult> {
+    const result = { deleted: 0, failed: 0 };
+    let cursor: string | undefined;
+    while (true) {
+      const rows = await this.prisma.asset.findMany({
+        where: {
+          AND: [
+            { metadata: { path: ['retentionHours'], equals: 72 } },
+            { metadata: { path: ['expiredAt'], equals: Prisma.AnyNull } },
+          ],
+          ...(cursor ? { id: { gt: cursor } } : {}),
+        },
+        orderBy: { id: 'asc' },
+        take: 100,
+        select: { id: true, contentKey: true, metadata: true },
+      });
+      for (const row of rows) {
+        if (!isGeneratedAssetExpired(row.metadata, now)) continue;
+        try {
+          const versions = await this.prisma.assetVersion.findMany({
+            where: { assetId: row.id },
+            select: { contentKey: true },
+          });
+          const sources = new Set([
+            row.contentKey,
+            ...versions.map((version) => version.contentKey),
+          ]);
+          const keys = new Set<string>(sources);
+          for (const source of sources) {
+            for (const kind of ['thumbnail', 'poster', 'waveform', 'final_frame']) {
+              for (const key of this.derivativeReadKeys(source, kind)) keys.add(key);
+            }
+          }
+          // 不使用公开 metadata 的任意对象键，清理范围只从受信任的内容键推导。
+          for (const key of keys) await this.blobStore.delete(key);
+          await this.prisma.asset.update({
+            where: { id: row.id },
+            data: {
+              metadata: {
+                ...asRecord(row.metadata),
+                expiredAt: new Date(now).toISOString(),
+              } as Prisma.InputJsonValue,
+            },
+          });
+          result.deleted++;
+        } catch {
+          result.failed++;
+        }
+      }
+      if (rows.length < 100) break;
+      cursor = rows[rows.length - 1]!.id;
+    }
+    return result;
   }
 
   /** 创建源资源、版本和旁路预览；失败时只清理本次新键，不触碰旧布局对象。 */
@@ -1103,7 +1208,7 @@ export class PrismaAssetStore implements AssetStore {
     const row = await this.prisma.asset.findFirst({
       where: { id, ...this.scopeWhere(scope) },
     });
-    if (!row) return undefined;
+    if (!row || isGeneratedAssetExpired(row.metadata)) return undefined;
     const content = await this.blobStore.get(row.contentKey);
     if (!content) return undefined;
     return {
@@ -1119,9 +1224,10 @@ export class PrismaAssetStore implements AssetStore {
   ): Promise<AssetContentSource | undefined> {
     const row = await this.prisma.asset.findFirst({
       where: { id, ...this.scopeWhere(scope) },
-      select: { contentKey: true },
+      select: { contentKey: true, metadata: true },
     });
-    return row ? this.blobContentSource(row.contentKey) : undefined;
+    if (!row || isGeneratedAssetExpired(row.metadata)) return undefined;
+    return this.blobContentSource(row.contentKey, row.metadata);
   }
 
   /**
@@ -1151,7 +1257,7 @@ export class PrismaAssetStore implements AssetStore {
       where: { id, ...this.scopeWhere(scope) },
       select: { contentKey: true, metadata: true },
     });
-    if (!asset) return false;
+    if (!asset || isGeneratedAssetExpired(asset.metadata)) return false;
     if (selector.version !== undefined) {
       const version = await this.prisma.assetVersion.findFirst({
         where: { assetId: id, version: selector.version },
@@ -1200,7 +1306,8 @@ export class PrismaAssetStore implements AssetStore {
       where: { id, ...this.scopeWhere(scope) },
       select: { contentKey: true, metadata: true },
     });
-    if (!row || !isSafeDerivativeKind(kind)) return undefined;
+    if (!row || isGeneratedAssetExpired(row.metadata) || !isSafeDerivativeKind(kind))
+      return undefined;
     const metadata = asRecord(row.metadata);
     const descriptor = asRecord(metadata?.derivatives)?.[kind];
     if (!asRecord(descriptor)?.mimeType) return undefined;
@@ -1226,7 +1333,7 @@ export class PrismaAssetStore implements AssetStore {
     const existing = await this.prisma.asset.findFirst({
       where: { id, ...this.scopeWhere(scope) },
     });
-    if (!existing) return undefined;
+    if (!existing || isGeneratedAssetExpired(existing.metadata)) return undefined;
     const row = await this.prisma.asset.update({
       where: { id },
       data: {
@@ -1250,7 +1357,7 @@ export class PrismaAssetStore implements AssetStore {
     const existing = await this.prisma.asset.findFirst({
       where: { id, ...this.scopeWhere(scope) },
     });
-    if (!existing) return undefined;
+    if (!existing || isGeneratedAssetExpired(existing.metadata)) return undefined;
     const row = await this.prisma.asset.update({
       where: { id },
       data: { status: archived ? 'ARCHIVED' : 'READY', archivedAt: archived ? new Date() : null },
@@ -1272,7 +1379,7 @@ export class PrismaAssetStore implements AssetStore {
       where: { id: assetId, ...this.scopeWhere(scope) },
       select: { id: true, metadata: true },
     });
-    if (!existing) return undefined;
+    if (!existing || isGeneratedAssetExpired(existing.metadata)) return undefined;
     const latest = await this.prisma.assetVersion.findFirst({
       where: { assetId },
       orderBy: { version: 'desc' },
@@ -1322,9 +1429,9 @@ export class PrismaAssetStore implements AssetStore {
   async listVersions(assetId: string, scope: AssetScope = {}): Promise<AssetVersionRecord[]> {
     const asset = await this.prisma.asset.findFirst({
       where: { id: assetId, ...this.scopeWhere(scope) },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
-    if (!asset) return [];
+    if (!asset || isGeneratedAssetExpired(asset.metadata)) return [];
     const rows = await this.prisma.assetVersion.findMany({
       where: { assetId },
       orderBy: { version: 'asc' },
@@ -1339,9 +1446,9 @@ export class PrismaAssetStore implements AssetStore {
   ): Promise<Buffer | undefined> {
     const asset = await this.prisma.asset.findFirst({
       where: { id: assetId, ...this.scopeWhere(scope) },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
-    if (!asset) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata)) return undefined;
     const row = await this.prisma.assetVersion.findFirst({ where: { assetId, version } });
     return row ? this.blobStore.get(row.contentKey) : undefined;
   }
@@ -1354,24 +1461,30 @@ export class PrismaAssetStore implements AssetStore {
   ): Promise<AssetContentSource | undefined> {
     const asset = await this.prisma.asset.findFirst({
       where: { id: assetId, ...this.scopeWhere(scope) },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
-    if (!asset) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata)) return undefined;
     const row = await this.prisma.assetVersion.findFirst({
       where: { assetId, version },
       select: { contentKey: true },
     });
-    return row ? this.blobContentSource(row.contentKey) : undefined;
+    return row ? this.blobContentSource(row.contentKey, asset.metadata) : undefined;
   }
 
   /** 查询选定对象的长度并延迟打开流；旧 BlobStore 沿用完整 Buffer，存储错误不回退。 */
-  private async blobContentSource(key: string): Promise<AssetContentSource | undefined> {
+  private async blobContentSource(
+    key: string,
+    metadata?: unknown,
+  ): Promise<AssetContentSource | undefined> {
     if (this.blobStore.head && this.blobStore.open) {
       const info = await this.blobStore.head(key);
       return info
         ? {
             sizeBytes: info.sizeBytes,
-            open: (range) => this.blobStore.open!(key, range, info.sizeBytes),
+            open: async (range) =>
+              isGeneratedAssetExpired(metadata)
+                ? undefined
+                : this.blobStore.open!(key, range, info.sizeBytes),
           }
         : undefined;
     }
@@ -1380,7 +1493,9 @@ export class PrismaAssetStore implements AssetStore {
     return {
       sizeBytes: content.byteLength,
       open: async (range) =>
-        Readable.from([range ? content.subarray(range.start, range.end + 1) : content]),
+        isGeneratedAssetExpired(metadata)
+          ? undefined
+          : Readable.from([range ? content.subarray(range.start, range.end + 1) : content]),
     };
   }
 
@@ -1394,9 +1509,9 @@ export class PrismaAssetStore implements AssetStore {
     if (!presigner) return undefined;
     const asset = await this.prisma.asset.findFirst({
       where: { id: assetId, ...this.scopeWhere(scope) },
-      select: { contentKey: true, mimeType: true },
+      select: { contentKey: true, mimeType: true, metadata: true },
     });
-    if (!asset) return undefined;
+    if (!asset || isGeneratedAssetExpired(asset.metadata)) return undefined;
     let key = asset.contentKey;
     let contentType = asset.mimeType;
     if (options.version !== undefined) {
@@ -1432,8 +1547,14 @@ export class PrismaAssetStore implements AssetStore {
       if (!existingKey) return undefined;
       key = existingKey;
     }
+    const deadline = asRecord(asset.metadata)?.expiresAt;
+    const expiresIn =
+      typeof deadline === 'string' && asRecord(asset.metadata)?.retentionHours === 72
+        ? Math.min(options.expiresIn, Math.floor((Date.parse(deadline) - Date.now()) / 1000))
+        : options.expiresIn;
+    if (!Number.isFinite(expiresIn) || expiresIn < 1) return undefined;
     return presigner.call(this.blobStore, key, {
-      expiresIn: options.expiresIn,
+      expiresIn,
       contentType,
     });
   }

@@ -6,11 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import {
   imageEditReferencesRequirePublicUrl,
   imageEditSourceSchema,
-  image2proVideoContractForModel,
-  moonVideoContractForModel,
-  yuanliuVideoContractForModel,
   runSnapshotSchema,
-  videoFamilyForModel,
   type FrozenPromptMention,
   type MediaType,
   type RunInputSnapshot,
@@ -41,6 +37,8 @@ export type StoredAssetReference = {
   contentKey: string;
   /** 资产当前状态；旧仓储适配器可省略，默认按可用处理。 */
   status?: 'ready' | 'archived';
+  /** 生成资源保留期限；历史资源和手动上传可省略。 */
+  metadata?: unknown;
 };
 
 export type StoredAssetVersionReference = {
@@ -439,8 +437,16 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       );
     }
     return cached(cache, resolved.contentKey, async () => {
+      const expiresIn =
+        resolved.expiresAt === undefined
+          ? PROVIDER_ASSET_URL_EXPIRES_SECONDS
+          : Math.min(
+              PROVIDER_ASSET_URL_EXPIRES_SECONDS,
+              Math.floor((resolved.expiresAt - Date.now()) / 1000),
+            );
+      if (expiresIn < 1) throw new Error('生成资源已到期销毁，请重新生成');
       const url = await signer.call(this.blobStore, resolved.contentKey, {
-        expiresIn: PROVIDER_ASSET_URL_EXPIRES_SECONDS,
+        expiresIn,
         contentType: resolved.mimeType,
       });
       await this.providerAssetPreflight?.(url, resolved.mediaType);
@@ -490,6 +496,7 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
       mediaType: asset.mediaType,
       mimeType,
       contentKey: selected.contentKey,
+      expiresAt: assetExpiration(asset.metadata),
       sizeBytes: Number(expectedSize),
       dataUrl: `data:${providerMimeType};base64,${content.toString('base64')}`,
       ...((asset.mediaType === 'video' || asset.mediaType === 'audio') &&
@@ -516,8 +523,20 @@ export class StoredAssetReferenceResolver implements AssetReferenceResolver {
     if (asset.status === 'archived') {
       throw new Error(`asset reference ${assetId} is archived`);
     }
+    const expiresAt = assetExpiration(asset.metadata);
+    const metadata = asset.metadata as Record<string, unknown> | undefined;
+    if (metadata?.expiredAt || (expiresAt !== undefined && expiresAt <= Date.now())) {
+      throw new Error('生成资源已到期销毁，请重新生成');
+    }
     return asset;
   }
+}
+
+function assetExpiration(metadata: unknown): number | undefined {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  const expiresAt = (metadata as Record<string, unknown>).expiresAt;
+  const expiration = typeof expiresAt === 'string' ? Date.parse(expiresAt) : NaN;
+  return Number.isFinite(expiration) ? expiration : undefined;
 }
 
 type ResolvedAsset = {
@@ -528,6 +547,7 @@ type ResolvedAsset = {
   mediaType: MediaType;
   mimeType: string;
   contentKey: string;
+  expiresAt?: number;
   /** 当前选中不可变版本的实际字节数，仅用于进程内模型限制复查。 */
   sizeBytes: number;
   dataUrl: string;
@@ -550,6 +570,7 @@ class PrismaAssetReferenceRepository implements AssetReferenceRepository {
         sizeBytes: true,
         contentKey: true,
         status: true,
+        metadata: true,
       },
     });
     return row

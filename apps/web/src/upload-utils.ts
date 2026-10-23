@@ -5,6 +5,29 @@ export type UploadMetadata = {
   sha256: string;
 };
 
+/** 单文件限制；在读取文件和计算摘要之前校验，避免大文件占用浏览器内存。 */
+export const MAX_UPLOAD_SIZE_BYTES = 512 * 1024 * 1024;
+export const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function assertUploadSize(file: Pick<File, 'name' | 'size'>) {
+  if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+    throw new Error(`${file.name} 超过单文件 512 MB 上传上限，请选择更小的文件`);
+  }
+}
+
+/** 上传会话过期、传输超时和大小限制统一为可执行的中文提醒。 */
+export function uploadFailureMessage(name: string, status: number, error?: string) {
+  if (status === 413 || error === 'upload_too_large') {
+    return `${name} 超过单文件 512 MB 上传上限，请选择更小的文件`;
+  }
+  if (status === 410 || error === 'upload_expired' || error === 'upload_session_expired') {
+    return `${name} 上传会话已过期，请重新选择文件上传`;
+  }
+  if (status === 408 || status === 504) return `${name} 上传超时，请检查网络后重试`;
+  if (status === 401) return '登录状态已过期，请重新登录后上传';
+  return error ?? `${name} 上传失败（${status}）`;
+}
+
 export async function sha256Hex(content: Uint8Array): Promise<string> {
   const buffer = new ArrayBuffer(content.byteLength);
   new Uint8Array(buffer).set(content);

@@ -447,7 +447,14 @@ describe('PrismaResultAssetArchiver', () => {
       modelAlias: 'gpt-test',
       format: 'txt',
       parameters: { temperature: 0.2 },
+      retentionHours: 72,
     });
+    const metadata = rows[0].metadata as Record<string, unknown>;
+    expect(Date.parse(String(metadata.expiresAt)) - Date.parse(String(metadata.generatedAt))).toBe(
+      72 * 60 * 60 * 1000,
+    );
+    expect(rows[1].metadata).toEqual(metadata);
+    expect(archived?.metadata).toEqual(metadata);
   });
 
   it('replays the same archive identity without creating a duplicate asset', async () => {
@@ -474,6 +481,38 @@ describe('PrismaResultAssetArchiver', () => {
     expect(replay).toEqual(first);
     expect(state.transactions).toBe(1);
     expect(blob.puts).toHaveLength(1);
+  });
+
+  it('does not extend retention on retry and cannot recreate an expired generated asset', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    const blob = createBlobStore();
+    const state = statefulPrisma();
+    const archiver = new PrismaResultAssetArchiver(state.prisma, { blobStore: blob });
+    const input = {
+      runId: 'retention-retry',
+      snapshot,
+      result,
+      providerJob,
+      archiveInput: {
+        mediaType: 'text' as const,
+        mimeType: 'text/plain',
+        content: Buffer.from('retained'),
+        metadata: { expiredAt: '2000-01-01T00:00:00.000Z', expiresAt: '2099-01-01T00:00:00.000Z' },
+      },
+    };
+    try {
+      const first = await archiver.archive(input);
+      const expiresAt = Date.parse(String(first?.metadata?.expiresAt));
+      clock.mockReturnValue(expiresAt - 1);
+      expect(await archiver.archive(input)).toEqual(first);
+      expect(first?.metadata?.expiredAt).toBeUndefined();
+      clock.mockReturnValue(expiresAt);
+      await expect(archiver.archive(input)).rejects.toThrow('生成资源已到期销毁');
+      expect(state.transactions).toBe(1);
+      expect(blob.puts).toHaveLength(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('rejects different content for an existing archive identity', async () => {
@@ -1319,6 +1358,7 @@ function statefulPrisma(): { prisma: PrismaClient; readonly transactions: number
         sizeBytes: bigint;
         sha256: string;
         contentKey: string;
+        metadata: Record<string, unknown>;
         versions: Array<{
           version: number;
           sizeBytes: bigint;
@@ -1359,6 +1399,7 @@ function statefulPrisma(): { prisma: PrismaClient; readonly transactions: number
           sizeBytes: BigInt(createdAsset.sizeBytes as bigint),
           sha256: String(createdAsset.sha256),
           contentKey: String(createdAsset.contentKey),
+          metadata: structuredClone(createdAsset.metadata as Record<string, unknown>),
           versions: [
             {
               version: Number(createdVersion.version),

@@ -28,10 +28,10 @@ describe('New API 模型目录规范化', () => {
   it('无媒体声明时保留目录推断结果，不替未知名称套用精确合同', () => {
     const models = normalizeModelsPayload({
       data: [
-        { id: '无限制-Flash-中配-Video' },
-        { id: '无限制-Flash-MAX-Video' },
-        { id: 'Seedance2.0 0.9r' },
-        { id: 'Seedance2.0 0.9r-other' },
+        { id: 'video-generation-model' },
+        { id: 'video-generation-model-max' },
+        { id: 'seedance-2-0-video' },
+        { id: 'legacy-model-other' },
       ],
     });
     expect(models.map((model) => model.mediaTypes)).toEqual([
@@ -41,17 +41,17 @@ describe('New API 模型目录规范化', () => {
       ['text'],
     ]);
     expect(models.map((model) => model.id)).toEqual([
-      '无限制-Flash-中配-Video',
-      '无限制-Flash-MAX-Video',
-      'Seedance2.0 0.9r',
-      'Seedance2.0 0.9r-other',
+      'video-generation-model',
+      'video-generation-model-max',
+      'seedance-2-0-video',
+      'legacy-model-other',
     ]);
   });
 
-  it('退役 Flash 中配保留上游目录声明，不由 Canvas 侧二次屏蔽', () => {
+  it('保留上游视频目录声明，不由 Canvas 侧二次屏蔽', () => {
     expect(
       normalizeModelsPayload({
-        data: ['无限制-Flash-中配-Video'].map((id) => ({
+        data: ['video-generation-model'].map((id) => ({
           id,
           mediaTypes: ['video', 'text'],
           capabilities: { duration: [5], resolution: ['720p'] },
@@ -59,7 +59,7 @@ describe('New API 模型目录规范化', () => {
       }),
     ).toMatchObject([
       {
-        id: '无限制-Flash-中配-Video',
+        id: 'video-generation-model',
         mediaTypes: ['video', 'text'],
         capabilities: { duration: [5], resolution: ['720p'] },
       },

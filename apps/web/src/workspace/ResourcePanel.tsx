@@ -31,6 +31,8 @@ import { useImeDraft } from '../ime';
 import type { ProjectAssetPagination } from '../use-project-assets';
 import { AssetPreview, AssetViewerDialog } from './AssetPreview';
 import { AssetGenerationHistory } from './AssetGenerationHistory';
+import { getAssetRetention, useAssetExpiryClock } from './asset-retention';
+import { serverClockNow } from '../server-clock';
 import { mediaLabels, type AssetFilter } from './contracts';
 import './CompactSelect.css';
 import './ResourcePanel.css';
@@ -98,6 +100,20 @@ export const ResourcePanel = memo(function ResourcePanel({
   const [modal, modalContextHolder] = Modal.useModal();
   /** 当前正在预览的资源；关闭对话框后清空。 */
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+  const futureExpiries = [...assets, ...(previewAsset ? [previewAsset] : [])]
+    .map((asset) => getAssetRetention(asset.metadata)?.expiresAt.timestamp)
+    .filter((time): time is number => time !== undefined && time > serverClockNow());
+  const expiryNow = useAssetExpiryClock(
+    futureExpiries.length ? Math.min(...futureExpiries) : undefined,
+  );
+  const isExpired = (asset: Asset) => {
+    const retention = getAssetRetention(asset.metadata);
+    return Boolean(
+      retention &&
+      (retention.expiredAt ||
+        retention.expiresAt.timestamp <= Math.max(expiryNow, serverClockNow())),
+    );
+  };
   /** 版本历史独立于原节点，资源保留时仍可读取生成说明。 */
   const [historyAsset, setHistoryAsset] = useState<Asset | null>(null);
   /** 刚结束 HTML5 拖拽时忽略随后的 click，避免误开预览。 */
@@ -176,7 +192,7 @@ export const ResourcePanel = memo(function ResourcePanel({
    * @param asset 被点击的资源卡片。
    */
   const openPreview = (asset: Asset) => {
-    if (draggedRef.current) return;
+    if (draggedRef.current || isExpired(asset)) return;
     setPreviewAsset(asset);
   };
 
@@ -318,7 +334,7 @@ export const ResourcePanel = memo(function ResourcePanel({
           type="button"
           className="icon-button resource-upload-button"
           aria-label="上传资源"
-          title="上传资源"
+          title="上传资源（单文件最大 512 MB）"
           onClick={() => inputRef.current?.click()}
           disabled={isUploading}
         >
@@ -400,9 +416,13 @@ export const ResourcePanel = memo(function ResourcePanel({
         {filteredAssets.map((asset) => (
           <article
             className={`asset-card ${asset.status === 'archived' ? 'is-archived' : ''}`}
-            draggable={asset.status !== 'archived'}
+            draggable={asset.status !== 'archived' && !isExpired(asset)}
             key={asset.id}
             onDragStart={(event) => {
+              if (isExpired(asset)) {
+                event.preventDefault();
+                return;
+              }
               clearTimeout(dragResetTimerRef.current);
               draggedRef.current = true;
               setDraggingOutside(false);
@@ -429,21 +449,30 @@ export const ResourcePanel = memo(function ResourcePanel({
               }, 50);
             }}
             title={
-              asset.status === 'archived'
-                ? '已归档资源'
-                : '拖到提示词中引用，使用添加按钮放入画布。点击预览。'
+              isExpired(asset)
+                ? '生成资源已到期，请重新生成'
+                : asset.status === 'archived'
+                  ? '已归档资源'
+                  : '拖到提示词中引用，使用添加按钮放入画布。点击预览。'
             }
           >
             <div
               className="asset-card-hit"
               role="button"
               tabIndex={0}
+              aria-disabled={isExpired(asset)}
               aria-label={`预览 ${asset.name}`}
               title={asset.name}
               onClick={() => openPreview(asset)}
               onKeyDown={(event) => handlePreviewKeyDown(event, asset)}
             >
-              <AssetPreview asset={asset} thumbnail className="asset-card-preview" />
+              {isExpired(asset) ? (
+                <div className="asset-card-expired" role="status">
+                  生成资源已到期，请重新生成
+                </div>
+              ) : (
+                <AssetPreview asset={asset} thumbnail className="asset-card-preview" />
+              )}
             </div>
             <div className="asset-card-actions">
               <Button
@@ -463,6 +492,7 @@ export const ResourcePanel = memo(function ResourcePanel({
                   asset.status === 'archived' ? `恢复 ${asset.name}` : `添加 ${asset.name} 到画布`
                 }
                 title={asset.status === 'archived' ? '恢复资源' : '添加到画布'}
+                disabled={isExpired(asset)}
                 onClick={() =>
                   asset.status === 'archived' ? onArchiveAsset(asset) : onAddAsset(asset)
                 }
@@ -595,7 +625,7 @@ export const ResourcePanel = memo(function ResourcePanel({
         </nav>
       )}
       {modalContextHolder}
-      {previewAsset ? (
+      {previewAsset && !isExpired(previewAsset) ? (
         <AssetViewerDialog
           asset={previewAsset}
           open

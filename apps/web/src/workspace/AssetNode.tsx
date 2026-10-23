@@ -21,7 +21,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
-import { Alert, Button as AntdButton, Tooltip, Typography } from 'antd';
+import { Alert, Button as AntdButton, Popover, Tooltip, Typography } from 'antd';
 import {
   useNodeConnections,
   useUpdateNodeInternals,
@@ -80,6 +80,7 @@ import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import { GenerationBatchViewContext } from './generation-batch-view';
 import { getNodeInfoTimes } from './node-info';
+import { AssetRetentionContext, getAssetRetention, useAssetExpiryClock } from './asset-retention';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
 import { NodeRunControlStoreContext, NodeStopContext, useNodeRunControl } from './node-run-control';
 import { MobileWorkspacePanel, useMobileWorkspace } from './MobileWorkspacePanel';
@@ -406,6 +407,7 @@ export function AssetNode({
   const [recoverError, setRecoverError] = useState<string | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [retentionOpen, setRetentionOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
   const [previewInteracting, setPreviewInteracting] = useState(false);
@@ -415,6 +417,7 @@ export function AssetNode({
     previewInteracting ||
     mobileActionsOpen ||
     infoOpen ||
+    retentionOpen ||
     renameOpen ||
     isDownloading ||
     uploadProgress !== null ||
@@ -517,6 +520,21 @@ export function AssetNode({
   const enabled = data.enabled !== false;
   /** 全部节点共用悬浮操作栏，保持内容区域固定尺寸。 */
   const floatingControls = true;
+  const knownAssets = useContext(AssetRetentionContext);
+  const resultRecord = data.resultAsset ? knownAssets.get(data.resultAsset.assetId) : undefined;
+  const sourceRecord = data.assetId ? knownAssets.get(data.assetId) : undefined;
+  const retentionMetadata =
+    !data.manualOutput && data.resultAsset
+      ? (data.resultAsset.metadata ??
+        (resultRecord && resultRecord.latestVersion === data.resultAsset.version
+          ? resultRecord.metadata
+          : undefined))
+      : sourceRecord?.metadata;
+  const retention = getAssetRetention(retentionMetadata);
+  const retentionNow = useAssetExpiryClock(retention?.expiresAt.timestamp);
+  const resourceExpired = Boolean(
+    retention && (retention.expiredAt || retention.expiresAt.timestamp <= retentionNow),
+  );
   const resultPreviewAsset =
     !data.manualOutput && data.resultAsset
       ? ({
@@ -532,6 +550,7 @@ export function AssetNode({
             data.resultAsset.contentUrl ??
             getResultAssetContentUrl(data.resultAsset.assetId, data.resultAsset.version),
           tags: [],
+          metadata: retentionMetadata,
         } satisfies Asset)
       : undefined;
   const recreationSource = data.videoRecreation?.source;
@@ -567,7 +586,8 @@ export function AssetNode({
           tags: [],
         } satisfies Asset)
       : undefined);
-  const previewAsset = rawPreviewAsset ? resolveOriginalImageAsset(rawPreviewAsset) : undefined;
+  const previewAsset =
+    !resourceExpired && rawPreviewAsset ? resolveOriginalImageAsset(rawPreviewAsset) : undefined;
   const infoTimes = getNodeInfoTimes(id, data);
   const displayedTiming = data.manualOutput
     ? undefined
@@ -1010,6 +1030,61 @@ export function AssetNode({
                 <Info size={18} aria-hidden="true" />
                 <NodeFloatingActionLabel>信息</NodeFloatingActionLabel>
               </NodeFloatingActionButton>
+              {retention ? (
+                <Popover
+                  title="资源销毁时间"
+                  trigger={mobile ? ['click'] : ['hover', 'focus', 'click']}
+                  open={retentionOpen}
+                  onOpenChange={setRetentionOpen}
+                  placement={mobile ? 'bottomLeft' : 'top'}
+                  destroyOnHidden
+                  getPopupContainer={() => document.body}
+                  zIndex={1200}
+                  styles={{ root: { maxWidth: 'min(320px, calc(100vw - 32px))' } }}
+                  content={
+                    <div
+                      role="group"
+                      aria-label="资源销毁时间"
+                      className="flow-node-retention-card"
+                    >
+                      <p>
+                        {resourceExpired
+                          ? '生成资源已超过 72 小时保留期。'
+                          : '生成资源仅保留 72 小时，到期后自动删除，请及时下载保存。'}
+                      </p>
+                      <time dateTime={retention.expiresAt.dateTime}>
+                        {retention.expiresAt.label}
+                      </time>
+                      {resourceExpired ? (
+                        <p>资源已到期，无法继续预览、下载或引用，请重新生成。</p>
+                      ) : null}
+                    </div>
+                  }
+                >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="flow-node-action-button flow-node-retention-button nodrag nopan nowheel"
+                    aria-label={`查看销毁时间：${data.label}`}
+                    aria-expanded={retentionOpen}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.stopPropagation();
+                        setRetentionOpen(false);
+                      }
+                    }}
+                  >
+                    <Clock3 size={18} aria-hidden="true" />
+                    <NodeFloatingActionLabel>
+                      {resourceExpired ? '已到期' : '销毁时间'}
+                    </NodeFloatingActionLabel>
+                  </Button>
+                </Popover>
+              ) : null}
               {openPrompt ? (
                 <NodeFloatingActionButton
                   type="button"
@@ -1116,7 +1191,7 @@ export function AssetNode({
                   </NodeFloatingActionLabel>
                 </NodeFloatingActionButton>
               )}
-              {editImage && isImageEditSourceNode({ data }) ? (
+              {editImage && !resourceExpired && isImageEditSourceNode({ data }) ? (
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
@@ -1402,6 +1477,31 @@ export function AssetNode({
                   )}
                 </dd>
               </div>
+              {retention ? (
+                <>
+                  <div>
+                    <dt>资源生成时间</dt>
+                    <dd>
+                      {retention.generatedAt ? (
+                        <time dateTime={retention.generatedAt.dateTime}>
+                          {retention.generatedAt.label}
+                        </time>
+                      ) : (
+                        '未记录'
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>资源销毁时间</dt>
+                    <dd>
+                      <time dateTime={retention.expiresAt.dateTime}>
+                        {retention.expiresAt.label}
+                      </time>
+                      （生成后保留 72 小时）
+                    </dd>
+                  </div>
+                </>
+              ) : null}
               {data.mediaType === 'image' && previewAsset ? (
                 <>
                   <div>
@@ -1500,7 +1600,13 @@ export function AssetNode({
           </DialogContent>
         )}
       </Dialog>
-      {renderDetail !== 'full' ? (
+      {resourceExpired ? (
+        <div className="flow-node-state flow-node-expired" role="status">
+          <Clock3 size={24} aria-hidden="true" />
+          <strong>生成资源已到期</strong>
+          <span>资源保留 72 小时后自动删除，请重新生成。</span>
+        </div>
+      ) : renderDetail !== 'full' ? (
         <div className="flow-node-preview flow-node-summary" aria-label={`节点摘要：${data.label}`}>
           <Icon size={28} strokeWidth={1.7} aria-hidden="true" />
           <span className="flow-node-summary-label">{data.label}</span>

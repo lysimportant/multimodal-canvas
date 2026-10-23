@@ -156,6 +156,7 @@ type ExistingResultArchive = {
   sizeBytes: bigint | number | string;
   sha256: string | null;
   contentKey: string;
+  metadata?: unknown;
   versions?: Array<{
     version: number;
     sizeBytes: bigint | number | string;
@@ -499,6 +500,12 @@ export class PrismaResultAssetArchiver {
       throwIfCancelled(input.signal);
       await this.prisma.$transaction(async (transaction) => {
         throwIfCancelled(input.signal);
+        const generatedAt = new Date();
+        Object.assign(metadata, {
+          generatedAt: generatedAt.toISOString(),
+          expiresAt: new Date(generatedAt.getTime() + 72 * 60 * 60 * 1000).toISOString(),
+          retentionHours: 72,
+        });
         await transaction.asset.create({
           data: {
             id: assetId,
@@ -574,6 +581,7 @@ export class PrismaResultAssetArchiver {
         mimeType: enrichedArchiveInput.mimeType,
         sizeBytes: content.byteLength,
         sha256: digest,
+        metadata,
       },
       content,
       enrichedArchiveInput.mimeType,
@@ -798,6 +806,7 @@ export class PrismaResultAssetArchiver {
         sizeBytes: true,
         sha256: true,
         contentKey: true,
+        metadata: true,
         versions: {
           where: { version: 1 },
           take: 1,
@@ -895,8 +904,10 @@ function buildResultMetadata(
   },
   archiveInput: ResultAssetArchiveInput,
 ): Record<string, unknown> {
+  const providerMetadata = sanitizeParameters(archiveInput.metadata ?? {});
+  delete providerMetadata.expiredAt;
   return {
-    ...sanitizeParameters(archiveInput.metadata ?? {}),
+    ...providerMetadata,
     generated: true,
     runId: input.runId,
     provider: input.result.provider,
@@ -950,6 +961,11 @@ function assertExistingArchiveMatches(
     contentUrl: string;
   },
 ): RunResultAsset {
+  const metadata = isJsonObject(existing.metadata) ? existing.metadata : {};
+  const expiresAt = typeof metadata.expiresAt === 'string' ? Date.parse(metadata.expiresAt) : NaN;
+  if (metadata.expiredAt || (Number.isFinite(expiresAt) && expiresAt <= Date.now())) {
+    throw new Error('生成资源已到期销毁，请重新生成');
+  }
   const version = existing.versions?.find((candidate) => candidate.version === 1);
   const existingSize = Number(existing.sizeBytes);
   const versionSize = version ? Number(version.sizeBytes) : expected.sizeBytes;
@@ -975,6 +991,9 @@ function assertExistingArchiveMatches(
     mimeType: expected.mimeType,
     sizeBytes: expected.sizeBytes,
     sha256: expected.sha256,
+    ...(existing.metadata && isJsonObject(existing.metadata)
+      ? { metadata: existing.metadata }
+      : {}),
   };
 }
 

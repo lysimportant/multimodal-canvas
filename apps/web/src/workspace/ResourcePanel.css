@@ -69,6 +69,17 @@
   overflow-wrap: anywhere;
 }
 
+.asset-card-expired {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  height: 100%;
+  justify-content: center;
+  overflow-wrap: anywhere;
+  padding: 8px;
+  text-align: center;
+}
+
 .resource-drawer.is-collapsed > .resource-pagination {
   display: none;
 }

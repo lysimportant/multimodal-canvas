@@ -1,5 +1,4 @@
 import {
-  image2proVideoContractForModel,
   isGeminiChatImageModel,
   type MediaType,
   type ModelSelection,
@@ -237,7 +236,6 @@ function normalizeModel(candidate: unknown, refreshedAt: string): ModelCatalogEn
 }
 
 function inferMediaTypes(modelAlias: string): MediaType[] {
-  if (image2proVideoContractForModel(modelAlias)) return ['video'];
   if (isGeminiChatImageModel(modelAlias)) return ['image'];
   const normalized = modelAlias.trim().toLowerCase();
   if (/^(gpt-image|dall[-_]?e|imagen|flux|sdxl|stable[-_]?diffusion|midjourney)/.test(normalized)) {

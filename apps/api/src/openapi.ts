@@ -1311,6 +1311,7 @@ export const openApiDocument = {
     '/v1/assets/uploads': {
       post: {
         tags: ['assets'],
+        description: 'Upload one file up to 512 MB (536870912 bytes).',
         requestBody: {
           required: true,
           content: {
@@ -1326,7 +1327,7 @@ export const openApiDocument = {
         responses: {
           '201': response('Asset uploaded', envelope('asset', assetSchema)),
           '400': response('Invalid upload', errorSchema),
-          '413': response('File exceeds upload limit', errorSchema),
+          '413': response('File exceeds the 512 MB upload limit (upload_too_large)', errorSchema),
           '415': response('Unsupported media type', errorSchema),
         },
       },
@@ -1344,7 +1345,7 @@ export const openApiDocument = {
                 properties: {
                   name: { type: 'string' },
                   mimeType: { type: 'string' },
-                  sizeBytes: { type: 'integer', minimum: 1 },
+                  sizeBytes: { type: 'integer', minimum: 1, maximum: 536870912 },
                   sha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
                   tags: { type: 'array', items: { type: 'string' } },
                 },
@@ -1357,6 +1358,7 @@ export const openApiDocument = {
             $ref: '#/components/schemas/UploadInitialization',
           }),
           '400': response('Invalid request', errorSchema),
+          '413': response('File exceeds the 512 MB upload limit (upload_too_large)', errorSchema),
           '415': response('Unsupported media type', errorSchema),
         },
       },
@@ -1373,6 +1375,8 @@ export const openApiDocument = {
           '204': response('Upload bytes accepted'),
           '400': response('Integrity validation failed', errorSchema),
           '404': response('Upload not found', errorSchema),
+          '410': response('Upload session expired; upload again (upload_expired)', errorSchema),
+          '413': response('File exceeds the 512 MB upload limit (upload_too_large)', errorSchema),
         },
       },
     },
@@ -1390,6 +1394,8 @@ export const openApiDocument = {
           '400': response('Integrity validation failed', errorSchema),
           '404': response('Upload not found', errorSchema),
           '409': response('Upload metadata or content is not ready', errorSchema),
+          '410': response('Upload session expired; upload again (upload_expired)', errorSchema),
+          '413': response('File exceeds the 512 MB upload limit (upload_too_large)', errorSchema),
         },
       },
     },
@@ -2614,7 +2620,7 @@ export const openApiDocument = {
           uploadId: { type: 'string' },
           name: { type: 'string' },
           mimeType: { type: 'string' },
-          sizeBytes: { type: 'integer', minimum: 1 },
+          sizeBytes: { type: 'integer', minimum: 1, maximum: 536870912 },
           sha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
         },
         additionalProperties: false,

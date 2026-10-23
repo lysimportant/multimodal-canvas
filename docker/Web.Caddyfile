@@ -11,7 +11,13 @@
 		X-Content-Type-Options nosniff
 		Referrer-Policy same-origin
 	}
-	request_body {
+	# 512 MiB 文件另留 1 MiB multipart 封装空间；其它请求保持既有限制。
+	@assetUploads path /v1/assets/uploads /v1/assets/uploads/*
+	request_body @assetUploads {
+		max_size 537919488
+	}
+	@otherRequests not path /v1/assets/uploads /v1/assets/uploads/*
+	request_body @otherRequests {
 		max_size 100MB
 	}
 	@api path /v1/* /health /documentation /documentation/*

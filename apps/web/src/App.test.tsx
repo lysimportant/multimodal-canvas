@@ -1035,6 +1035,39 @@ describe('App 资源抽屉集成', () => {
     await waitFor(() => expect(view.resource!.assets).toHaveLength(0));
   });
 
+  it('超过 512 MB 在读取文件和发起上传前提示用户', async () => {
+    await renderCanvas();
+    const file = new File(['synthetic'], 'large.png', { type: 'image/png' });
+    const readFile = vi.fn();
+    Object.defineProperty(file, 'size', { value: 512 * 1024 * 1024 + 1 });
+    Object.defineProperty(file, 'arrayBuffer', { value: readFile });
+    act(() => view.resource!.onFilesSelected([file]));
+    await waitFor(() => expect(view.resource!.isUploading).toBe(false));
+    expect(await screen.findByText(/超过单文件 512 MB 上传上限/)).toBeVisible();
+    expect(readFile).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/uploads/'))).toBe(false);
+  });
+
+  it.each([
+    [410, 'upload_expired', '上传会话已过期'],
+    [504, undefined, '上传超时'],
+  ] as const)('上传初始化返回 %s 时提示可重试的中文原因', async (status, error, message) => {
+    const api = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith('/v1/assets/uploads/init')
+        ? json({ error }, status)
+        : api(input, init),
+    );
+    await renderCanvas();
+    const file = new File(['image'], 'retry.png', { type: 'image/png' });
+    Object.defineProperty(file, 'arrayBuffer', {
+      value: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+    act(() => view.resource!.onFilesSelected([file]));
+    expect(await screen.findByText(new RegExp(message))).toBeVisible();
+    expect(view.resource!.isUploading).toBe(false);
+  });
+
   it.each(['选择文件', '拖入文件'] as const)(
     '%s 回调持续同步上传状态、进度和新增资源',
     async (entry) => {
@@ -2941,7 +2974,7 @@ describe('App 节点参数提交', () => {
     [
       'image',
       { quality: 'standard', aspectRatio: '1:1' },
-      { quality: 'standard', size: '1024x1024' },
+      { quality: 'standard', aspectRatio: '1:1' },
     ],
     ['image', { quality: '2k', aspectRatio: '16:9' }, { size: '2048x1152' }],
     ['image', { quality: '3k', aspectRatio: '4:3' }, { size: '3072x2304' }],

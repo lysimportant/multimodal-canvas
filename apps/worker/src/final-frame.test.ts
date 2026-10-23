@@ -54,6 +54,89 @@ function blobStore(): ResultBlobStore & { puts: string[] } {
 }
 
 describe('applyVideoFinalFrame', () => {
+  it('assigns 72 hours to a new final-frame image and preserves its deadline on retry', async () => {
+    const rows: Record<string, unknown>[] = [];
+    let saved: Record<string, unknown> | undefined;
+    const prisma = {
+      asset: {
+        async findUnique({ where }: { where: { id: string } }) {
+          return where.id === archived.assetId ? { metadata: {} } : (saved ?? null);
+        },
+        async update() {},
+      },
+      async $transaction(callback: (tx: unknown) => Promise<void>) {
+        await callback({
+          asset: {
+            async create({ data }: { data: Record<string, unknown> }) {
+              rows.push(data);
+              saved = { ...data, versions: [{ version: 1 }] };
+            },
+          },
+          assetVersion: {
+            async create({ data }: { data: Record<string, unknown> }) {
+              rows.push(data);
+            },
+          },
+        });
+      },
+    } as unknown as PrismaClient;
+    const input = {
+      runId: 'retained-final-frame',
+      snapshot: videoSnapshot('create_asset'),
+      archived,
+      content: Buffer.from('video'),
+      videoMimeType: 'video/mp4',
+      contentKey: 'assets/video/v1',
+      prisma,
+      blobStore: blobStore(),
+      timeoutMs: 1000,
+      maxBytes: 1024,
+      extractor: async () => ({
+        content: jpeg,
+        mimeType: 'image/jpeg' as const,
+        seekWindowSeconds: 1,
+      }),
+    };
+    const first = await applyVideoFinalFrame(input);
+    expect(first.status).toBe('ready');
+    const metadata = rows[0].metadata as Record<string, unknown>;
+    expect(metadata).toMatchObject({ generated: true, retentionHours: 72 });
+    expect(Date.parse(String(metadata.expiresAt)) - Date.parse(String(metadata.generatedAt))).toBe(
+      72 * 60 * 60 * 1000,
+    );
+    expect(rows[1].metadata).toMatchObject({
+      generatedAt: metadata.generatedAt,
+      expiresAt: metadata.expiresAt,
+    });
+    expect(await applyVideoFinalFrame(input)).toEqual(first);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('does not recreate a derivative for an expired source video', async () => {
+    const blob = blobStore();
+    const prisma = {
+      asset: {
+        async findUnique() {
+          return { metadata: { expiresAt: '2000-01-01T00:00:00.000Z' } };
+        },
+      },
+    } as unknown as PrismaClient;
+    const result = await applyVideoFinalFrame({
+      runId: 'expired-source',
+      snapshot: videoSnapshot('create_asset'),
+      archived,
+      content: Buffer.from('video'),
+      videoMimeType: 'video/mp4',
+      contentKey: 'assets/video/v1',
+      prisma,
+      blobStore: blob,
+      timeoutMs: 1000,
+      maxBytes: 1024,
+      extractor: async () => ({ content: jpeg, mimeType: 'image/jpeg', seekWindowSeconds: 1 }),
+    });
+    expect(result.status).toBe('failed');
+    expect(blob.puts).toEqual([]);
+  });
   it('skips extraction when the node action is omitted', async () => {
     const blob = blobStore();
     const result = await applyVideoFinalFrame({

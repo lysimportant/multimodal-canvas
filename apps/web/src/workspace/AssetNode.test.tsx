@@ -230,6 +230,88 @@ function mockThumbnail(width: number, height: number) {
   });
 }
 
+describe('生成资源保留期', () => {
+  it('在节点信息中展示生成和销毁时间，键盘可打开独立销毁卡片', async () => {
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'retained-image',
+          version: 1,
+          mimeType: 'image/png',
+          metadata: {
+            generatedAt: '2099-10-23T00:00:00Z',
+            expiresAt: '2099-10-26T00:00:00Z',
+            retentionHours: 72,
+          },
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    const trigger = screen.getByRole('button', { name: '查看销毁时间：文案生成' });
+    act(() => trigger.focus());
+    const expiry = await screen.findByRole('group', { name: '资源销毁时间' });
+    await waitFor(() => expect(within(expiry).getByText(/保留 72 小时/)).toBeVisible());
+    expect(expiry.querySelector('time')).toHaveAttribute('datetime', '2099-10-26T00:00:00.000Z');
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const info = screen.getByRole('dialog', { name: '节点信息' });
+    expect(
+      within(info).getByText('资源生成时间').nextElementSibling?.querySelector('time'),
+    ).toHaveAttribute('datetime', '2099-10-23T00:00:00.000Z');
+    expect(
+      within(info).getByText('资源销毁时间').nextElementSibling?.querySelector('time'),
+    ).toHaveAttribute('datetime', '2099-10-26T00:00:00.000Z');
+  });
+
+  it('鼠标悬停销毁时间按钮即可显示悬浮卡片', async () => {
+    renderNode(
+      makeNode({
+        resultAsset: {
+          assetId: 'hover-result',
+          version: 1,
+          metadata: { expiresAt: '2099-10-26T00:00:00Z' },
+        },
+      }),
+    );
+    await userEvent.hover(screen.getByRole('button', { name: '查看销毁时间：文案生成' }));
+    await waitFor(() => expect(screen.getByRole('group', { name: '资源销毁时间' })).toBeVisible());
+  });
+
+  it('到期保留明确提醒，并禁止下载、分享和基于旧图片编辑', () => {
+    const editImage = vi.fn();
+    renderNode(
+      makeNode({
+        mediaType: 'image',
+        runStatus: 'succeeded',
+        resultAsset: {
+          assetId: 'expired-image',
+          version: 1,
+          mimeType: 'image/png',
+          metadata: { expiresAt: '2020-10-26T00:00:00Z' },
+        },
+      }),
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      { editImage },
+    );
+    expect(screen.getByText('生成资源已到期')).toBeVisible();
+    expect(screen.getByRole('button', { name: '下载图片' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '修改图片：文案生成' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /分享/ })).not.toBeInTheDocument();
+  });
+
+  it('未标记保留期的旧结果不展示销毁入口', () => {
+    renderNode(makeNode({ resultAsset: { assetId: 'old-result', version: 1 } }));
+    expect(screen.queryByRole('button', { name: /查看销毁时间/ })).not.toBeInTheDocument();
+  });
+});
+
 beforeEach(() => {
   /** rc-util 测试环境固定 Portal ID；恢复唯一 ID，避免 Tooltip 卸载清掉 Modal 的 Escape 注册。 */
   vi.stubEnv('NODE_ENV', 'development');

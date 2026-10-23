@@ -8,16 +8,8 @@ import {
   isUnadaptedYuanliuVideoModel,
   unadaptedYuanliuVideoModelReason,
 } from './yuanliu-video-contract.js';
-import {
-  image2proVideoContractForModel,
-  Image2proVideoParameterError,
-  isRetiredImage2proVideoModel,
-  retiredImage2proVideoModelReason,
-  resolveImage2proVideoParameters,
-} from './image2pro-video-contract.js';
 export * from './video-recreation.js';
 export * from './moon-video-contract.js';
-export * from './image2pro-video-contract.js';
 export * from './image-chat-contract.js';
 export * from './yuanliu-video-contract.js';
 
@@ -161,6 +153,8 @@ export const providerJobSchema = z.object({
 
 export const runResultAssetSchema = z.object({
   assetId: z.string().min(1),
+  /** 生成结果的保存时间和到期策略；旧运行可省略。 */
+  metadata: z.record(z.unknown()).optional(),
   version: z.number().int().positive().optional(),
   contentUrl: z.string().min(1).optional(),
   mimeType: z.string().min(1).optional(),
@@ -1858,7 +1852,6 @@ export type VideoModelFamily =
   | 'moon-seedance-2'
   | 'moon-seedance-2.5-official'
   | 'moon-grok-v1.5-video'
-  | 'image2pro'
   | 'yuanliu'
   | 'minimax-h3'
   | 'wan3'
@@ -1874,7 +1867,6 @@ export type VideoModelFamily =
 export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
   const exactId = (modelAlias ?? '').trim();
   if (!exactId) return 'unknown';
-  if (image2proVideoContractForModel(exactId)) return 'image2pro';
   if (yuanliuVideoContractForModel(exactId)) return 'yuanliu';
   if (exactId === 'minimax-h3') return 'moon-minimax-h3';
   if (exactId === 'MiniMax-H3') return 'minimax-h3';
@@ -2289,8 +2281,6 @@ export function isGrokImagineVideo15(modelAlias: string | undefined): boolean {
 export function confirmedVideoInputRolesForModel(modelAlias?: string): readonly PortRole[] {
   const yuanliuContract = yuanliuVideoContractForModel(modelAlias);
   if (yuanliuContract) return yuanliuContract.confirmedInputRoles;
-  const image2proContract = image2proVideoContractForModel(modelAlias);
-  if (image2proContract) return image2proContract.confirmedInputRoles;
   const moonContract = moonVideoContractForModel(modelAlias);
   if (moonContract) return moonContract.confirmedInputRoles;
   const family = videoFamilyForModel(modelAlias);
@@ -2535,9 +2525,7 @@ export function precheckVideoGenerationInputs(
   } = {},
 ): VideoGenerationPrecheck {
   const collectionMode =
-    !options.videoMode &&
-    (image2proVideoContractForModel(options.modelAlias) ||
-      yuanliuVideoContractForModel(options.modelAlias))
+    !options.videoMode && yuanliuVideoContractForModel(options.modelAlias)
       ? 'omni_reference'
       : options.videoMode;
   const { inputSet } = collectVideoInputSet(inputs, collectionMode);

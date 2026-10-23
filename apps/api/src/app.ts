@@ -1,3 +1,4 @@
+import { registerAssetExpiration } from './asset-expiration';
 import { accountError } from './account-errors';
 import {
   AgentAccessService,
@@ -228,7 +229,16 @@ export type BuildAppOptions = {
   rateLimiter?: RateLimiter;
 };
 
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
+// 请求体、SSE 和模型引用下载沿用现有配置上限，上传扩容不影响这些边界。
+const MAX_CONFIGURED_BYTES = 100 * 1024 * 1024;
+// multipart 边界和文件头不计入单文件的 512 MB 限额。
+const MAX_MULTIPART_BODY_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024;
+const UPLOAD_LIMIT_ERROR = {
+  error: 'file exceeds the 512 MB upload limit',
+  code: 'upload_too_large',
+  maxBytes: MAX_UPLOAD_BYTES,
+};
 const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_SSE_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_SSE_MAX_EVENT_BYTES = 256 * 1024;
@@ -1248,6 +1258,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       });
     }
     const code = isErrorCode(error) ? error.code : undefined;
+    if (
+      code === 'FST_REQ_FILE_TOO_LARGE' ||
+      (code === 'FST_ERR_CTP_BODY_TOO_LARGE' &&
+        ((request.method === 'POST' && request.url.split('?', 1)[0] === '/v1/assets/uploads') ||
+          (request.method === 'PUT' && /^\/v1\/assets\/uploads\/[^/?]+(?:\?|$)/.test(request.url))))
+    ) {
+      return reply.code(413).send(UPLOAD_LIMIT_ERROR);
+    }
     if (code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
       return reply.code(413).send({
         error: 'request body exceeds configured limit',
@@ -1284,10 +1302,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.observability ?? createEnvironmentObservability({ logger: app.log });
   const requestSpans = new WeakMap<object, ObservabilitySpan>();
   const projectStore = options.projectStore ?? new MemoryProjectStore();
-  const assetStore: AssetStore = withAssetOwnershipPolicy(
-    options.assetStore ?? new MemoryAssetStore(),
-    projectStore,
-  );
+  const sourceAssetStore = options.assetStore ?? new MemoryAssetStore();
+  registerAssetExpiration(app, sourceAssetStore);
+  const assetStore: AssetStore = withAssetOwnershipPolicy(sourceAssetStore, projectStore);
   const providerName =
     options.runService instanceof MemoryRunService
       ? options.runService.getProviderName()
@@ -4014,61 +4031,69 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { assets: result.assets, total: result.total, page, pageSize };
   });
 
-  app.post('/v1/assets/uploads', { bodyLimit: MAX_UPLOAD_BYTES }, async (request, reply) => {
-    const file = await request.file();
-    if (!file) {
-      return reply.code(400).send({ error: 'file is required' });
-    }
+  app.post(
+    '/v1/assets/uploads',
+    { bodyLimit: MAX_MULTIPART_BODY_BYTES },
+    async (request, reply) => {
+      const file = await request.file();
+      if (!file) {
+        return reply.code(400).send({ error: 'file is required' });
+      }
 
-    const content = await file.toBuffer();
-    const validation = validateUploadContent(file.filename, file.mimetype, content);
-    if (!validation.ok) return reply.code(validation.status).send({ error: validation.error });
+      const content = await file.toBuffer();
+      const validation = validateUploadContent(file.filename, file.mimetype, content);
+      if (!validation.ok)
+        return reply
+          .code(validation.status)
+          .send(validation.status === 413 ? UPLOAD_LIMIT_ERROR : { error: validation.error });
 
-    const metadata = await tryExtractMediaMetadata(
-      mediaMetadataExtractor,
-      {
-        content,
-        mimeType: file.mimetype || 'application/octet-stream',
+      const metadata = await tryExtractMediaMetadata(
+        mediaMetadataExtractor,
+        {
+          content,
+          mimeType: file.mimetype || 'application/octet-stream',
+          mediaType: validation.mediaType,
+        },
+        request.log,
+      );
+      const derivatives = await tryGenerateMediaDerivatives(
+        mediaDerivativeGenerator,
+        {
+          content,
+          mimeType: file.mimetype || 'application/octet-stream',
+          mediaType: validation.mediaType,
+        },
+        request.log,
+      );
+
+      const asset = await assetStore.create({
+        name: file.filename,
         mediaType: validation.mediaType,
-      },
-      request.log,
-    );
-    const derivatives = await tryGenerateMediaDerivatives(
-      mediaDerivativeGenerator,
-      {
-        content,
         mimeType: file.mimetype || 'application/octet-stream',
-        mediaType: validation.mediaType,
-      },
-      request.log,
-    );
+        content,
+        ...(derivatives ? { derivatives } : {}),
+        ...(metadata ? { metadata } : {}),
+        ...ownerInput(requestPrincipals, request),
+      });
 
-    const asset = await assetStore.create({
-      name: file.filename,
-      mediaType: validation.mediaType,
-      mimeType: file.mimetype || 'application/octet-stream',
-      content,
-      ...(derivatives ? { derivatives } : {}),
-      ...(metadata ? { metadata } : {}),
-      ...ownerInput(requestPrincipals, request),
-    });
-
-    const { content: _content, ...response } = asset;
-    return reply.code(201).send({ asset: response });
-  });
+      const { content: _content, ...response } = asset;
+      return reply.code(201).send({ asset: response });
+    },
+  );
 
   app.post('/v1/assets/uploads/init', async (request, reply) => {
     const result = z
       .object({
         name: z.string().trim().min(1).max(240),
         mimeType: z.string().trim().min(1).max(160),
-        sizeBytes: z.number().int().positive().max(MAX_UPLOAD_BYTES),
+        sizeBytes: z.number().int().positive(),
         sha256: z.string().regex(/^[a-f0-9]{64}$/i),
         tags: z.array(z.string().trim().min(1).max(64)).max(32).optional(),
       })
       .strict()
       .safeParse(request.body);
     if (!result.success) return reply.code(400).send({ error: 'invalid upload initialization' });
+    if (result.data.sizeBytes > MAX_UPLOAD_BYTES) return reply.code(413).send(UPLOAD_LIMIT_ERROR);
     const mediaType = detectMediaType(result.data.name, result.data.mimeType);
     if (!mediaType) return reply.code(415).send({ error: 'unsupported media type' });
     const upload = await uploadSessionStore.create({
@@ -4096,12 +4121,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     async (request, reply) => {
       const scope = uploadScope(requestPrincipals, request);
       const upload = await uploadSessionStore.get(request.params.uploadId, scope);
-      if (!upload || isUploadExpired(upload)) {
+      if (!upload) return reply.code(404).send({ error: 'upload not found' });
+      if (isUploadExpired(upload)) {
         await uploadSessionStore.delete(request.params.uploadId, scope);
-        return reply.code(404).send({ error: 'upload not found or expired' });
+        return reply.code(410).send({
+          error: 'upload session expired; please upload the file again',
+          code: 'upload_expired',
+        });
       }
       const content = Buffer.isBuffer(request.body) ? request.body : Buffer.from([]);
-      if (content.byteLength > MAX_UPLOAD_BYTES || content.byteLength !== upload.sizeBytes) {
+      if (content.byteLength > MAX_UPLOAD_BYTES || upload.sizeBytes > MAX_UPLOAD_BYTES)
+        return reply.code(413).send(UPLOAD_LIMIT_ERROR);
+      if (content.byteLength !== upload.sizeBytes) {
         return reply.code(400).send({ error: 'uploaded size does not match initialization' });
       }
       const actualSha256 = sha256(content);
@@ -4125,11 +4156,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       .strict()
       .safeParse(request.body);
     if (!result.success) return reply.code(400).send({ error: 'invalid upload completion' });
+    if (result.data.sizeBytes > MAX_UPLOAD_BYTES) return reply.code(413).send(UPLOAD_LIMIT_ERROR);
     const scope = uploadScope(requestPrincipals, request);
     const upload = await uploadSessionStore.get(result.data.uploadId, scope);
-    if (!upload || isUploadExpired(upload)) {
+    if (!upload) return reply.code(404).send({ error: 'upload not found' });
+    if (isUploadExpired(upload)) {
       await uploadSessionStore.delete(result.data.uploadId, scope);
-      return reply.code(404).send({ error: 'upload not found or expired' });
+      return reply.code(410).send({
+        error: 'upload session expired; please upload the file again',
+        code: 'upload_expired',
+      });
     }
     if (
       upload.name !== result.data.name ||
@@ -4144,7 +4180,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const content = await uploadSessionStore.getContent(upload.uploadId, scope);
     if (!content) return reply.code(409).send({ error: 'upload content is not ready' });
     const validation = validateUploadContent(upload.name, upload.mimeType, content);
-    if (!validation.ok || sha256(content) !== upload.sha256) {
+    if (!validation.ok && validation.status === 413) {
+      await uploadSessionStore.delete(result.data.uploadId, scope);
+      return reply.code(413).send(UPLOAD_LIMIT_ERROR);
+    }
+    if (
+      !validation.ok ||
+      content.byteLength !== upload.sizeBytes ||
+      sha256(content) !== upload.sha256
+    ) {
       await uploadSessionStore.delete(result.data.uploadId, scope);
       return reply.code(400).send({ error: 'uploaded content failed integrity validation' });
     }
@@ -5029,6 +5073,7 @@ function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
     const extension = output.format
       ? `.${output.format.replace(/[^a-z0-9]+/gi, '').toLowerCase()}`
       : extensionForResultMime(output.mimeType, result.mediaType);
+    const generatedAt = new Date();
     const asset = await assetStore.create({
       projectId: run.projectId,
       name: `${label}${extension}`,
@@ -5037,6 +5082,9 @@ function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
       content: output.content,
       metadata: {
         source: 'run',
+        generatedAt: generatedAt.toISOString(),
+        expiresAt: new Date(generatedAt.getTime() + 72 * 60 * 60 * 1000).toISOString(),
+        retentionHours: 72,
         runId: run.id,
         targetNodeId: result.targetNodeId,
         provider: result.provider,
@@ -5046,6 +5094,7 @@ function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
     });
     return {
       assetId: asset.id,
+      metadata: asset.metadata,
       version: 1,
       ...(asset.contentUrl ? { contentUrl: asset.contentUrl } : {}),
       mimeType: asset.mimeType,
@@ -5080,7 +5129,7 @@ function validateUploadContent(
   | { ok: false; status: 400 | 413 | 415; error: string } {
   if (content.byteLength === 0) return { ok: false, status: 400, error: 'file cannot be empty' };
   if (content.byteLength > MAX_UPLOAD_BYTES) {
-    return { ok: false, status: 413, error: 'file exceeds the 100 MB upload limit' };
+    return { ok: false, status: 413, error: UPLOAD_LIMIT_ERROR.error };
   }
   const mediaType = detectMediaType(name, mimeType);
   if (!mediaType) return { ok: false, status: 415, error: 'unsupported media type' };
@@ -5310,7 +5359,7 @@ function errorStatusCode(value: unknown): number {
 function parseByteLimit(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_UPLOAD_BYTES
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_CONFIGURED_BYTES
     ? parsed
     : fallback;
 }
