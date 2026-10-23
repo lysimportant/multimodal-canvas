@@ -12,6 +12,7 @@ import {
   Camera,
   FolderPlus,
   Link2,
+  Play,
   Plus,
   Replace,
   Search,
@@ -88,6 +89,8 @@ export type ResourceMentionEditorProps = {
   onReferencePickToggle?: () => void;
   /** 资源条的持久化优先顺序，按 assetId 与冻结版本精确匹配。 */
   resourceRefs?: readonly NodeResourceRef[];
+  /** 父层实际发送编号，仅用于无障碍描述；键为 JSON.stringify([assetId, assetVersion])。 */
+  referenceLabels?: ReadonlyMap<string, readonly string[]>;
   /** 回传完整资源条顺序；同步保存错误显示在编辑警告区，不修改正文或连线。 */
   onResourceReorder?: (resources: readonly { assetId: string; assetVersion?: number }[]) => void;
   /** 原子移除指定版本的连线和引用；文档保留全部文字，失败可同步抛错。 */
@@ -170,6 +173,7 @@ export function ResourceMentionEditor({
   onSearchProjectResources,
   connectedAssets = [],
   referencePickActive = false,
+  referenceLabels,
   onReferencePickToggle,
   resourceRefs = [],
   onResourceReorder,
@@ -208,7 +212,13 @@ export function ResourceMentionEditor({
   const pickerDismissedRef = useRef(false);
   const fileInputRef = useRef<FilePickerHandle>(null);
   const caretRef = useRef(initialText.length);
-  const [trigger, setTrigger] = useState<{ start: number; query: string } | null>(null);
+  const [trigger, setTriggerState] = useState<{ start: number; query: string } | null>(null);
+  const triggerRef = useRef<typeof trigger>(null);
+  const typedAtRef = useRef<number | null>(null);
+  const setTrigger = useCallback((next: typeof trigger) => {
+    triggerRef.current = next;
+    setTriggerState(next);
+  }, []);
   const [activeIndex, setActiveIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const [mediaFilter, setMediaFilter] = useState<(typeof RESOURCE_FILTERS)[number]>('all');
@@ -317,6 +327,8 @@ export function ResourceMentionEditor({
 
   const restoreSnapshot = useCallback(
     (snapshot: EditorSnapshot) => {
+      typedAtRef.current = null;
+      setTrigger(null);
       textRef.current = snapshot.text;
       rangesRef.current = normalizeRanges(snapshot.text, snapshot.ranges);
       setText(snapshot.text);
@@ -334,6 +346,7 @@ export function ResourceMentionEditor({
       requestAnimationFrame(() => {
         const input = textareaRef.current;
         if (!input) return;
+        if (input.selectionStart !== input.selectionEnd) return;
         const position = Math.min(caretRef.current, input.value.length);
         input.focus();
         input.setSelectionRange(position, position);
@@ -367,7 +380,6 @@ export function ResourceMentionEditor({
       const nextRanges = updateRangesForTextEdit(previousText, nextText, rangesRef.current, edit);
       commitState(nextText, nextRanges);
       setSearchQuery(null);
-      updateTrigger(nextText, caretRef.current, setTrigger);
     },
     [commitState],
   );
@@ -380,6 +392,7 @@ export function ResourceMentionEditor({
       setResourceDialogId(null);
     }
     if (identityRef.current !== nodeId) {
+      typedAtRef.current = null;
       identityRef.current = nodeId;
       draggedResourceRef.current = null;
       setDraggedResourceKey(null);
@@ -403,6 +416,7 @@ export function ResourceMentionEditor({
       return;
     }
     setRetainedMentions(incomingRanges);
+    typedAtRef.current = null;
     pendingLocalSignatureRef.current = null;
     historyRef.current = { past: [], future: [] };
     textRef.current = incomingText;
@@ -587,6 +601,7 @@ export function ResourceMentionEditor({
   ]);
 
   const closePicker = useCallback(() => {
+    typedAtRef.current = null;
     pickerDismissedRef.current = true;
     setTrigger(null);
     setReplaceMentionId(null);
@@ -723,7 +738,7 @@ export function ResourceMentionEditor({
       const selectionEnd = editorFocused
         ? (input?.selectionEnd ?? selectionStart)
         : caretRef.current;
-      const activeTrigger = trigger ?? findMentionTrigger(textRef.current, selectionStart);
+      const activeTrigger = trigger;
       const start = activeTrigger?.start ?? selectionStart;
       const end = Math.max(start, selectionEnd);
       const token = INLINE_REFERENCE;
@@ -938,8 +953,38 @@ export function ResourceMentionEditor({
   }, [bindingDraft, bindingMentionId, commitState]);
 
   const handleTextChange = useCallback(
-    (value: string, start: number, _end: number, references?: InlinePromptPosition[]) => {
-      pickerDismissedRef.current = false;
+    (value: string, start: number, end: number, references?: InlinePromptPosition[]) => {
+      const previous = textRef.current;
+      const edit = inferTextEdit(previous, value);
+      const inserted = value.slice(edit.editStart, edit.editStart + edit.replacementLength);
+      const active = triggerRef.current;
+      const typedAt = typedAtRef.current;
+      typedAtRef.current = null;
+      let nextTrigger: typeof trigger = null;
+      if (
+        typedAt !== null &&
+        inserted === '@' &&
+        edit.editStart === typedAt &&
+        start === typedAt + 1 &&
+        start === end
+      ) {
+        nextTrigger = { start: typedAt, query: '' };
+        pickerDismissedRef.current = false;
+      } else if (
+        active &&
+        !pickerDismissedRef.current &&
+        start === end &&
+        edit.editStart > active.start &&
+        edit.editEnd <= active.start + active.query.length + 1
+      ) {
+        const query = value.slice(active.start + 1, start);
+        if (
+          start > active.start &&
+          value[active.start] === '@' &&
+          /^[\p{L}\p{N}\p{M}]*$/u.test(query)
+        )
+          nextTrigger = { start: active.start, query };
+      }
       caretRef.current = start;
       if (references) {
         const nextRanges = references.flatMap(({ id, start }) => {
@@ -949,16 +994,46 @@ export function ResourceMentionEditor({
         commitState(value, nextRanges);
         setSearchQuery(null);
         setProtectedEditMessage(null);
-        updateTrigger(value, start, setTrigger);
       } else handleCommittedText(value);
+      setTrigger(nextTrigger);
     },
     [handleCommittedText, commitState],
+  );
+
+  const handleInputIntent = useCallback(
+    (inputType: string, data: string | null) => {
+      if (
+        inputType === 'insertFromPaste' ||
+        inputType === 'insertFromDrop' ||
+        inputType.startsWith('history')
+      ) {
+        closePicker();
+      } else if (
+        (inputType === 'insertText' ||
+          inputType === 'insertTextCommitted' ||
+          inputType === 'insertCompositionText') &&
+        data === '@'
+      ) {
+        typedAtRef.current = textareaRef.current?.selectionStart ?? null;
+        // compositionend 的 DOM 已包含提交字符，普通 beforeinput 尚未插入。
+        if (inputType !== 'insertText' && typedAtRef.current !== null) typedAtRef.current -= 1;
+      }
+    },
+    [closePicker],
   );
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLElement>) => {
       if (disabled || isImeKeyboardEvent(event) || textareaRef.current?.isComposing()) return;
       const command = event.metaKey || event.ctrlKey;
+      typedAtRef.current =
+        event.key === '@' && !command && !event.altKey
+          ? (textareaRef.current?.selectionStart ?? null)
+          : null;
+      if (
+        ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Tab'].includes(event.key)
+      )
+        closePicker();
       if (event.key === 'Backspace' || event.key === 'Delete') {
         const input = textareaRef.current!;
         const start = input.selectionStart;
@@ -970,6 +1045,7 @@ export function ResourceMentionEditor({
         const edit = { editStart, editEnd, replacementLength: 0 };
         if (rangesRef.current.some((range) => editTouchesMention(edit, range))) {
           event.preventDefault();
+          closePicker();
           handleCommittedText(
             textRef.current.slice(0, editStart) + textRef.current.slice(editEnd),
             edit,
@@ -1028,7 +1104,7 @@ export function ResourceMentionEditor({
         });
         return;
       }
-      if (event.key === 'Enter' && searchEntries.length > 0) {
+      if (event.key === 'Enter' && !event.shiftKey && searchEntries.length > 0) {
         event.preventDefault();
         selectMention(searchEntries[activeIndex % searchEntries.length]);
       }
@@ -1097,9 +1173,8 @@ export function ResourceMentionEditor({
       const start = input.selectionStart ?? 0;
       const end = input.selectionEnd ?? start;
       caretRef.current = start;
-      if (pointer) pickerDismissedRef.current = false;
-      if (pickerDismissedRef.current) return;
-      setReplaceMentionId(null);
+      const active = triggerRef.current;
+      if (pointer || (active && start !== active.start + active.query.length + 1)) setTrigger(null);
       if (start !== end) {
         // 鼠标选字和选中引用原子均保留原生选区，不自动打开资源搜索。
         setTrigger(null);
@@ -1108,7 +1183,6 @@ export function ResourceMentionEditor({
       }
       const inside = rangesRef.current.find((range) => start > range.start && start < range.end);
       if (inside) setHoveredMentionId(inside.mention.mentionId);
-      updateTrigger(textRef.current, caretRef.current, setTrigger);
     },
     [disabled],
   );
@@ -1547,6 +1621,9 @@ export function ResourceMentionEditor({
               className={`resource-mention-thumb${unavailableReason ? ' is-missing' : ''}${draggedResourceKey === item.key ? ' is-reordering' : ''}`}
               role="article"
               aria-label={`参考资源 ${index + 1}：${item.name}`}
+              aria-description={referenceLabels
+                ?.get(resourceIdentity(item.assetId, item.assetVersion))
+                ?.join(' / ')}
               data-mention-id={item.mentionId}
               data-resource-key={item.key}
               draggable={Boolean(onResourceReorder) && !disabled}
@@ -1700,7 +1777,13 @@ export function ResourceMentionEditor({
                     </div>
                   }
                 >
-                  <span className="resource-mention-token" data-mention-id={mention.mentionId}>
+                  <span
+                    className="resource-mention-token"
+                    data-mention-id={mention.mentionId}
+                    aria-description={referenceLabels
+                      ?.get(resourceIdentity(mention.assetId, mention.assetVersion))
+                      ?.join(' / ')}
+                  >
                     <MentionPreview asset={asset} mediaType={mention.mediaType} thumbnail />
                   </span>
                 </Popover>
@@ -1711,6 +1794,7 @@ export function ResourceMentionEditor({
           onSelect={handleSelect}
           onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
+          onInputIntent={handleInputIntent}
           onScroll={() => pickerPopoverRef.current?.forceAlign()}
           placeholder={placeholder}
           ariaLabel={ariaLabel}
@@ -1791,7 +1875,7 @@ export function ResourceMentionEditor({
           <DialogContent
             className="resource-mention-dialog"
             overlayClassName="resource-mention-dialog-backdrop"
-            style={{ width: 'min(920px, 75vw)' }}
+            style={{ width: 'min(920px, calc(100vw - 32px))' }}
             aria-describedby={undefined}
             onPointerDown={(event) => event.stopPropagation()}
           >
@@ -2093,22 +2177,6 @@ function documentSignature(document: PromptDocument | undefined, fallbackText: s
   return `legacy:${fallbackText}`;
 }
 
-/** 光标前最新的 @ 即可开启查询，允许紧接普通正文；空白或另一个 @ 结束旧查询。 */
-function findMentionTrigger(text: string, caret: number): { start: number; query: string } | null {
-  const prefix = text.slice(0, caret);
-  const match = /@([^\s@]*)$/u.exec(prefix);
-  if (!match || match.index < 0) return null;
-  return { start: match.index, query: match[1] };
-}
-
-function updateTrigger(
-  text: string,
-  caret: number,
-  setter: (value: { start: number; query: string } | null) => void,
-) {
-  setter(findMentionTrigger(text, caret));
-}
-
 /** 按资源身份和冻结版本生成键；未冻结与已冻结版本保持不同。 */
 function resourceIdentity(assetId: string, assetVersion?: number): string {
   return JSON.stringify([assetId, assetVersion]);
@@ -2368,8 +2436,13 @@ function MentionMediaIcon({ mediaType }: { mediaType: MediaType }) {
           ? AudioLines
           : FileText;
   return (
-    <span className={`resource-mention-media-icon is-${mediaType}`} aria-hidden="true">
-      <Icon size={15} />
+    <span
+      className={`resource-mention-media-icon is-${mediaType}`}
+      {...(mediaType === 'audio' || mediaType === 'video'
+        ? { role: 'img', 'aria-label': mediaType === 'audio' ? '音频' : '视频' }
+        : { 'aria-hidden': true })}
+    >
+      <Icon size={15} aria-hidden="true" />
     </span>
   );
 }
@@ -2386,14 +2459,25 @@ function MentionPreview({
   className?: string;
   thumbnail?: boolean;
 }) {
+  if (mediaType === 'audio') return <MentionMediaIcon mediaType={mediaType} />;
   if (!canPreviewMentionAsset(asset)) return <MentionMediaIcon mediaType={mediaType} />;
-  return (
+  const preview = (
     <AssetPreview
       asset={asset as Asset}
       mode="compact"
       className={className}
       thumbnail={thumbnail && mediaType === 'image'}
     />
+  );
+  return mediaType === 'video' && className === 'resource-mention-preview' ? (
+    <span className="resource-mention-video-preview">
+      {preview}
+      <span className="resource-mention-video-play" role="img" aria-label="视频">
+        <Play size={10} fill="currentColor" aria-hidden="true" />
+      </span>
+    </span>
+  ) : (
+    preview
   );
 }
 

@@ -1731,7 +1731,7 @@ describe('ResourceMentionEditor', () => {
     render(
       <ResourceMentionEditor
         nodeId="node-image"
-        value="@"
+        value=""
         assets={[imageAsset]}
         onChange={vi.fn()}
         onDocumentChange={onDocumentChange}
@@ -1739,8 +1739,8 @@ describe('ResourceMentionEditor', () => {
     );
     const editor = screen.getByRole('textbox') as HTMLTextAreaElement;
     editor.focus();
-    setEditorSelection(editor, 1, 1);
-    fireEvent.select(editor);
+    await user.keyboard('@');
+    onDocumentChange.mockClear();
     expect(screen.getByRole('listbox')).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -1753,15 +1753,14 @@ describe('ResourceMentionEditor', () => {
     render(
       <ResourceMentionEditor
         nodeId="node-image-option-focus"
-        value="@"
+        value=""
         assets={[imageAsset]}
         onDocumentChange={vi.fn()}
       />,
     );
     const editor = screen.getByRole('textbox') as HTMLTextAreaElement;
     editor.focus();
-    setEditorSelection(editor, 1, 1);
-    fireEvent.select(editor);
+    await user.keyboard('@');
     await user.click(screen.getByRole('tab', { name: '项目资源' }));
     const option = screen.getByRole('option', { name: /产品图/ });
     option.focus();

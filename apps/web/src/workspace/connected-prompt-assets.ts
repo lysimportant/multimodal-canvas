@@ -1,7 +1,13 @@
 /**
  * 收集提示词资源条可用的连线输入，并补齐生成结果的预览地址。
  */
-import { promptDocumentSchema, type Asset, type PromptDocument } from '@multimodal-canvas/domain';
+import {
+  portRoleSchema,
+  promptDocumentSchema,
+  type Asset,
+  type PromptDocument,
+  type PortRole,
+} from '@multimodal-canvas/domain';
 
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { nodeEchoAssetVersion, resultAssetContentUrl } from './node-echo-text';
@@ -20,6 +26,8 @@ export type ConnectedPromptAsset = Pick<Asset, 'id' | 'name' | 'mediaType'> &
     referenceNeedsSync?: boolean;
     /** 来源版本未知或历史绑定存在歧义，不能借资源目录最新版建立引用。 */
     versionUnavailable?: boolean;
+    /** 视频编号保留每条实际连线的角色与保存顺序，不受资源条去重影响。 */
+    videoInputBindings?: readonly { nodeId: string; role: PortRole; sortOrder: number }[];
   };
 
 /** 来源绑定 ID 的保留前缀；旧 connected 别名不含此段。 */
@@ -57,12 +65,24 @@ export function collectConnectedPromptAssets(
 ): ConnectedPromptAsset[] {
   const items: ConnectedPromptAsset[] = [];
   const seen = new Set<string>();
-  const references = nodes.find((node) => node.id === nodeId)?.data.resourceRefs ?? [];
+  const target = nodes.find((node) => node.id === nodeId);
+  const references = target?.data.resourceRefs ?? [];
+  const roleOrders = new Map<string, number>();
   for (const edge of edges) {
     if (edge.target !== nodeId) continue;
+    const handle = edge.targetHandle ?? 'input:content';
+    const sortOrder = roleOrders.get(handle) ?? 0;
+    roleOrders.set(handle, sortOrder + 1);
     if (edge.targetHandle === 'input:imageEdit') continue;
     const source = nodes.find((node) => node.id === edge.source);
     if (!source) continue;
+    const parsedRole = portRoleSchema.safeParse(handle.slice('input:'.length));
+    const videoInputBindings =
+      target?.data.mediaType === 'video'
+        ? source.data.enabled !== false && parsedRole.success
+          ? [{ nodeId: source.id, role: parsedRole.data, sortOrder }]
+          : []
+        : undefined;
     const result = source.data.manualOutput ? undefined : source.data.resultAsset;
     const assetId = result?.assetId ?? source.data.assetId;
     if (!assetId) continue;
@@ -106,7 +126,18 @@ export function collectConnectedPromptAssets(
     const versionUnavailable =
       bindingUnavailable || (assetVersion === undefined && source.data.mode !== 'source');
     const identity = JSON.stringify([assetId, assetVersion]);
-    if (seen.has(identity)) continue;
+    if (seen.has(identity)) {
+      const previous = items.find(
+        (item) => JSON.stringify([item.id, item.assetVersion]) === identity,
+      );
+      if (previous && videoInputBindings) {
+        previous.videoInputBindings = [
+          ...(previous.videoInputBindings ?? []),
+          ...videoInputBindings,
+        ];
+      }
+      continue;
+    }
     seen.add(identity);
     const contentUrl =
       assetVersion !== undefined
@@ -125,6 +156,7 @@ export function collectConnectedPromptAssets(
       ...(reference && reference.assetVersion === undefined ? { referenceNeedsSync: true } : {}),
       ...(assetVersion !== undefined ? { assetVersion } : {}),
       ...(versionUnavailable ? { versionUnavailable: true } : {}),
+      ...(videoInputBindings ? { videoInputBindings } : {}),
       mediaType: source.data.mediaType,
       contentUrl,
       mimeType: catalog?.mimeType ?? result?.mimeType ?? source.data.mimeType ?? '',

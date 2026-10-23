@@ -1007,7 +1007,7 @@ export function AssetViewerDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       {open && (
         <DialogContent
-          className={`artifact-preview-viewer overflow-hidden${
+          className={`artifact-preview-viewer${
             kind === 'image' || kind === 'video' ? ' is-zoomable' : ''
           }${kind === 'image' ? ` is-image-viewer${imageExpanded ? ' is-expanded' : ''}` : ''}`}
           overlayClassName="artifact-preview-viewer-backdrop"

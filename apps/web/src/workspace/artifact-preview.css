@@ -133,7 +133,8 @@
   flex-direction: column;
   height: min(720px, 75dvh);
   max-height: 75dvh;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 12px 12px 16px;
   width: min(920px, 75vw);
   z-index: 81;

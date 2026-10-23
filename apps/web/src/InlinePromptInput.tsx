@@ -49,6 +49,8 @@ type InlinePromptInputProps = {
   onSelect: (pointer?: boolean) => void;
   onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
   onKeyUp: (event: KeyboardEvent<HTMLElement>) => void;
+  /** 区分手动输入、粘贴和历史恢复，避免扫描已有正文打开资源查询。 */
+  onInputIntent?: (inputType: string, data: string | null) => void;
   onScroll?: () => void;
   disabled?: boolean;
   placeholder?: string;
@@ -273,6 +275,7 @@ export const InlinePromptInput = forwardRef<InlinePromptInputHandle, InlinePromp
       onSelect,
       onKeyDown,
       onKeyUp,
+      onInputIntent,
       onScroll,
       disabled,
       placeholder,
@@ -432,6 +435,23 @@ export const InlinePromptInput = forwardRef<InlinePromptInputHandle, InlinePromp
           }}
           rows={4}
           {...nativeIme.bind}
+          onChange={(event) => {
+            const input = event.nativeEvent as InputEvent;
+            if (input.inputType?.startsWith('history') || input.inputType === 'insertFromDrop')
+              onInputIntent?.(input.inputType, input.data);
+            if (input.inputType === 'insertText' && input.data === '@')
+              onInputIntent?.('insertTextCommitted', input.data);
+            nativeIme.bind.onChange(event);
+          }}
+          onBeforeInput={(event) => {
+            const input = event.nativeEvent as InputEvent;
+            onInputIntent?.(input.inputType || 'insertText', input.data);
+          }}
+          onPaste={() => onInputIntent?.('insertFromPaste', null)}
+          onCompositionEnd={(event) => {
+            onInputIntent?.('insertCompositionText', event.data);
+            nativeIme.bind.onCompositionEnd(event);
+          }}
           aria-label={ariaLabel}
           aria-controls={controls}
           aria-expanded={expanded}
@@ -466,11 +486,23 @@ export const InlinePromptInput = forwardRef<InlinePromptInputHandle, InlinePromp
           contentEditable={!disabled}
           suppressContentEditableWarning
           spellCheck={false}
-          onInput={emit}
+          onInput={(event) => {
+            const input = event.nativeEvent as InputEvent;
+            if (input.inputType?.startsWith('history') || input.inputType === 'insertFromDrop')
+              onInputIntent?.(input.inputType, input.data);
+            if (input.inputType === 'insertText' && input.data === '@')
+              onInputIntent?.('insertTextCommitted', input.data);
+            emit();
+          }}
+          onBeforeInput={(event) => {
+            const input = event.nativeEvent as InputEvent;
+            onInputIntent?.(input.inputType || 'insertText', input.data);
+          }}
           onCompositionStart={() => {
             composingRef.current = true;
           }}
-          onCompositionEnd={() => {
+          onCompositionEnd={(event) => {
+            onInputIntent?.('insertCompositionText', event.data);
             composingRef.current = false;
             emit();
           }}
@@ -503,6 +535,7 @@ export const InlinePromptInput = forwardRef<InlinePromptInputHandle, InlinePromp
             }
           }}
           onPaste={(event) => {
+            onInputIntent?.('insertFromPaste', null);
             event.preventDefault();
             if (!disabled)
               insertText(

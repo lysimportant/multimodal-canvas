@@ -2853,19 +2853,29 @@ h2 {
   z-index: 90;
 }
 
-.resource-mention-dialog.resource-mention-dialog {
+/* 居中 Modal 自带 inline-block；业务面板须保留 flex，才能为底部操作区让出空间。 */
+.ant-modal-root .ant-modal.resource-mention-dialog.ui-dialog {
   box-sizing: border-box;
-  display: flex;
+  display: inline-flex;
   flex-direction: column;
-  height: min(680px, calc(100dvh - 48px));
-  max-height: 75dvh;
-  overflow: hidden;
+  height: min(680px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
   z-index: 91;
 }
 
+.resource-mention-dialog [data-slot='dialog-title'] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .resource-mention-dialog-preview {
+  flex: 1 1 auto;
   margin: 12px 0;
   max-height: min(60vh, 520px);
+  min-height: 0;
   overflow: auto;
 }
 
@@ -2873,8 +2883,8 @@ h2 {
 .resource-mention-dialog-preview.is-video {
   align-items: center;
   display: flex;
-  flex: 0 1 min(50dvh, 520px);
-  height: min(50dvh, 520px);
+  flex: 1 1 min(50dvh, 520px);
+  height: auto;
   justify-content: center;
   min-height: 0;
   overflow: hidden;
@@ -2896,6 +2906,7 @@ h2 {
 
 .resource-mention-dialog-name {
   display: grid;
+  flex: 0 0 auto;
   gap: 6px;
   margin-bottom: 12px;
 }
@@ -2909,8 +2920,14 @@ h2 {
 
 .resource-mention-dialog-actions {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.resource-mention-dialog .resource-mention-edit-warning {
+  flex: 0 0 auto;
 }
 
 .resource-mention-edit-warning {

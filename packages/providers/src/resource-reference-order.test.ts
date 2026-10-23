@@ -212,6 +212,296 @@ async function captureVideo(
   return { body: JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body)), record: records[0]! };
 }
 
+describe('视频内联引用模型编号', () => {
+  it.each([
+    ['doubao-seedance-2-5-260628', '图 1', '图 2', '视频 1', '音频 1'],
+    ['wan3.0-video', '图1', '图2', '视频1', '音频1'],
+    ['MiniMax-H3', '<Picture 1>', '<Picture 2>', '<Video 1>', '<Audio 1>'],
+  ])(
+    '%s 显式别名只改变原位置提示词，全部非文本请求字段保持一致',
+    async (model, first, second, video, audio) => {
+      const snapshot = snapshotFor('video');
+      snapshot.modelAlias = model!;
+      snapshot.parameters = { duration: 5, resolution: '768P', seed: 42 };
+      addMentions(snapshot, [
+        { assetId: 'person', assetVersion: 1 },
+        { assetId: 'person', assetVersion: 2 },
+        { assetId: 'person', assetVersion: 1 },
+        { assetId: 'clip', assetVersion: 1, mediaType: 'video' },
+        { assetId: 'voice', assetVersion: 1, mediaType: 'audio' },
+        { assetId: 'attached', assetVersion: 1 },
+      ]);
+      const document = snapshot.nodes[0]!.data.promptDocument!;
+      const prefix = '<Subject 1> is the woman in <Picture 1>. (S1) 小明：';
+      document.blocks[0] = { type: 'text', text: prefix };
+      document.blocks = document.blocks.map((block) =>
+        block.type === 'mention'
+          ? {
+              ...block,
+              inline: true,
+              ...(block.assetId === 'attached' ? { executionOnly: true as const } : {}),
+            }
+          : block,
+      );
+      const unnamed = await captureVideo(snapshot);
+      expect(unnamed.body.prompt).toBe(
+        `${prefix}${first} / ${second} / ${first} / ${video} / ${audio} /  / `,
+      );
+      document.blocks = document.blocks.map((block) => {
+        if (block.type !== 'mention') return block;
+        if (block.assetId === 'person')
+          return block.assetVersion === 1
+            ? { ...block, entityName: ' 小明 ', binding: { entityName: '不能覆盖显式名称' } }
+            : { ...block, binding: { entityName: ' 成年小明 ' } };
+        return {
+          ...block,
+          entityName:
+            block.assetId === 'clip'
+              ? '跑步动作'
+              : block.assetId === 'voice'
+                ? '旁白音色'
+                : '附加资料不入正文',
+        };
+      });
+      const before = structuredClone(snapshot);
+      const named = await captureVideo(snapshot);
+      const prompt = `${prefix}${first}（小明） / ${second}（成年小明） / ${first}（小明） / ${video}（跑步动作） / ${audio}（旁白音色） /  / `;
+      const expectedBody = structuredClone(unnamed.body);
+      expectedBody.prompt = prompt;
+      if (expectedBody.metadata.content) expectedBody.metadata.content[0].text = prompt;
+      expect(named.body).toEqual(expectedBody);
+      expect(named.body.prompt).not.toContain('附加资料不入正文');
+      expect(snapshot).toEqual(before);
+    },
+  );
+
+  it.each([
+    ['doubao-seedance-2-5-260628', '图 1 '],
+    ['wan3.0-video', '图1 '],
+    ['MiniMax-H3', '<Picture 1>'],
+  ])('%s 只隔离插入编号与相邻数字，不重写普通文本或跨越静默资料', async (model, token) => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = model!;
+    snapshot.parameters = { duration: 5, resolution: '768P' };
+    addMentions(snapshot, [
+      { assetId: 'person', assetVersion: 1 },
+      { assetId: 'attached', assetVersion: 1 },
+    ]);
+    const document = snapshot.nodes[0]!.data.promptDocument!;
+    const mentions = document.blocks.filter((block) => block.type === 'mention');
+    const prefix = '普通正文图12人；';
+    document.blocks = [
+      { type: 'text', text: prefix },
+      { ...mentions[0]!, inline: true, binding: { entityName: '  ' } },
+      { type: 'text', text: '' },
+      { ...mentions[1]!, inline: true, executionOnly: true, entityName: '静默' },
+      { type: 'text', text: '2人同行，<Subject 1> (S1) 保留。' },
+    ];
+    const before = structuredClone(snapshot);
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe(`${prefix}${token}2人同行，<Subject 1> (S1) 保留。`);
+    expect(snapshot).toEqual(before);
+  });
+
+  it.each([
+    ['unknown-video-model', 'newapi-video-v1'],
+    ['unknown-video-model', 'legacy-v1'],
+    ['unknown-video-model', 'newapi-unified-v1'],
+    ['doubao-seedance-2-0-260128', 'legacy-v1'],
+    ['wan3.0-video', 'newapi-unified-v1'],
+    ['MiniMax-H3', 'legacy-v1'],
+  ] as const)('%s 的 %s 未确认最终参考映射时在提交前明确失败', async (model, videoContract) => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = model;
+    snapshot.parameters = {
+      duration: 5,
+      ...(model === 'MiniMax-H3' ? { resolution: '768P' } : {}),
+    };
+    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention' ? { ...block, inline: true } : block,
+      );
+    const fetchImpl = vi.fn<typeof fetch>();
+    const onProviderJob = vi.fn();
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://provider.invalid/v1',
+        apiKey: 'test-placeholder',
+        videoContract,
+        fetchImpl,
+      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot), onProviderJob }),
+    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_MAPPING_UNSUPPORTED', retryable: false });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onProviderJob).not.toHaveBeenCalled();
+  });
+
+  it('无inline的未知模型仍保留原有参考字段，不扩大旧请求限制', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'unknown-video-model';
+    snapshot.inputs = [
+      linkedInput('first', 1, 0, 'firstFrame'),
+      linkedInput('last', 1, 1, 'lastFrame'),
+      linkedInput('reference', 1, 2),
+    ];
+    const { body } = await captureVideo(snapshot);
+    expect(body.image).toBe(contentUrl('first', 1, 'image'));
+    expect(body.last_frame).toBe(contentUrl('last', 1, 'image'));
+    expect(body.reference_images).toEqual([{ url: contentUrl('reference', 1, 'image') }]);
+  });
+
+  it.each([
+    ['doubao-seedance-2-0-260128', '图 2', '图 1', '视频 1', '音频 1'],
+    ['doubao-seedance-2-5-260628', '图 2', '图 1', '视频 1', '音频 1'],
+    ['wan3.0-video', '图2', '图1', '视频1', '音频1'],
+    ['MiniMax-H3', '<Picture 2>', '<Picture 1>', '<Video 1>', '<Audio 1>'],
+  ])('%s 按实际素材顺序渲染原位置，并复用重复引用', async (model, second, first, video, audio) => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = model!;
+    snapshot.parameters = {
+      duration: 5,
+      ...(model === 'MiniMax-H3' ? { resolution: '768P' } : {}),
+    };
+    snapshot.inputs = [
+      linkedInput('alpha', 1, 0),
+      { ...linkedInput('alpha', 1, 1), nodeId: 'duplicate' },
+    ];
+    addMentions(snapshot, [
+      { assetId: 'alpha', assetVersion: 1 },
+      { assetId: 'alpha', assetVersion: 2 },
+      { assetId: 'clip', assetVersion: 1, mediaType: 'video' },
+      { assetId: 'sound', assetVersion: 1, mediaType: 'audio' },
+      { assetId: 'alpha', assetVersion: 1 },
+    ]);
+    const document = snapshot.nodes[0]!.data.promptDocument!;
+    document.blocks = document.blocks.map((block) =>
+      block.type === 'mention' ? { ...block, inline: true } : block,
+    );
+    snapshot.nodes[0]!.data.resourceRefs = [
+      reference('alpha', 2),
+      reference('sound', 1, 'audio'),
+      reference('clip', 1, 'video'),
+    ];
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe(`Use ${second} / ${first} / ${video} / ${audio} / ${second} / `);
+    const media =
+      model === 'wan3.0-video'
+        ? body.metadata.input.media
+        : body.metadata.content.filter((item: { type: string }) => item.type !== 'text');
+    expect(media).toHaveLength(4);
+    expect(body.prompt).not.toContain('Subject');
+  });
+
+  it('切换模型重新渲染引用，不修改原文档或普通正文中的素材名称', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.parameters = { duration: 5, resolution: '768P' };
+    addMentions(snapshot, [{ assetId: 'person', assetVersion: 1 }]);
+    const document = snapshot.nodes[0]!.data.promptDocument!;
+    const source = document.blocks.find((block) => block.type === 'mention')!;
+    document.blocks = [
+      { type: 'text', text: '保留原文 Image1、图9、<Subject 1>；让' },
+      { ...source, inline: true },
+      { type: 'text', text: '中的人物向左走。' },
+    ];
+    const before = structuredClone(document);
+    for (const [model, token] of [
+      ['doubao-seedance-2-5-260628', '图 1'],
+      ['wan3.0-video', '图1'],
+      ['MiniMax-H3', '<Picture 1>'],
+      ['wan3.0-video', '图1'],
+    ]) {
+      snapshot.modelAlias = model!;
+      const { body } = await captureVideo(snapshot);
+      expect(body.prompt).toBe(`保留原文 Image1、图9、<Subject 1>；让${token}中的人物向左走。`);
+      expect(snapshot.nodes[0]!.data.promptDocument).toEqual(before);
+    }
+  });
+
+  it('仅附加资料参与编号但不生成正文尾部标记', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'MiniMax-H3';
+    snapshot.parameters = { duration: 5, resolution: '768P' };
+    addMentions(snapshot, [
+      { assetId: 'attached', assetVersion: 1 },
+      { assetId: 'quoted', assetVersion: 1 },
+    ]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? {
+              ...block,
+              inline: true,
+              ...(block.assetId === 'attached' ? { executionOnly: true as const } : {}),
+            }
+          : block,
+      );
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe('Use  / <Picture 2> / ');
+    expect(
+      body.metadata.content.filter((item: { type: string }) => item.type === 'image_url'),
+    ).toHaveLength(2);
+  });
+
+  it('首尾帧占用图片编号，引用不能合并不同角色的同版本素材', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'MiniMax-H3';
+    snapshot.parameters = { duration: 5, resolution: '768P' };
+    snapshot.inputs = [
+      linkedInput('alpha', 1, 0, 'firstFrame'),
+      linkedInput('last', 1, 1, 'lastFrame'),
+    ];
+    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention' ? { ...block, inline: true } : block,
+      );
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe('Use <Picture 3> / ');
+    expect(body.metadata.content.slice(1).map((item: { role: string }) => item.role)).toEqual([
+      'first_frame',
+      'last_frame',
+      'reference_image',
+    ]);
+  });
+
+  it('无身份的开放媒体参数会阻止内联引用错号，而不是静默混入', async () => {
+    const snapshot = snapshotFor('video');
+    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention' ? { ...block, inline: true } : block,
+      );
+    snapshot.parameters = { images: ['https://assets.invalid/untracked.png'] };
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://provider.invalid/v1',
+        apiKey: 'test-placeholder',
+        fetchImpl,
+      }).execute({
+        snapshot,
+        resolvedMentions: resolveProviderMentions(snapshot),
+        onProviderJob: vi.fn(),
+      }),
+    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_ORDER_AMBIGUOUS' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('文本提及仍使用水合内容，不生成图片编号或丢弃正文', async () => {
+    const snapshot = snapshotFor('video');
+    addMentions(snapshot, [{ assetId: 'text', assetVersion: 1, mediaType: 'text' }]);
+    const block = snapshot.nodes[0]!.data.promptDocument!.blocks[1]!;
+    Object.assign(block, {
+      inline: true,
+      mimeType: 'text/plain',
+      contentUrl: `data:text/plain;base64,${Buffer.from('Frozen text reference').toString('base64')}`,
+    });
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe('Use  / \nFrozen text reference');
+    expect(body.prompt).not.toContain('Image');
+  });
+});
+
 describe('图片参考资源显式顺序', () => {
   it('在混合连线和提及去重后排序实际图片字节与记录，不改变正文和冻结块顺序', async () => {
     const snapshot = snapshotFor('image');

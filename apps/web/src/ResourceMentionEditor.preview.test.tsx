@@ -97,6 +97,17 @@ describe('资源引用的悬浮展示与版本缩略图', () => {
       /\.resource-mention-inline\s*\{[\s\S]*?width:\s*34px;[\s\S]*?height:\s*30px;/,
     );
     expect(token.querySelector('.resource-mention-preview')).toBeInTheDocument();
+    expect(getComputedStyle(inline).borderWidth).toBe('0px');
+    if (media.mediaType === 'image') fireEvent.load(token.querySelector('img')!);
+    else fireEvent.loadedMetadata(token.querySelector('video')!);
+    expect(token.textContent).toBe('');
+    if (media.mediaType === 'video') {
+      const play = within(token as HTMLElement).getByRole('img', { name: '视频' });
+      expect(play).toHaveClass('resource-mention-video-play');
+      expect(getComputedStyle(play).left).toBe('4px');
+      expect(getComputedStyle(play).bottom).toBe('4px');
+      expect(getComputedStyle(play).pointerEvents).toBe('none');
+    }
     fireEvent.mouseMove(token);
     const hover = await screen.findByRole('region', { name: '预览 参考图' });
     const shell = hover.querySelector('.artifact-preview-media-shell')!;
@@ -112,6 +123,49 @@ describe('资源引用的悬浮展示与版本缩略图', () => {
     expect(controlsCss).toMatch(
       /\.resource-mention-inline\s*\{[\s\S]*?width:\s*34px;[\s\S]*?height:\s*30px;/,
     );
+  });
+
+  it('音频资料条和正文显示音频图标，顺序与删除保留独立入口', () => {
+    const audio = {
+      ...imageAsset,
+      id: 'audio',
+      name: '声音',
+      mediaType: 'audio' as const,
+      mimeType: 'audio/mpeg',
+    };
+    render(
+      <ResourceMentionEditor
+        nodeId="audio-icons"
+        assets={[audio]}
+        referenceLabels={new Map([[JSON.stringify([audio.id, 1]), ['Audio1']]])}
+        promptDocument={{
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              inline: true,
+              mentionId: 'audio-inline',
+              assetId: audio.id,
+              assetVersion: 1,
+              label: audio.name,
+              mediaType: 'audio',
+            },
+          ],
+        }}
+      />,
+    );
+    const editor = screen.getByRole('textbox');
+    const card = screen.getByRole('article');
+    const audioIcon = within(card).getByRole('img', { name: '音频' });
+    expect(audioIcon).toHaveClass('resource-mention-media-icon', 'is-audio');
+    expect(getComputedStyle(audioIcon).left).toBe('4px');
+    expect(getComputedStyle(audioIcon).bottom).toBe('4px');
+    expect(within(card).getByLabelText('引用顺序 1')).toHaveTextContent('1');
+    expect(within(card).getByRole('button', { name: '删除 声音' })).toBeEnabled();
+    expect(within(editor).getByRole('img', { name: '音频' })).toBeInTheDocument();
+    expect(editor.textContent).toBe('');
+    expect(screen.queryByText('Audio1')).not.toBeInTheDocument();
+    expect(auth.apiFetch).not.toHaveBeenCalled();
   });
 
   it('正文、悬浮、资料条和节点选择器复用冻结版本缩略图，完整详情才申请原图', async () => {

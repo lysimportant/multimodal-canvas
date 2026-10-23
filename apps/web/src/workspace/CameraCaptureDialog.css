@@ -7,7 +7,8 @@
   height: min(560px, calc(100dvh - 48px));
   max-height: calc(100dvh - 48px);
   padding: 22px;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   color: var(--mc-text);
 }
 
@@ -50,6 +51,7 @@
 
 .camera-capture-dialog-body {
   display: grid;
+  flex: 1 1 auto;
   gap: 10px;
   min-height: 0;
   overflow: auto;
@@ -93,4 +95,9 @@
 .camera-capture-dialog-actions {
   border-top: 1px solid var(--mc-border);
   padding-top: 14px;
+}
+
+.camera-capture-dialog-actions,
+.camera-capture-dialog-actions > div {
+  flex-wrap: wrap;
 }

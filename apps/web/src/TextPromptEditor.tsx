@@ -11,6 +11,10 @@ import { Typography } from 'antd';
 import { ResourceMentionEditor } from './ResourceMentionEditor';
 import { projectConnectedPromptDocument } from './resource-mention-sync';
 import type { ConnectedPromptAsset } from './workspace/connected-prompt-assets';
+import {
+  videoPromptReferenceLabels,
+  type VideoPromptReferenceContext,
+} from './workspace/video-prompt-reference-labels';
 
 /** 共享提示词入口参数；资源顺序与参考资料选择状态由父层持久化和控制。 */
 type TextPromptEditorProps = {
@@ -24,6 +28,8 @@ type TextPromptEditorProps = {
   /** 当前项目资源，用于 `@` 搜索和提及卡片。 */
   assets?: readonly Asset[];
   connectedAssets?: readonly ConnectedPromptAsset[];
+  /** 仅视频节点启用素材编号；其它媒体仍使用原有引用呈现。 */
+  videoReferenceContext?: VideoPromptReferenceContext;
   /** 画布是否正在为当前节点连续添加参考资料。 */
   referencePickActive?: boolean;
   /** 切换参考资料选择模式；缺省时不显示入口。 */
@@ -69,6 +75,7 @@ export function TextPromptEditor({
   promptDocument,
   assets,
   connectedAssets,
+  videoReferenceContext,
   referencePickActive,
   onReferencePickToggle,
   resourceRefs,
@@ -113,6 +120,18 @@ export function TextPromptEditor({
       };
     }
   }, [projectionKey]);
+  const referenceLabels = useMemo(
+    () =>
+      videoReferenceContext
+        ? videoPromptReferenceLabels(
+            videoReferenceContext,
+            projection.document,
+            connectedAssets,
+            resourceRefs,
+          )
+        : undefined,
+    [videoReferenceContext, projection.document, connectedAssets, resourceRefs],
+  );
   return (
     <>
       <ResourceMentionEditor
@@ -122,6 +141,7 @@ export function TextPromptEditor({
         assets={assets}
         onSearchProjectResources={onSearchProjectResources}
         connectedAssets={connectedAssets}
+        referenceLabels={referenceLabels}
         referencePickActive={referencePickActive}
         onReferencePickToggle={onReferencePickToggle}
         resourceRefs={resourceRefs}

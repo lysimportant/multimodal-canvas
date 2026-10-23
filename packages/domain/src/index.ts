@@ -253,6 +253,8 @@ export const promptMentionSchema = z
     assetVersion: z.number().int().positive().optional(),
     /** 独立内联引用标记，不占用普通正文；缺省为旧版名称绑定。 */
     inline: z.literal(true).optional(),
+    /** 仅为执行吸收独立资料而补入，不在正文中渲染引用。 */
+    executionOnly: z.literal(true).optional(),
     /** 导入时资源不可访问会保留身份并标记为不可执行占位。 */
     placeholder: z.boolean().optional(),
     placeholderReason: z
@@ -499,6 +501,7 @@ export function getExecutionPromptDocument(input: {
       type: 'mention',
       mentionId,
       inline: true,
+      executionOnly: true,
       assetId: reference.assetId,
       assetVersion: reference.assetVersion,
       mediaType: reference.mediaType,
@@ -2574,3 +2577,4 @@ export function videoFinalFrameActionId(input: {
   ].join(':');
 }
 export * from './canvas-operations.js';
+export * from './video-prompt-references.js';

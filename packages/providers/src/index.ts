@@ -27,6 +27,9 @@ import {
   resolveImageOutputParameters,
   precheckVideoGenerationInputs,
   renderPromptDocument,
+  buildVideoPromptReferences,
+  orderVideoPromptMedia,
+  videoPromptReferenceIdentity,
   resolveImageEditMaxImages,
   REQUEST_PROMPT_SCHEMA_VERSION,
   IMAGE2PRO_IMAGE_TASK_CONTRACT,
@@ -1884,6 +1887,12 @@ export class NewApiVideoProvider {
         absorbedMentionIds,
       );
       const inputs = mapVideoInputs(snapshot, absorbedMentionInputs);
+      const videoPromptDocument = renderVideoPromptReferences(
+        snapshot,
+        target.data.promptDocument,
+        inputs,
+        contract,
+      );
       const idempotencyKey = standardRequestIdempotencyKey(snapshot, existingProviderJob);
       const mappedBody = unified
         ? unifiedVideoPayload(
@@ -1891,7 +1900,7 @@ export class NewApiVideoProvider {
             target.data.label,
             target.data.prompt,
             inputs,
-            target.data.promptDocument,
+            videoPromptDocument,
           )
         : openaiVideo
           ? openaiVideoPayload(
@@ -1899,14 +1908,14 @@ export class NewApiVideoProvider {
               target.data.label,
               target.data.prompt,
               inputs,
-              target.data.promptDocument,
+              videoPromptDocument,
             )
           : videoPayload(
               snapshot,
               target.data.label,
               target.data.prompt,
               inputs,
-              target.data.promptDocument,
+              videoPromptDocument,
             );
       const body = openVideoRequestBody(snapshot, mappedBody, inputs);
       const pendingPayload = videoJobPayloadSummary(contract, 'submitting', snapshot.modelAlias);
@@ -3342,21 +3351,146 @@ function orderedVideoMedia(snapshot: RunSnapshot, inputs: VideoInputMapping): Ru
     ...inputs.referenceImages,
     ...inputs.referenceVideos,
     ...inputs.referenceAudios,
-  ]
-    .filter((input): input is RunInputSnapshot => input !== undefined)
-    .sort(
-      (left, right) => left.sortOrder - right.sortOrder || left.nodeId.localeCompare(right.nodeId),
+  ].filter((input): input is RunInputSnapshot => input !== undefined);
+  return orderVideoPromptMedia(
+    media.map((input) => ({
+      input,
+      nodeId: input.nodeId,
+      sortOrder: input.sortOrder,
+      assetId: input.sourceAssetId ?? input.snapshot.data.assetId ?? input.nodeId,
+      assetVersion: input.sourceAssetVersion,
+      mediaType: input.snapshot.data.mediaType as 'image' | 'video' | 'audio',
+      role:
+        input === inputs.firstFrame
+          ? 'firstFrame'
+          : input === inputs.lastFrame
+            ? 'lastFrame'
+            : input.role,
+    })),
+    snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data.resourceRefs,
+  ).map((item) => item.input);
+}
+
+/** 仅视频把真实正文提及替换为发送素材编号，附加资料仍只占媒体槽位。 */
+function renderVideoPromptReferences(
+  snapshot: RunSnapshot,
+  document: PromptDocument | undefined,
+  inputs: VideoInputMapping,
+  contract: NewApiVideoContract,
+): PromptDocument | undefined {
+  if (!document) return document;
+  const hasInlineReferences = document.blocks.some(
+    (block) =>
+      block.type === 'mention' &&
+      block.inline &&
+      !block.executionOnly &&
+      block.mediaType !== 'text',
+  );
+  if (hasInlineReferences) {
+    const metadata = isRecord(snapshot.parameters.metadata) ? snapshot.parameters.metadata : {};
+    const hasUntrackedMedia = [
+      'images',
+      'image',
+      'input_reference',
+      'first_frame',
+      'last_frame',
+      'reference_images',
+      'videos',
+      'audios',
+      'reference_videos',
+      'reference_audios',
+      'content',
+      'input',
+    ].some((key) => snapshot.parameters[key] !== undefined || metadata[key] !== undefined);
+    if (hasUntrackedMedia)
+      throw new NewApiProviderError(
+        '内联视频引用不能与缺少资产身份的媒体参数混用，请通过资源条或连线提供素材',
+        { code: 'VIDEO_REFERENCE_ORDER_AMBIGUOUS', retryable: false },
+      );
+  }
+  const family = videoFamilyForModel(snapshot.modelAlias);
+  const supportsReferenceOrder =
+    family === 'grok-imagine-video-1.5' ||
+    (contract === 'newapi-video-v1' &&
+      (['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5', 'yuanliu'].includes(
+        family,
+      ) ||
+        Boolean(moonVideoContractForModel(snapshot.modelAlias))));
+  if (hasInlineReferences && !supportsReferenceOrder) {
+    throw new NewApiProviderError(
+      '当前视频模型与请求协议尚未确认内联素材编号映射，请选择支持参考素材的模型和 OpenAI 视频协议',
+      {
+        code: 'VIDEO_REFERENCE_MAPPING_UNSUPPORTED',
+        retryable: false,
+      },
     );
-  const references = orderResourceReferenceInputs(
-    snapshot,
-    media.filter((input) => input !== inputs.firstFrame && input !== inputs.lastFrame),
+  }
+  const tokenFamily = family.includes('seedance')
+    ? 'seedance'
+    : family.startsWith('wan')
+      ? 'wan'
+      : family.includes('minimax-h3')
+        ? 'h3'
+        : 'generic';
+  const references = buildVideoPromptReferences(
+    orderedVideoMedia(snapshot, inputs).map((input) => ({
+      assetId: input.sourceAssetId ?? input.snapshot.data.assetId ?? input.nodeId,
+      assetVersion: input.sourceAssetVersion,
+      mediaType: input.snapshot.data.mediaType as 'image' | 'video' | 'audio',
+      role: input.role,
+    })),
+    tokenFamily,
+    { deduplicate: hasInlineReferences },
   );
-  let referenceIndex = 0;
-  return media.map((input) =>
-    input === inputs.firstFrame || input === inputs.lastFrame
-      ? input
-      : references[referenceIndex++]!,
-  );
+  const byIdentity = new Map(references.map((item) => [item.identity, item]));
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  return {
+    ...document,
+    blocks: document.blocks.map((block, blockIndex) => {
+      if (block.type === 'text') return block;
+      if (block.executionOnly) return { type: 'text' as const, text: '' };
+      if (!block.inline || block.mediaType === 'text') return block;
+      const frozen = snapshot.promptMentions?.find(
+        (mention) =>
+          (mention.nodeId ?? snapshot.targetNodeId) === snapshot.targetNodeId &&
+          mention.mentionId === block.mentionId,
+      );
+      const role = videoInputRoleForPromptMention(
+        block.mediaType,
+        target?.data.videoMode,
+        snapshot.modelAlias,
+      );
+      const reference = byIdentity.get(
+        videoPromptReferenceIdentity({
+          assetId: block.assetId,
+          assetVersion: frozen?.assetVersion ?? block.assetVersion,
+          mediaType: block.mediaType,
+          role,
+        }),
+      );
+      if (!reference)
+        throw promptMentionMappingError(
+          snapshot,
+          block,
+          'RESOURCE_MENTION_RESOLUTION_INVALID',
+          '视频引用没有对应的实际发送素材',
+        );
+      // 显式命名只绑定当前引用，不从文件显示名或语义角色猜测主体。
+      const entityName = block.entityName?.trim() || block.binding?.entityName?.trim();
+      let text = entityName ? `${reference.token}（${entityName}）` : reference.token;
+      const nextBlock = document.blocks
+        .slice(blockIndex + 1)
+        .find((next) => (next.type === 'text' ? next.text.length > 0 : !next.executionOnly));
+      // 只隔开插入编号和紧随其后的数字，避免“图1”+“2人”变成“图12人”。
+      if (
+        /\p{Decimal_Number}$/u.test(text) &&
+        nextBlock?.type === 'text' &&
+        /^\p{Decimal_Number}/u.test(nextBlock.text)
+      )
+        text += ' ';
+      return { type: 'text' as const, text };
+    }),
+  };
 }
 
 /** 校验已确认视频模型参考素材的媒体类型与传输方式；URL 由 Worker 按冻结版本提供。 */
@@ -6066,6 +6200,28 @@ function mapVideoInputs(
   extraInputs: readonly RunInputSnapshot[] = [],
 ): VideoInputMapping {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  const seenMedia = new Set<string>();
+  const hasInlineReferences = target?.data.promptDocument?.blocks.some(
+    (block) =>
+      block.type === 'mention' &&
+      block.inline &&
+      !block.executionOnly &&
+      block.mediaType !== 'text',
+  );
+  const allInputs = [...snapshot.inputs, ...extraInputs].filter((input) => {
+    const mediaType = input.snapshot.data.mediaType;
+    const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
+    if (!hasInlineReferences || mediaType === 'text' || !assetId) return true;
+    const identity = videoPromptReferenceIdentity({
+      assetId,
+      assetVersion: input.sourceAssetVersion,
+      mediaType,
+      role: input.role,
+    });
+    if (seenMedia.has(identity)) return false;
+    seenMedia.add(identity);
+    return true;
+  });
   let parameters = snapshot.parameters;
   if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
     let source = resolvePromptSource(
@@ -6076,7 +6232,7 @@ function mapVideoInputs(
       target?.data.promptDocument,
     );
     if (!source.value.trim()) source = { value: '', explicit: false };
-    const textInput = [...snapshot.inputs, ...extraInputs].find(
+    const textInput = allInputs.find(
       (input) =>
         input.snapshot.data.mediaType === 'text' &&
         (input.role === 'prompt' || input.role === 'content'),
@@ -6088,7 +6244,7 @@ function mapVideoInputs(
   const absorbedOmni = extraInputs.some((input) =>
     ['referenceImage', 'character', 'style', 'content', 'audioTrack'].includes(input.role),
   );
-  const precheck = precheckVideoGenerationInputs([...snapshot.inputs, ...extraInputs], {
+  const precheck = precheckVideoGenerationInputs(allInputs, {
     modelAlias: snapshot.modelAlias,
     parameters,
     videoMode: videoModeForPromptMentions(target?.data.videoMode, absorbedOmni),
@@ -6117,7 +6273,7 @@ function mapVideoInputs(
     inputImageUrl(input, 'video');
   }
   return {
-    allInputs: [...snapshot.inputs, ...extraInputs],
+    allInputs,
     prompt: precheck.inputSet.prompt,
     negativePrompt: precheck.inputSet.negativePrompt,
     firstFrame: precheck.inputSet.firstFrame,

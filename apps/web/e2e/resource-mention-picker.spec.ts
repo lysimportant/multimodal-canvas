@@ -874,6 +874,241 @@ test('PC video 完整编辑器解绑资源引用、连线和冻结资源且刷�
   expect(fixture.errors).toEqual([]);
 });
 
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`${viewport.width} 视频引用简洁缩略图与媒体类型，旧 @ 不重开搜索`, async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const initial = initialCanvas();
+    const target = initial.nodes[0]!;
+    target.type = 'video';
+    target.data.mediaType = 'video';
+    target.data.modelAlias = 'wan3.0-video';
+    target.data.videoMode = 'omni_reference';
+    target.data.promptDocument = {
+      version: 1,
+      blocks: [
+        { type: 'text', text: '让 ' },
+        {
+          type: 'mention',
+          inline: true,
+          mentionId: 'person',
+          assetId: 'product-image',
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '产品图',
+        },
+        { type: 'text', text: ' 走向 ' },
+        {
+          type: 'mention',
+          inline: true,
+          mentionId: 'scene',
+          assetId: 'scene-image-1',
+          assetVersion: 1,
+          mediaType: 'image',
+          label: '场景参考图 1',
+        },
+        { type: 'text', text: '，旧@这里是一段很长的中文正文不应该打开资源搜索' },
+      ],
+    };
+    target.data.resourceRefs = [
+      {
+        id: 'ordered:scene',
+        assetId: 'scene-image-1',
+        assetVersion: 1,
+        mediaType: 'image',
+        name: '场景参考图 1',
+      },
+      {
+        id: 'ordered:person',
+        assetId: 'product-image',
+        assetVersion: 1,
+        mediaType: 'image',
+        name: '产品图',
+      },
+      {
+        id: 'attached:video',
+        attached: true,
+        assetId: 'product-video',
+        assetVersion: 1,
+        mediaType: 'video',
+        name: '产品视频',
+      },
+      {
+        id: 'attached:audio',
+        attached: true,
+        assetId: 'voice-sample',
+        assetVersion: 1,
+        mediaType: 'audio',
+        name: '声音样本',
+      },
+    ];
+    const fixture = await installFixture(page, baseURL, initial);
+    await page.goto(`/projects/${project.id}`);
+    const { editor } = await openQuickEditor(page);
+    const prompt = editor.getByRole('textbox', { name: '提示词' });
+    await expect(prompt.locator('.resource-mention-inline')).toHaveCount(2);
+    await expect(editor.locator('.resource-mention-reference-label')).toHaveCount(0);
+    for (const inline of await prompt.locator('.resource-mention-inline').all()) {
+      await expect(inline.locator('img')).toBeVisible();
+      await expect(inline).toHaveText('');
+      await expect(inline).toHaveCSS('border-top-width', '0px');
+    }
+    await prompt.click();
+    await prompt.press('Control+End');
+    await expect(page.locator('.resource-mention-picker')).not.toBeVisible();
+    await prompt.pressSequentially('继续写');
+    await expect(page.locator('.resource-mention-picker')).not.toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath(`video-reference-thumbnails-${viewport.width}.png`),
+    });
+    const referenceThumbs = editor.locator(
+      '.resource-mention-thumb:has(> .resource-mention-thumb-order)',
+    );
+    await expect(referenceThumbs).toHaveCount(4);
+    const videoThumb = referenceThumbs.filter({
+      has: page.getByRole('button', { name: '预览并命名 产品视频', exact: true }),
+    });
+    const audioThumb = referenceThumbs.filter({
+      has: page.getByRole('button', { name: '预览并命名 声音样本', exact: true }),
+    });
+    await expect(videoThumb.getByRole('img', { name: '视频', exact: true })).toBeVisible();
+    await expect(videoThumb.locator('video')).toBeVisible();
+    await expect(audioThumb.getByRole('img', { name: '音频', exact: true })).toBeVisible();
+    await expect(audioThumb.locator('img,video')).toHaveCount(0);
+    for (const [index, thumb] of (await referenceThumbs.all()).entries()) {
+      const order = thumb.locator('.resource-mention-thumb-order');
+      await expect(order).toHaveText(String(index + 1));
+      await expect(order).toBeInViewport();
+      const orderBox = (await order.boundingBox())!;
+      const deleteBox = (await thumb.locator('.resource-mention-thumb-delete').boundingBox())!;
+      expect(orderBox.y + orderBox.height).toBeLessThanOrEqual(deleteBox.y);
+    }
+    const playBox = (await videoThumb
+      .getByRole('img', { name: '视频', exact: true })
+      .boundingBox())!;
+    const removeBox = (await videoThumb.locator('.resource-mention-thumb-delete').boundingBox())!;
+    expect(playBox.x + playBox.width).toBeLessThanOrEqual(removeBox.x);
+    await prompt.pressSequentially('@');
+    await expect(page.locator('.resource-mention-picker')).toBeVisible();
+    await prompt.press('Escape');
+    await prompt.press('ArrowLeft');
+    await prompt.press('ArrowRight');
+    await expect(page.locator('.resource-mention-picker')).not.toBeVisible();
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+  { width: 900, height: 360 },
+]) {
+  test(`${viewport.width}x${viewport.height} 视频节点资源 Dialog 操作不裁剪`, async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    // 先打开预览再缩短窗口，避免画布节点在低高度下没有空间展示快捷编辑器。
+    const openingViewport = viewport.height < 500 ? { width: 1440, height: 900 } : viewport;
+    await page.setViewportSize(openingViewport);
+    const initial = initialCanvas();
+    const target = initial.nodes[0]!;
+    target.type = 'video';
+    target.data.mediaType = 'video';
+    target.data.modelAlias = 'wan3.0-video';
+    target.data.videoMode = 'omni_reference';
+    target.data.resourceRefs = ['product-video', 'interview-script'].map((id) => {
+      const entry = assets.find((item) => item.id === id)!;
+      return {
+        id: `attached:${id}`,
+        attached: true,
+        assetId: id,
+        assetVersion: 1,
+        mediaType: entry.mediaType,
+        name: entry.name,
+      };
+    });
+    const fixture = await installFixture(page, baseURL, initial);
+    await page.goto(`/projects/${project.id}`);
+    const { editor } = await openQuickEditor(page);
+    for (const name of ['产品图', '产品视频', '采访脚本']) {
+      await page.setViewportSize(openingViewport);
+      await editor.getByRole('button', { name: `预览并命名 ${name}`, exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: '资源预览', exact: true });
+      await expect(dialog).toBeVisible();
+      await page.setViewportSize(viewport);
+      await expect(dialog).toHaveCSS('display', 'inline-flex');
+      for (const action of ['保存名称', '关闭']) {
+        const button = dialog.getByRole('button', { name: action, exact: true });
+        await button.scrollIntoViewIfNeeded();
+        await expect(button).toBeInViewport({ ratio: 1 });
+        await button.click({ trial: true });
+        expect(
+          await button.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            let ancestor = element.parentElement;
+            while (ancestor) {
+              const style = getComputedStyle(ancestor);
+              const box = ancestor.getBoundingClientRect();
+              if (
+                /(hidden|auto|scroll|clip)/.test(style.overflowY) &&
+                (rect.top < box.top - 1 || rect.bottom > box.bottom + 1)
+              )
+                return false;
+              ancestor = ancestor.parentElement;
+            }
+            return true;
+          }),
+        ).toBe(true);
+      }
+      if (name === '产品图') {
+        await page.screenshot({
+          path: testInfo.outputPath('resource-dialog.png'),
+          animations: 'disabled',
+        });
+        await dialog.getByRole('button', { name: '预览图片：产品图', exact: true }).click();
+        const viewer = page.getByRole('dialog', { name: '产品图', exact: true });
+        for (const name of ['下载原文件', '关闭预览']) {
+          const button = viewer.getByRole('button', { name, exact: true });
+          await button.scrollIntoViewIfNeeded();
+          await expect(button).toBeInViewport({ ratio: 1 });
+          await button.click({ trial: true });
+        }
+        await viewer.getByRole('button', { name: '关闭预览', exact: true }).click();
+        await expect(viewer).toHaveCount(0);
+      }
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+    }
+    await page.setViewportSize(openingViewport);
+    await editor.getByRole('button', { name: '上传引用资源', exact: true }).click();
+    const resources = page.getByRole('dialog', { name: '选择参考资料', exact: true });
+    await expect(resources).toBeVisible();
+    await page.setViewportSize(viewport);
+    for (const name of ['上传本地文件', '关闭参考资料选择']) {
+      const button = resources.getByRole('button', { name, exact: true });
+      await button.scrollIntoViewIfNeeded();
+      await expect(button).toBeInViewport({ ratio: 1 });
+      await button.click({ trial: true });
+    }
+    await resources.getByRole('button', { name: '关闭参考资料选择', exact: true }).click();
+    await page.setViewportSize(openingViewport);
+    const camera = await openSyntheticReferenceCamera(page, editor);
+    await page.setViewportSize(viewport);
+    const shutter = camera.getByRole('button', { name: '拍照', exact: true });
+    await shutter.scrollIntoViewIfNeeded();
+    await expect(shutter).toBeInViewport({ ratio: 1 });
+    await shutter.click({ trial: true });
+    await page.keyboard.press('Escape');
+    await expect(camera).toHaveCount(0);
+    expect(fixture.errors).toEqual([]);
+  });
+}
+
 test('1440 PC 节点 picker 贴近 @、独立搜索筛选滚动，并支持原子删除与撤销', async ({
   page,
   baseURL,

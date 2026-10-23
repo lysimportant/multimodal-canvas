@@ -676,6 +676,14 @@ export function NodeQuickEditor({
         assets={assets}
         onSearchProjectResources={onSearchProjectResources}
         connectedAssets={connectedAssets}
+        videoReferenceContext={
+          node.data.mediaType === 'video'
+            ? {
+                modelAlias: node.data.modelAlias,
+                videoMode: node.data.videoMode,
+              }
+            : undefined
+        }
         onConnectedResourceRename={onConnectedResourceRename}
         placeholder={
           imageEditSource ? '想用这张图修改什么？例如：换成夜景、去掉背景' : '描述你想生成的内容'
