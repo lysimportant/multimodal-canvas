@@ -44,6 +44,8 @@ import { isApiOriginUrl, resolveUploadUrl } from '../upload-utils';
 import { API_BASE_URL } from './contracts';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { AssetShareButton } from './AssetShareButton';
+import { AssetCompression } from './AssetCompression';
+import { formatAssetFileSize } from './asset-file-size';
 import { ImagePreviewStage } from './ImagePreviewStage';
 import { MediaPreviewPlayer } from './MediaPreviewPlayer';
 import {
@@ -1143,6 +1145,12 @@ export function AssetViewerDialog({
               onRetry={retry}
             />
           )}
+          <div className="artifact-preview-viewer-footer">
+            <span className="artifact-preview-file-size">
+              文件大小：{formatAssetFileSize(asset.sizeBytes)}
+            </span>
+            <AssetCompression key={downloadIdentity} asset={asset} />
+          </div>
         </DialogContent>
       )}
     </Dialog>

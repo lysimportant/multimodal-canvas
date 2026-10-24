@@ -3,6 +3,13 @@ import type { Asset } from '@multimodal-canvas/domain';
 import { clearAuthSession, persistAuthSession } from '../auth-client';
 import { fetchNodeAssetDownload } from './node-asset-download';
 
+it('压缩下载在响应大小超限时中止，未声明长度也受限', async () => {
+  for (const headers of [new Headers({ 'content-length': '100' }), new Headers()]) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('12345', { headers })));
+    await expect(fetchNodeAssetDownload(makeAsset(), undefined, 4)).rejects.toThrow('图片过大');
+  }
+});
+
 /** 创建隔离测试产物，不访问真实 Provider 或本地用户文件。 */
 function makeAsset(overrides: Partial<Asset> = {}): Asset {
   return {

@@ -9,7 +9,7 @@ for (const { width, channel } of [
   { width: 1440, channel: true },
   { width: 390, channel: true },
 ]) {
-  test(`真实提示词预览 ${width}px${channel ? ' 渠道契约' : ''}`, async ({
+  test(`自动同步与真实提示词预览 ${width}px${channel ? ' 渠道契约' : ''}`, async ({
     page,
     baseURL,
   }, info) => {
@@ -56,6 +56,7 @@ for (const { width, channel } of [
       ],
       links: {},
     };
+    let syncCount = 0;
     const errors: string[] = [];
     const unexpected: string[] = [];
     let canvas = canvasDocumentSchema.parse({
@@ -122,6 +123,7 @@ for (const { width, channel } of [
         return json({ user, expiresAt: new Date(Date.now() + 3600000).toISOString() });
       if (path === '/v1/account/newapi') return json({ account });
       if (path === '/v1/account/newapi/sync' && method === 'POST') {
+        syncCount++;
         return json({ account });
       }
       if (path === '/v1/models') return json({ models: [model] });
@@ -155,6 +157,7 @@ for (const { width, channel } of [
       await expect(page.getByRole('button', { name: '查看真实提示词' })).toBeVisible();
     };
     await openEditor();
+    await expect.poll(() => syncCount).toBe(1);
     const trigger = page.getByRole('button', { name: '查看真实提示词' });
     const composer = trigger.locator(
       'xpath=ancestor::*[contains(@class,"node-quick-editor-run-group")]',
@@ -195,8 +198,10 @@ for (const { width, channel } of [
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(trigger).toBeFocused();
+    expect(syncCount).toBe(1);
     await page.reload();
     await openEditor();
+    await expect.poll(() => syncCount).toBe(2);
     expect(unexpected).toEqual([]);
     expect(errors).toEqual([]);
   });

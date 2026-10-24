@@ -80,6 +80,7 @@ import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import { GenerationBatchViewContext } from './generation-batch-view';
 import { getNodeInfoTimes } from './node-info';
+import { formatAssetFileSize, resolveAssetFileSize } from './asset-file-size';
 import { AssetRetentionContext, getAssetRetention, useAssetExpiryClock } from './asset-retention';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
 import { NodeRunControlStoreContext, NodeStopContext, useNodeRunControl } from './node-run-control';
@@ -586,8 +587,16 @@ export function AssetNode({
           tags: [],
         } satisfies Asset)
       : undefined);
+  const originalPreviewAsset = rawPreviewAsset
+    ? resolveOriginalImageAsset(rawPreviewAsset)
+    : undefined;
+  const fileSize = originalPreviewAsset
+    ? resolveAssetFileSize(originalPreviewAsset, knownAssets.get(originalPreviewAsset.id))
+    : undefined;
   const previewAsset =
-    !resourceExpired && rawPreviewAsset ? resolveOriginalImageAsset(rawPreviewAsset) : undefined;
+    !resourceExpired && originalPreviewAsset
+      ? { ...originalPreviewAsset, sizeBytes: fileSize ?? 0 }
+      : undefined;
   const infoTimes = getNodeInfoTimes(id, data);
   const displayedTiming = data.manualOutput
     ? undefined
@@ -1411,6 +1420,10 @@ export function AssetNode({
               <div>
                 <dt>类型</dt>
                 <dd>{mediaLabels[data.mediaType]}</dd>
+              </div>
+              <div>
+                <dt>文件大小</dt>
+                <dd>{formatAssetFileSize(fileSize)}</dd>
               </div>
               <div>
                 <dt>模式</dt>

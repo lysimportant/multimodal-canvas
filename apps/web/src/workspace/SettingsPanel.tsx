@@ -29,6 +29,7 @@ import {
   saveGlobalStoreConfiguration,
   modelCatalogQueryKey,
 } from '../query/models';
+import { synchronizeNewApiAccount, useNewApiAccountQuery } from '../query/account-sync';
 import {
   useWorkspacePreferences,
   useCustomApiGroupsStore,
@@ -56,27 +57,6 @@ const MAX_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 const mediaOrder: MediaType[] = ['text', 'image', 'audio', 'video'];
 
 type SettingsCategory = 'overview' | 'defaults' | 'generation' | 'appearance' | 'custom-api';
-type AccountGroup = {
-  group: string;
-  credentialId?: string;
-  credentialVersion?: number;
-  repairable?: boolean;
-  repairPending?: boolean;
-  status: string;
-  error?: string;
-  modelCount?: number;
-};
-type NewApiAccount = {
-  issuer: string;
-  externalUserId: string;
-  displayName?: string;
-  status: string;
-  syncedAt?: string;
-  error?: string;
-  groups: AccountGroup[];
-  links: { models?: string; account?: string };
-};
-
 const settingsCategories: Array<{ id: SettingsCategory; label: string }> = [
   { id: 'overview', label: 'New API 账号' },
   { id: 'defaults', label: '节点默认' },
@@ -484,12 +464,16 @@ export function SettingsPanel({
   isAdmin?: boolean;
 }) {
   const [category, setCategory] = useState<SettingsCategory>('overview');
-  const [account, setAccount] = useState<NewApiAccount | null>(null);
+  const queryClient = useQueryClient();
+  const userId = readStoredAuthSession()?.user.id;
+  const accountQuery = useNewApiAccountQuery(userId);
+  const account = accountQuery.data;
   const [globalDefaults, setGlobalDefaults] = useState<ModelDefaults>({});
   const [projectDefaults, setProjectDefaults] = useState<ModelDefaults>({});
   const [scope, setScope] = useState<'global' | 'project'>(projectId ? 'project' : 'global');
   const [timeoutMs, setTimeoutMs] = useState(String(DEFAULT_PROVIDER_TIMEOUT_MS));
-  const [loading, setLoading] = useState(true);
+  const [settingsLoading, setLoading] = useState(true);
+  const loading = settingsLoading || accountQuery.isPending;
   const [busy, setBusy] = useState<'save' | 'sync' | 'login' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
@@ -527,18 +511,6 @@ export function SettingsPanel({
     generation.current = requestGeneration;
     setLoading(true);
     setError(null);
-    const accountRequest = apiFetch(
-      `${API_BASE_URL}/v1/account/newapi`,
-      { signal: controller.signal },
-      { expectedAuthGeneration: requestGeneration },
-    ).then(async (response) => {
-      const result = (await response.json().catch(() => ({}))) as
-        NewApiAccount | { account?: NewApiAccount; error?: string };
-      const value = 'account' in result ? result.account : result;
-      if (!response.ok || !value || !('groups' in value))
-        throw new Error('error' in result ? result.error : 'New API 账号状态加载失败');
-      return value;
-    });
     const settingsRequest = apiFetch(
       `${API_BASE_URL}/v1/settings/ai`,
       { signal: controller.signal },
@@ -567,10 +539,9 @@ export function SettingsPanel({
         })
       : Promise.resolve({} as ModelDefaults);
 
-    void Promise.all([accountRequest, settingsRequest, projectRequest])
-      .then(([nextAccount, settings, nextProjectDefaults]) => {
+    void Promise.all([settingsRequest, projectRequest])
+      .then(([settings, nextProjectDefaults]) => {
         if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
-        setAccount(nextAccount);
         setGlobalDefaults(settings.defaultModels ?? {});
         setProjectDefaults(nextProjectDefaults);
         setTimeoutMs(String(settings.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS));
@@ -615,18 +586,9 @@ export function SettingsPanel({
     setBusy('sync');
     setError(null);
     try {
-      const response = await apiFetch(
-        `${API_BASE_URL}/v1/account/newapi/sync`,
-        { method: 'POST' },
-        { expectedAuthGeneration: requestGeneration },
-      );
-      const result = (await response.json().catch(() => ({}))) as
-        NewApiAccount | { account?: NewApiAccount; error?: string };
-      const value = 'account' in result ? result.account : result;
-      if (!response.ok || !value || !('groups' in value))
-        throw new Error('error' in result ? result.error : '分组同步失败');
+      if (!userId) throw new Error('请先登录后同步分组与模型');
+      const value = await synchronizeNewApiAccount(queryClient, userId);
       if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
-      setAccount(value);
       const refreshed = await modelsQuery.refetch();
       if (!mounted.current || requestGeneration !== getAuthSessionGeneration()) return;
       if (
@@ -724,9 +686,9 @@ export function SettingsPanel({
       {loading && category !== 'generation' && (
         <p className="settings-status">正在加载 New API 账号与模型…</p>
       )}
-      {error && category !== 'generation' && (
+      {(error || accountQuery.error) && category !== 'generation' && (
         <Typography.Text type="danger" className="settings-field-error" role="alert">
-          {error}
+          {error || accountQuery.error?.message}
         </Typography.Text>
       )}
       {!loading && category === 'overview' && (

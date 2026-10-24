@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfigProvider } from 'antd';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -37,11 +38,15 @@ vi.mock('../auth-client', () => ({
   readAuthSession: () => ({
     user: { id: 'synthetic-admin', role: 'admin', createdAt: '2026-09-26T00:00:00Z' },
   }),
+  readStoredAuthSession: () => ({
+    user: { id: 'synthetic-admin', role: 'admin', createdAt: '2026-09-26T00:00:00Z' },
+  }),
   subscribeAuthSession: () => () => {},
 }));
 vi.mock('../query/models', async () => {
   const { useState } = await vi.importActual<typeof import('react')>('react');
   return {
+    modelCatalogQueryKey: ['model-catalog'],
     useModelCatalogQuery: () => {
       const [data, setData] = useState(modelCatalogState.models);
       return {
@@ -152,14 +157,18 @@ afterEach(() => {
 async function renderSettings(presentation: 'dialog' | 'page' = 'page') {
   const onNotice = vi.fn();
   render(
-    <ConfigProvider theme={{ token: { motion: false } }}>
-      <SettingsPanel
-        projectId="project-a"
-        onClose={vi.fn()}
-        onNotice={onNotice}
-        presentation={presentation}
-      />
-    </ConfigProvider>,
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <ConfigProvider theme={{ token: { motion: false } }}>
+        <SettingsPanel
+          projectId="project-a"
+          onClose={vi.fn()}
+          onNotice={onNotice}
+          presentation={presentation}
+        />
+      </ConfigProvider>
+    </QueryClientProvider>,
   );
   await screen.findByRole('heading', { name: 'New API 账号' });
   return { onNotice };

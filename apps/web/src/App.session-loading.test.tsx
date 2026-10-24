@@ -43,12 +43,27 @@ function requestPath(input: RequestInfo | URL) {
   return new URL(url, window.location.origin).pathname;
 }
 
-/** 将会话响应交由各测试控制，其余请求仅允许已认证路由的项目列表读取。 */
+/** 会话响应由测试控制；已认证后的项目读取与账号同步使用合成数据。 */
 function installApi(handleAuth: (pathname: string, init?: RequestInit) => Promise<Response>) {
   const fetcher = vi.fn<typeof fetch>((input, init) => {
     const pathname = requestPath(input);
     if (pathname.startsWith('/v1/auth/')) return handleAuth(pathname, init);
     if (pathname === '/v1/projects') return Promise.resolve(Response.json({ projects: [] }));
+    if (
+      (pathname === '/v1/account/newapi' && (!init?.method || init.method === 'GET')) ||
+      (pathname === '/v1/account/newapi/sync' && init?.method === 'POST')
+    )
+      return Promise.resolve(
+        Response.json({
+          account: {
+            issuer: 'https://synthetic.example',
+            externalUserId: 'synthetic-session-user',
+            status: 'active',
+            groups: [],
+            links: {},
+          },
+        }),
+      );
     throw new Error(`未声明的测试请求：${init?.method ?? 'GET'} ${pathname}`);
   });
   vi.stubGlobal('fetch', fetcher);

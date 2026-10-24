@@ -190,6 +190,8 @@ function installApi() {
       const path = url.pathname;
       if (method === 'GET') {
         if (path === '/v1/auth/me') return Response.json(session);
+        if (path === '/v1/account/newapi')
+          return Response.json({ error: '合成账号未绑定 New API' }, { status: 404 });
         if (path === '/v1/models') return Response.json({ models: [] });
         if (path === '/v1/settings/ai') return Response.json({ settings: { defaultModels: {} } });
         if (path === `/v1/projects/${project.id}/models/defaults`)

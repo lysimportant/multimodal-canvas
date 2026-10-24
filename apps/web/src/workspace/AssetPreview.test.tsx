@@ -112,6 +112,14 @@ afterEach(() => {
   }
 });
 
+it('预览底部显示当前文件大小，切换未知大小时不沿用旧值', () => {
+  const asset = makeAsset({ mediaType: 'image', mimeType: 'image/jpeg', sizeBytes: 2048 });
+  const { rerender } = render(<AssetViewerDialog asset={asset} open onOpenChange={vi.fn()} />);
+  expect(screen.getByText(/文件大小：/)).toHaveTextContent('2 KB');
+  rerender(<AssetViewerDialog asset={{ ...asset, sizeBytes: 0 }} open onOpenChange={vi.fn()} />);
+  expect(screen.getByText(/文件大小：/)).toHaveTextContent('未知');
+});
+
 describe('AssetPreview', () => {
   /** 合成会话只用于验证签名申请，不读取本机凭据。 */
   function signIn() {

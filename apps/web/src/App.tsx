@@ -240,6 +240,7 @@ import { AppQueryProvider } from './query/client';
 import { createOperationLogId, recordOperationLog } from './operation-log';
 import { SessionLoading } from './startup/SessionLoading';
 import { usePlatformModelCatalogQuery, useCustomGroupsModelQuery } from './query/models';
+import { useAutomaticAccountSync } from './query/account-sync';
 import {
   useCustomApiGroupsStore,
   getCustomApiVisibleForUsers,
@@ -6619,6 +6620,7 @@ function AppContent() {
   );
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  useAutomaticAccountSync(authSession?.user.id, !authLoading, setAuthNotice);
   /** 监听回调使用最新身份，续期/资料变更不清空同一用户的项目缓存。 */
   const authSessionRef = useRef(authSession);
   authSessionRef.current = authSession;

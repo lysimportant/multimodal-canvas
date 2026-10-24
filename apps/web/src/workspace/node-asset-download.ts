@@ -34,6 +34,7 @@ const mediaExtensions: Readonly<Record<string, string>> = {
 export async function fetchNodeAssetDownload(
   inputAsset: Asset,
   signal?: AbortSignal,
+  maxBytes?: number,
 ): Promise<ProjectExportDownload> {
   const asset = resolveOriginalImageAsset(inputAsset);
   if (!asset.contentUrl) throw new Error('暂无可下载内容');
@@ -68,7 +69,10 @@ export async function fetchNodeAssetDownload(
     throw new Error('下载失败，请检查网络或资源跨域权限后重试', { cause });
   }
   if (!response.ok) throw new Error(`下载失败（${response.status}），请重试`);
-  const blob = await response.blob();
+  const blob =
+    maxBytes === undefined
+      ? await response.blob()
+      : await readLimitedDownload(response, maxBytes, signal);
   if (blob.size === 0) throw new Error('下载内容为空，请重试');
   const extension =
     mediaExtensions[blob.type.split(';')[0].toLowerCase()] ??
@@ -85,4 +89,34 @@ export async function fetchNodeAssetDownload(
     blob,
     filename: filenameFromContentDisposition(response.headers.get('content-disposition'), filename),
   };
+}
+
+/** 压缩入口限制下载内存；普通原文件下载保持原行为。 */
+async function readLimitedDownload(response: Response, maxBytes: number, signal?: AbortSignal) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('无法读取文件内容');
+  const parts: Uint8Array<ArrayBuffer>[] = [];
+  let size = 0;
+  const cancel = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (Number(response.headers.get('content-length')) > maxBytes)
+      throw new Error('图片过大，当前支持不超过 32 MB 的文件');
+    while (true) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      signal?.throwIfAborted();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error('图片过大，当前支持不超过 32 MB 的文件');
+      parts.push(new Uint8Array(value));
+    }
+    return new Blob(parts, { type: response.headers.get('content-type') ?? '' });
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }

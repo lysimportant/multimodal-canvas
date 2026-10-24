@@ -1837,6 +1837,17 @@ describe('AssetNode result presentation', () => {
     expect(within(dialog).queryByText(/未达到所选|当前原图/)).not.toBeInTheDocument();
   });
 
+  it('信息面板显示当前生成版本的文件大小', async () => {
+    renderNode(
+      makeNode({
+        resultAsset: { assetId: 'sized-result', version: 1, sizeBytes: 1536 },
+      }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const dialog = await screen.findByRole('dialog', { name: '节点信息' });
+    expect(within(dialog).getByText('文件大小').nextElementSibling).toHaveTextContent('1.5 KB');
+  });
+
   it('信息按钮打开介绍对话框', async () => {
     const user = userEvent.setup();
     renderNode(makeNode({ stale: true }), undefined, vi.fn(), undefined, false, vi.fn(), vi.fn());
@@ -1847,6 +1858,7 @@ describe('AssetNode result presentation', () => {
     expect(dialog).toHaveTextContent('文案生成');
     expect(dialog).toHaveTextContent('上游已变更，节点待更新');
     expect(within(dialog).getByText('节点创建时间').nextElementSibling).toHaveTextContent('未记录');
+    expect(within(dialog).getByText('文件大小').nextElementSibling).toHaveTextContent('未知');
     expect(within(dialog).getByText('结果回显时间').nextElementSibling).toHaveTextContent('未记录');
     await user.click(screen.getByRole('button', { name: '关闭节点信息' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
