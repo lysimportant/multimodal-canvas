@@ -111,6 +111,7 @@ export const runStatuses = [
   'preparing',
   'running',
   'processing',
+  'archiving',
   'succeeded',
   'failed',
   'cancel_requested',
@@ -395,6 +396,25 @@ export function renderPromptDocument(document: PromptDocument): string {
       block.type === 'text' ? block.text : block.inline ? '' : mentionDisplayName(block),
     )
     .join('');
+}
+
+/**
+ * 模型与协议未声明素材编号映射时，把正文内联媒体引用退化为普通文本。
+ * 画布不再以能力声明拒绝提交；退化后请求仍保持用户原文顺序和资源名，
+ * 由上游自行判断能否处理，避免画布与渠道目录版本不一致时误拦。
+ * @param document 目标节点冻结的提示词文档。
+ * @returns 内联媒体提及转为 `@资源名` 文本后的新文档；其它块保持不变。
+ */
+export function degradeInlinePromptMentions(document: PromptDocument): PromptDocument {
+  const parsed = promptDocumentSchema.parse(document);
+  return {
+    ...parsed,
+    blocks: parsed.blocks.map((block) =>
+      block.type === 'mention' && block.inline && !block.executionOnly && block.mediaType !== 'text'
+        ? { type: 'text' as const, text: `@${block.label}` }
+        : block,
+    ),
+  };
 }
 
 export function getEffectivePromptDocument(input: {
@@ -951,6 +971,10 @@ export function getNodeGenerationCount(data: { generationCount?: unknown }): num
   return data.generationCount;
 }
 
+/** 视频素材编号语法覆盖；缺省按模型家族自动匹配，用户可在单个节点上手动切换。 */
+export const videoReferenceSyntaxSchema = z.enum(['seedance', 'wan', 'h3', 'generic']);
+export type VideoReferenceSyntax = z.infer<typeof videoReferenceSyntaxSchema>;
+
 export const nodeDataSchema = z.object({
   label: z.string().min(1),
   /** 节点实例首次创建时间（UTC ISO 8601）；复制的新节点重新记录，历史缺失不补写。 */
@@ -1017,6 +1041,11 @@ export const nodeDataSchema = z.object({
    * 新视频生成节点会写入显式值，一次运行只使用一种模式。
    */
   videoMode: videoModeSchema.optional(),
+  /**
+   * 视频素材编号语法覆盖。缺省按模型家族自动匹配；只对当前节点生效，
+   * 用户认为自动匹配不符合渠道习惯时可手动切换，预览与发送都按该语法编号。
+   */
+  videoReferenceSyntax: videoReferenceSyntaxSchema.optional(),
   /**
    * 图片编辑语义。由“修改图片”入口写入的版本化来源引用；缺省表示普通图片
    * 生成节点（旧画布不会被自动推断成编辑节点）。
@@ -1786,7 +1815,9 @@ const runStatusTransitions: Record<RunStatus, readonly RunStatus[]> = {
   queued: ['preparing', 'cancel_requested', 'cancelled'],
   preparing: ['running', 'cancel_requested'],
   running: ['processing', 'cancel_requested'],
-  processing: ['succeeded', 'failed', 'cancel_requested'],
+  processing: ['archiving', 'succeeded', 'failed', 'cancel_requested'],
+  // 归档阶段仍可能因取消、存储失败或原结果补救而回到进行中。
+  archiving: ['processing', 'succeeded', 'failed', 'cancel_requested'],
   succeeded: [],
   failed: [],
   cancel_requested: ['cancelled', 'failed'],
@@ -1891,10 +1922,38 @@ export function videoFamilyForModel(modelAlias?: string): VideoModelFamily {
   ) {
     return 'seedance-2';
   }
+  if (id.includes('wan3')) return 'wan3';
   if (id.includes('wan')) return 'wan';
   const moonContract = moonVideoContractForModel(exactId);
   if (moonContract) return moonContract.family;
+  // 渠道自定义别名启发式：家族表未收录时按 ID 特征归并，避免把官方能力模型当成未知模型。
+  // 例如 933 / ManSui 的 `mt-h3`、渠道 `sd_2.0_special` 等不在精确表内。
+  if (id.includes('h3')) return 'minimax-h3';
+  const seedanceFamily = seedanceFamilyFromAlias(id);
+  if (seedanceFamily) return seedanceFamily;
   return 'unknown';
+}
+
+/**
+ * 未收录的 Seedance 渠道别名按 ID 内的版本号归并。
+ * 约定：`sd` / `seedance` / `video` 别名中的 `2.5`、`2.0` 视为对应 Seedance 版本；
+ * 单纯的 `2.5` / `2-5` 别名也按 Seedance 2.5 处理，用户可在节点上手动改回其他语法。
+ */
+function seedanceFamilyFromAlias(id: string): VideoModelFamily | undefined {
+  const version25 =
+    /(?:sd|seedance)[-_.]?2[._-]?5(?=$|[-_.])/.test(id) ||
+    /(?:^|[-_.])2[._-]?5(?:$|[-_.])/.test(id);
+  const version20 =
+    /(?:sd|seedance)[-_.]?2[._-]?0(?=$|[-_.])/.test(id) ||
+    /(?:^|[-_.])2[._-]?0(?:$|[-_.])/.test(id);
+  if (!version25 && !version20) return undefined;
+  const namedSeedance =
+    id.includes('sd') ||
+    id.includes('seedance') ||
+    id.includes('video') ||
+    /^2[._-]?[25]$/.test(id);
+  if (!namedSeedance) return undefined;
+  return version25 ? 'seedance-2.5' : 'seedance-2';
 }
 
 /** 某个视频模式在指定模型上的画布端口与真实 POST 能力。 */

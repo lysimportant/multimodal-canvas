@@ -22,7 +22,10 @@ x-runtime-environment: &runtime-environment
   S3_SECRET_KEY: ${S3_SECRET_KEY:?必须配置 R2 S3_SECRET_KEY}
   S3_REGION: auto
   S3_UPLOAD_MODE: proxy
-  S3_DOWNLOAD_MODE: proxy
+  # 预览默认仍由 API 代理：本机实测浏览器直连 R2 约 0.4-0.6MB/s，而 API 容器到 R2 约 3.3MB/s，
+  # 直连反而更慢（10MB 视频 12-21s vs 2.8-3.2s，11MB 图片 18.6s vs 3.7s）。
+  # 对象存储网络路径更好的部署可设 S3_DOWNLOAD_MODE=direct 打开预签名直连；前端会回退 proxy 签名地址。
+  S3_DOWNLOAD_MODE: ${S3_DOWNLOAD_MODE:-proxy}
   RESULT_ASSET_S3_TIMEOUT_MS: ${RESULT_ASSET_S3_TIMEOUT_MS:-300000}
   S3_PROVIDER_ENDPOINT: ${S3_PROVIDER_ENDPOINT:-}
   AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED

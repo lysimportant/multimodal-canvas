@@ -746,6 +746,7 @@ const runSchema = {
         'preparing',
         'running',
         'processing',
+        'archiving',
         'succeeded',
         'failed',
         'cancel_requested',

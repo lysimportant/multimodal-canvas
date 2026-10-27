@@ -859,4 +859,65 @@ describe('资源提及 HTTP 边界', () => {
       expect.objectContaining({ mentionId: 'mention-text', mediaType: 'image' }),
     ]);
   });
+
+  it('画布保存只读取资源元数据，不从对象存储下载素材内容', async () => {
+    const assetStore = new MemoryAssetStore();
+    const projectStore = new MemoryProjectStore();
+    const runService = new MemoryRunService({ stepDelayMs: 0 });
+    const project = await projectStore.create({ name: '元数据只读保存' });
+    const image = await assetStore.create({
+      projectId: project.id,
+      name: 'huge.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.alloc(512 * 1024, 7),
+    });
+    const app = buildApp({ logger: false, assetStore, projectStore, runService });
+    apps.push(app);
+    // 画布保存冻结提及只需要元数据；一旦调用 get 就会完整下载素材字节。
+    const readContent = vi.spyOn(assetStore, 'get');
+    const readMetadata = vi.spyOn(assetStore, 'getMetadata');
+
+    const save = await app.inject({
+      method: 'PATCH',
+      url: `/v1/projects/${project.id}/canvas`,
+      payload: {
+        revision: 0,
+        nodes: [
+          {
+            id: 'node-meta-only',
+            type: 'image',
+            position: { x: 0, y: 0 },
+            data: {
+              label: '元数据节点',
+              mediaType: 'image',
+              mode: 'generate',
+              prompt: '只校验元数据',
+              promptDocument: {
+                version: 1,
+                blocks: [
+                  { type: 'text', text: '只校验元数据' },
+                  {
+                    type: 'mention',
+                    mentionId: 'mention-meta-only',
+                    assetId: image.id,
+                    assetVersion: 1,
+                    label: image.name,
+                    mediaType: 'image',
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    expect(save.statusCode).toBe(200);
+    expect(save.json().canvas.revision).toBe(1);
+    expect(readMetadata).toHaveBeenCalled();
+    expect(readContent).not.toHaveBeenCalled();
+  });
+
 });

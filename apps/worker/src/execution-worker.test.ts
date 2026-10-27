@@ -1448,3 +1448,28 @@ describe('Worker 中性执行授权', () => {
     expect(f.creationCalls()).toBe(0);
   });
 });
+
+describe('Worker 终止 Provider 声明不可重试的失败', () => {
+  it('发送前的不可重试 Provider 失败不再按队列策略重投', async () => {
+    const f = fixture(snapshot('image', true));
+    const failure = new NewApiProviderError(
+      '当前视频模型与请求协议尚未确认内联素材编号映射，请选择支持参考素材的模型和 OpenAI 视频协议',
+      { code: 'VIDEO_REFERENCE_MAPPING_UNSUPPORTED', retryable: false },
+    );
+    f.options.provider = {
+      execute: vi.fn(async () => {
+        throw failure;
+      }),
+    };
+    f.options.videoProvider = f.options.provider;
+    createRunWorker({ ...f.options, execution: singleSendAuthorization().execution });
+
+    const failures = await processWithQueueRetries(f.job);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toBeInstanceOf(UnrecoverableError);
+    expect((failures[0] as UnrecoverableError).message).toBe(failure.message);
+    expect((failures[0] as UnrecoverableError).cause).toBe(failure);
+    expect(f.creationCalls()).toBe(0);
+  });
+});

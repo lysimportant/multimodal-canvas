@@ -299,9 +299,14 @@ function nodeMenuItems(
   run: (action: () => void) => void,
 ): MenuProps['items'] {
   const enabled = node.data.enabled !== false;
-  const running = ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
-    node.data.runStatus ?? '',
-  );
+  const running = [
+    'queued',
+    'preparing',
+    'running',
+    'processing',
+    'archiving',
+    'cancel_requested',
+  ].includes(node.data.runStatus ?? '');
   const unavailable = !enabled || props.busy || running;
   const stoppable = runControl.stoppable || (running && !props.runControlStore);
   const waitingForUpstream = running && !stoppable;

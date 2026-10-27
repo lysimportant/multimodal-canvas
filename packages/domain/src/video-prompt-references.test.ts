@@ -5,6 +5,7 @@ import {
   renderVideoPromptReferenceDocument,
   VideoPromptReferenceMappingError,
   videoPromptTokenFamilyForModel,
+  videoPromptTokenFamilyForNode,
   type VideoPromptMediaDescriptor,
 } from './video-prompt-references.js';
 import type { PromptDocument, PromptMention } from './index.js';
@@ -24,6 +25,7 @@ describe('video prompt references', () => {
     ['doubao-seedance-2-5-260628', '图 1'],
     ['wan3.0-video', '图1'],
     ['MiniMax-H3', '<Picture 1>'],
+    ['mt-h3', '<Picture 1>'],
     ['grok-imagine-video-1.5.1', 'Image 1'],
   ])('renders %s references with the same tokens used for submission', (modelAlias, token) => {
     const refs = buildVideoPromptReferences(
@@ -47,6 +49,14 @@ describe('video prompt references', () => {
       { type: 'text', text: `${token}（成年小明）` },
     ]);
     expect(document).toEqual(before);
+  });
+
+  it('lets a node override the automatic token family', () => {
+    expect(videoPromptTokenFamilyForNode('mt-h3', undefined)).toBe('h3');
+    expect(videoPromptTokenFamilyForNode('mt-h3', 'wan')).toBe('wan');
+    expect(videoPromptTokenFamilyForNode('doubao-seedance-2-5-260628', 'generic')).toBe('generic');
+    expect(videoPromptTokenFamilyForNode('MiniMax-H3', 'seedance')).toBe('seedance');
+    expect(videoPromptTokenFamilyForNode(undefined, 'h3')).toBe('h3');
   });
 
   it('honors frozen versions, skips execution-only blocks and separates following digits', () => {

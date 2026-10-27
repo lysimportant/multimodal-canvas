@@ -137,12 +137,11 @@ describe('视频真实提示词入口', () => {
         }}
       />,
     );
+    expect(typeof accepted).toBe('boolean');
     fireEvent.click(screen.getByRole('button', { name: '查看真实提示词' }));
-    if (accepted) expect(screen.getByLabelText('真实提示词正文')).toHaveTextContent('Image 1');
-    else {
-      expect(screen.getByRole('alert')).toHaveTextContent('尚未确认素材编号映射');
-      expect(screen.queryByLabelText('真实提示词正文')).not.toBeInTheDocument();
-    }
+    // 能力声明不再拦截预览：无论声明是否可用都按通用编号展示，与真实提交一致。
+    expect(screen.getByLabelText('真实提示词正文')).toHaveTextContent('Image 1');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('读取未回写父层的最新输入，可通过键盘打开关闭且不提交', async () => {

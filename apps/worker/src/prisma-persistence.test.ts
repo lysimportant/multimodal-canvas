@@ -386,6 +386,18 @@ describe('WorkerPrismaRunPersistence run result persistence', () => {
       data: { status: 'FAILED', error: { message: 'synthetic provider failure' } },
     });
   });
+
+  it('writes the archiving stage as its own durable status', async () => {
+    const update = vi.fn(async (args) => args);
+    const persistence = new WorkerPrismaRunPersistence({ run: { update } } as never);
+
+    await persistence.updateRun({ runId, status: 'archiving' });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: databaseId },
+      data: { status: 'ARCHIVING' },
+    });
+  });
 });
 
 describe('WorkerPrismaRunPersistence credential snapshots', () => {

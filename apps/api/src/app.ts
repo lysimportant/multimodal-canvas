@@ -36,6 +36,7 @@ import {
 import { withLocalResourceReferences } from './local-resource-references';
 import { withConnectedImageResults } from './connected-image-results';
 import { withConnectedTextInputs } from './connected-text-inputs';
+import { withConnectedVideoResults } from './connected-video-results';
 import { RunImageParameterError, validateRunImageParameters } from './run-image-parameters';
 import { ExecutionError } from '@multimodal-canvas/execution';
 import {
@@ -768,6 +769,18 @@ async function resolveRunAssetRefs(input: {
   };
   const assetCache = new Map<string, Promise<{ ref: FrozenRunAssetRef; mediaType: MediaType }>>();
   /**
+   * 冻结运行输入只依赖资源元数据，优先走不下载对象字节的读取路径；对象内容
+   * 由真正发送请求的执行器按需读取。旧实现用 `get` 会在每次提交运行时从对象
+   * 存储完整下载所有输入素材。
+   * @param assetId 资源 ID。
+   * @param scope 资源归属范围；未授权时不返回资源。
+   * @returns 资源存在且获授权时返回元数据，否则返回 undefined。
+   */
+  const readMetadata = (assetId: string, scope?: AssetScope) =>
+    input.assetStore.getMetadata
+      ? input.assetStore.getMetadata(assetId, scope)
+      : input.assetStore.get(assetId, scope);
+  /**
    * 解析并缓存一个资产的可冻结版本。
    *
    * `pinnedVersion` 来自图片编辑节点冻结的来源引用：用户发起修改时确定的版本
@@ -782,9 +795,9 @@ async function resolveRunAssetRefs(input: {
     const cached = assetCache.get(cacheKey);
     if (cached) return cached;
     const pending = (async () => {
-      const projectAsset = await input.assetStore.get(assetId, projectAssetScope);
+      const projectAsset = await readMetadata(assetId, projectAssetScope);
       const scope = projectAsset ? projectAssetScope : globalAssetScope;
-      const asset = projectAsset ?? (await input.assetStore.get(assetId, globalAssetScope));
+      const asset = projectAsset ?? (await readMetadata(assetId, globalAssetScope));
       if (!asset) {
         throw new RunAssetFreezeError(
           'asset_unavailable',
@@ -988,10 +1001,23 @@ async function resolvePromptMentionRefs(
     process.env.RESOURCE_MENTION_MAX_BYTES,
     DEFAULT_RESOURCE_MENTION_MAX_BYTES,
   );
+  /**
+   * 冻结提及只读取公开元数据，绝不读取对象字节。画布每次自动保存都会走这里，
+   * 旧实现调用 `get` 会从对象存储完整下载每个被引用素材，导致保存耗时随素材
+   * 体积线性增长（实测 9–20 秒）。
+   * @param assetId 资源 ID。
+   * @param scope 资源归属范围；未授权时不返回资源。
+   * @returns 资源存在且获授权时返回元数据，否则返回 undefined。
+   */
+  const readMetadata = (assetId: string, scope?: AssetScope) =>
+    input.assetStore.getMetadata
+      ? input.assetStore.getMetadata(assetId, scope)
+      : input.assetStore.get(assetId, scope);
+
   const assetCache = new Map<
     string,
     Promise<{
-      asset: Awaited<ReturnType<AssetStore['get']>>;
+      asset: Asset | undefined;
       scope: AssetScope;
       accessible: boolean;
     }>
@@ -1001,13 +1027,13 @@ async function resolvePromptMentionRefs(
     const cached = assetCache.get(assetId);
     if (cached) return cached;
     const pending = (async () => {
-      const projectAsset = await input.assetStore.get(assetId, projectScope);
+      const projectAsset = await readMetadata(assetId, projectScope);
       if (projectAsset) return { asset: projectAsset, scope: projectScope, accessible: true };
-      const globalAsset = await input.assetStore.get(assetId, globalScope);
+      const globalAsset = await readMetadata(assetId, globalScope);
       if (globalAsset) return { asset: globalAsset, scope: globalScope, accessible: true };
       // A second, unscoped lookup only distinguishes not-found from forbidden;
       // no unscoped value is returned to the client.
-      const existing = await input.assetStore.get(assetId);
+      const existing = await readMetadata(assetId);
       return { asset: existing, scope: projectScope, accessible: false };
     })();
     assetCache.set(assetId, pending);
@@ -1377,7 +1403,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const mediaMetadataExtractor = options.mediaMetadataExtractor ?? new NoopMediaMetadataExtractor();
   const mediaDerivativeGenerator =
     options.mediaDerivativeGenerator ?? new NoopMediaDerivativeGenerator();
-  const assetThumbnails = new AssetThumbnailService(assetStore, mediaDerivativeGenerator);
+  const assetThumbnails = new AssetThumbnailService(assetStore, mediaDerivativeGenerator, {
+    persistDerivatives: true,
+  });
   const eventStreamCleanups = new Set<() => void>();
   const uploadSessionStore = options.uploadSessionStore ?? new MemoryUploadSessionStore();
   const authToken = process.env.API_AUTH_TOKEN?.trim();
@@ -2695,6 +2723,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       let bytesWritten = 0;
       let responseLimitReached = false;
       let lastCanvasRevision: number | undefined;
+      let runCursor: Date | undefined;
       const lastSeen = new Map<string, string>();
       const writeRaw = (chunk: string, options: { bypassLimit?: boolean } = {}) => {
         if (closed) return;
@@ -2752,6 +2781,52 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       request.raw.once('close', cleanup);
       request.raw.once('error', cleanup);
 
+      const publishRun = (run: RunRecord) => {
+        if (run.snapshot.reversePrompt || run.snapshot.promptOptimization) return;
+        const publicRun = toPublicRunEvent(run);
+        const serialized = JSON.stringify(publicRun);
+        if (lastSeen.get(run.id) === serialized) return;
+        lastSeen.set(run.id, serialized);
+        write('run.updated', publicRun);
+      };
+      /**
+       * 首次连接回放一次全量运行视图，之后只按持久化游标读取变化的运行。
+       *
+       * 旧实现每次轮询都会把项目全部历史（连同完整快照）从队列和数据库读出来并
+       * 逐条校验，历史越长单核占用越高；增量游标让空闲轮询只剩一次索引查询，
+       * 有变化时再按单条运行读取最新状态。
+       */
+      const publishRuns = async () => {
+        if (!runCursor) {
+          const runs = await runService.listByProject(projectId);
+          let newest: Date | undefined;
+          for (const run of runs) {
+            publishRun(run);
+            const updatedAt = new Date(run.updatedAt);
+            if (!Number.isNaN(updatedAt.getTime()) && (!newest || updatedAt > newest)) {
+              newest = updatedAt;
+            }
+          }
+          runCursor = newest ?? new Date();
+          return;
+        }
+        const cursor: Date = runCursor;
+        const changes = runService.listProjectRunChanges
+          ? await runService.listProjectRunChanges(projectId, cursor)
+          : (await runService.listByProject(projectId))
+              .map((run) => ({ id: run.id, updatedAt: run.updatedAt }))
+              .filter((change) => new Date(change.updatedAt) >= cursor);
+        if (changes.length === 0) return;
+        let newest: Date = cursor;
+        for (const change of changes) {
+          const updatedAt = new Date(change.updatedAt);
+          if (!Number.isNaN(updatedAt.getTime()) && updatedAt > newest) newest = updatedAt;
+          const run = await runService.get(change.id);
+          if (run) publishRun(run);
+        }
+        runCursor = newest;
+      };
+
       const publishChanges = async () => {
         if (closed || publishing) return;
         publishing = true;
@@ -2764,15 +2839,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             lastCanvasRevision = canvas.revision;
             write('canvas.updated', { projectId, revision: canvas.revision });
           }
-          const runs = await runService.listByProject(projectId);
-          for (const run of runs) {
-            if (run.snapshot.reversePrompt || run.snapshot.promptOptimization) continue;
-            const publicRun = toPublicRunEvent(run);
-            const serialized = JSON.stringify(publicRun);
-            if (lastSeen.get(run.id) === serialized) continue;
-            lastSeen.set(run.id, serialized);
-            write('run.updated', publicRun);
-          }
+          await publishRuns();
         } catch (error) {
           request.log.error(
             { err: sanitizeExceptionForObservability(error), requestId: request.id },
@@ -2790,9 +2857,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
       write('ready', { projectId, projectName: project.name });
       await publishChanges();
-      // Polling is a compatibility fallback for the in-process run service;
-      // avoid overlapping reads and keep the interval modest for projects
-      // with many connected clients.
+      // 首次回放后轮询只读取增量变更（一次索引查询），因此 500ms 频率不会随
+      // 项目历史增长放大成本；同时避免重叠读取，兼容内存运行服务。
       pollTimer = setInterval(() => void publishChanges(), 500);
       keepAliveTimer = setInterval(() => {
         writeRaw(': keep-alive\n\n');
@@ -2962,9 +3028,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
             isReversePromptRun(run, body.projectId, asset.id, version, body.purpose) &&
             (body.automatic ||
               run.idempotencyKey === idempotencyKey ||
-              ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
-                run.status,
-              )),
+              [
+                'queued',
+                'preparing',
+                'running',
+                'processing',
+                'archiving',
+                'cancel_requested',
+              ].includes(run.status)),
         )
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .at(0);
@@ -2973,7 +3044,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (
         maxActiveRunsPerProject !== undefined &&
         projectRuns.filter((run) =>
-          ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(run.status),
+          [
+            'queued',
+            'preparing',
+            'running',
+            'processing',
+            'archiving',
+            'cancel_requested',
+          ].includes(run.status),
         ).length >= maxActiveRunsPerProject
       ) {
         return reply.code(429).send({ error: 'project run quota exceeded', retryAfterSeconds: 30 });
@@ -3217,9 +3295,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           if (
             maxActiveRunsPerProject !== undefined &&
             projectRuns.filter((run) =>
-              ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(
-                run.status,
-              ),
+              [
+                'queued',
+                'preparing',
+                'running',
+                'processing',
+                'archiving',
+                'cancel_requested',
+              ].includes(run.status),
             ).length >= maxActiveRunsPerProject
           ) {
             return reply
@@ -3430,7 +3513,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         targetNodeId: request.params.nodeId,
         runService,
       });
-      const canvasForRun = textInputs.canvas;
+      const videoInputs = await withConnectedVideoResults({
+        projectId: body.projectId,
+        canvas: textInputs.canvas,
+        targetNodeId: request.params.nodeId,
+        runService,
+      });
+      const canvasForRun = videoInputs.canvas;
       // 只检查实际执行的复刻节点；已有资产的来源节点不重新生成。
       const recreationNodeIds = getRunSnapshotIncludedNodeIds(canvasForRun, request.params.nodeId);
       for (const node of canvasForRun.nodes) {
@@ -3520,11 +3609,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           });
         }
       }
-      const sourceVersions = { ...imageInputs.sourceVersions, ...textInputs.sourceVersions };
+      const sourceVersions = {
+        ...imageInputs.sourceVersions,
+        ...textInputs.sourceVersions,
+        ...videoInputs.sourceVersions,
+      };
       if (maxActiveRunsPerProject !== undefined) {
         const activeRuns = await runService.listByProject(body.projectId);
         const activeCount = activeRuns.filter((run) =>
-          ['queued', 'preparing', 'running', 'processing', 'cancel_requested'].includes(run.status),
+          [
+            'queued',
+            'preparing',
+            'running',
+            'processing',
+            'archiving',
+            'cancel_requested',
+          ].includes(run.status),
         ).length;
         if (activeCount >= maxActiveRunsPerProject) {
           return reply.code(429).send({

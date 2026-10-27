@@ -31,6 +31,7 @@ import {
   videoModeForPromptMentions,
   promptDocumentSchema,
   renderPromptDocument,
+  degradeInlinePromptMentions,
   mentionDisplayName,
   uniqueResourceDisplayName,
   defaultResourceDisplayName,
@@ -583,6 +584,52 @@ describe('canvas protocol', () => {
     expect(document.blocks[1]).toMatchObject({ inline: true });
   });
 
+  it('degrades inline media mentions to plain text when the model capability is undeclared', () => {
+    const document = promptDocumentSchema.parse({
+      version: 1,
+      blocks: [
+        { type: 'text', text: '女子' },
+        {
+          type: 'mention',
+          mentionId: 'inline-reference',
+          assetId: 'asset-inline',
+          label: '6.png',
+          mediaType: 'image',
+          inline: true,
+        },
+        { type: 'text', text: '跳舞' },
+        {
+          type: 'mention',
+          mentionId: 'pool-reference',
+          assetId: 'asset-pool',
+          label: '场景',
+          mediaType: 'image',
+        },
+        {
+          type: 'mention',
+          mentionId: 'silent-reference',
+          assetId: 'asset-silent',
+          label: '静默',
+          mediaType: 'video',
+          inline: true,
+          executionOnly: true,
+        },
+      ],
+    });
+
+    const degraded = degradeInlinePromptMentions(document);
+    expect(degraded.blocks).toMatchObject([
+      { type: 'text', text: '女子' },
+      { type: 'text', text: '@6.png' },
+      { type: 'text', text: '跳舞' },
+      { type: 'mention', mentionId: 'pool-reference' },
+      { type: 'mention', mentionId: 'silent-reference' },
+    ]);
+    // 退化只影响提交渲染：原文档保持不变，资源条/连线仍持有冻结身份。
+    expect(renderPromptDocument(degraded)).toBe('女子@6.png跳舞场景');
+    expect(document.blocks[1]).toMatchObject({ type: 'mention' });
+  });
+
   it('projects attached resource refs in stable order and deduplicates exact identities', () => {
     const source = {
       version: 1 as const,
@@ -1020,6 +1067,9 @@ describe('canvas protocol', () => {
       ).toBe(false);
     }
     expect(canTransitionRunStatus('queued', 'preparing')).toBe(true);
+    expect(canTransitionRunStatus('processing', 'archiving')).toBe(true);
+    expect(canTransitionRunStatus('archiving', 'succeeded')).toBe(true);
+    expect(canTransitionRunStatus('archiving', 'processing')).toBe(true);
     expect(canTransitionRunStatus('succeeded', 'running')).toBe(false);
   });
 
@@ -1574,14 +1624,17 @@ describe('video input set', () => {
 });
 
 describe('video mode ports', () => {
-  it('distinguishes exact H3 providers and recognizes only confirmed model families', () => {
+  it('distinguishes exact H3 providers and recognizes confirmed model families', () => {
     expect(videoFamilyForModel('minimax-h3')).toBe('moon-minimax-h3');
     expect(videoFamilyForModel('MiniMax-H3')).toBe('minimax-h3');
-    expect(videoFamilyForModel('MINIMAX-H3')).toBe('unknown');
-    expect(videoFamilyForModel('Minimax-H3')).toBe('unknown');
-    expect(videoFamilyForModel('minimax_h3-1080p')).toBe('unknown');
+    expect(videoFamilyForModel('MINIMAX-H3')).toBe('minimax-h3');
+    expect(videoFamilyForModel('Minimax-H3')).toBe('minimax-h3');
+    expect(videoFamilyForModel('minimax_h3-1080p')).toBe('minimax-h3');
+    expect(videoFamilyForModel('mt-h3')).toBe('minimax-h3');
+    expect(videoFamilyForModel('h3-context')).toBe('minimax-h3');
     expect(videoFamilyForModel('wan3.0-video')).toBe('wan3');
     expect(videoFamilyForModel('wan3.0-video-prime')).toBe('wan3');
+    expect(videoFamilyForModel('wan3.5-video')).toBe('wan3');
     expect(videoFamilyForModel('wan2.6-video')).toBe('wan');
     expect(videoFamilyForModel('doubao-seedance-2-0-260128')).toBe('seedance-2');
     expect(videoFamilyForModel('doubao-seedance-2-0-fast-260128')).toBe('seedance-2');
@@ -1590,9 +1643,11 @@ describe('video mode ports', () => {
     expect(videoFamilyForModel('seedance-2-0-fast-official')).toBe('seedance-2');
     expect(videoFamilyForModel('seedance-2-0-mini-official')).toBe('seedance-2');
     expect(videoFamilyForModel('doubao-seedance-2-5-260628')).toBe('seedance-2.5');
-    expect(videoFamilyForModel('doubao-seedance-2-0-mini-260128')).toBe('unknown');
-    expect(videoFamilyForModel('doubao-seedance-2-5-pro-260901')).toBe('unknown');
-    expect(videoFamilyForModel('doubao-seedance-2-5')).toBe('unknown');
+    expect(videoFamilyForModel('doubao-seedance-2-0-mini-260128')).toBe('seedance-2');
+    expect(videoFamilyForModel('doubao-seedance-2-5-pro-260901')).toBe('seedance-2.5');
+    expect(videoFamilyForModel('doubao-seedance-2-5')).toBe('seedance-2.5');
+    expect(videoFamilyForModel('sd2.5')).toBe('seedance-2.5');
+    expect(videoFamilyForModel('sd_2.0_special')).toBe('seedance-2');
     expect(videoFamilyForModel('doubao-seedance-1-5-pro')).toBe('unknown');
   });
 

@@ -230,6 +230,20 @@ function installApi() {
             pageSize,
           });
         }
+        if (path === '/v1/assets/seed-source/versions') {
+          return Response.json({
+            versions: [
+              {
+                id: 'seed-source-v1',
+                assetId: 'seed-source',
+                version: 1,
+                sizeBytes: 16,
+                createdAt: '2026-10-02T00:00:00Z',
+                contentUrl: '/v1/assets/seed-source/versions/1/content',
+              },
+            ],
+          });
+        }
       }
       if (path === `/v1/projects/${project.id}/canvas` && method === 'PATCH') {
         canvas = { ...body, revision: canvas.revision + 1 } as CanvasDocument;
@@ -517,5 +531,54 @@ describe('App 资源分页集成', () => {
       'archived-51',
     );
     expectEditsPreserved();
+  });
+
+  it('页外来源添加参考资料时按需补齐最新版本，重复添加不再读取版本', async () => {
+    catalog = Array.from({ length: 50 }, (_, i) => makeAsset(i + 1));
+    await renderApp(50);
+    expect(
+      view.canvas!.assets!.find((asset) => asset.id === 'seed-source')?.latestVersion,
+    ).toBeUndefined();
+    const versionReads = () =>
+      requests.filter(({ url }) => url.pathname === '/v1/assets/seed-source/versions');
+
+    await act(async () => {
+      await view.canvas!.onAddNodeReference!('restored-source', 'editor');
+    });
+
+    expect(versionReads()).toHaveLength(1);
+    expect(view.canvas!.assets!.find((asset) => asset.id === 'seed-source')?.latestVersion).toBe(1);
+    await waitFor(() =>
+      expect(view.canvas!.nodes.find((node) => node.id === 'editor')?.data.resourceRefs).toEqual([
+        expect.objectContaining({ assetId: 'seed-source', assetVersion: 1 }),
+      ]),
+    );
+    expect(view.canvas!.edges).toEqual([
+      expect.objectContaining({ source: 'restored-source', target: 'editor' }),
+    ]);
+    await waitFor(() =>
+      expect(
+        requests
+          .filter(
+            ({ method, url }) =>
+              method === 'PATCH' && url.pathname === `/v1/projects/${project.id}/canvas`,
+          )
+          .at(-1)?.body,
+      ).toMatchObject({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'editor',
+            data: expect.objectContaining({
+              resourceRefs: [expect.objectContaining({ assetId: 'seed-source', assetVersion: 1 })],
+            }),
+          }),
+        ]),
+      }),
+    );
+
+    await act(async () => {
+      await view.canvas!.onAddNodeReference!('restored-source', 'editor');
+    });
+    expect(versionReads()).toHaveLength(1);
   });
 });

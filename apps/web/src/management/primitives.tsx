@@ -268,6 +268,7 @@ export function StatusBadge({ value, label }: { value: string; label?: string })
     archived: '已归档',
     ready: '可用',
     processing: '处理中',
+    archiving: '归档中',
   };
   return (
     <Tag className={`mg-badge is-${value.toLowerCase()}`}>

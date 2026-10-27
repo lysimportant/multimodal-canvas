@@ -322,6 +322,7 @@ function isNodeRunning(status: RunStatus | undefined): boolean {
     status === 'preparing' ||
     status === 'running' ||
     status === 'processing' ||
+    status === 'archiving' ||
     status === 'cancel_requested'
   );
 }
@@ -1900,6 +1901,9 @@ function RunStatusIcon({
   if (status === 'cancel_requested') {
     return <Clock3 size={16} aria-label="等待运行" />;
   }
+  if (status === 'archiving') {
+    return <LoaderCircle className="spin" size={16} aria-label="归档中" />;
+  }
   if (
     status === 'queued' ||
     status === 'preparing' ||
@@ -1923,6 +1927,7 @@ function getNodePresentationState(
     runStatus === 'preparing' ||
     runStatus === 'running' ||
     runStatus === 'processing' ||
+    runStatus === 'archiving' ||
     runStatus === 'cancel_requested'
   ) {
     return 'running';
@@ -1968,6 +1973,7 @@ export function runStatusLabel(status: RunStatus) {
     preparing: '准备中',
     running: '运行中',
     processing: '处理中',
+    archiving: '归档中',
     succeeded: '已完成',
     failed: '失败',
     cancel_requested: '取消中',

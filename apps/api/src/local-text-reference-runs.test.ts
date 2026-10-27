@@ -52,6 +52,8 @@ describe('本地文字资源到 Chat Completions', () => {
     { kind: 'mention', mediaType: 'video', outcome: 'success' },
     { kind: 'link', mediaType: 'text', outcome: 'success' },
     { kind: 'link', mediaType: 'image', outcome: 'success' },
+    { kind: 'link', mediaType: 'audio', outcome: 'success' },
+    { kind: 'link', mediaType: 'video', outcome: 'success' },
     { kind: 'mixed', mediaType: 'image', outcome: 'success' },
     { kind: 'mention', mediaType: 'image', outcome: 'scope-revoked' },
     { kind: 'link', mediaType: 'image', outcome: 'scope-revoked' },

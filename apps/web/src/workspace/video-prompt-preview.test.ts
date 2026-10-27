@@ -86,37 +86,13 @@ describe('视频输入正文预览', () => {
     ).toBe('Image 2/Image 2/Image 1');
   });
 
-  it.each([
-    ['image', 'maxImages', '图片'],
-    ['video', 'maxVideos', '视频'],
-    ['audio', 'maxAudios', '音频'],
-  ] as const)('按真实发送的 %s 数量检查上限', (mediaType, limitKey, label) => {
-    const limited = { ...context, videoReferences: { ...videoReferences, [limitKey]: 1 } };
+  it('不按目录声明的上限拦截参考素材，由上游返回错误', () => {
+    const limited = { ...context, videoReferences: { ...videoReferences, maxImages: 1 } };
     const document: PromptDocument = {
       version: 1,
-      blocks: [
-        { ...image, mediaType },
-        { ...image, mediaType, mentionId: 'repeat' },
-      ],
+      blocks: [image, { ...image, mediaType: 'video', mentionId: 'motion', assetId: 'motion' }],
     };
-    expect(() => previewVideoPrompt(document, limited)).not.toThrow();
-    expect(() =>
-      previewVideoPrompt(
-        document,
-        limited,
-        [],
-        [
-          {
-            id: 'attached:extra',
-            assetId: 'extra',
-            assetVersion: 1,
-            mediaType,
-            name: '额外素材',
-            attached: true,
-          },
-        ],
-      ),
-    ).toThrow(`最多支持 1 个${label}参考素材，当前为 2 个`);
+    expect(previewVideoPrompt(document, limited)).toBe('Image 1Video 1');
   });
 
   it.each(['start_frame', 'end_frame'])('禁止与未追踪的 %s 素材混用', (key) => {
@@ -151,6 +127,7 @@ describe('视频输入正文预览', () => {
     ['doubao-seedance-2-0-260128', '图 1'],
     ['wan3.0-video', '图1'],
     ['minimax-h3', '<Picture 1>'],
+    ['mt-h3', '<Picture 1>'],
   ])('按 %s 转换实际素材标记，保留普通文字和空白', (modelAlias, token) => {
     expect(
       previewVideoPrompt(
@@ -215,7 +192,7 @@ describe('视频输入正文预览', () => {
     ).toBe('图2（主角）');
   });
 
-  it('缺少版本、占位资源和未知模型不产生虚假提交正文', () => {
+  it('缺少版本和占位资源不产生虚假提交正文；未知模型仍按编号预览', () => {
     const doc = (mention: PromptMention): PromptDocument => ({ version: 1, blocks: [mention] });
     expect(() => previewVideoPrompt(doc({ ...image, assetVersion: undefined }), context)).toThrow(
       '版本尚未确定',
@@ -223,9 +200,8 @@ describe('视频输入正文预览', () => {
     expect(() => previewVideoPrompt(doc({ ...image, placeholder: true }), context)).toThrow(
       '尚未绑定',
     );
-    expect(() => previewVideoPrompt(doc(image), { ...context, modelAlias: 'unknown' })).toThrow(
-      '尚未确认',
-    );
+    // 画布不再以模型能力拒绝提交：未知模型同样按通用编号预览，上游自行处理。
+    expect(previewVideoPrompt(doc(image), { ...context, modelAlias: 'unknown' })).toBe('Image 1');
     expect(() =>
       previewVideoPrompt(doc(image), { ...context, parameters: { images: ['synthetic'] } }),
     ).toThrow('混用');

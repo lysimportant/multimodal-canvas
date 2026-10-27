@@ -5,6 +5,7 @@ import {
   type PromptDocument,
   type PromptMention,
   type VideoMode,
+  type VideoReferenceSyntax,
 } from './index.js';
 
 export type VideoPromptMediaDescriptor = {
@@ -16,16 +17,31 @@ export type VideoPromptMediaDescriptor = {
 
 export type VideoPromptTokenFamily = 'seedance' | 'wan' | 'h3' | 'generic';
 
+/** 独立出现的 h3 段（如 `mt-h3`、`h3-official`），用于识别家族表未收录的 H3 渠道别名。 */
+const H3_ALIAS_PATTERN = /(?:^|[-_.])h3(?:$|[-_.])/i;
+
 /** 预览和 Provider 使用同一套模型素材编号语法。 */
 export function videoPromptTokenFamilyForModel(modelAlias?: string): VideoPromptTokenFamily {
   const family = videoFamilyForModel(modelAlias);
-  return family.includes('seedance')
-    ? 'seedance'
-    : family.startsWith('wan')
-      ? 'wan'
-      : family.includes('minimax-h3')
-        ? 'h3'
-        : 'generic';
+  if (family.includes('seedance')) return 'seedance';
+  if (family.startsWith('wan')) return 'wan';
+  // 933 / ManSui 等渠道把官方 H3 暴露为家族表未收录的别名（如 `mt-h3`）：
+  // 这些模型仍按 H3 官方六段格式使用 `<Picture N>` / `<Video N>` / `<Audio N>`，
+  // 不能因为家族未知就退化成通用 `Image N`。
+  if (family.includes('minimax-h3') || H3_ALIAS_PATTERN.test((modelAlias ?? '').trim()))
+    return 'h3';
+  return 'generic';
+}
+
+/**
+ * 节点级“转换语法器”优先：显式覆盖值大于按模型家族自动匹配的默认语法。
+ * 仅影响正文内联引用的编号写法，不改变发送结构或上游协议。
+ */
+export function videoPromptTokenFamilyForNode(
+  modelAlias: string | undefined,
+  override: VideoReferenceSyntax | undefined,
+): VideoPromptTokenFamily {
+  return override ?? videoPromptTokenFamilyForModel(modelAlias);
 }
 
 export class VideoPromptReferenceMappingError extends Error {

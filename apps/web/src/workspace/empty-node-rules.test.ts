@@ -115,12 +115,13 @@ describe('classifyEmptyPromptNode', () => {
     });
   });
 
-  it('排队、准备、生成、归档、取消请求中或上传中都保留，避免操作竞态', () => {
+  it('排队、准备、生成、处理、归档、取消请求中或上传中都保留，避免操作竞态', () => {
     for (const status of [
       'queued',
       'preparing',
       'running',
       'processing',
+      'archiving',
       'cancel_requested',
     ] as const) {
       expect(isActiveRunStatus(status)).toBe(true);

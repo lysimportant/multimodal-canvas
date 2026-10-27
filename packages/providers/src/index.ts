@@ -27,11 +27,12 @@ import {
   resolveImageOutputParameters,
   precheckVideoGenerationInputs,
   parseVideoReferenceCapability,
+  degradeInlinePromptMentions,
   renderPromptDocument,
   buildVideoPromptReferences,
   renderVideoPromptReferenceDocument,
   VideoPromptReferenceMappingError,
-  videoPromptTokenFamilyForModel,
+  videoPromptTokenFamilyForNode,
   orderVideoPromptMedia,
   videoPromptReferenceIdentity,
   resolveImageEditMaxImages,
@@ -3066,8 +3067,92 @@ function videoPayload(
   return payload;
 }
 
+/** 紧急回滚开关：设为 degrade 时恢复“未声明能力的模型把参考引用退化为文本”的旧行为。 */
+function videoReferenceFallbackEnabled(): boolean {
+  return process.env.NEW_API_VIDEO_REFERENCE_FALLBACK === 'degrade';
+}
+
+/** 是否包含首尾帧之外的参考媒体；画布不再按目录声明决定是否发送这些素材。 */
+function hasVideoReferenceMedia(inputs: VideoInputMapping): boolean {
+  return (
+    inputs.referenceImages.length > 0 ||
+    inputs.referenceVideos.length > 0 ||
+    inputs.referenceAudios.length > 0
+  );
+}
+
+/**
+ * 组装渠道通用参考素材创建体：正文编号 + metadata.content。
+ * 只发送受授权输入，不在这里限制数量或媒体类型；能力不足由渠道返回自己的错误。
+ */
+function videoReferenceContentPayload(
+  snapshot: RunSnapshot,
+  label: string,
+  nodePrompt: string | undefined,
+  inputs: VideoInputMapping,
+  nodePromptDocument?: PromptDocument,
+): Record<string, unknown> {
+  const prompt = resolveRequiredVideoPrompt(
+    snapshot,
+    label,
+    nodePrompt,
+    inputs.prompt,
+    nodePromptDocument,
+  );
+  const metadata = isRecord(snapshot.parameters.metadata) ? snapshot.parameters.metadata : {};
+  const hasUntrackedMedia = [
+    'images',
+    'image',
+    'input_reference',
+    'first_frame',
+    'start_frame',
+    'end_frame',
+    'last_frame',
+    'reference_images',
+    'videos',
+    'audios',
+    'reference_videos',
+    'reference_audios',
+    'content',
+    'input',
+  ].some((key) => snapshot.parameters[key] !== undefined || metadata[key] !== undefined);
+  if (hasUntrackedMedia)
+    throw new NewApiProviderError(
+      '内联视频引用不能与缺少资产身份的媒体参数混用，请通过资源条或连线提供素材',
+      { code: 'VIDEO_REFERENCE_ORDER_AMBIGUOUS', retryable: false },
+    );
+  return {
+    model: snapshot.modelAlias,
+    prompt,
+    ...(inputs.negativePrompt
+      ? { negative_prompt: inputTextValue(inputs.negativePrompt, 'video') }
+      : {}),
+    metadata: {
+      content: [
+        { type: 'text', text: prompt },
+        ...orderedVideoMedia(snapshot, inputs).map((input) => {
+          const mediaType = input.snapshot.data.mediaType;
+          const url = officialVideoReferenceUrl(input, 'seedance-video', snapshot.modelAlias);
+          if (!url.startsWith('https://'))
+            throw new NewApiProviderError('该渠道参考素材需要公网 HTTPS 地址，请配置素材访问域名', {
+              code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
+              retryable: false,
+            });
+          return {
+            type: `${mediaType}_url`,
+            role: providerVideoMediaRole(mediaType, input.role),
+            [`${mediaType}_url`]: { url },
+          };
+        }),
+      ],
+    },
+  };
+}
+
 /**
  * New API OpenAI 视频创建体：路径为 POST /videos。
+ * 声明了素材编号能力的渠道按 metadata.content 发送；未声明的模型同样按该通用结构发送，
+ * 画布不再把参考素材退化为文本，也不在发送前检查数量上限。
  * GlobalStore 已知型号只传数字 duration，避免渠道拒绝重复的 seconds；其他型号保留既有映射。
  * seconds 使用字符串以兼容 Go 请求结构；图生视频 image 为 URL 字符串。
  */
@@ -3079,90 +3164,8 @@ function openaiVideoPayload(
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
   const videoReferences = frozenVideoReferences(snapshot);
-  if (videoReferences) {
-    const parameterMetadata = isRecord(snapshot.parameters.metadata)
-      ? snapshot.parameters.metadata
-      : {};
-    if (
-      [
-        'images',
-        'image',
-        'input_reference',
-        'first_frame',
-        'last_frame',
-        'start_frame',
-        'end_frame',
-        'reference_images',
-        'videos',
-        'audios',
-        'reference_videos',
-        'reference_audios',
-        'content',
-        'input',
-      ].some(
-        (key) => snapshot.parameters[key] !== undefined || parameterMetadata[key] !== undefined,
-      )
-    )
-      throw new NewApiProviderError(
-        '渠道参考素材请通过资源条或连线提供，不能混入未追踪的媒体参数',
-        {
-          code: 'VIDEO_REFERENCE_ORDER_AMBIGUOUS',
-          retryable: false,
-        },
-      );
-    const media = orderedVideoMedia(snapshot, inputs);
-    const counts = { image: 0, video: 0, audio: 0 };
-    for (const input of media) {
-      const mediaType = input.snapshot.data.mediaType as keyof typeof counts;
-      counts[mediaType]++;
-    }
-    if (
-      counts.image > videoReferences.maxImages ||
-      counts.video > videoReferences.maxVideos ||
-      counts.audio > videoReferences.maxAudios
-    )
-      throw new NewApiProviderError(
-        `参考素材超过渠道上限：图片 ${videoReferences.maxImages}、视频 ${videoReferences.maxVideos}、音频 ${videoReferences.maxAudios}`,
-        { code: 'VIDEO_REFERENCE_LIMIT_EXCEEDED', retryable: false },
-      );
-    // 渠道契约优先于模型名称；每类素材顺序由同一 orderedVideoMedia 决定。
-    const prompt = resolveRequiredVideoPrompt(
-      snapshot,
-      label,
-      nodePrompt,
-      inputs.prompt,
-      nodePromptDocument,
-    );
-    return {
-      model: snapshot.modelAlias,
-      prompt,
-      ...(inputs.negativePrompt
-        ? { negative_prompt: inputTextValue(inputs.negativePrompt, 'video') }
-        : {}),
-      metadata: {
-        content: [
-          { type: 'text', text: prompt },
-          ...media.map((input) => {
-            const mediaType = input.snapshot.data.mediaType;
-            const url = officialVideoReferenceUrl(input, 'seedance-video', snapshot.modelAlias);
-            if (!url.startsWith('https://'))
-              throw new NewApiProviderError(
-                '该渠道参考素材需要公网 HTTPS 地址，请配置素材访问域名',
-                {
-                  code: 'VIDEO_REFERENCE_PUBLIC_URL_REQUIRED',
-                  retryable: false,
-                },
-              );
-            return {
-              type: `${mediaType}_url`,
-              role: providerVideoMediaRole(mediaType, input.role),
-              [`${mediaType}_url`]: { url },
-            };
-          }),
-        ],
-      },
-    };
-  }
+  if (videoReferences)
+    return videoReferenceContentPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
     return yuanliuVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   }
@@ -3170,13 +3173,33 @@ function openaiVideoPayload(
   if (moonContract) {
     return moonVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument, moonContract);
   }
+  // GlobalStore 已知型号仍走旧映射（只发数字 duration，避免渠道拒绝重复的 seconds）；
+  // 家族启发式只用于编号写法，不改变这些型号的请求体结构。
   if (
+    !isGlobalStoreVideoModel(snapshot.modelAlias) &&
     ['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(
       videoFamilyForModel(snapshot.modelAlias),
     )
   ) {
     return officialVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   }
+  // 目录没有声明素材编号能力时，正文内联引用仍按渠道通用 content 发送：
+  // 已知家族走上面的官方字段，其余模型交给渠道判断能否处理；普通连线输入保留旧映射。
+  const targetNodeData = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId)?.data;
+  const hasInlineReferenceDocument =
+    targetNodeData?.promptDocument?.blocks.some(
+      (block) =>
+        block.type === 'mention' &&
+        block.inline &&
+        !block.executionOnly &&
+        block.mediaType !== 'text',
+    ) ?? false;
+  if (
+    !videoReferenceFallbackEnabled() &&
+    hasInlineReferenceDocument &&
+    hasVideoReferenceMedia(inputs)
+  )
+    return videoReferenceContentPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   const payload = videoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   const duration = payload.duration;
   if (typeof duration === 'number' && !isGlobalStoreVideoModel(snapshot.modelAlias))
@@ -3474,6 +3497,41 @@ function orderedVideoMedia(snapshot: RunSnapshot, inputs: VideoInputMapping): Ru
   ).map((item) => item.input);
 }
 
+/**
+ * 判断冻结视频快照的提示词正文内联素材编号映射是否按编号发送。
+ * 视频合同或已知参考家族一律按编号发送，画布不再依据目录能力声明拒绝或退化；
+ * 仅 `NEW_API_VIDEO_REFERENCE_FALLBACK=degrade` 时退回旧行为（由调用方按文本退化）。
+ * @param snapshot 已冻结执行绑定的运行快照；能力以其中 videoReferences 为准。
+ * @param document 目标节点冻结的提示词文档。
+ * @param contract 已冻结的视频协议合同。
+ * @returns `hasInlineReferences` 表示正文含内联媒体引用；`supported` 为 false 时按文本退化。
+ */
+export function videoPromptInlineReferenceSupport(
+  snapshot: RunSnapshot,
+  document: PromptDocument | undefined,
+  contract: string,
+): {
+  hasInlineReferences: boolean;
+  supported: boolean;
+  family: ReturnType<typeof videoFamilyForModel>;
+} {
+  const hasInlineReferences = Boolean(
+    document?.blocks.some(
+      (block) =>
+        block.type === 'mention' &&
+        block.inline &&
+        !block.executionOnly &&
+        block.mediaType !== 'text',
+    ),
+  );
+  const family = videoFamilyForModel(snapshot.modelAlias);
+  if (!hasInlineReferences) return { hasInlineReferences, supported: true, family };
+  const supported =
+    !videoReferenceFallbackEnabled() &&
+    (contract === 'newapi-video-v1' || family === 'grok-imagine-video-1.5');
+  return { hasInlineReferences, supported, family };
+}
+
 /** 仅视频把真实正文提及替换为发送素材编号，附加资料仍只占媒体槽位。 */
 function renderVideoPromptReferences(
   snapshot: RunSnapshot,
@@ -3482,12 +3540,10 @@ function renderVideoPromptReferences(
   contract: NewApiVideoContract,
 ): PromptDocument | undefined {
   if (!document) return document;
-  const hasInlineReferences = document.blocks.some(
-    (block) =>
-      block.type === 'mention' &&
-      block.inline &&
-      !block.executionOnly &&
-      block.mediaType !== 'text',
+  const { hasInlineReferences, supported } = videoPromptInlineReferenceSupport(
+    snapshot,
+    document,
+    contract,
   );
   if (hasInlineReferences) {
     const metadata = isRecord(snapshot.parameters.metadata) ? snapshot.parameters.metadata : {};
@@ -3513,24 +3569,17 @@ function renderVideoPromptReferences(
         { code: 'VIDEO_REFERENCE_ORDER_AMBIGUOUS', retryable: false },
       );
   }
-  const family = videoFamilyForModel(snapshot.modelAlias);
-  const supportsReferenceOrder =
-    (contract === 'newapi-video-v1' && Boolean(frozenVideoReferences(snapshot))) ||
-    family === 'grok-imagine-video-1.5' ||
-    (contract === 'newapi-video-v1' &&
-      (['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5', 'yuanliu'].includes(
-        family,
-      ) ||
-        Boolean(moonVideoContractForModel(snapshot.modelAlias))));
-  if (hasInlineReferences && !supportsReferenceOrder) {
-    throw new NewApiProviderError(
-      '当前视频模型与请求协议尚未确认内联素材编号映射，请选择支持参考素材的模型和 OpenAI 视频协议',
-      {
-        code: 'VIDEO_REFERENCE_MAPPING_UNSUPPORTED',
-        retryable: false,
-      },
-    );
+  if (!supported) {
+    // 画布不代替上游判断模型能力：未声明编号映射的模型把正文内联引用退化为普通文本，
+    // 请求照常发出；能力不足时由渠道返回它自己的错误。
+    return degradeInlinePromptMentions(document);
   }
+  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
+  // 节点级“转换语法器”优先：显式覆盖值大于按模型自动匹配的默认语法；
+  // 渠道已声明 videoReferences 时仍使用通用编号，顺序与上游协议保持一致。
+  const tokenFamily = frozenVideoReferences(snapshot)
+    ? 'generic'
+    : videoPromptTokenFamilyForNode(snapshot.modelAlias, target?.data.videoReferenceSyntax);
   const references = buildVideoPromptReferences(
     orderedVideoMedia(snapshot, inputs).map((input) => ({
       assetId: input.sourceAssetId ?? input.snapshot.data.assetId ?? input.nodeId,
@@ -3538,12 +3587,9 @@ function renderVideoPromptReferences(
       mediaType: input.snapshot.data.mediaType as 'image' | 'video' | 'audio',
       role: input.role,
     })),
-    frozenVideoReferences(snapshot)
-      ? 'generic'
-      : videoPromptTokenFamilyForModel(snapshot.modelAlias),
+    tokenFamily,
     { deduplicate: hasInlineReferences },
   );
-  const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   try {
     return renderVideoPromptReferenceDocument(document, references, {
       modelAlias: snapshot.modelAlias,

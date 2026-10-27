@@ -3,7 +3,7 @@ import {
   collectVideoInputSet,
   getExecutionPromptDocument,
   orderVideoPromptMedia,
-  videoPromptTokenFamilyForModel,
+  videoPromptTokenFamilyForNode,
   videoInputRoleForPromptMention,
   videoPromptReferenceIdentity,
   yuanliuVideoContractForModel,
@@ -13,6 +13,7 @@ import {
   type VideoMode,
   type VideoPromptMediaDescriptor,
   type VideoReferenceCapability,
+  type VideoReferenceSyntax,
 } from '@multimodal-canvas/domain';
 import type { ConnectedPromptAsset } from './connected-prompt-assets';
 
@@ -21,6 +22,8 @@ export type VideoPromptReferenceContext = {
   videoMode?: VideoMode;
   parameters?: Record<string, unknown>;
   videoReferences?: VideoReferenceCapability;
+  /** 节点级“转换语法器”覆盖；缺省按模型家族自动匹配。 */
+  videoReferenceSyntax?: VideoReferenceSyntax;
 };
 
 /** 将前端冻结身份投影成执行层输入；编号与请求共用分类、排序和标记函数。 */
@@ -166,21 +169,12 @@ export function collectVideoPromptReferences(
     seen.add(key);
     return true;
   });
-  if (context.videoReferences) {
-    for (const [mediaType, limitKey, label] of [
-      ['image', 'maxImages', '图片'],
-      ['video', 'maxVideos', '视频'],
-      ['audio', 'maxAudios', '音频'],
-    ] as const) {
-      const count = ordered.filter((item) => item.mediaType === mediaType).length;
-      const limit = context.videoReferences[limitKey];
-      if (count > limit)
-        throw new Error(`当前模型最多支持 ${limit} 个${label}参考素材，当前为 ${count} 个。`);
-    }
-  }
+  // 画布不按目录能力声明限制参考素材数量：超过渠道能力时由上游返回错误。
   return buildVideoPromptReferences(
     ordered,
-    context.videoReferences ? 'generic' : videoPromptTokenFamilyForModel(context.modelAlias),
+    context.videoReferences
+      ? 'generic'
+      : videoPromptTokenFamilyForNode(context.modelAlias, context.videoReferenceSyntax),
     { deduplicate },
   );
 }

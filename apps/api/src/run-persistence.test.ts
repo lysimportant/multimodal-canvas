@@ -751,6 +751,26 @@ describe('PrismaRunPersistence', () => {
     expect(JSON.stringify(restored)).not.toContain('legacy-secret');
   });
 
+  it('按更新时间游标查询运行变更，不读取快照正文', async () => {
+    const { prisma, persistence } = createPersistence();
+    const projectId = '123e4567-e89b-12d3-a456-426614174010';
+    const since = new Date('2026-09-17T10:00:00.000Z');
+    const updatedAt = new Date('2026-09-17T10:00:05.000Z');
+    prisma.run.findMany.mockResolvedValueOnce([{ id: runId, updatedAt }]);
+
+    await expect(persistence.listRunChangesByProject(projectId, since)).resolves.toEqual([
+      { id: runId, updatedAt },
+    ]);
+
+    // 只返回身份与时间戳，且按游标过滤，避免 SSE 轮询把整份快照再读一遍。
+    expect(prisma.run.findMany).toHaveBeenCalledWith({
+      where: { projectId, updatedAt: { gte: since } },
+      select: { id: true, updatedAt: true },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+      take: 200,
+    });
+  });
+
   it('recognizes only PostgreSQL UUID-shaped identifiers', () => {
     expect(isPrismaUuid(runId)).toBe(true);
     expect(isPrismaUuid('run_idem_abc123')).toBe(false);

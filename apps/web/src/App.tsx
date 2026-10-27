@@ -79,6 +79,7 @@ import {
   type VideoCompletionAction,
   type VideoMode,
   type VideoRecreationConfig,
+  type VideoReferenceSyntax,
   videoRecreationConfigSchema,
   isPortConnectionAllowed,
   getNodeGenerationCount,
@@ -131,6 +132,7 @@ import {
   collectConnectedPromptAssets,
   createSelectedNodesPromptDocument,
 } from './workspace/connected-prompt-assets';
+import { ensureReferenceAssetVersions } from './workspace/reference-asset-versions';
 import { projectGenerationBatches } from './workspace/generation-batch-view';
 import {
   addNodeResourceReference,
@@ -3489,15 +3491,20 @@ function WorkspaceApp({
     [assets, rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
   );
 
-  /** 每次点击原子保存参考和连线；错误保留当前图与添加模式。 */
+  /** 每次点击原子保存参考和连线；页外来源先按需补齐最新版本，错误保留当前图与添加模式。 */
   const handleAddNodeReference = useCallback(
-    (sourceId: string, targetId: string) => {
+    async (sourceId: string, targetId: string) => {
       const target = nodesRef.current.find((node) => node.id === targetId);
       if (target && isNodeBusy(targetId)) throw new Error('节点正在生成，请完成后再添加参考资源');
+      const source = nodesRef.current.find((node) => node.id === sourceId);
+      const referenceAssets = source
+        ? await ensureReferenceAssetVersions([source], assets)
+        : { assets, resolved: [] };
+      if (referenceAssets.resolved.length > 0) upsertAssets(referenceAssets.resolved);
       const next = addNodeResourceReference(
         nodesRef.current,
         edgesRef.current,
-        assets,
+        referenceAssets.assets,
         targetId,
         sourceId,
       );
@@ -3509,7 +3516,7 @@ function WorkspaceApp({
       setEdges(next.edges);
       canvasDirtyRef.current = true;
     },
-    [assets, isNodeBusy, rememberHistory, setNodes, setEdges],
+    [assets, isNodeBusy, rememberHistory, setNodes, setEdges, upsertAssets],
   );
 
   /** 上传只保存独立资料；正文、来源节点和连线保持原状，整次操作共用一个画布撤销。 */
@@ -3829,6 +3836,21 @@ function WorkspaceApp({
       updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
         ...data,
         parameters,
+      }));
+    },
+    [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
+  );
+
+  /** 保存单节点的素材编号语法覆盖；未选时恢复按模型家族自动匹配。 */
+  const updateSelectedReferenceSyntax = useCallback(
+    (value: VideoReferenceSyntax | undefined, nodeId?: string) => {
+      const targetNodeId = nodeId ?? effectiveSelectedNodeId;
+      if (!targetNodeId) return;
+      rememberHistory();
+      canvasDirtyRef.current = true;
+      updateNodeDataAndMarkDownstreamStale(targetNodeId, (data) => ({
+        ...data,
+        videoReferenceSyntax: value,
       }));
     },
     [rememberHistory, effectiveSelectedNodeId, updateNodeDataAndMarkDownstreamStale],
@@ -6286,6 +6308,7 @@ function WorkspaceApp({
             onBatchExpandedChange={updateBatchExpanded}
             onCompletionActionChange={updateSelectedCompletionAction}
             onVideoModeChange={updateSelectedVideoMode}
+            onVideoReferenceSyntaxChange={updateSelectedReferenceSyntax}
             onCompletionTargetNodeIdChange={updateSelectedCompletionTarget}
             onModelChange={updateSelectedModel}
             onInferenceStrengthChange={updateSelectedInferenceStrength}

@@ -24,6 +24,7 @@ import type {
   VideoCompletionAction,
   VideoMode,
   VideoRecreationConfig,
+  VideoReferenceSyntax,
 } from '@multimodal-canvas/domain';
 import {
   DEFAULT_GENERATION_COUNT,
@@ -41,6 +42,7 @@ import {
   videoModeDescriptions,
   videoModeLabels,
   videoModes,
+  videoPromptTokenFamilyForModel,
 } from '@multimodal-canvas/domain';
 import { renderPromptDocument } from '@multimodal-canvas/domain';
 import {
@@ -58,6 +60,7 @@ import { VideoRecreationPanel } from './VideoRecreationPanel';
 import { VideoRecreationSourcePicker } from './VideoRecreationSourcePicker';
 import { recreationGenerationIssue } from './video-recreation-node';
 import { AssetPreview } from './AssetPreview';
+import { collectVideoPromptReferences } from './video-prompt-reference-labels';
 import type { ConnectedPromptAsset } from './connected-prompt-assets';
 import { canForkNewNode, canRunSameNode, nodeHasPrompt } from './fork-generate-node';
 import { type NodeRunControlStore, useNodeRunControl } from './node-run-control';
@@ -184,6 +187,11 @@ export type NodeQuickEditorProps = {
   connectedInputRoles?: readonly PortRole[];
   /** 更新视频生成模式；切换后由父层裁掉不兼容连线。 */
   onVideoModeChange?: (value: VideoMode) => void;
+  /**
+   * 更新当前节点的“转换语法器”覆盖值：缺省按模型自动匹配，
+   * 用户手动切换后仅对当前节点生效，并随画布保存。
+   */
+  onVideoReferenceSyntaxChange?: (value: VideoReferenceSyntax | undefined) => void;
   /**
    * 图片编辑节点的只读来源图。存在时编辑器显示专用文案与原图缩略图，
    * 且不允许在此修改来源节点内容。
@@ -340,6 +348,7 @@ export function NodeQuickEditor({
   emptyImageNodes = [],
   connectedInputRoles = [],
   onVideoModeChange,
+  onVideoReferenceSyntaxChange,
   imageEditSource,
   onFocusImageEditSource,
 }: NodeQuickEditorProps) {
@@ -396,6 +405,45 @@ export function NodeQuickEditor({
   const videoReferences = parseVideoReferenceCapability(
     selectedModel?.capabilities?.videoReferences,
   );
+  /** 转换语法器：默认按模型家族自动匹配，用户可手动覆盖且仅对当前节点生效。 */
+  const videoReferenceSyntaxLabels: Record<VideoReferenceSyntax, string> = {
+    seedance: 'Seedance：图 1',
+    wan: 'Wan：图1',
+    h3: 'H3：<Picture 1>',
+    generic: '通用：Image 1',
+  };
+  const autoVideoReferenceSyntax = videoPromptTokenFamilyForModel(node.data.modelAlias);
+  const videoReferenceSyntaxOptions = (
+    Object.entries(videoReferenceSyntaxLabels) as Array<[VideoReferenceSyntax, string]>
+  ).map(([value, label]) => ({ value, label }));
+  /** 素材登记表：按实际发送顺序展示编号，节点与上游用同一份指代。 */
+  const referenceRegistry = (() => {
+    if (node.data.mediaType !== 'video') return [];
+    const document =
+      promptDraft?.nodeId === node.id
+        ? promptDraft.document
+        : (node.data.promptDocument ?? {
+            version: 1 as const,
+            blocks: [{ type: 'text' as const, text: node.data.prompt ?? '' }],
+          });
+    try {
+      return collectVideoPromptReferences(
+        {
+          modelAlias: node.data.modelAlias,
+          videoMode: node.data.videoMode,
+          parameters: node.data.parameters,
+          videoReferences,
+          videoReferenceSyntax: node.data.videoReferenceSyntax,
+        },
+        document,
+        connectedAssets,
+        node.data.resourceRefs,
+      );
+    } catch {
+      // 编辑中缺少版本或占位资源时不猜编号，等真实提示词可用后再显示。
+      return [];
+    }
+  })();
   const currentModel = storedModelAlias;
   const currentModelIsMissing =
     Boolean(currentModel) &&
@@ -1083,6 +1131,52 @@ export function NodeQuickEditor({
               </Button>
             </div>
             {mediaParameterEditor}
+            {node.data.mediaType === 'video' && (
+              // 转换语法器：默认按模型匹配，可手动覆盖；仅影响当前节点的编号写法。
+              <div className="node-quick-editor-reference-syntax" aria-label="素材编号语法">
+                <NodeParameterSelect
+                  label="素材编号语法"
+                  value={node.data.videoReferenceSyntax ?? ''}
+                  options={[
+                    {
+                      value: '',
+                      label: `自动（${videoReferenceSyntaxLabels[autoVideoReferenceSyntax]}）`,
+                      description: '按模型家族自动匹配；手动选择后仅对当前节点生效',
+                    },
+                    ...videoReferenceSyntaxOptions,
+                  ]}
+                  onChange={(value) =>
+                    onVideoReferenceSyntaxChange?.(
+                      value === '' ? undefined : (value as VideoReferenceSyntax),
+                    )
+                  }
+                  className="node-quick-editor-select-group"
+                />
+              </div>
+            )}
+            {referenceRegistry.length > 0 && (
+              <div className="node-quick-editor-reference-registry" aria-label="素材登记表">
+                <strong>素材登记表</strong>
+                <p>按实际发送顺序编号，上游用这些编号指代素材。</p>
+                <ul>
+                  {referenceRegistry.map((reference) => (
+                    <li key={reference.identity}>
+                      <span className="node-quick-editor-reference-token">{reference.token}</span>
+                      <span aria-hidden="true">←</span>
+                      <span>
+                        {assets.find((asset) => asset.id === reference.assetId)?.name ??
+                          reference.assetId}
+                      </span>
+                      {reference.assetVersion !== undefined && (
+                        <span className="node-quick-editor-reference-version">
+                          v{reference.assetVersion}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         }
       >
@@ -1152,6 +1246,7 @@ export function NodeQuickEditor({
               videoMode: node.data.videoMode,
               parameters: node.data.parameters,
               videoReferences,
+              videoReferenceSyntax: node.data.videoReferenceSyntax,
             }}
             connectedAssets={connectedAssets}
             resourceRefs={node.data.resourceRefs}

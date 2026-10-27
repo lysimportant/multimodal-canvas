@@ -43,10 +43,11 @@ const statusRank: Record<RunRecord['status'], number> = {
   preparing: 2,
   running: 3,
   processing: 4,
-  cancel_requested: 5,
-  succeeded: 6,
-  failed: 6,
-  cancelled: 6,
+  archiving: 5,
+  cancel_requested: 6,
+  succeeded: 7,
+  failed: 7,
+  cancelled: 7,
 };
 
 /** Keep late SSE/poll/history responses from replacing a newer node run. */

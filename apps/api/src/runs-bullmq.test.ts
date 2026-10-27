@@ -618,6 +618,76 @@ describe('BullMQ run result integrity', () => {
     await service.close();
   });
 
+  it('增量读取项目运行变更时不再扫描队列', async () => {
+    const change = {
+      id: databaseRunId('run_incremental'),
+      updatedAt: new Date('2026-09-17T10:00:05.000Z'),
+    };
+    state.getJobs = vi.fn(async () => {
+      throw new Error('incremental project run changes must not scan the queue');
+    });
+    const persistence = {
+      ensureRun: vi.fn(async () => undefined),
+      listRunChangesByProject: vi.fn(async () => [change]),
+    };
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: persistence as never,
+    });
+    const since = new Date('2026-09-17T10:00:00.000Z');
+
+    await expect(service.listProjectRunChanges('project_1', since)).resolves.toEqual([
+      { id: change.id, updatedAt: change.updatedAt.toISOString() },
+    ]);
+    expect(persistence.listRunChangesByProject).toHaveBeenCalledWith('project_1', since);
+    await service.close();
+  });
+
+  it('持久化不支持增量查询时回退到按游标过滤的项目列表', async () => {
+    const snapshot = createRunSnapshot(
+      'project_1',
+      {
+        revision: 9,
+        nodes: [
+          {
+            id: 'node_text',
+            type: 'text',
+            position: { x: 0, y: 0 },
+            data: { label: 'Generate', mediaType: 'text', mode: 'generate' },
+          },
+        ],
+        edges: [],
+      },
+      'node_text',
+    );
+    const runId = 'run_change_fallback';
+    state.getJobs = vi.fn(async () => [
+      {
+        id: runId,
+        data: { runId, snapshot, attempt: 1, provider: 'newapi', cancelRequested: false },
+        progress: { status: 'succeeded', progress: 100, updatedAt: '2026-09-17T10:00:03.000Z' },
+        returnvalue: undefined,
+        timestamp: Date.parse('2026-09-17T10:00:00.000Z'),
+        async getState() {
+          return 'completed';
+        },
+      },
+    ]);
+    const service = new BullMqRunService({
+      connection: { host: '127.0.0.1', port: 6379 },
+      persistence: { ensureRun: vi.fn(async () => undefined) } as never,
+    });
+
+    await expect(
+      service.listProjectRunChanges('project_1', new Date('2026-09-17T10:00:02.000Z')),
+    ).resolves.toEqual([{ id: runId, updatedAt: '2026-09-17T10:00:03.000Z' }]);
+    // 游标之后没有变化的运行不应重复返回。
+    await expect(
+      service.listProjectRunChanges('project_1', new Date('2026-09-17T10:00:04.000Z')),
+    ).resolves.toEqual([]);
+    await service.close();
+  });
+
   it('marks a completed job with an invalid result envelope as failed', async () => {
     const snapshot = createRunSnapshot(
       'project_1',

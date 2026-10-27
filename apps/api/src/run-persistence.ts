@@ -186,6 +186,34 @@ export class PrismaRunPersistence {
   }
 
   /**
+   * 增量读取项目内自 `since` 之后有持久化更新的运行身份。
+   *
+   * SSE 等轮询方只需要知道“哪些运行变了”，不应为此解析全部运行快照。调用方
+   * 拿到身份后按单条运行读取最新状态；`updatedAt` 由 Prisma 在每次运行或
+   * provider 进度落库时自动维护，因此可以直接作为增量游标。
+   *
+   * @param projectId 已授权的项目 ID。
+   * @param since 上次读取到的最新 `updatedAt`（含等值，避免同一毫秒内漏事件）。
+   * @param limit 单次最多返回的身份数，防止异常写入放大单次轮询成本。
+   * @returns 按 `updatedAt` 升序排列的运行 ID 与更新时间。
+   */
+  async listRunChangesByProject(
+    projectId: string,
+    since: Date,
+    limit = 200,
+  ): Promise<Array<{ id: string; updatedAt: Date }>> {
+    return this.prisma.run.findMany({
+      where: {
+        projectId: requireUuid(projectId, 'projectId'),
+        updatedAt: { gte: since },
+      },
+      select: { id: true, updatedAt: true },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+    });
+  }
+
+  /**
    * 列出某次运行留存的请求提示词摘要。
    *
    * 结果不含请求正文，只携带记录 ID、节点身份、发送状态与计数；完整请求文本
@@ -563,6 +591,7 @@ function persistedRunStatus(value: unknown): RunStatus | undefined {
     'preparing',
     'running',
     'processing',
+    'archiving',
     'succeeded',
     'failed',
     'cancel_requested',

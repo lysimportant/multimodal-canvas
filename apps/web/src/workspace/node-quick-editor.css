@@ -340,6 +340,53 @@
   color: var(--mc-text);
 }
 
+.node-quick-editor-reference-syntax {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mc-border);
+  font-size: 12px;
+}
+
+.node-quick-editor-reference-registry {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mc-border);
+  font-size: 12px;
+}
+
+.node-quick-editor-reference-registry > p {
+  margin: 4px 0 8px;
+  color: var(--mc-text-muted);
+}
+
+.node-quick-editor-reference-registry > ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.node-quick-editor-reference-registry > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.node-quick-editor-reference-token {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--mc-text-strong);
+}
+
+.node-quick-editor-reference-version {
+  color: var(--mc-text-muted);
+}
+
 .node-quick-editor-parameter-heading,
 .node-quick-editor-dialog-header {
   display: flex;

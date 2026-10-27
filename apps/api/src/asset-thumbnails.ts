@@ -15,10 +15,20 @@ export const THUMBNAIL_CACHE_LIMITS = {
   failureTtlMs: 30_000,
 } as const;
 
+/**
+ * 缩略图生成器修订。写回持久衍生图时作为标记，并参与 ETag：
+ * 生成逻辑升级时递增即可让旧标记与旧浏览器缓存一起失效。
+ */
+export const THUMBNAIL_GENERATOR_REVISION = 'thumbnail-v2';
+
 /** 可调整的缓存边界；时间以毫秒计，now 仅用于注入可测试时钟。 */
 export type ThumbnailCacheOptions = {
   [Key in keyof typeof THUMBNAIL_CACHE_LIMITS]?: number;
-} & { now?: () => number };
+} & {
+  now?: () => number;
+  /** 生成成功后把缩略图写回资源存储，进程重启/缓存到期后不再重读原图。 */
+  persistDerivatives?: boolean;
+};
 
 /** 已授权的缩略图请求；version 冻结版本，revision 仅区分无版本记录的历史资源。 */
 export type ThumbnailRequest = {
@@ -75,6 +85,7 @@ export class AssetThumbnailService {
   private readonly inflight = new Map<string, Promise<AssetThumbnail>>();
   private readonly limits: { [Key in keyof typeof THUMBNAIL_CACHE_LIMITS]: number };
   private readonly now: () => number;
+  private readonly persistDerivatives: boolean;
   private bytes = 0;
 
   /** 注入已包装 owner/project 权限策略的存储和现有生成器；无效缓存边界立即抛错。 */
@@ -85,6 +96,7 @@ export class AssetThumbnailService {
   ) {
     this.limits = { ...THUMBNAIL_CACHE_LIMITS, ...options };
     this.now = options.now ?? Date.now;
+    this.persistDerivatives = options.persistDerivatives === true;
     for (const key of Object.keys(THUMBNAIL_CACHE_LIMITS) as Array<
       keyof typeof THUMBNAIL_CACHE_LIMITS
     >) {
@@ -173,6 +185,35 @@ export class AssetThumbnailService {
     return task;
   }
 
+  /**
+   * 只读计算当前源的 ETag 与原始尺寸；不生成也不写回缩略图。
+   * 供条件请求在生成前判断 304；缺失、越权与源故障的语义和 get 一致。
+   */
+  async validator(
+    input: ThumbnailRequest,
+  ): Promise<{ etag: string; originalWidth?: number; originalHeight?: number }> {
+    if (
+      input.version !== undefined &&
+      (!Number.isSafeInteger(input.version) || input.version < 1)
+    ) {
+      throw new AssetThumbnailError(400, 'invalid_asset_version', 'invalid asset version');
+    }
+    if (input.revision !== undefined && input.revision.length > 256) {
+      throw new AssetThumbnailError(
+        400,
+        'invalid_thumbnail_revision',
+        'invalid thumbnail revision',
+      );
+    }
+    const source = await this.snapshot(input);
+    return {
+      etag: thumbnailEtag(source.key),
+      ...(source.version
+        ? originalDimensions(source.version.metadata)
+        : originalDimensions(source.asset?.metadata)),
+    };
+  }
+
   /** 只读取授权索引以识别版本；无版本资源通过授权元数据列表识别变更，v 不覆盖服务器摘要。 */
   private async snapshot(input: ThumbnailRequest): Promise<SourceSnapshot> {
     try {
@@ -235,18 +276,28 @@ export class AssetThumbnailService {
     const dimensions = originalDimensions(
       source.version ? source.version.metadata : asset.metadata,
     );
-    // 旧生成器固定宽度 640：已知竖图或小图须从原版本重建。未知尺寸的旧图可复用，
-    // 但不保证其长边 <= 640，也不将缩略图尺寸冒充原尺寸。
+    // 单版本资源才存在无歧义的预览映射；多版本资源始终从冻结版本重建。
+    const singleVersion =
+      (!source.version && !source.latestVersion) ||
+      (source.version?.version === 1 && source.latestVersion === 1);
+    // 旧生成器固定宽度 640：已知竖图或小图须从原版本重建。带当前修订标记的持久
+    // 缩略图与方向无关，可直接复用，避免缓存到期/进程重启后重新下载整张原图。
     const needsResize =
       dimensions.originalWidth !== undefined &&
       dimensions.originalHeight !== undefined &&
       (dimensions.originalHeight > dimensions.originalWidth || dimensions.originalWidth < 640);
-    let derivative: { content: Buffer; mimeType: string } | undefined =
-      !needsResize &&
-      ((!source.version && !source.latestVersion) ||
-        (source.version?.version === 1 && source.latestVersion === 1))
-        ? await this.store.getDerivative(input.assetId, 'thumbnail', input.scope)
-        : undefined;
+    let derivative: { content: Buffer; mimeType: string } | undefined;
+    if (singleVersion) {
+      const stored = await this.store.getDerivative(input.assetId, 'thumbnail', input.scope);
+      if (
+        stored &&
+        stored.content.byteLength > 0 &&
+        (!needsResize || stored.generator === THUMBNAIL_GENERATOR_REVISION)
+      ) {
+        derivative = stored;
+      }
+    }
+    let generated = false;
     if (derivative) {
       const current = await this.snapshot(input);
       if (current.key !== source.key) throw sourceChanged();
@@ -270,6 +321,7 @@ export class AssetThumbnailService {
           { cause: error },
         );
       }
+      generated = true;
     }
     if (
       !derivative ||
@@ -290,10 +342,27 @@ export class AssetThumbnailService {
       );
     }
     if ((await this.snapshot(input)).key !== source.key) throw sourceChanged();
+    // 预览写回只是性能优化：失败不改变本次响应，也不让缓存命中路径依赖写权限。
+    if (generated && this.persistDerivatives && singleVersion && this.store.putDerivative) {
+      try {
+        await this.store.putDerivative(
+          input.assetId,
+          'thumbnail',
+          {
+            mimeType: derivative.mimeType,
+            content: derivative.content,
+            generator: THUMBNAIL_GENERATOR_REVISION,
+          },
+          input.scope,
+        );
+      } catch {
+        // 忽略写回失败；下次冷缓存仍可从原图重建。
+      }
+    }
     return {
       content: derivative.content,
       mimeType: derivative.mimeType,
-      etag: `"${createHash('sha256').update(source.key).update(derivative.content).digest('hex')}"`,
+      etag: thumbnailEtag(source.key),
       ...dimensions,
     };
   }
@@ -358,9 +427,56 @@ function sourceChanged(): AssetThumbnailError {
   );
 }
 
+/** 强 ETag 只由源版本键与生成器修订决定；同源版本在所有实例间共享同一标识。 */
+function thumbnailEtag(sourceKey: string): string {
+  return `"${createHash('sha256').update(sourceKey).update(THUMBNAIL_GENERATOR_REVISION).digest('hex')}"`;
+}
+
+/** 写回可缓存表示的头；304 只带校验头，不声明内容类型。 */
+function applyThumbnailHeaders(
+  reply: FastifyReply,
+  input: ThumbnailRequest,
+  representation: {
+    etag: string;
+    mimeType?: string;
+    originalWidth?: number;
+    originalHeight?: number;
+  },
+): void {
+  const vary = String(reply.getHeader('vary') ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (const header of ['Cookie', 'Authorization']) {
+    if (!vary.some((entry) => entry.toLowerCase() === header.toLowerCase())) vary.push(header);
+  }
+  reply
+    .header('vary', vary.join(', '))
+    .header(
+      'cache-control',
+      input.version === undefined ? 'private, max-age=0, must-revalidate' : 'private, no-cache',
+    )
+    .header('etag', representation.etag)
+    .header('x-content-type-options', 'nosniff');
+  if (representation.mimeType) reply.type(representation.mimeType);
+  if (representation.originalWidth !== undefined)
+    reply.header('x-original-width', representation.originalWidth);
+  if (representation.originalHeight !== undefined)
+    reply.header('x-original-height', representation.originalHeight);
+}
+
+/** If-None-Match 按弱比较匹配；`*` 匹配任意已存在表示。 */
+function matchesIfNoneMatch(ifNoneMatch: string | undefined, etag: string): boolean {
+  return Boolean(
+    ifNoneMatch
+      ?.split(',')
+      .some((entry) => entry.trim() === '*' || entry.trim().replace(/^W\//, '') === etag),
+  );
+}
+
 /**
  * 输出 Cookie 会话或 Bearer 可读的预览；冻结版和 latest 均要求浏览器重验证。
- * 条件请求仍先鉴权。Vary 隔离 Cookie、Authorization 并保留 Origin，不扩展签名合同。
+ * 条件请求命中校验头时直接 304，不触发缩略图生成与原图下载。
  */
 export async function sendAssetThumbnail(
   service: AssetThumbnailService,
@@ -370,34 +486,16 @@ export async function sendAssetThumbnail(
 ): Promise<unknown> {
   reply.header('cache-control', 'private, no-store');
   try {
-    const thumbnail = await service.get(input);
-    const vary = String(reply.getHeader('vary') ?? '')
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    for (const header of ['Cookie', 'Authorization']) {
-      if (!vary.some((entry) => entry.toLowerCase() === header.toLowerCase())) vary.push(header);
+    if (ifNoneMatch) {
+      const validator = await service.validator(input);
+      if (matchesIfNoneMatch(ifNoneMatch, validator.etag)) {
+        applyThumbnailHeaders(reply, input, validator);
+        return reply.code(304).send();
+      }
     }
-    reply
-      .header('vary', vary.join(', '))
-      .header(
-        'cache-control',
-        input.version === undefined ? 'private, max-age=0, must-revalidate' : 'private, no-cache',
-      )
-      .header('etag', thumbnail.etag)
-      .header('x-content-type-options', 'nosniff')
-      .type(thumbnail.mimeType);
-    if (thumbnail.originalWidth !== undefined)
-      reply.header('x-original-width', thumbnail.originalWidth);
-    if (thumbnail.originalHeight !== undefined)
-      reply.header('x-original-height', thumbnail.originalHeight);
-    if (
-      ifNoneMatch
-        ?.split(',')
-        .some(
-          (entry) => entry.trim() === '*' || entry.trim().replace(/^W\//, '') === thumbnail.etag,
-        )
-    ) {
+    const thumbnail = await service.get(input);
+    applyThumbnailHeaders(reply, input, thumbnail);
+    if (matchesIfNoneMatch(ifNoneMatch, thumbnail.etag)) {
       return reply.code(304).send();
     }
     return reply.send(thumbnail.content);

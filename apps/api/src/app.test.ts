@@ -2532,6 +2532,85 @@ describe('project event stream', () => {
       await streamApp.close();
     }
   });
+
+  it('publishes later run updates from the incremental change cursor', async () => {
+    const runService = new MemoryRunService({ stepDelayMs: 0 });
+    // 绑定原始方法后再替换，便于分别统计“首次全量回放”和“增量轮询”。
+    const originalList = runService.listByProject.bind(runService);
+    const listSpy = vi.spyOn(runService, 'listByProject');
+    const changeSpy = vi.fn(async (projectId: string, since: Date) =>
+      (await originalList(projectId))
+        .map((run) => ({ id: run.id, updatedAt: run.updatedAt }))
+        .filter((change) => new Date(change.updatedAt) >= since),
+    );
+    Object.assign(runService, { listProjectRunChanges: changeSpy });
+    const streamApp = buildApp({ logger: false, runService });
+    const address = await streamApp.listen({ port: 0, host: '127.0.0.1' });
+    const controller = new AbortController();
+    try {
+      const create = await streamApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Incremental stream test' },
+      });
+      const projectId = create.json().project.id;
+      await streamApp.inject({
+        method: 'PATCH',
+        url: `/v1/projects/${projectId}/canvas`,
+        payload: {
+          revision: 0,
+          nodes: [
+            {
+              id: 'node_text',
+              type: 'text',
+              position: { x: 0, y: 0 },
+              data: { label: 'Generate text', mediaType: 'text', mode: 'generate' },
+            },
+          ],
+          edges: [],
+        },
+      });
+
+      const response = await fetch(`${address}/v1/projects/${projectId}/events`, {
+        signal: controller.signal,
+      });
+      expect(response.status).toBe(200);
+      const reader = response.body?.getReader();
+      expect(reader).toBeDefined();
+      const decoder = new TextDecoder();
+      let received = '';
+      const readUntil = async (marker: string) => {
+        const deadline = Date.now() + 3_000;
+        while (!received.includes(marker)) {
+          if (Date.now() > deadline) throw new Error(`SSE stream did not publish ${marker}`);
+          const chunk = await reader!.read();
+          received += decoder.decode(chunk.value, { stream: true });
+        }
+      };
+
+      await readUntil('event: ready');
+      // 首次连接仍需回放一次项目运行视图。
+      expect(listSpy).toHaveBeenCalledTimes(1);
+
+      const runResponse = await streamApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_text/runs',
+        payload: { projectId },
+      });
+      expect(runResponse.statusCode).toBe(202);
+      const callsAfterCreate = listSpy.mock.calls.length;
+      await readUntil('event: run.updated');
+      expect(changeSpy).toHaveBeenCalled();
+
+      // 空闲轮询只读增量变更，不再把项目全部历史重新扫一遍。
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      expect(listSpy.mock.calls.length).toBe(callsAfterCreate);
+      await reader!.cancel();
+    } finally {
+      controller.abort();
+      await streamApp.close();
+    }
+  });
 });
 
 describe('webhook and run idempotency boundaries', () => {

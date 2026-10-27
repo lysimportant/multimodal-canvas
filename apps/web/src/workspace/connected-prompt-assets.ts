@@ -215,3 +215,36 @@ export function createSelectedNodesPromptDocument(
   }
   return promptDocumentSchema.parse({ version: 1, blocks });
 }
+
+/** 引用来源前仍需向服务端补齐最新版本的素材，按资产去重。 */
+export type ReferenceAssetVersionTarget = {
+  sourceNodeId: string;
+  assetId: string;
+  label: string;
+};
+
+/**
+ * 找出引用时仍无法确定版本、但可由资源目录最新版补齐的来源。
+ * 只覆盖画布上传来源（mode=source）且没有冻结结果版本的情况；
+ * 生成结果或历史绑定歧义不能借最新版覆盖，因此不返回。
+ * @param sources 要加入引用的来源节点。
+ * @param assets 当前已加载资源目录。
+ * @returns 需要补齐 latestVersion 的来源；已能确定版本时为空。
+ */
+export function missingReferenceAssetVersions(
+  sources: readonly AssetFlowNode[],
+  assets: readonly Asset[],
+): ReferenceAssetVersionTarget[] {
+  const missing = new Map<string, ReferenceAssetVersionTarget>();
+  for (const source of sources) {
+    const result = source.data.manualOutput ? undefined : source.data.resultAsset;
+    const assetId = result?.assetId ?? source.data.assetId;
+    if (!assetId) continue;
+    if (nodeEchoAssetVersion(source) !== undefined) continue;
+    // 生成结果的版本必须来自冻结回显，不能用资源目录最新版替代。
+    if (source.data.mode !== 'source' || result) continue;
+    if (assets.find((asset) => asset.id === assetId)?.latestVersion !== undefined) continue;
+    missing.set(assetId, { sourceNodeId: source.id, assetId, label: source.data.label });
+  }
+  return [...missing.values()];
+}

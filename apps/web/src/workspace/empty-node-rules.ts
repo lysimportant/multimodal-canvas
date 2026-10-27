@@ -145,7 +145,7 @@ function isPromptDocumentShape(
 /**
  * 由一次运行状态推导节点的进行中状态。
  *
- * 排队、准备、运行、处理与取消请求中都视为进行中，避免清空与运行竞态。
+ * 排队、准备、运行、处理、归档与取消请求中都视为进行中，避免清空与运行竞态。
  *
  * @param status 该节点最近一次运行状态。
  * @returns 是否仍有进行中的操作。
@@ -156,6 +156,7 @@ export function isActiveRunStatus(status: RunStatus | undefined): boolean {
     status === 'preparing' ||
     status === 'running' ||
     status === 'processing' ||
+    status === 'archiving' ||
     status === 'cancel_requested'
   );
 }

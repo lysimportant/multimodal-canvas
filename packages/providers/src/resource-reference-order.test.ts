@@ -311,25 +311,18 @@ describe('视频内联引用模型编号', () => {
     expect(body.metadata.content).toHaveLength(51);
   });
 
-  it.each(['image', 'video', 'audio'] as const)('%s 超限在发送前失败', async (mediaType) => {
+  it.each(['image', 'video', 'audio'] as const)('%s 超过目录上限仍照常发送', async (mediaType) => {
     const snapshot = channelSnapshot();
     const role =
       mediaType === 'image' ? 'referenceImage' : mediaType === 'video' ? 'content' : 'audioTrack';
-    for (let index = 0; index < (mediaType === 'image' ? 31 : 11); index++) {
+    const count = mediaType === 'image' ? 31 : 11;
+    for (let index = 0; index < count; index++) {
       const input = linkedInput(`${mediaType}-${index}`, 1, index, role, mediaType);
       input.snapshot.data.contentUrl = `https://assets.invalid/${mediaType}-${index}`;
       snapshot.inputs.push(input);
     }
-    const fetchImpl = vi.fn<typeof fetch>();
-    await expect(
-      new NewApiVideoProvider({
-        baseUrl: 'https://provider.invalid/v1',
-        apiKey: 'synthetic',
-        videoContract: 'newapi-video-v1',
-        fetchImpl,
-      }).execute({ snapshot, onProviderJob: vi.fn() }),
-    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_LIMIT_EXCEEDED' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    const { body } = await captureVideo(snapshot);
+    expect(body.metadata.content).toHaveLength(count + 1);
   });
 
   it('渠道拒绝 data URL 和未追踪媒体参数', async () => {
@@ -442,38 +435,98 @@ describe('视频内联引用模型编号', () => {
     expect(snapshot).toEqual(before);
   });
 
+  it('未声明编号能力的视频合同按通用 content 发送内联引用', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'unknown-video-model';
+    snapshot.parameters = { duration: 5 };
+    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? { ...block, inline: true, contentUrl: 'https://assets.invalid/alpha' }
+          : block,
+      );
+    const before = structuredClone(snapshot);
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe('Use Image 1 / ');
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: body.prompt },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/alpha' },
+      },
+    ]);
+    expect(snapshot).toEqual(before);
+  });
+
+  it('mt-h3 等 H3 渠道别名按尖括号语法编号后发送通用 content', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'mt-h3';
+    snapshot.parameters = { duration: 5 };
+    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? { ...block, inline: true, contentUrl: 'https://assets.invalid/alpha' }
+          : block,
+      );
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe('Use <Picture 1> / ');
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: body.prompt },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/alpha' },
+      },
+    ]);
+  });
+
+  it('节点级转换语法覆盖优先于模型家族自动匹配', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'unknown-video-model';
+    snapshot.parameters = { duration: 5 };
+    snapshot.nodes[0]!.data.videoReferenceSyntax = 'wan';
+    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? { ...block, inline: true, contentUrl: 'https://assets.invalid/alpha' }
+          : block,
+      );
+    const { body } = await captureVideo(snapshot);
+    expect(body.prompt).toBe('Use 图1 / ');
+  });
+
   it.each([
-    ['unknown-video-model', 'newapi-video-v1'],
     ['unknown-video-model', 'legacy-v1'],
     ['unknown-video-model', 'newapi-unified-v1'],
     ['doubao-seedance-2-0-260128', 'legacy-v1'],
     ['wan3.0-video', 'newapi-unified-v1'],
     ['MiniMax-H3', 'legacy-v1'],
-  ] as const)('%s 的 %s 未确认最终参考映射时在提交前明确失败', async (model, videoContract) => {
-    const snapshot = snapshotFor('video');
-    snapshot.modelAlias = model;
-    snapshot.parameters = {
-      duration: 5,
-      ...(model === 'MiniMax-H3' ? { resolution: '768P' } : {}),
-    };
-    addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
-    snapshot.nodes[0]!.data.promptDocument!.blocks =
-      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
-        block.type === 'mention' ? { ...block, inline: true } : block,
-      );
-    const fetchImpl = vi.fn<typeof fetch>();
-    const onProviderJob = vi.fn();
-    await expect(
-      new NewApiVideoProvider({
-        baseUrl: 'https://provider.invalid/v1',
-        apiKey: 'test-placeholder',
-        videoContract,
-        fetchImpl,
-      }).execute({ snapshot, resolvedMentions: resolveProviderMentions(snapshot), onProviderJob }),
-    ).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_MAPPING_UNSUPPORTED', retryable: false });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onProviderJob).not.toHaveBeenCalled();
-  });
+  ] as const)(
+    '%s 的 %s 未确认编号映射时把内联引用退化为文本后照常提交',
+    async (model, videoContract) => {
+      const snapshot = snapshotFor('video');
+      snapshot.modelAlias = model;
+      snapshot.parameters = {
+        duration: 5,
+        ...(model === 'MiniMax-H3' ? { resolution: '768P' } : {}),
+      };
+      addMentions(snapshot, [{ assetId: 'alpha', assetVersion: 1 }]);
+      snapshot.nodes[0]!.data.promptDocument!.blocks =
+        snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+          block.type === 'mention' ? { ...block, inline: true } : block,
+        );
+      const before = structuredClone(snapshot);
+      // 画布不再替上游判断模型能力：正文内联引用按普通文本退化，请求仍发出。
+      const { body } = await captureVideo(snapshot, videoContract);
+      expect(body.prompt).toBe('Use @alpha@1 / ');
+      expect(body.prompt).not.toContain('Image 1');
+      expect(snapshot).toEqual(before);
+    },
+  );
 
   it('无inline的未知模型仍保留原有参考字段，不扩大旧请求限制', async () => {
     const snapshot = snapshotFor('video');

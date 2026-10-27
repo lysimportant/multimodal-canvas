@@ -1414,6 +1414,7 @@ describe('AssetNode result presentation', () => {
     'preparing',
     'running',
     'processing',
+    'archiving',
     'cancel_requested',
     'failed',
     'cancelled',
@@ -1912,6 +1913,15 @@ describe('AssetNode result presentation', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent('请求中');
     expect(screen.getByLabelText('运行进度 48%')).toHaveTextContent('48%');
+    expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
+  });
+
+  it('供应商结果归档期间显示归档中而不是停留在请求中', () => {
+    renderNode(makeNode({ runStatus: 'archiving', runProgress: 95 }));
+
+    expect(screen.getByRole('status')).toHaveTextContent('归档中');
+    expect(screen.getByLabelText('归档中')).toBeInTheDocument();
+    expect(screen.queryByText('请求中')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
 

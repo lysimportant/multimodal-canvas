@@ -8,6 +8,8 @@
 | Wan 3.0    | 图1           | 视频1       | 音频1       |
 | MiniMax H3 | `<Picture 1>` | `<Video 1>` | `<Audio 1>` |
 
+模型别名按家族归并：`minimax-h3`、`MiniMax-H3`、`moon-minimax-h3`，以及 933 / ManSui 等渠道使用独立 `h3` 段的别名（如 `mt-h3`）都按 MiniMax H3 的尖括号语法编号；家族表未收录、也不带 `h3` 段的模型退回通用 `Image N` / `Video N` / `Audio N`。H3 官方指南只定义 `<Subject N>`、`<Picture N>`、`<Video N>`、`<Audio N>` 四类标签，没有 `<Project>` 这一类。
+
 ## 来源
 
 - [Seedance 中文官方指南](https://docs.volcengine.com/docs/ark/seedance-2-5-prompt-guide?lang=zh)：按上传顺序对应“图 1 / 视频 1 / 音频 1”，每个素材进行文本绑定。此链接替代无法直接读取的飞书分享页。

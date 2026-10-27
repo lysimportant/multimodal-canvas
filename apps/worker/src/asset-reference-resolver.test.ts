@@ -1926,6 +1926,8 @@ describe('createRunWorker asset hydration boundary', () => {
     { mediaType: 'audio', mimeType: 'audio/wav', kind: 'mention' },
     { mediaType: 'video', mimeType: 'video/mp4', kind: 'mention' },
     { mediaType: 'image', mimeType: 'image/png', kind: 'link' },
+    { mediaType: 'audio', mimeType: 'audio/wav', kind: 'link' },
+    { mediaType: 'video', mimeType: 'video/mp4', kind: 'link' },
   ] as const)(
     '文字目标的 $mediaType $kind 将冻结内容送入聊天接口',
     async ({ mediaType, mimeType, kind }) => {
@@ -1939,7 +1941,7 @@ describe('createRunWorker asset hydration boundary', () => {
               mediaType,
             })
           : referenceSnapshot({
-              sourceMediaType: 'image',
+              sourceMediaType: mediaType,
               targetMediaType: 'text',
               role: 'content',
               assetId: imageAssetId,

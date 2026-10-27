@@ -41,23 +41,31 @@ export function withLocalResourceReferences(
     if (videoTarget && request.providerJob?.platformJobId) {
       return typeof executor === 'function' ? executor(request) : executor.execute(request);
     }
-    const resourceInputs = request.snapshot.inputs.filter((input) =>
-      input.snapshot.data.mediaType === 'text'
-        ? ['prompt', 'content', 'transcript', 'negativePrompt'].includes(input.role)
-        : (input.snapshot.data.mediaType === 'image' &&
-            ((target.data.mediaType === 'text' && input.role === 'content') ||
-              (target.data.mediaType === 'image' && imageSourceRoles.has(input.role)))) ||
-          (videoTarget &&
-            [
-              'firstFrame',
-              'lastFrame',
-              'referenceImage',
-              'character',
-              'style',
-              'content',
-              'audioTrack',
-            ].includes(input.role)),
-    );
+    const resourceInputs = request.snapshot.inputs.filter((input) => {
+      const mediaType = input.snapshot.data.mediaType;
+      if (mediaType === 'text') {
+        return ['prompt', 'content', 'transcript', 'negativePrompt'].includes(input.role);
+      }
+      // 文字目标通过 content 端口消费非文本素材（图片/视频/音频），与
+      // domain 中 targetRoleMediaTypes.content 的能力声明保持一致。
+      if (target.data.mediaType === 'text') return input.role === 'content';
+      if (videoTarget) {
+        return [
+          'firstFrame',
+          'lastFrame',
+          'referenceImage',
+          'character',
+          'style',
+          'content',
+          'audioTrack',
+        ].includes(input.role);
+      }
+      return (
+        target.data.mediaType === 'image' &&
+        mediaType === 'image' &&
+        imageSourceRoles.has(input.role)
+      );
+    });
     const frozenMentions = (request.snapshot.promptMentions ?? []).filter(
       (mention) =>
         (mention.nodeId ?? request.snapshot.targetNodeId) === target.id &&

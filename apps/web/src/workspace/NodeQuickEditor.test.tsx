@@ -4863,6 +4863,39 @@ describe('用户选择由上游判断模型能力', () => {
     expect(props.onRun).not.toHaveBeenCalled();
   });
 
+  it('视频节点默认按模型家族显示素材编号语法，也可只对当前节点手动切换', async () => {
+    const onVideoReferenceSyntaxChange = vi.fn();
+    const mention: PromptMentionBlock = {
+      type: 'mention',
+      mentionId: 'mention-0',
+      assetId: 'asset-image',
+      assetVersion: 1,
+      mediaType: 'image',
+      label: '6.png',
+      inline: true,
+    };
+    const props = makeProps({
+      node: {
+        ...videoNode,
+        data: {
+          ...videoNode.data,
+          modelAlias: 'mt-h3',
+          promptDocument: makeMentionDocument(mention),
+        },
+      } as AssetFlowNode,
+      onVideoReferenceSyntaxChange,
+    });
+    render(<NodeQuickEditor {...props} />);
+    const selector = screen.getByRole('combobox', {
+      name: '素材编号语法：自动（H3：<Picture 1>）',
+    });
+    expect(selector).toHaveAttribute('aria-label', '素材编号语法：自动（H3：<Picture 1>）');
+    const user = userEvent.setup();
+    await user.click(selector);
+    await user.click(screen.getByRole('option', { name: 'Seedance：图 1' }));
+    expect(onVideoReferenceSyntaxChange).toHaveBeenCalledWith('seedance');
+  });
+
   it('自定义秒数输入可保存小数和滑块范围之外的数值，不触发生成', async () => {
     const props = makeProps({ node: videoNode, onParametersChange: vi.fn() });
     render(<NodeQuickEditor {...props} />);

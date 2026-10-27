@@ -486,6 +486,8 @@ export type StoredAssetDerivative = {
   sizeBytes: number;
   sha256: string;
   content: Buffer;
+  /** 写回该衍生图的生成器修订；上传/归档侧产出的历史预览没有此标记。 */
+  generator?: string;
 };
 
 export interface AssetStore {
@@ -551,6 +553,17 @@ export interface AssetStore {
   getDerivative(
     id: string,
     kind: string,
+    scope?: AssetScope,
+  ): Promise<StoredAssetDerivative | undefined>;
+  /**
+   * 写回可重建的旁路预览字节，供缓存失效后直接复用；旧适配器可省略。
+   * @returns 写入后返回派生记录；资源缺失、越权、到期或种类非法时返回 undefined。
+   * @throws 对象存储或元数据写入失败时保留底层错误，调用方决定是否降级。
+   */
+  putDerivative?(
+    id: string,
+    kind: string,
+    input: { mimeType: string; content: Buffer; generator?: string },
     scope?: AssetScope,
   ): Promise<StoredAssetDerivative | undefined>;
   update(id: string, input: UpdateAssetInput, scope?: AssetScope): Promise<StoredAsset | undefined>;
@@ -909,6 +922,47 @@ export class MemoryAssetStore implements AssetStore {
       return undefined;
     const derivative = this.derivatives.get(id)?.get(kind);
     return derivative ? { ...derivative, content: Buffer.from(derivative.content) } : undefined;
+  }
+
+  async putDerivative(
+    id: string,
+    kind: string,
+    input: { mimeType: string; content: Buffer; generator?: string },
+    scope: AssetScope = {},
+  ): Promise<StoredAssetDerivative | undefined> {
+    const asset = this.assets.get(id);
+    if (
+      !asset ||
+      isGeneratedAssetExpired(asset.metadata) ||
+      !this.matchesScope(id, scope) ||
+      !isSafeDerivativeKind(kind) ||
+      input.content.byteLength === 0
+    )
+      return undefined;
+    const derivative: StoredAssetDerivative = {
+      kind,
+      mimeType: input.mimeType,
+      sizeBytes: input.content.byteLength,
+      sha256: sha256(input.content),
+      content: Buffer.from(input.content),
+      ...(input.generator ? { generator: input.generator } : {}),
+    };
+    const byKind = this.derivatives.get(id) ?? new Map<string, StoredAssetDerivative>();
+    byKind.set(kind, derivative);
+    this.derivatives.set(id, byKind);
+    this.assets.set(id, {
+      ...asset,
+      metadata: {
+        ...(asset.metadata ?? {}),
+        derivatives: {
+          ...(asRecord(asRecord(asset.metadata)?.derivatives) ?? {}),
+          [kind]: derivativeDescriptor(id, derivative),
+        },
+      },
+    });
+    const times = this.assetTimes.get(id);
+    if (times) times.updatedAt = new Date().toISOString();
+    return { ...derivative, content: Buffer.from(derivative.content) };
   }
 
   async update(
@@ -1320,9 +1374,49 @@ export class PrismaAssetStore implements AssetStore {
         sizeBytes: content.byteLength,
         sha256: sha256(content),
         content,
+        ...(typeof asRecord(descriptor)?.generator === 'string'
+          ? { generator: String(asRecord(descriptor)?.generator) }
+          : {}),
       };
     }
     return undefined;
+  }
+
+  /** 写回旁路预览：新键优先，同时刷新公开元数据中的派生描述，读侧沿用同一回退顺序。 */
+  async putDerivative(
+    id: string,
+    kind: string,
+    input: { mimeType: string; content: Buffer; generator?: string },
+    scope: AssetScope = {},
+  ): Promise<StoredAssetDerivative | undefined> {
+    if (!isSafeDerivativeKind(kind) || input.content.byteLength === 0) return undefined;
+    const row = await this.prisma.asset.findFirst({
+      where: { id, ...this.scopeWhere(scope) },
+      select: { contentKey: true, metadata: true },
+    });
+    if (!row || isGeneratedAssetExpired(row.metadata)) return undefined;
+    const derivative: StoredAssetDerivative = {
+      kind,
+      mimeType: input.mimeType,
+      sizeBytes: input.content.byteLength,
+      sha256: sha256(input.content),
+      content: Buffer.from(input.content),
+      ...(input.generator ? { generator: input.generator } : {}),
+    };
+    await this.blobStore.put(this.derivativeKey(row.contentKey, kind), derivative.content);
+    await this.prisma.asset.update({
+      where: { id },
+      data: {
+        metadata: {
+          ...asRecord(row.metadata),
+          derivatives: {
+            ...(asRecord(asRecord(row.metadata)?.derivatives) ?? {}),
+            [kind]: derivativeDescriptor(id, derivative),
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+    return derivative;
   }
 
   async update(
@@ -2003,6 +2097,20 @@ function mapDerivativeInputs(
     }));
 }
 
+/** 公开派生描述；generator 仅标记服务端可复用的生成器修订，不是客户端输入。 */
+function derivativeDescriptor(
+  assetId: string,
+  derivative: StoredAssetDerivative,
+): Record<string, unknown> {
+  return {
+    mimeType: derivative.mimeType,
+    sizeBytes: derivative.sizeBytes,
+    sha256: derivative.sha256,
+    contentUrl: `/v1/assets/${assetId}/derivatives/${derivative.kind}`,
+    ...(derivative.generator ? { generator: derivative.generator } : {}),
+  };
+}
+
 function metadataWithDerivatives(
   metadata: Record<string, unknown> | undefined,
   derivatives: StoredAssetDerivative[],
@@ -2010,15 +2118,7 @@ function metadataWithDerivatives(
 ): Record<string, unknown> | undefined {
   if (derivatives.length === 0 && !metadata) return undefined;
   const descriptor = Object.fromEntries(
-    derivatives.map((derivative) => [
-      derivative.kind,
-      {
-        mimeType: derivative.mimeType,
-        sizeBytes: derivative.sizeBytes,
-        sha256: derivative.sha256,
-        contentUrl: `/v1/assets/${assetId}/derivatives/${derivative.kind}`,
-      },
-    ]),
+    derivatives.map((derivative) => [derivative.kind, derivativeDescriptor(assetId, derivative)]),
   );
   return {
     ...(metadata ?? {}),

@@ -4663,6 +4663,8 @@ describe('worker node timings', () => {
             input.nodeTimings?.[nodeId]?.outcome === 'succeeded',
         ),
       ).toBe(true);
+      // 归档前必须先把目标节点标记为归档阶段，界面才能在结果落盘期间显示“归档中”。
+      expect(updateRun.mock.calls.some(([input]) => input.status === 'archiving')).toBe(true);
       expect(execute).toHaveBeenCalledOnce();
       expect(resultArchiver).toHaveBeenCalledOnce();
     },

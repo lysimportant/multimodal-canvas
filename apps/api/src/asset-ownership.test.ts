@@ -318,4 +318,39 @@ describe('项目与个人资源的前置权限分页', () => {
     expect(rows.map((asset) => asset.name)).toEqual(['legacy', 'owned']);
     expect(fixture.plainPage).not.toHaveBeenCalled();
   });
+
+  it('把写回的衍生图透传到原始资源存储并校验范围', async () => {
+    const projects = new MemoryProjectStore();
+    const raw = new MemoryAssetStore();
+    const project = await projects.create({ name: '缩略图项目' }, { ownerId: 'owner-a' });
+    const asset = await raw.create({
+      projectId: project.id,
+      name: '项目原图',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.from('original-image'),
+    });
+    const assets = withAssetOwnershipPolicy(raw, projects);
+    expect(assets.putDerivative).toBeDefined();
+    const stored = await assets.putDerivative!(
+      asset.id,
+      'thumbnail',
+      { mimeType: 'image/jpeg', content: Buffer.from('thumb-bytes'), generator: 'thumbnail-v2' },
+      { projectId: project.id },
+    );
+    expect(stored?.content.toString()).toBe('thumb-bytes');
+    expect(stored?.generator).toBe('thumbnail-v2');
+    const rawDerivative = await raw.getDerivative(asset.id, 'thumbnail');
+    expect(rawDerivative?.content.toString()).toBe('thumb-bytes');
+    expect(rawDerivative?.generator).toBe('thumbnail-v2');
+    expect(
+      await assets.putDerivative!(
+        asset.id,
+        'thumbnail',
+        { mimeType: 'image/jpeg', content: Buffer.from('other') },
+        { projectId: '11111111-1111-4111-8111-111111111111' },
+      ),
+    ).toBeUndefined();
+    expect(await raw.getDerivative(asset.id, 'thumbnail')).toMatchObject({ sizeBytes: 11 });
+  });
 });

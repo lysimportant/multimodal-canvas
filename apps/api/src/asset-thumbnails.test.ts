@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AssetThumbnailService } from './asset-thumbnails';
+import { AssetThumbnailService, THUMBNAIL_GENERATOR_REVISION } from './asset-thumbnails';
 import { MemoryAssetStore, MemoryBlobStore, PrismaAssetStore } from './assets';
 import { withAssetOwnershipPolicy } from './asset-ownership';
 import { MemoryProjectStore } from './projects';
@@ -819,5 +819,89 @@ describe('会话隔离、容量恢复与兼容入口', () => {
     });
     const result = await new AssetThumbnailService(store, generator()).get(request(asset.id));
     expect(result.content.toString()).toBe('thumb:one');
+  });
+});
+
+describe('持久化缩略图写回与条件请求', () => {
+  it('冷缓存与进程重启复用写回的竖图缩略图，不再重新下载原图', async () => {
+    const store = new MemoryAssetStore();
+    const asset = await image(store, 'portrait-source', { width: 480, height: 960 });
+    const generate = generator();
+    const read = vi.spyOn(store, 'getVersionContent');
+    const warm = new AssetThumbnailService(store, generate, { persistDerivatives: true });
+    const initial = await warm.get(request(asset.id));
+    expect(initial.content.toString()).toBe('thumb:portrait-source');
+    const stored = await store.getDerivative(asset.id, 'thumbnail', { ownerId: 'owner-a' });
+    expect(stored?.generator).toBe(THUMBNAIL_GENERATOR_REVISION);
+    // 模拟进程重启：新实例没有进程内缓存，旧缩略图因带当前修订标记可直接复用。
+    const cold = new AssetThumbnailService(store, generate, { persistDerivatives: true });
+    const again = await cold.get(request(asset.id));
+    expect(again.content.toString()).toBe('thumb:portrait-source');
+    expect(again.etag).toBe(initial.etag);
+    expect(generate.generate).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+  });
+
+  it('未开启写回时只缓存内存结果，不落资源存储', async () => {
+    const store = new MemoryAssetStore();
+    const asset = await image(store, 'one', { width: 1920, height: 1080 });
+    const generate = generator();
+    await new AssetThumbnailService(store, generate).get(request(asset.id));
+    expect(
+      await store.getDerivative(asset.id, 'thumbnail', { ownerId: 'owner-a' }),
+    ).toBeUndefined();
+  });
+
+  it('条件请求命中校验头时直接 304，不生成缩略图也不读取原图', async () => {
+    const store = new MemoryAssetStore();
+    const asset = await image(store, 'one', { width: 2400, height: 3600 });
+    const generate = generator();
+    const read = vi.spyOn(store, 'getVersionContent');
+    const app = buildApp({ logger: false, assetStore: store, mediaDerivativeGenerator: generate });
+    try {
+      const response = await app.inject({
+        url: `/v1/assets/${asset.id}/versions/1/derivatives/thumbnail`,
+        headers: { 'if-none-match': '*' },
+      });
+      expect(response.statusCode).toBe(304);
+      expect(response.headers['x-original-width']).toBe('2400');
+      expect(generate.generate).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('Prisma 写回衍生图使用当前内容键并保留生成器标记', async () => {
+    const blobs = new MemoryBlobStore();
+    let metadata: Record<string, unknown> = {};
+    const row = { id: 'asset', contentKey: 'assets/asset/v1', metadata };
+    const prisma = {
+      asset: {
+        findFirst: vi.fn(async () => row),
+        update: vi.fn(async ({ data }: { data: { metadata?: Record<string, unknown> } }) => {
+          metadata = data.metadata ?? {};
+          row.metadata = metadata;
+          return row;
+        }),
+      },
+      assetVersion: {
+        findFirst: vi.fn(async () => ({ version: 1 })),
+        findMany: vi.fn(async () => []),
+      },
+    };
+    const store = new PrismaAssetStore(prisma as never, { blobStore: blobs });
+    const written = await store.putDerivative?.('asset', 'thumbnail', {
+      mimeType: 'image/jpeg',
+      content: Buffer.from('thumb-bytes'),
+      generator: THUMBNAIL_GENERATOR_REVISION,
+    });
+    expect(written?.generator).toBe(THUMBNAIL_GENERATOR_REVISION);
+    expect(await blobs.get('assets/asset/v1.derivatives/thumbnail')).toEqual(
+      Buffer.from('thumb-bytes'),
+    );
+    const read = await store.getDerivative('asset', 'thumbnail');
+    expect(read?.content.toString()).toBe('thumb-bytes');
+    expect(read?.generator).toBe(THUMBNAIL_GENERATOR_REVISION);
   });
 });

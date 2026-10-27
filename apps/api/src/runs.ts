@@ -160,6 +160,17 @@ export interface RunService {
   create(snapshot: RunSnapshot, options?: RunCreateOptions): Promise<RunRecord>;
   get(runId: string): Promise<RunRecord | undefined>;
   listByProject(projectId: string): Promise<RunRecord[]>;
+  /**
+   * 增量列出项目内自 `since` 之后更新的运行身份。
+   *
+   * 事件推送方按游标轮询时使用，避免每次轮询都全量扫描项目历史；调用方随后按
+   * {@link get} 读取单条运行的最新状态。未实现该方法的后端（如内存模式）由
+   * 调用方回退到 {@link listByProject}。
+   */
+  listProjectRunChanges?(
+    projectId: string,
+    since: Date,
+  ): Promise<Array<{ id: string; updatedAt: string }>>;
   /** 检查当前任务后端连接；内存模式明确报告本地服务可用。 */
   health?(): Promise<void>;
   /** Apply an asynchronous provider callback when the service owns queue state. */
@@ -1519,7 +1530,12 @@ export class BullMqRunService implements RunService {
     Partial<
       Pick<
         PrismaRunPersistence,
-        'getRun' | 'listRunsByProject' | 'getRunByProviderJob' | 'updateRun' | 'upsertProviderJob'
+        | 'getRun'
+        | 'listRunsByProject'
+        | 'listRunChangesByProject'
+        | 'getRunByProviderJob'
+        | 'updateRun'
+        | 'upsertProviderJob'
       >
     >;
 
@@ -1532,7 +1548,12 @@ export class BullMqRunService implements RunService {
       Partial<
         Pick<
           PrismaRunPersistence,
-          'getRun' | 'listRunsByProject' | 'getRunByProviderJob' | 'updateRun' | 'upsertProviderJob'
+          | 'getRun'
+          | 'listRunsByProject'
+          | 'listRunChangesByProject'
+          | 'getRunByProviderJob'
+          | 'updateRun'
+          | 'upsertProviderJob'
         >
       >;
   }) {
@@ -1603,6 +1624,24 @@ export class BullMqRunService implements RunService {
         ? left.id.localeCompare(right.id)
         : left.createdAt.localeCompare(right.createdAt),
     );
+  }
+
+  async listProjectRunChanges(
+    projectId: string,
+    since: Date,
+  ): Promise<Array<{ id: string; updatedAt: string }>> {
+    const persisted = await this.persistence?.listRunChangesByProject?.(projectId, since);
+    if (persisted) {
+      return persisted.map((change) => ({
+        id: change.id,
+        updatedAt: change.updatedAt.toISOString(),
+      }));
+    }
+    // 未接持久化增量查询的后端仍保持正确：全量读取后按游标过滤。
+    const runs = await this.listByProject(projectId);
+    return runs
+      .map((run) => ({ id: run.id, updatedAt: run.updatedAt }))
+      .filter((change) => new Date(change.updatedAt) >= since);
   }
 
   /**

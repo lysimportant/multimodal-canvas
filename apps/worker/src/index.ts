@@ -2348,7 +2348,13 @@ export function createRunWorker(options: {
           if (!independent && !options.resultArchiver) {
             throw new Error(`result archiver is required for workflow node ${node.id}`);
           }
-          await persistRun('processing', executionProviderJob);
+          // 供应商已返回、结果尚未落存储：目标节点单独标记归档阶段，
+          // 让界面在生成完成到资产可用之间显示“归档中”而不是停在“处理中”。
+          if (node.id === executionSnapshot.targetNodeId) {
+            await persistRun('archiving', executionProviderJob);
+          } else {
+            await persistRun('processing', executionProviderJob);
+          }
           /** 只重试原输出归档；恢复 URL 不改变资产键、供应商回执和请求提示词身份。 */
           const archiveCurrentOutput = () =>
             executeWithCancellation(
@@ -2779,6 +2785,14 @@ export function createRunWorker(options: {
           errorMessage = `${errorMessage}；${videoRefundMessage(refundStatus)}`;
           failedNodeWithMetadata.payload.error = errorMessage;
         }
+        // 发送前协议校验失败（例如内联素材编号映射未声明）时，重投必然重复同一
+        // 失败；直接终止 BullMQ 重试，避免用户白等多轮无效重试。这里只收窄到
+        // 发送前能力校验错误：轮询/提交阶段的 retryable:false 仍可恢复，不能一概终止。
+        const unrecoverableProviderFailure =
+          rawError instanceof NewApiProviderError &&
+          rawError.retryable === false &&
+          (rawError.code === 'VIDEO_REFERENCE_MAPPING_UNSUPPORTED' ||
+            rawError.code === 'VIDEO_REFERENCE_ORDER_AMBIGUOUS');
         const failedProviderJob: ProviderJob = {
           ...failedNodeWithMetadata,
           status: 'failed' as const,
@@ -2869,7 +2883,8 @@ export function createRunWorker(options: {
           terminalImageCreationFailure ||
           terminalImageFailure ||
           promptOptimizationOutputError ||
-          terminalVideoFailure
+          terminalVideoFailure ||
+          unrecoverableProviderFailure
         ) {
           const terminalError = new UnrecoverableError(errorMessage);
           terminalError.cause = error;

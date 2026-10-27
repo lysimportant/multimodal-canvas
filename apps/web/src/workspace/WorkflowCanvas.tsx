@@ -51,6 +51,7 @@ import type {
   VideoCompletionAction,
   VideoMode,
   VideoRecreationConfig,
+  VideoReferenceSyntax,
 } from '@multimodal-canvas/domain';
 import { portRoles, videoImageRolesForMode } from '@multimodal-canvas/domain';
 import type { CanvasTheme } from '../state/workspace-preferences';
@@ -267,7 +268,7 @@ export type WorkflowCanvasProps = {
     assetVersion?: number,
   ) => void;
   /** 向固定目标添加已有资源及来源连线；失败时抛出可展示错误，不改变当前图。 */
-  onAddNodeReference?: (sourceId: string, targetId: string) => void;
+  onAddNodeReference?: (sourceId: string, targetId: string) => void | Promise<void>;
   /** 按当前项目在服务端分页搜索；未提供时兼容使用传入的完整目录。 */
   onSearchProjectResources?: ProjectResourceSearch;
   /** 保存资源条排列，包含资产冻结版本。 */
@@ -293,6 +294,8 @@ export type WorkflowCanvasProps = {
   onCompletionActionChange?: (value: VideoCompletionAction, nodeId?: string) => void;
   onCompletionTargetNodeIdChange?: (value: string | undefined, nodeId?: string) => void;
   onVideoModeChange?: (value: VideoMode, nodeId?: string) => void;
+  /** 保存单节点的素材编号语法覆盖；缺省表示继续按模型自动匹配。 */
+  onVideoReferenceSyntaxChange?: (value: VideoReferenceSyntax | undefined, nodeId?: string) => void;
   onModelChange: (value: ModelSelection, nodeId?: string) => void;
   onInferenceStrengthChange: (value: InferenceStrength, nodeId?: string) => void;
   onRunNode: (node: AssetFlowNode, target?: NodeRunTarget) => void;
@@ -425,6 +428,7 @@ export function WorkflowCanvas({
   onCompletionActionChange,
   onCompletionTargetNodeIdChange,
   onVideoModeChange,
+  onVideoReferenceSyntaxChange,
   onModelChange,
   onInferenceStrengthChange,
   onRunNode,
@@ -526,6 +530,8 @@ export function WorkflowCanvas({
     window.addEventListener('keydown', cancel);
     return () => window.removeEventListener('keydown', cancel);
   }, [referenceTargetId, exitReferencePick]);
+  /** 异步补齐来源版本期间只允许一次添加，避免连续点击重复写入。 */
+  const referenceAddPendingRef = useRef(false);
   /** 在节点内控件之前消费资源点击，避免预览、删除或选择改变目标。 */
   const handleReferenceClick = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
@@ -535,16 +541,38 @@ export function WorkflowCanvas({
       if (!sourceId) return;
       event.preventDefault();
       event.stopPropagation();
-      try {
-        onAddNodeReference(sourceId, referenceTargetId);
+      if (referenceAddPendingRef.current) return;
+      const succeed = () => {
         setReferencePickMessage(null);
         void referenceMessageApi.success({
           content: '已添加参考资料',
         });
-      } catch (error) {
+      };
+      const fail = (error: unknown) => {
         const errorMessage = error instanceof Error ? error.message : '添加资源失败，请重试';
         setReferencePickMessage(errorMessage);
         void referenceMessageApi.error({ content: errorMessage });
+      };
+      try {
+        const adding = onAddNodeReference(sourceId, referenceTargetId);
+        // 同步回调保持原有即时结果；返回 thenable 时等补齐版本后再提示。
+        if (adding && typeof (adding as PromiseLike<void>).then === 'function') {
+          referenceAddPendingRef.current = true;
+          void (adding as Promise<void>).then(
+            () => {
+              referenceAddPendingRef.current = false;
+              succeed();
+            },
+            (error: unknown) => {
+              referenceAddPendingRef.current = false;
+              fail(error);
+            },
+          );
+          return;
+        }
+        succeed();
+      } catch (error) {
+        fail(error);
       }
     },
     [onAddNodeReference, referenceTargetId, referenceMessageApi],
@@ -1442,6 +1470,11 @@ export function WorkflowCanvas({
         onVideoModeChange={
           onVideoModeChange ? (value) => onVideoModeChange(value, editorNode.id) : undefined
         }
+        onVideoReferenceSyntaxChange={
+          onVideoReferenceSyntaxChange
+            ? (value) => onVideoReferenceSyntaxChange(value, editorNode.id)
+            : undefined
+        }
         connectedInputRoles={edges.flatMap((edge) => {
           if (edge.target !== editorNode.id || !edge.targetHandle?.startsWith('input:')) {
             return [];
@@ -1526,6 +1559,7 @@ export function WorkflowCanvas({
     onCompletionActionChange,
     onCompletionTargetNodeIdChange,
     onVideoModeChange,
+    onVideoReferenceSyntaxChange,
     onModelChange,
     onInferenceStrengthChange,
     runNodeWithTrigger,

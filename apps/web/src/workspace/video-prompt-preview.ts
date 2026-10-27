@@ -1,9 +1,7 @@
 import {
   getExecutionPromptDocument,
-  moonVideoContractForModel,
   renderPromptDocument,
   renderVideoPromptReferenceDocument,
-  videoFamilyForModel,
   type NodeResourceRef,
   type PromptDocument,
 } from '@multimodal-canvas/domain';
@@ -36,23 +34,6 @@ export function previewVideoPrompt(
   if (mentions.some((mention) => mention.mediaType === 'text'))
     throw new Error('当前提示词包含文字资源，需解析资源正文后才能确定完整提交内容。');
   const hasInlineReferences = mentions.some((mention) => mention.inline && !mention.executionOnly);
-  if (hasInlineReferences) {
-    const family = videoFamilyForModel(context.modelAlias);
-    if (
-      !context.videoReferences &&
-      ![
-        'grok-imagine-video-1.5',
-        'moon-minimax-h3',
-        'minimax-h3',
-        'wan3',
-        'seedance-2',
-        'seedance-2.5',
-        'yuanliu',
-      ].includes(family) &&
-      !moonVideoContractForModel(context.modelAlias)
-    )
-      throw new Error('当前模型尚未确认素材编号映射，请先选择支持参考素材的视频模型。');
-  }
   if (hasInlineReferences || context.videoReferences) {
     const parameters = context.parameters ?? {};
     const metadata =
@@ -79,6 +60,7 @@ export function previewVideoPrompt(
     )
       throw new Error('媒体参数与引用资源混用，无法确定素材编号，请通过资源条或连线提供素材。');
   }
+  // 画布不替上游判断模型能力：视频参考素材一律按实际发送顺序编号，预览与提交保持一致。
   const references = collectVideoPromptReferences(
     context,
     executionDocument,
