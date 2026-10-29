@@ -11,6 +11,8 @@ const SEEK_WINDOWS_SECONDS = [0.25, 1, 3] as const;
 
 export type FinalFrameExtractInput = {
   content: Buffer;
+  /** 已流式下载的视频文件；存在时优先于 content 使用。 */
+  filePath?: string;
   mimeType: string;
   binary: string;
   timeoutMs: number;
@@ -24,18 +26,19 @@ export type FinalFrameExtractResult = {
 };
 
 /**
- * 从视频字节中提取最后一张可解码 JPEG 帧。
+ * 从视频字节或本地文件中提取最后一张可解码 JPEG 帧。
  * 不使用起始 poster；工具缺失或无可解码帧时抛出固定诊断，不暴露 stderr。
  */
 export async function extractLastDecodableFrame(
   input: FinalFrameExtractInput,
 ): Promise<FinalFrameExtractResult> {
   const directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-final-frame-'));
-  const source = join(directory, `input${extensionFor(input.mimeType)}`);
+  const ownedSource = join(directory, `input${extensionFor(input.mimeType)}`);
+  const source = input.filePath ?? ownedSource;
   const output = join(directory, 'last.jpg');
   const runner = input.runner ?? defaultRunner;
   try {
-    await writeFile(source, input.content, { flag: 'wx' });
+    if (!input.filePath) await writeFile(ownedSource, input.content, { flag: 'wx' });
     let lastError: unknown;
     for (const window of SEEK_WINDOWS_SECONDS) {
       try {

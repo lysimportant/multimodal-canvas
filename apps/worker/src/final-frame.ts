@@ -17,6 +17,8 @@ const JPEG_MIME = 'image/jpeg';
 
 export type FinalFrameExtractor = (input: {
   content: Buffer;
+  /** 已流式下载的视频文件；存在时优先于 content 使用。 */
+  filePath?: string;
   mimeType: string;
   binary: string;
   timeoutMs: number;
@@ -27,7 +29,10 @@ export type ApplyFinalFrameInput = {
   userId?: string;
   snapshot: RunSnapshot;
   archived: RunResultAsset;
-  content: Buffer;
+  /** 内存内容；流式归档时为空 Buffer（由 filePath 提供实际内容）。 */
+  content?: Buffer;
+  /** 已流式下载到本地临时文件的视频内容，优先于 content 使用。 */
+  filePath?: string;
   videoMimeType: string;
   contentKey: string;
   prisma: PrismaClient;
@@ -35,7 +40,8 @@ export type ApplyFinalFrameInput = {
   extractor?: FinalFrameExtractor;
   ffmpegBinary?: string;
   timeoutMs: number;
-  maxBytes: number;
+  /** 可选末帧大小上限；未配置表示不限制。 */
+  maxBytes?: number;
 };
 
 /** 在视频归档成功后派生末帧。任何失败只返回 failed/conflict，不抛给归档流程。 */
@@ -77,12 +83,16 @@ export async function applyVideoFinalFrame(
     });
     assertNotExpired(asRecord(source?.metadata));
     const frame = await (extractor ?? defaultExtractor)({
-      content: input.content,
+      content: input.content ?? Buffer.alloc(0),
+      ...(input.filePath ? { filePath: input.filePath } : {}),
       mimeType: input.videoMimeType,
       binary: binary ?? 'ffmpeg',
       timeoutMs: input.timeoutMs,
     });
-    if (frame.content.byteLength === 0 || frame.content.byteLength > input.maxBytes) {
+    if (
+      frame.content.byteLength === 0 ||
+      (input.maxBytes !== undefined && frame.content.byteLength > input.maxBytes)
+    ) {
       throw new Error('invalid final frame');
     }
     assertNotExpired(asRecord(source?.metadata));
@@ -130,6 +140,7 @@ export async function applyVideoFinalFrame(
 
 async function defaultExtractor(input: {
   content: Buffer;
+  filePath?: string;
   mimeType: string;
   binary: string;
   timeoutMs: number;

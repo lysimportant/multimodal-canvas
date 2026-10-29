@@ -43,6 +43,11 @@ export type ResultAssetArchiveInput = {
   content?: Buffer;
   /** A short-lived/provider URL that the archiver may fetch server-side. */
   contentUrl?: string;
+  /**
+   * 下载受保护 contentUrl 时附带的请求头（例如 Provider 的 Bearer 凭据）。
+   * 仅由 Worker 从 Provider 凭据解析后写入，不得持久化或回显到任务结果。
+   */
+  contentHeaders?: Record<string, string>;
   metadata?: Record<string, unknown>;
 };
 

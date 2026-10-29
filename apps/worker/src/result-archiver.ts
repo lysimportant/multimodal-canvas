@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lookup as dnsLookup } from 'node:dns/promises';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isIP } from 'node:net';
@@ -26,7 +27,6 @@ import type { ResultAssetArchiver } from './index';
 import type { ResultAssetArchiveInput, ProviderOutput } from './result-output';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
 const DEFAULT_S3_TIMEOUT_MS = 300_000;
 const DEFAULT_S3_DELETE_TIMEOUT_MS = 30_000;
@@ -36,11 +36,16 @@ const execFile = promisify(execFileCallback);
 /** Small object-storage boundary shared by filesystem and S3 adapters. */
 export interface ResultBlobStore {
   put(key: string, content: Buffer, contentType?: string): Promise<void>;
+  /** 可选：直接从本地临时文件流式上传，避免把大视频整体读进内存。 */
+  putFile?(key: string, filePath: string, sizeBytes: number, contentType?: string): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
+/** 归档内容探测输入：内存 Buffer 或已下载的本地文件，二选一。 */
 export type ResultMediaProbeInput = {
-  content: Buffer;
+  content?: Buffer;
+  /** 已流式下载到本地临时文件的内容，优先于 content 使用。 */
+  filePath?: string;
   mimeType: string;
   mediaType: MediaType;
 };
@@ -75,11 +80,16 @@ export class WorkerFfmpegMediaDerivativeGenerator implements ResultMediaDerivati
   /** 为图片、视频、音频生成单个预览；工具失败返回固定诊断，不暴露原始 stderr。 */
   async generate(input: ResultMediaProbeInput): Promise<ResultMediaDerivative[]> {
     if (input.mediaType === 'text') return [];
+    if (!input.filePath && !input.content) throw new Error('media content is required');
     const directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-worker-derivative-'));
-    const source = join(directory, `input.${extensionFor(input.mediaType, input.mimeType)}`);
+    const ownedSource = join(directory, `input.${extensionFor(input.mediaType, input.mimeType)}`);
+    const source = input.filePath ?? ownedSource;
     const audio = input.mediaType === 'audio';
     try {
-      await writeFile(source, input.content, { flag: 'wx' });
+      if (!input.filePath) {
+        if (!input.content) throw new Error('media content is required');
+        await writeFile(ownedSource, input.content, { flag: 'wx' });
+      }
       const { stdout } = await execFile(
         this.binary,
         [
@@ -165,6 +175,37 @@ type ExistingResultArchive = {
   }>;
 };
 
+/** 归档入口参数；对外暴露的结构与 ResultAssetArchiver 保持一致。 */
+type ResultArchiveRequest = {
+  runId: string;
+  userId?: string;
+  snapshot: RunSnapshot;
+  result: RunResult;
+  providerJob: ProviderJob;
+  output?: ProviderOutput;
+  archiveInput?: ResultAssetArchiveInput;
+  archiveKey?: string;
+  signal?: AbortSignal;
+};
+
+type ArchiveResult = (RunResultAsset & { finalFrame?: RunResultFinalFrame }) | undefined;
+
+/** 已通过 URL/DNS/传输校验并落盘的下载结果；sha256 在读流时计算。 */
+type DownloadedResultFile = {
+  directory: string;
+  filePath: string;
+  sizeBytes: number;
+  sha256: string;
+  mimeType?: string;
+};
+
+/** 归档来源：内存内容（小结果）或已流式下载到本地文件（视频）。 */
+type ResolvedResultSource = {
+  content?: Buffer;
+  mimeType?: string;
+  downloaded?: DownloadedResultFile;
+};
+
 /** Worker-local ffprobe adapter used after a provider video has been downloaded. */
 export class WorkerFfprobeMediaMetadataExtractor implements ResultMediaMetadataExtractor {
   private readonly binary: string;
@@ -182,9 +223,13 @@ export class WorkerFfprobeMediaMetadataExtractor implements ResultMediaMetadataE
 
   async extract(input: ResultMediaProbeInput): Promise<Record<string, unknown>> {
     const directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-worker-probe-'));
-    const filePath = join(directory, `input.${extensionFor(input.mediaType, input.mimeType)}`);
+    const ownedPath = join(directory, `input.${extensionFor(input.mediaType, input.mimeType)}`);
+    const filePath = input.filePath ?? ownedPath;
     try {
-      await writeFile(filePath, input.content, { flag: 'wx' });
+      if (!input.filePath) {
+        if (!input.content) throw new Error('media content is required');
+        await writeFile(ownedPath, input.content, { flag: 'wx' });
+      }
       const stdout = await this.runner(
         this.binary,
         [
@@ -220,6 +265,18 @@ export class WorkerFileBlobStore implements ResultBlobStore {
     const target = this.pathFor(key);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
+  }
+
+  /** 直接复制本地临时文件，避免大视频落入 Node 内存。 */
+  async putFile(
+    key: string,
+    filePath: string,
+    _sizeBytes?: number,
+    _contentType?: string,
+  ): Promise<void> {
+    const target = this.pathFor(key);
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(filePath, target);
   }
 
   async delete(key: string): Promise<void> {
@@ -308,6 +365,32 @@ export class WorkerS3BlobStore implements ResultBlobStore {
       throw error;
     }
   }
+
+  /** 以文件流上传大体积结果，避免整段视频进入内存。 */
+  async putFile(
+    key: string,
+    filePath: string,
+    sizeBytes: number,
+    contentType?: string,
+  ): Promise<void> {
+    const signal = AbortSignal.timeout(this.timeoutMs);
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: createReadStream(filePath),
+          ContentLength: sizeBytes,
+          ...(contentType ? { ContentType: contentType } : {}),
+        }),
+        { abortSignal: signal },
+      );
+    } catch (error) {
+      if (signal.aborted) throw storageTimeoutError('上传', this.timeoutMs);
+      if (error instanceof Error && error.name === 'AbortError') throw storageAbortError('上传');
+      throw error;
+    }
+  }
 }
 
 function storageTimeoutError(action: string, timeoutMs: number): Error {
@@ -327,6 +410,7 @@ export type PrismaResultAssetArchiverOptions = {
   keyPrefix?: string;
   contentUrl?: (assetId: string) => string;
   fetchImpl?: typeof fetch;
+  /** 可选归档大小上限（字节）；未配置表示不限制，容量由磁盘/对象存储决定。 */
   maxBytes?: number;
   fetchTimeoutMs?: number;
   /** 仅本地开发/测试允许明文 HTTP；关闭时图片和视频可尝试默认端口的 HTTPS 候选。 */
@@ -372,7 +456,7 @@ export class PrismaResultAssetArchiver {
   private readonly keyPrefix: string;
   private readonly contentUrl: (assetId: string) => string;
   private readonly fetchImpl: typeof fetch;
-  private readonly maxBytes: number;
+  private readonly maxBytes?: number;
   private readonly fetchTimeoutMs: number;
   private readonly allowHttp: boolean;
   private readonly strictDns: boolean;
@@ -391,7 +475,8 @@ export class PrismaResultAssetArchiver {
     this.keyPrefix = trimPrefix(options.keyPrefix ?? 'assets');
     this.contentUrl =
       options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/versions/1/content`);
-    this.maxBytes = positiveLimit(options.maxBytes ?? DEFAULT_MAX_BYTES, 'max asset size');
+    this.maxBytes =
+      options.maxBytes === undefined ? undefined : positiveLimit(options.maxBytes, 'max asset size');
     this.fetchTimeoutMs = positiveLimit(
       options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
       'asset fetch timeout',
@@ -404,7 +489,12 @@ export class PrismaResultAssetArchiver {
       options.fetchImpl ??
       (this.strictDns
         ? (url, init) =>
-            fetchWithPublicDns(new URL(String(url)), init?.signal ?? undefined, this.lookupHost)
+            fetchWithPublicDns(
+              new URL(String(url)),
+              init?.signal ?? undefined,
+              this.lookupHost,
+              requestHeaders(init?.headers),
+            )
         : fetch);
     this.metadataExtractor = options.metadataExtractor;
     this.derivativeGenerator = options.derivativeGenerator;
@@ -412,17 +502,7 @@ export class PrismaResultAssetArchiver {
     this.ffmpegBinary = options.ffmpegBinary;
   }
 
-  async archive(input: {
-    runId: string;
-    userId?: string;
-    snapshot: RunSnapshot;
-    result: RunResult;
-    providerJob: ProviderJob;
-    output?: ProviderOutput;
-    archiveInput?: ResultAssetArchiveInput;
-    archiveKey?: string;
-    signal?: AbortSignal;
-  }): Promise<(RunResultAsset & { finalFrame?: RunResultFinalFrame }) | undefined> {
+  async archive(input: ResultArchiveRequest): Promise<ArchiveResult> {
     throwIfCancelled(input.signal);
     let archiveInput = input.archiveInput;
     if (!archiveInput) return undefined;
@@ -433,21 +513,59 @@ export class PrismaResultAssetArchiver {
       throw new Error('cannot archive a result with an invalid user UUID');
     }
 
-    const downloaded = archiveInput.content
-      ? undefined
-      : await this.download(archiveInput.contentUrl, archiveInput.mediaType, input.signal);
-    const content = archiveInput.content ?? downloaded?.content;
-    if (downloaded?.mimeType) archiveInput = { ...archiveInput, mimeType: downloaded.mimeType };
+    // 没有内存内容时先从 URL 取回：视频流式落盘避免占满内存，其它媒体维持有界读取。
+    const buffered =
+      archiveInput.content || archiveInput.mediaType === 'video'
+        ? undefined
+        : await this.download(
+            archiveInput.contentUrl,
+            archiveInput.mediaType,
+            archiveInput.contentHeaders,
+            input.signal,
+          );
+    const downloaded =
+      archiveInput.content || buffered
+        ? undefined
+        : await this.downloadToFile(
+            archiveInput.contentUrl,
+            archiveInput.mediaType,
+            archiveInput.contentHeaders,
+            input.signal,
+          );
+    try {
+      return await this.archiveResolved(input, archiveInput, {
+        content: archiveInput.content ?? buffered?.content,
+        mimeType: buffered?.mimeType ?? downloaded?.mimeType,
+        downloaded,
+      });
+    } finally {
+      if (downloaded) {
+        await rm(downloaded.directory, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  /** 归档已解析内容：内存 Buffer 或已流式下载到本地文件的大结果。 */
+  private async archiveResolved(
+    input: ResultArchiveRequest,
+    initialArchiveInput: ResultAssetArchiveInput,
+    source: ResolvedResultSource,
+  ): Promise<ArchiveResult> {
+    let archiveInput = initialArchiveInput;
+    const content = source.content;
+    const filePath = source.downloaded?.filePath;
+    if (source.mimeType) archiveInput = { ...archiveInput, mimeType: source.mimeType };
     throwIfCancelled(input.signal);
-    if (!content || content.byteLength === 0) {
+    const sizeBytes = content ? content.byteLength : (source.downloaded?.sizeBytes ?? 0);
+    if (sizeBytes === 0) {
       throw new Error('provider returned an empty result payload');
     }
-    if (content.byteLength > this.maxBytes) {
-      throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
-    }
+    this.assertWithinLimit(sizeBytes);
+    const digest = content ? sha256Hex(content) : source.downloaded!.sha256;
 
     const extractedMetadata = await this.tryExtractMetadata({
-      content,
+      ...(content ? { content } : {}),
+      ...(filePath ? { filePath } : {}),
       mimeType: archiveInput.mimeType,
       mediaType: archiveInput.mediaType,
     });
@@ -459,7 +577,6 @@ export class PrismaResultAssetArchiver {
         }
       : archiveInput;
 
-    const digest = createHash('sha256').update(content).digest('hex');
     const assetId = deterministicResultAssetId(archiveIdentity(input));
     const contentKey = `${this.keyPrefix}/${assetId}/v1-${digest}`;
     const metadata = buildResultMetadata(input, enrichedArchiveInput);
@@ -470,15 +587,15 @@ export class PrismaResultAssetArchiver {
         projectId: input.snapshot.projectId,
         mediaType: enrichedArchiveInput.mediaType,
         mimeType: enrichedArchiveInput.mimeType,
-        sizeBytes: content.byteLength,
+        sizeBytes,
         sha256: digest,
         contentKey,
         contentUrl: this.contentUrl(assetId),
       });
-      return this.withFinalFrame(
+      return await this.withFinalFrame(
         input,
         archived,
-        content,
+        { content, filePath },
         enrichedArchiveInput.mimeType,
         contentKey,
       );
@@ -486,11 +603,21 @@ export class PrismaResultAssetArchiver {
     throwIfCancelled(input.signal);
     const storedKeys = [contentKey];
     try {
-      await this.blobStore.put(contentKey, content, enrichedArchiveInput.mimeType);
+      await this.putArchiveContent(
+        contentKey,
+        { content, filePath },
+        sizeBytes,
+        enrichedArchiveInput.mimeType,
+      );
       throwIfCancelled(input.signal);
       if (this.derivativeGenerator && archiveInput.mediaType !== 'text') {
         const derivatives = await this.storeDerivatives(
-          { content, mimeType: archiveInput.mimeType, mediaType: archiveInput.mediaType },
+          {
+            ...(content ? { content } : {}),
+            ...(filePath ? { filePath } : {}),
+            mimeType: archiveInput.mimeType,
+            mediaType: archiveInput.mediaType,
+          },
           contentKey,
           assetId,
           storedKeys,
@@ -519,7 +646,7 @@ export class PrismaResultAssetArchiver {
             mediaType: enrichedArchiveInput.mediaType.toUpperCase() as
               'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO',
             mimeType: enrichedArchiveInput.mimeType,
-            sizeBytes: BigInt(content.byteLength),
+            sizeBytes: BigInt(sizeBytes),
             sha256: digest,
             contentKey,
             metadata: metadata as Prisma.InputJsonValue,
@@ -530,7 +657,7 @@ export class PrismaResultAssetArchiver {
           data: {
             assetId,
             version: 1,
-            sizeBytes: BigInt(content.byteLength),
+            sizeBytes: BigInt(sizeBytes),
             sha256: digest,
             contentKey,
             metadata: metadata as Prisma.InputJsonValue,
@@ -554,7 +681,7 @@ export class PrismaResultAssetArchiver {
             projectId: input.snapshot.projectId,
             mediaType: enrichedArchiveInput.mediaType,
             mimeType: enrichedArchiveInput.mimeType,
-            sizeBytes: content.byteLength,
+            sizeBytes,
             sha256: digest,
             contentKey,
             contentUrl: this.contentUrl(assetId),
@@ -572,21 +699,43 @@ export class PrismaResultAssetArchiver {
       throw error;
     }
 
-    return this.withFinalFrame(
+    return await this.withFinalFrame(
       input,
       {
         assetId,
         version: 1,
         contentUrl: this.contentUrl(assetId),
         mimeType: enrichedArchiveInput.mimeType,
-        sizeBytes: content.byteLength,
+        sizeBytes,
         sha256: digest,
         metadata,
       },
-      content,
+      { content, filePath },
       enrichedArchiveInput.mimeType,
       contentKey,
     );
+  }
+
+  private assertWithinLimit(sizeBytes: number): void {
+    if (this.maxBytes !== undefined && sizeBytes > this.maxBytes) {
+      throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
+    }
+  }
+
+  private async putArchiveContent(
+    contentKey: string,
+    source: { content?: Buffer; filePath?: string },
+    sizeBytes: number,
+    contentType: string,
+  ): Promise<void> {
+    if (source.filePath && this.blobStore.putFile) {
+      await this.blobStore.putFile(contentKey, source.filePath, sizeBytes, contentType);
+      return;
+    }
+    const buffer =
+      source.content ?? (source.filePath ? await readFile(source.filePath) : undefined);
+    if (!buffer) throw new Error('provider returned an empty result payload');
+    await this.blobStore.put(contentKey, buffer, contentType);
   }
 
   /**
@@ -599,7 +748,7 @@ export class PrismaResultAssetArchiver {
       snapshot: RunSnapshot;
     },
     archived: RunResultAsset,
-    content: Buffer,
+    source: { content?: Buffer; filePath?: string },
     videoMimeType: string,
     contentKey: string,
   ): Promise<RunResultAsset & { finalFrame?: RunResultFinalFrame }> {
@@ -614,7 +763,8 @@ export class PrismaResultAssetArchiver {
       userId: input.userId,
       snapshot: input.snapshot,
       archived,
-      content,
+      ...(source.content ? { content: source.content } : {}),
+      ...(source.filePath ? { filePath: source.filePath } : {}),
       videoMimeType,
       contentKey,
       prisma: this.prisma,
@@ -622,7 +772,7 @@ export class PrismaResultAssetArchiver {
       extractor: this.finalFrameExtractor,
       ffmpegBinary: this.ffmpegBinary,
       timeoutMs: 30_000,
-      maxBytes: this.maxBytes,
+      ...(this.maxBytes !== undefined ? { maxBytes: this.maxBytes } : {}),
     });
     return { ...archived, finalFrame };
   }
@@ -648,7 +798,7 @@ export class PrismaResultAssetArchiver {
         if (
           derivative.kind !== expected ||
           derivative.content.byteLength === 0 ||
-          derivative.content.byteLength > this.maxBytes ||
+          (this.maxBytes !== undefined && derivative.content.byteLength > this.maxBytes) ||
           derivative.mimeType !== (expected === 'waveform' ? 'image/png' : 'image/jpeg')
         ) {
           throw new Error('invalid derivative');
@@ -669,10 +819,14 @@ export class PrismaResultAssetArchiver {
     }
   }
 
-  /** 受限下载并完整校验内容；HTTP 图片/视频失败返回脱敏诊断，保留地址失效类型和取消名称。 */
+  /**
+   * 有界读取非视频结果到内存：与视频流式下载共享地址、DNS、MIME 与取消边界。
+   * HTTP 图片/视频失败返回脱敏诊断，保留地址失效类型和取消名称。
+   */
   private async download(
     url: string | undefined,
     mediaType: MediaType,
+    headers: Record<string, string> | undefined,
     cancellationSignal?: AbortSignal,
   ): Promise<{ content: Buffer; mimeType?: string } | undefined> {
     if (!url) return undefined;
@@ -686,6 +840,7 @@ export class PrismaResultAssetArchiver {
     cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
     const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
     let response: Response | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const parsed = validateRemoteUrl(
         requiresHttpsCandidate ? createHttpsMediaCandidate(url, mediaType) : url,
@@ -702,6 +857,7 @@ export class PrismaResultAssetArchiver {
             this.fetchImpl(parsed.toString(), {
               signal: controller.signal,
               redirect: 'error',
+              ...(headers ? { headers } : {}),
             }),
           )
           .catch(() => {
@@ -730,8 +886,8 @@ export class PrismaResultAssetArchiver {
         throw new Error('provider result download media type mismatch');
       }
       const contentLength = Number(response.headers.get('content-length') ?? 0);
-      if (contentLength > this.maxBytes) {
-        throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
+      if (Number.isFinite(contentLength) && contentLength > 0) {
+        this.assertWithinLimit(contentLength);
       }
       if (!response.body || typeof response.body.getReader !== 'function') {
         const bytes = Buffer.from(
@@ -740,30 +896,23 @@ export class PrismaResultAssetArchiver {
         if (requiresHttpsCandidate && bytes.byteLength === 0) {
           throw new Error('provider returned an empty result payload');
         }
-        if (requiresHttpsCandidate && bytes.byteLength > this.maxBytes) {
-          throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
-        }
+        this.assertWithinLimit(bytes.byteLength);
         return { content: bytes, mimeType };
       }
-      const reader = response.body.getReader();
-      const chunks: Buffer[] = [];
+      reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
       let total = 0;
-      try {
-        while (true) {
-          const next = await waitForDownloadStage(reader.read(), controller.signal);
-          if (next.done) break;
-          const chunk = Buffer.from(next.value);
-          total += chunk.byteLength;
-          if (total > this.maxBytes) {
-            throw new Error(`provider result exceeds the ${this.maxBytes}-byte limit`);
-          }
-          chunks.push(chunk);
-        }
-      } finally {
-        reader.releaseLock();
+      for (;;) {
+        const { done, value } = await waitForDownloadStage(reader.read(), controller.signal);
+        if (done) break;
+        if (!value) continue;
+        this.assertWithinLimit(total + value.byteLength);
+        chunks.push(value);
+        total += value.byteLength;
       }
-      if (requiresHttpsCandidate && total === 0)
+      if (requiresHttpsCandidate && total === 0) {
         throw new Error('provider returned an empty result payload');
+      }
       return { content: Buffer.concat(chunks, total), mimeType };
     } catch (error) {
       if (!requiresHttpsCandidate || error instanceof ResultUrlUnavailableError) throw error;
@@ -781,7 +930,165 @@ export class PrismaResultAssetArchiver {
       throw failure;
     } finally {
       controller.abort();
-      void response?.body?.cancel().catch(() => undefined);
+      try {
+        if (reader) {
+          void reader.cancel().catch(() => undefined);
+        } else {
+          void response?.body?.cancel().catch(() => undefined);
+        }
+      } catch {
+        // 响应体可能已读取并锁定，取消只用于释放未读响应。
+      }
+      clearTimeout(timeout);
+      cancellationSignal?.removeEventListener('abort', cancelDownload);
+    }
+  }
+
+  /**
+   * 流式下载结果到临时文件并计算摘要与大小；未配置大小上限时不限制体积。
+   * HTTP 图片/视频失败返回脱敏诊断，保留地址失效类型和取消名称。
+   */
+  private async downloadToFile(
+    url: string | undefined,
+    mediaType: MediaType,
+    headers: Record<string, string> | undefined,
+    cancellationSignal?: AbortSignal,
+  ): Promise<DownloadedResultFile | undefined> {
+    if (!url) return undefined;
+    throwIfCancelled(cancellationSignal);
+    const requiresHttpsCandidate =
+      !this.allowHttp &&
+      (mediaType === 'image' || mediaType === 'video') &&
+      /^http:\/\//i.test(url);
+    const controller = new AbortController();
+    const cancelDownload = () => controller.abort(cancellationSignal?.reason);
+    cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
+    const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+    let response: Response | undefined;
+    let directory: string | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const parsed = validateRemoteUrl(
+        requiresHttpsCandidate ? createHttpsMediaCandidate(url, mediaType) : url,
+        this.allowHttp,
+      );
+      await waitForDownloadStage(
+        assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost),
+        controller.signal,
+      );
+      throwIfCancelled(cancellationSignal);
+      response = await waitForDownloadStage(
+        Promise.resolve()
+          .then(() =>
+            this.fetchImpl(parsed.toString(), {
+              signal: controller.signal,
+              redirect: 'error',
+              ...(headers ? { headers } : {}),
+            }),
+          )
+          .catch(() => {
+            throw new Error('provider result download transport failed');
+          }),
+        controller.signal,
+      );
+      if (!response.ok) {
+        if (mediaType === 'video' && [401, 403, 404, 410].includes(response.status)) {
+          throw new ResultUrlUnavailableError(response.status);
+        }
+        throw new Error(`provider result download failed (${response.status})`);
+      }
+      const receivedMime = response.headers
+        .get('content-type')
+        ?.split(';', 1)[0]
+        ?.trim()
+        .toLowerCase();
+      const mimeType =
+        receivedMime && receivedMime !== 'application/octet-stream' ? receivedMime : undefined;
+      if (
+        mimeType &&
+        !mimeType.startsWith(`${mediaType}/`) &&
+        !(mediaType === 'text' && mimeType === 'application/json')
+      ) {
+        throw new Error('provider result download media type mismatch');
+      }
+      const contentLength = Number(response.headers.get('content-length') ?? 0);
+      if (Number.isFinite(contentLength) && contentLength > 0) {
+        this.assertWithinLimit(contentLength);
+      }
+      directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-worker-archive-'));
+      const filePath = join(directory, 'content.bin');
+      if (!response.body || typeof response.body.getReader !== 'function') {
+        const bytes = Buffer.from(
+          await waitForDownloadStage(response.arrayBuffer(), controller.signal),
+        );
+        if (requiresHttpsCandidate && bytes.byteLength === 0) {
+          throw new Error('provider returned an empty result payload');
+        }
+        this.assertWithinLimit(bytes.byteLength);
+        await writeFile(filePath, bytes, { flag: 'wx' });
+        return {
+          directory,
+          filePath,
+          sizeBytes: bytes.byteLength,
+          sha256: sha256Hex(bytes),
+          mimeType,
+        };
+      }
+      this.assertWithinLimit(contentLength);
+      reader = response.body.getReader();
+      const fileHandle = await open(filePath, 'wx');
+      let position = 0;
+      try {
+        for (;;) {
+          const { done, value } = await waitForDownloadStage(reader.read(), controller.signal);
+          if (done) break;
+          if (!value) continue;
+          const chunk = Buffer.from(value);
+          const { bytesWritten } = await waitForDownloadStage(
+            fileHandle.write(chunk, 0, chunk.byteLength, position),
+            controller.signal,
+          );
+          position += bytesWritten;
+        }
+      } finally {
+        await fileHandle.close().catch(() => undefined);
+        await reader.cancel().catch(() => undefined);
+      }
+      const { size } = await stat(filePath);
+      const sha256 = await sha256File(filePath);
+      if (requiresHttpsCandidate && size === 0) {
+        throw new Error('provider returned an empty result payload');
+      }
+      this.assertWithinLimit(size);
+      return { directory, filePath, sizeBytes: size, sha256, mimeType };
+    } catch (error) {
+      await reader?.cancel().catch(() => undefined);
+      if (directory) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+      if (!requiresHttpsCandidate || error instanceof ResultUrlUnavailableError) throw error;
+      const failure = new Error(
+        mediaType === 'video'
+          ? '上游返回HTTP视频地址且HTTPS安全读取失败'
+          : '上游返回HTTP图片地址且HTTPS安全读取失败',
+      );
+      if (
+        error instanceof Error &&
+        (error.name === 'AbortError' || error.name === 'WorkerCancellationError')
+      ) {
+        failure.name = error.name;
+      }
+      throw failure;
+    } finally {
+      controller.abort();
+      try {
+        if (reader) {
+          // 读取端取消会触发底层 ReadableStream 的 cancel 回调。
+          void reader.cancel().catch(() => undefined);
+        } else {
+          void response?.body?.cancel().catch(() => undefined);
+        }
+      } catch {
+        // 请求体可能已被读取并锁定，取消只用于释放未读响应。
+      }
       clearTimeout(timeout);
       cancellationSignal?.removeEventListener('abort', cancelDownload);
     }
@@ -850,6 +1157,27 @@ function waitForDownloadStage<Value>(pending: Promise<Value>, signal: AbortSigna
   });
 }
 
+function sha256Hex(value: Buffer | string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** 流式读取文件摘要，避免把大体积结果整体载入内存。 */
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest('hex');
+}
+
+/** 归一 fetch 初始化器里的 headers，保持原样传给受信任的下载适配器。 */
+function requestHeaders(init: RequestInit['headers']): Record<string, string> | undefined {
+  if (!init) return undefined;
+  const headers = new Headers(init);
+  const entries = Array.from(headers.entries());
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 /** Build a production archiver from the same environment variables as the API. */
 export function createResultAssetArchiverFromEnvironment(): {
   resultArchiver?: ResultAssetArchiver;
@@ -870,7 +1198,6 @@ export function createResultAssetArchiverFromEnvironment(): {
     : new WorkerFileBlobStore(process.env.ASSET_STORAGE_ROOT ?? '.data/assets');
   const archiver = new PrismaResultAssetArchiver(prisma, {
     blobStore,
-    maxBytes: Number(process.env.RESULT_ASSET_MAX_BYTES ?? DEFAULT_MAX_BYTES),
     fetchTimeoutMs: Number(process.env.NEW_API_TIMEOUT_MS ?? DEFAULT_FETCH_TIMEOUT_MS),
     allowHttp: process.env.NODE_ENV !== 'production',
     ...(process.env.FFPROBE_ENABLED === 'true' || process.env.FFPROBE_PATH
@@ -1158,12 +1485,14 @@ function fetchWithPublicDns(
   url: URL,
   signal: AbortSignal | undefined,
   lookupHost: PublicHostLookup,
+  headers?: Record<string, string>,
 ): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
     const request = (url.protocol === 'https:' ? requestHttps : requestHttp)(
       url,
       {
         method: 'GET',
+        ...(headers ? { headers } : {}),
         signal,
         lookup(hostname, options, callback) {
           void lookupHost(hostname, { all: true, verbatim: true }).then(

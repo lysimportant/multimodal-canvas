@@ -1709,8 +1709,13 @@ export type NewApiVideoProviderOptions = NewApiProviderOptions & {
   pollIntervalMs?: number;
   /** 仅供隔离测试显式限制查询次数；生产默认持续查询，直到任务终态或主动取消。 */
   maxPollAttempts?: number;
-  /** 同源受保护视频的下载上限，单位字节；默认 50 MiB。 */
+  /** 同源受保护视频的下载上限，单位字节；默认 50 MiB；仅对 `inline` 交付生效。 */
   maxContentBytes?: number;
+  /**
+   * 受保护视频的交付方式：`inline` 下载到内存并返回 base64（默认，兼容内存执行器）；
+   * `url` 只返回受保护的源地址，由归档器带凭据流式下载，避免大视频受内存上限限制。
+   */
+  videoContentDelivery?: 'inline' | 'url';
 };
 
 /** 已解析的视频查询结果；媒体元数据只保留已确认的数值字段。 */
@@ -1746,6 +1751,7 @@ export class NewApiVideoProvider {
   private readonly maxPollAttempts?: number;
   private readonly maxContentBytes: number;
   private readonly maxResponseBytes: number;
+  private readonly videoContentDelivery: 'inline' | 'url';
   /** 新任务默认合同，不覆盖历史任务的冻结合同。 */
   private readonly videoContract: NewApiVideoContract;
 
@@ -1780,6 +1786,7 @@ export class NewApiVideoProvider {
       defaultResponseContentLimit,
       'maxResponseBytes',
     );
+    this.videoContentDelivery = options.videoContentDelivery ?? 'inline';
   }
 
   /**
@@ -2331,6 +2338,17 @@ export class NewApiVideoProvider {
     if (rawUrl) {
       const dataUrl = parseDataUrl(rawUrl);
       if (dataUrl?.mimeType.startsWith('video/')) {
+        if (this.videoContentDelivery === 'url') {
+          // 统一走平台受保护内容地址，由归档器流式下载，避免大体积结果进入内存。
+          return {
+            mediaType: 'video',
+            kind: 'url',
+            url: this.protectedContentUrl(platformJobId),
+            mimeType: dataUrl.mimeType,
+            format: formatFromMimeType(dataUrl.mimeType),
+          };
+        }
+        // Data URL 内容已经在轮询响应里读到内存（受 maxResponseBytes 约束），按内联处理。
         const base64 = validatedMediaBase64(dataUrl.base64);
         if (atob(base64).length > this.maxContentBytes) {
           throw new NewApiProviderError('New API 视频内容超过归档大小限制', {
@@ -2362,6 +2380,19 @@ export class NewApiVideoProvider {
       }
     }
 
+    if (this.videoContentDelivery === 'url') {
+      const mimeType = poll.outputFormat
+        ? videoMimeTypeFromFormat(poll.outputFormat)
+        : 'video/mp4';
+      return {
+        mediaType: 'video',
+        kind: 'url',
+        url: this.protectedContentUrl(platformJobId, rawUrl),
+        mimeType,
+        format: poll.outputFormat ?? formatFromMimeType(mimeType),
+      };
+    }
+
     const contentUrl = this.protectedContentUrl(platformJobId, rawUrl);
     const content = await this.requestBinary(contentUrl, signal, platformJobId);
     return {
@@ -2391,6 +2422,18 @@ export class NewApiVideoProvider {
     } catch {
       return true;
     }
+  }
+
+  /**
+   * 归档器下载受保护内容时所需的请求头；跨源地址不返回凭据，避免泄露 Bearer Token。
+   */
+  archiveContentHeaders(url: string): Record<string, string> | undefined {
+    try {
+      if (new URL(url).origin !== new URL(this.baseUrl).origin) return undefined;
+    } catch {
+      return undefined;
+    }
+    return { authorization: `Bearer ${this.apiKey}` };
   }
 
   /** 在响应体读取完成前保留超时与取消监听，返回已解析的平台响应及请求 ID。 */

@@ -279,6 +279,8 @@ type WorkerCancellationMonitor = {
 
 type ProviderExecutor = {
   execute(request: WorkerProviderRequest): Promise<RunResult | ProviderExecution>;
+  /** 受保护的结果地址需要 Provider 凭据；仅内置 Provider 实现，归档下载时短暂使用。 */
+  archiveContentHeaders?(url: string): Record<string, string> | undefined;
 };
 
 export type DatabaseRunIdResolver = (
@@ -2329,6 +2331,42 @@ export function createRunWorker(options: {
           let archiveInput = output
             ? providerOutputToArchiveInput(output, executionResult.mediaType)
             : undefined;
+          /**
+           * 受保护的视频内容地址需要 Provider 凭据：归档器流式下载时附上 Bearer。
+           * 请求头只在本次归档调用内使用，不写入任何持久记录。
+           */
+          const addArchiveContentHeaders = async (
+            currentArchiveInput: ResultAssetArchiveInput | undefined,
+            currentOutput: ProviderOutput | undefined,
+          ): Promise<ResultAssetArchiveInput | undefined> => {
+            if (
+              !currentArchiveInput ||
+              !currentOutput ||
+              currentOutput.kind !== 'url' ||
+              node.data.mediaType !== 'video' ||
+              currentData.provider !== 'newapi'
+            ) {
+              return currentArchiveInput;
+            }
+            let headerProvider = provider;
+            if (!headerProvider) {
+              try {
+                headerProvider = await getNewApiProvider(
+                  true,
+                  nodeSnapshot,
+                  cancellationSignal,
+                  executionContract,
+                );
+              } catch {
+                headerProvider = undefined;
+              }
+            }
+            const headers = headerProvider?.archiveContentHeaders?.(currentOutput.url);
+            return headers
+              ? { ...currentArchiveInput, contentHeaders: headers }
+              : currentArchiveInput;
+          };
+          archiveInput = await addArchiveContentHeaders(archiveInput, output);
           if (!output || !archiveInput) {
             throw new Error(`provider returned no archivable output for workflow node ${node.id}`);
           }
@@ -2429,6 +2467,7 @@ export function createRunWorker(options: {
               }
               output = normalizeProviderOutput(refreshed.output, 'video');
               archiveInput = output ? providerOutputToArchiveInput(output, 'video') : undefined;
+              archiveInput = await addArchiveContentHeaders(archiveInput, output);
               if (!output || !archiveInput) throw new Error('原视频只读恢复未返回可归档内容');
               if (await cancellationRequested()) throw workerCancellationError();
               asset = await archiveCurrentOutput();
@@ -3717,6 +3756,7 @@ function createNewApiProviders(
     maxResponseBytes: responseMaxBytes,
     pollIntervalMs: Number(process.env.NEW_API_VIDEO_POLL_INTERVAL_MS ?? 2_000),
     maxContentBytes: Number(process.env.NEW_API_VIDEO_MAX_CONTENT_BYTES ?? 50 * 1024 * 1024),
+    videoContentDelivery: 'url',
     awaitSubmissionOnCancel: true,
     requireHttps: process.env.NODE_ENV === 'production',
   });
