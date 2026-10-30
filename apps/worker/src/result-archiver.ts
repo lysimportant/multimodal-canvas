@@ -27,6 +27,7 @@ import type { ResultAssetArchiver } from './index';
 import type { ResultAssetArchiveInput, ProviderOutput } from './result-output';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** 下载阶段的空闲超时：只有长时间没有任何进展才中止，正常的大文件传输不会被总时长截断。 */
 const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
 const DEFAULT_S3_TIMEOUT_MS = 300_000;
 const DEFAULT_S3_DELETE_TIMEOUT_MS = 30_000;
@@ -412,6 +413,10 @@ export type PrismaResultAssetArchiverOptions = {
   fetchImpl?: typeof fetch;
   /** 可选归档大小上限（字节）；未配置表示不限制，容量由磁盘/对象存储决定。 */
   maxBytes?: number;
+  /**
+   * 下载空闲超时（毫秒）：连续这么久没有任何进展才中止，不限制总下载时长。
+   * 与 Provider 请求超时会话分属两套语义，生产由 RESULT_ASSET_DOWNLOAD_TIMEOUT_MS 配置。
+   */
   fetchTimeoutMs?: number;
   /** 仅本地开发/测试允许明文 HTTP；关闭时图片和视频可尝试默认端口的 HTTPS 候选。 */
   allowHttp?: boolean;
@@ -840,7 +845,7 @@ export class PrismaResultAssetArchiver {
     const controller = new AbortController();
     const cancelDownload = () => controller.abort(cancellationSignal?.reason);
     cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
-    const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+    const watchdog = createIdleWatchdog(this.fetchTimeoutMs, controller);
     let response: Response | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
@@ -852,6 +857,7 @@ export class PrismaResultAssetArchiver {
         assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost),
         controller.signal,
       );
+      watchdog.touch();
       throwIfCancelled(cancellationSignal);
       response = await waitForDownloadStage(
         Promise.resolve()
@@ -867,6 +873,7 @@ export class PrismaResultAssetArchiver {
           }),
         controller.signal,
       );
+      watchdog.touch();
       if (!response.ok) {
         if (mediaType === 'video' && [401, 403, 404, 410].includes(response.status)) {
           throw new ResultUrlUnavailableError(response.status);
@@ -908,6 +915,7 @@ export class PrismaResultAssetArchiver {
         const { done, value } = await waitForDownloadStage(reader.read(), controller.signal);
         if (done) break;
         if (!value) continue;
+        watchdog.touch();
         this.assertWithinLimit(total + value.byteLength);
         chunks.push(value);
         total += value.byteLength;
@@ -941,7 +949,7 @@ export class PrismaResultAssetArchiver {
       } catch {
         // 响应体可能已读取并锁定，取消只用于释放未读响应。
       }
-      clearTimeout(timeout);
+      watchdog.dispose();
       cancellationSignal?.removeEventListener('abort', cancelDownload);
     }
   }
@@ -965,7 +973,7 @@ export class PrismaResultAssetArchiver {
     const controller = new AbortController();
     const cancelDownload = () => controller.abort(cancellationSignal?.reason);
     cancellationSignal?.addEventListener('abort', cancelDownload, { once: true });
-    const timeout = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+    const watchdog = createIdleWatchdog(this.fetchTimeoutMs, controller);
     let response: Response | undefined;
     let directory: string | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -978,6 +986,7 @@ export class PrismaResultAssetArchiver {
         assertPublicResolvedHost(parsed.hostname, this.strictDns, this.lookupHost),
         controller.signal,
       );
+      watchdog.touch();
       throwIfCancelled(cancellationSignal);
       response = await waitForDownloadStage(
         Promise.resolve()
@@ -993,6 +1002,7 @@ export class PrismaResultAssetArchiver {
           }),
         controller.signal,
       );
+      watchdog.touch();
       if (!response.ok) {
         if (mediaType === 'video' && [401, 403, 404, 410].includes(response.status)) {
           throw new ResultUrlUnavailableError(response.status);
@@ -1045,6 +1055,7 @@ export class PrismaResultAssetArchiver {
           const { done, value } = await waitForDownloadStage(reader.read(), controller.signal);
           if (done) break;
           if (!value) continue;
+          watchdog.touch();
           const chunk = Buffer.from(value);
           const { bytesWritten } = await waitForDownloadStage(
             fileHandle.write(chunk, 0, chunk.byteLength, position),
@@ -1091,7 +1102,7 @@ export class PrismaResultAssetArchiver {
       } catch {
         // 请求体可能已被读取并锁定，取消只用于释放未读响应。
       }
-      clearTimeout(timeout);
+      watchdog.dispose();
       cancellationSignal?.removeEventListener('abort', cancelDownload);
     }
   }
@@ -1142,6 +1153,32 @@ export class PrismaResultAssetArchiver {
       return { metadataStatus: 'failed' };
     }
   }
+}
+
+/**
+ * 空闲看门狗：每次有进展（DNS 完成、收到响应头、读到数据块）就重置计时，
+ * 只有连续这么久没有任何进展才中止下载。这样大体积结果不会被总时长误杀，
+ * 而真正卡死的连接仍会被及时终止。
+ */
+function createIdleWatchdog(
+  idleMs: number,
+  controller: AbortController,
+): { touch: () => void; dispose: () => void } {
+  let timer: NodeJS.Timeout | undefined;
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), idleMs);
+  };
+  arm();
+  return {
+    touch: () => {
+      if (!controller.signal.aborted) arm();
+    },
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
 }
 
 /** 让 DNS、响应头及流读取共享下载截止时间，取消发生后不再等待不响应的适配器。 */
@@ -1200,7 +1237,11 @@ export function createResultAssetArchiverFromEnvironment(): {
     : new WorkerFileBlobStore(process.env.ASSET_STORAGE_ROOT ?? '.data/assets');
   const archiver = new PrismaResultAssetArchiver(prisma, {
     blobStore,
-    fetchTimeoutMs: Number(process.env.NEW_API_TIMEOUT_MS ?? DEFAULT_FETCH_TIMEOUT_MS),
+    // 归档下载的空闲超时独立于 Provider 请求超时：大体积视频可能传输很久，
+    // 但只要仍有进展就不应被总时长截断；连续这么久的完全停滞才判定失败。
+    fetchTimeoutMs: Number(
+      process.env.RESULT_ASSET_DOWNLOAD_TIMEOUT_MS?.trim() || DEFAULT_FETCH_TIMEOUT_MS,
+    ),
     allowHttp: process.env.NODE_ENV !== 'production',
     ...(process.env.FFPROBE_ENABLED === 'true' || process.env.FFPROBE_PATH
       ? {

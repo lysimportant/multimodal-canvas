@@ -982,6 +982,31 @@ describe('PrismaResultAssetArchiver', () => {
       },
     );
 
+    it('慢速下载只要有进展就不会被空闲超时中止', async () => {
+      /** 总耗时远超空闲阈值，但每段都有数据进展，因此不应被中止。 */
+      const fixture = setup({ fetchTimeoutMs: 500 });
+      let stream!: ReadableStreamDefaultController<Uint8Array>;
+      fixture.fetchImpl.mockResolvedValue(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              stream = controller;
+            },
+          }),
+          { headers: { 'content-type': mimeType } },
+        ),
+      );
+      const pending = fixture.archive();
+      await vi.waitFor(() => expect(fixture.fetchImpl).toHaveBeenCalledOnce());
+      for (let index = 0; index < 6; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        stream.enqueue(new Uint8Array([index + 1]));
+      }
+      stream.close();
+      await expect(pending).resolves.toMatchObject({ mimeType, sizeBytes: 6 });
+      expect(fixture.blob.puts).toHaveLength(1);
+    });
+
     it('production 默认配置也仅下载 HTTPS，不需要新增环境开关', async () => {
       vi.stubEnv('NODE_ENV', 'production');
       try {
