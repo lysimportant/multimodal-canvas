@@ -66,17 +66,18 @@ export function shouldApplyRunUpdate(current: RunRecord | undefined, incoming: R
   return statusRank[incoming.status] >= statusRank[current.status];
 }
 
-/** A result only makes a node current when it matches the saved canvas snapshot. */
-export function shouldClearNodeStale(
-  run: RunRecord,
-  canvasRevision: number,
-  hasUnsavedCanvasChanges: boolean,
-): boolean {
-  return (
-    run.status === 'succeeded' &&
-    !hasUnsavedCanvasChanges &&
-    run.snapshot.canvasRevision >= canvasRevision
-  );
+/**
+ * 成功结果是否应清掉节点的「待更新」提示。
+ *
+ * `stale` 只是会话内的派生提示：一旦该节点最近的运行成功落地，它的展示结果就是
+ * 这次执行的结果，上游改动带来的待更新状态也随之结束。早期实现还要求
+ * `run.snapshot.canvasRevision >= 当前画布 revision`，但画布 revision 会因为任意
+ * 无关编辑（移动节点、改其它节点、甚至只是保存）而前进，导致成功结果永远清不掉徽标
+ * （线上项目 9fe6f9d2 即如此）。画布还有未保存改动时仍不清除，避免把「结果对应旧输入」
+ * 误标成已更新。
+ */
+export function shouldClearNodeStale(run: RunRecord, hasUnsavedCanvasChanges: boolean): boolean {
+  return run.status === 'succeeded' && !hasUnsavedCanvasChanges;
 }
 
 function timestamp(value: string): number {

@@ -84,7 +84,7 @@ describe('画布持久化快照复用', () => {
     expect(source.nodes[0].data.prompt).toBe('合成提示词');
   });
 
-  it('选中、测量和运行进度复用内容，但节点编辑、边顺序与组变化仍判脏', () => {
+  it('选中、测量、运行进度与 stale 复用内容，但节点编辑、边顺序与组变化仍判脏', () => {
     const source = canvas();
     const cache = new CanvasPersistence();
     const first = cache.capture(source);
@@ -94,11 +94,13 @@ describe('画布持久化快照复用', () => {
         ...node,
         selected: false,
         measured: { width: 999, height: 999 },
-        data: { ...node.data, runProgress: 80 },
+        data: { ...node.data, runProgress: 80, stale: true },
       })),
     };
     expect(cache.capture(runtime)).toBe(first);
     expect(first.matches(runtime)).toBe(true);
+    // stale 只是运行时派生提示：既不判脏，也不会被写进文档随同步永久留存。
+    expect(JSON.parse(first.serialize(1)).nodes[0].data).not.toHaveProperty('stale');
     for (const changed of [
       { ...source, nodes: source.nodes.slice(1) },
       { ...source, nodes: source.nodes.map((node) => ({ ...node, width: 400 })) },

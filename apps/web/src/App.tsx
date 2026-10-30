@@ -4235,11 +4235,7 @@ function WorkspaceApp({
       }
       const hasResultAsset = Boolean(run.result?.asset);
       setNodes((current) => {
-        const clearStale = shouldClearNodeStale(
-          run,
-          canvasRevisionRef.current,
-          canvasDirtyRef.current,
-        );
+        const clearStale = shouldClearNodeStale(run, canvasDirtyRef.current);
         const updated = current.map((node) =>
           node.id === nodeId && (!node.data.manualOutput || node.data.manualOutputRunId === run.id)
             ? {

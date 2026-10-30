@@ -8,15 +8,21 @@ export type CanvasSnapshot = {
   groups: CanvasGroup[];
 };
 
-/** 与 toCanvasDocument 一致的运行时字段，不参与文档判等或保存。 */
+/**
+ * 与 toCanvasDocument 一致的运行时字段，不参与文档判等或保存。
+ * `stale` 只表示本次会话里上游内容改动使既有结果待更新，属于派生提示；
+ * 一旦写进画布文档就会随同步永久留存，因此同样只存在于运行时。
+ */
 const CANVAS_RUNTIME_DATA_KEYS: ReadonlySet<string> = new Set([
   'runStatus',
   'runId',
   'runProgress',
   'runError',
+  'upstreamTaskId',
   'nodeTiming',
   'resultTiming',
   'resultAsset',
+  'stale',
 ]);
 
 /** 只比较节点持久化数据的第一层；嵌套编辑由不可变引用体现，不遍历提示词或资源正文。 */

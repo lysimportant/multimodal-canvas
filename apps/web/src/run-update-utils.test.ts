@@ -76,7 +76,7 @@ describe('run update ordering', () => {
       const merged = mergeRunUpdate(current, incoming satisfies RunUpdate);
 
       expect(merged?.snapshot.inputs).toEqual(current.snapshot.inputs);
-      expect(() => shouldClearNodeStale(merged!, 3, false)).not.toThrow();
+      expect(() => shouldClearNodeStale(merged!, false)).not.toThrow();
     },
   );
 
@@ -112,14 +112,21 @@ describe('run update ordering', () => {
     ).toBe(false);
   });
 
-  it('only clears stale for a successful result from the current saved revision', () => {
+  it('clears stale as soon as the node run succeeds, regardless of the saved revision', () => {
     const succeeded = run({
       status: 'succeeded',
-      snapshot: { ...run().snapshot, canvasRevision: 4 },
+      snapshot: { ...run().snapshot, canvasRevision: 64 },
     });
-    expect(shouldClearNodeStale(succeeded, 4, false)).toBe(true);
-    expect(shouldClearNodeStale(succeeded, 5, false)).toBe(false);
-    expect(shouldClearNodeStale(succeeded, 4, true)).toBe(false);
-    expect(shouldClearNodeStale(run({ status: 'failed' }), 3, false)).toBe(false);
+    expect(shouldClearNodeStale(succeeded, false)).toBe(true);
+    // 画布 revision 因无关编辑前进时也不能把成功结果判成过期（线上项目 9fe6f9d2 的回归点）。
+    expect(
+      shouldClearNodeStale(
+        run({ status: 'succeeded', snapshot: { ...run().snapshot, canvasRevision: 1 } }),
+        false,
+      ),
+    ).toBe(true);
+    expect(shouldClearNodeStale(succeeded, true)).toBe(false);
+    expect(shouldClearNodeStale(run({ status: 'failed' }), false)).toBe(false);
+    expect(shouldClearNodeStale(run({ status: 'running' }), false)).toBe(false);
   });
 });

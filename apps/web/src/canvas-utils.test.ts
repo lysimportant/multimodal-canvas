@@ -76,6 +76,19 @@ describe('stale propagation', () => {
       data: { manualOutput: true, assetId: 'manual-asset', mode: 'generate' },
     });
   });
+  it('keeps stale out of the canvas document and drops legacy persisted values', () => {
+    const nodes = [flowNode('a', 'text', { stale: true }), flowNode('b', 'text')];
+    const saved = toCanvasDocument(nodes, [], 3);
+    expect(saved.nodes[0].data).not.toHaveProperty('stale');
+    // 旧文档里已经存下来的 stale 不应在读取时复活成徽标。
+    const legacy = canvasDocumentSchema.parse({
+      ...saved,
+      nodes: saved.nodes.map((node, index) =>
+        index ? node : { ...node, data: { ...node.data, stale: true } },
+      ),
+    });
+    expect(fromCanvasDocument(legacy).nodes[0].data).not.toHaveProperty('stale');
+  });
   it('marks all downstream nodes without clearing existing results', () => {
     const nodes = [
       flowNode('source'),

@@ -208,15 +208,17 @@ export function fromCanvasDocument(document: CanvasDocument): {
   groups: CanvasGroup[];
 } {
   return {
-    nodes: document.nodes.map((node) =>
-      withNodeAutoGrowthLimit({
+    nodes: document.nodes.map((node) => {
+      // 旧文档可能残留 stale 标记；它属于运行时提示，读取时直接丢弃，避免徽标随同步永久回流。
+      const { stale: _stale, ...data } = node.data;
+      return withNodeAutoGrowthLimit({
         ...node,
         data: {
-          ...node.data,
-          mimeType: node.data.mimeType ?? 'application/octet-stream',
+          ...data,
+          mimeType: data.mimeType ?? 'application/octet-stream',
         },
-      } as AssetFlowNode),
-    ),
+      } as AssetFlowNode);
+    }),
     edges: document.edges.map((edge) => ({
       id: edge.id,
       source: edge.sourceNodeId,
@@ -251,6 +253,8 @@ export function toCanvasDocument(
         nodeTiming: _nodeTiming,
         resultTiming: _resultTiming,
         resultAsset: _resultAsset,
+        // stale 只是「既有结果相对上游已过期」的运行时提示，写进文档会随同步永久留存。
+        stale: _stale,
         modelAlias,
         ...savedData
       } = data;
