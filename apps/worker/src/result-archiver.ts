@@ -476,7 +476,9 @@ export class PrismaResultAssetArchiver {
     this.contentUrl =
       options.contentUrl ?? ((assetId) => `/v1/assets/${assetId}/versions/1/content`);
     this.maxBytes =
-      options.maxBytes === undefined ? undefined : positiveLimit(options.maxBytes, 'max asset size');
+      options.maxBytes === undefined
+        ? undefined
+        : positiveLimit(options.maxBytes, 'max asset size');
     this.fetchTimeoutMs = positiveLimit(
       options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
       'asset fetch timeout',

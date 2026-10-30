@@ -103,10 +103,13 @@ describe.each(['base64', 'url'] as const)('图片原始输出归档（%s）', (k
       } as unknown as PrismaClient;
       const put = vi.fn(async (_key: string, _content: Buffer, _mimeType?: string) => {});
       const metadataExtractor = {
-        extract: vi.fn(async ({ content }: { content: Buffer }) => ({
-          width: content.readUInt32BE(16),
-          height: content.readUInt32BE(20),
-        })),
+        extract: vi.fn(async (input: { content?: Buffer }) => {
+          if (!input.content) throw new Error('expected buffered image content');
+          return {
+            width: input.content.readUInt32BE(16),
+            height: input.content.readUInt32BE(20),
+          };
+        }),
       };
       const archiver = new PrismaResultAssetArchiver(prisma, {
         blobStore: { put, delete: vi.fn(async () => {}) },

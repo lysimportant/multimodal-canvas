@@ -2381,9 +2381,7 @@ export class NewApiVideoProvider {
     }
 
     if (this.videoContentDelivery === 'url') {
-      const mimeType = poll.outputFormat
-        ? videoMimeTypeFromFormat(poll.outputFormat)
-        : 'video/mp4';
+      const mimeType = poll.outputFormat ? videoMimeTypeFromFormat(poll.outputFormat) : 'video/mp4';
       return {
         mediaType: 'video',
         kind: 'url',
