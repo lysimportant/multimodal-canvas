@@ -1,0 +1,90 @@
+.local-agent-chat-panel .ant-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.local-agent-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.local-agent-setup .ant-typography {
+  margin: 0;
+}
+
+.local-agent-cmd {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.local-agent-setup-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.local-agent-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+}
+
+.local-agent-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.local-agent-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 90%;
+}
+
+.local-agent-msg--user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.local-agent-msg--agent {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.local-agent-msg-content {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--ant-color-fill-secondary, #f5f5f5);
+}
+
+.local-agent-msg--user .local-agent-msg-content {
+  background: var(--ant-color-primary-bg, #e6f4ff);
+}
+
+.local-agent-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-agent-send-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

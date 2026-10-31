@@ -4,6 +4,7 @@ import {
 } from './project-resource-search';
 import { useCanvasDraft } from './use-canvas-draft';
 import { AgentConnectionPanel } from './workspace/AgentConnectionPanel';
+import { LocalAgentChatPanel } from './workspace/LocalAgentChatPanel';
 import { useAppNotice } from './use-app-notice';
 import { mergeRemoteCanvasRuntime, remoteCanvasMatches } from './canvas-remote-sync';
 import { CanvasHistory } from './canvas-history';
@@ -870,6 +871,8 @@ function WorkspaceApp({
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showAgentConnections, setShowAgentConnections] = useState(false);
   useEffect(() => setShowAgentConnections(false), [projectId, authUser?.id]);
+  const [showLocalAgentChat, setShowLocalAgentChat] = useState(false);
+  useEffect(() => setShowLocalAgentChat(false), [projectId, authUser?.id]);
   const isResourceCollapsed = useWorkspacePreferences((state) => state.isResourcePanelCollapsed);
   const setIsResourceCollapsed = useWorkspacePreferences(
     (state) => state.setResourcePanelCollapsed,
@@ -5900,7 +5903,7 @@ function WorkspaceApp({
             id="mobile-workspace-menu"
             kind="menu"
             restoreFocusRef={
-              showCommandPalette || showSettings || showAgentConnections
+              showCommandPalette || showSettings || showAgentConnections || showLocalAgentChat
                 ? undefined
                 : mobileMenuTriggerRef
             }
@@ -5995,6 +5998,19 @@ function WorkspaceApp({
                 }}
               >
                 Agent
+              </UiButton>
+              <UiButton
+                type="button"
+                className="icon-button"
+                aria-label="打开本地 Agent 聊天"
+                title="本地 Agent 聊天"
+                disabled={!isCanvasReady || isProjectLoading || !authUser}
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  setShowLocalAgentChat(true);
+                }}
+              >
+                本地 Agent
               </UiButton>
               <UiButton
                 type="button"
@@ -6122,6 +6138,14 @@ function WorkspaceApp({
             projectId={projectId}
             open={showAgentConnections}
             onClose={() => setShowAgentConnections(false)}
+          />
+        ) : null}
+        {projectId ? (
+          <LocalAgentChatPanel
+            projectId={projectId}
+            open={showLocalAgentChat}
+            onClose={() => setShowLocalAgentChat(false)}
+            saveCanvas={saveCanvas}
           />
         ) : null}
 

@@ -20,6 +20,8 @@ uploads/
 .local-tests/
 .local-deploy/
 *.log
+# 本地联调生成的 MCP 配置，包含连接令牌
+canvas-mcp.cordis.yml
 
 # IDE and OS files
 .idea/
