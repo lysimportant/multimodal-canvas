@@ -91,10 +91,10 @@ npx prettier --check <本轮改动与新增文件>        # 通过
 
 ## 六、提交
 
-本轮改动尚未提交。工作区变更：
+已提交 `571e627` feat(agent): 本地 Agent 改为浏览器直连本机桥接，并推送到 `origin`（GitHub）与 `gitee`。该提交包含：
 
-- 修改：`packages/bridge/src/index.ts`、`packages/bridge/package.json`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,css,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`
-- 新增：`packages/bridge/test/local-agent.test.mjs`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`、本文
+- 修改：`packages/bridge/src/index.ts`、`packages/bridge/package.json`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,css,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、`docs/canvas-agent-mcp.md`、本文
+- 新增：`packages/bridge/test/local-agent.test.mjs`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`
 
 历史提交（中继模式阶段）：
 
