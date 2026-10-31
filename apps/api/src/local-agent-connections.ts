@@ -8,7 +8,8 @@ type LocalEntry = {
   token: string;
   connection: LocalAgentConnection;
   listener: FastifyInstance;
-  timer: ReturnType<typeof setTimeout>;
+  /** 长期连接无到期计时器，API 关闭或停止时释放端口。 */
+  timer?: ReturnType<typeof setTimeout>;
 };
 
 function loopback(address: string | undefined): boolean {
@@ -184,15 +185,18 @@ export class LocalAgentConnections {
       authority = new URL(address).host;
       if (this.closing) throw new Error('Local MCP service is closing');
       const local = { ...connection, mcpUrl: `${address}/mcp` };
-      const timer = setTimeout(
-        () => {
-          void this.remove(connection.id).catch(() => {
-            this.app.log.warn({ code: 'local_mcp_cleanup_failed' }, '清理到期本地连接失败');
-          });
-        },
-        Math.max(0, Date.parse(connection.expiresAt) - Date.now()),
-      );
-      timer.unref();
+      const timer =
+        connection.expiresAt === null
+          ? undefined
+          : setTimeout(
+              () => {
+                void this.remove(connection.id).catch(() => {
+                  this.app.log.warn({ code: 'local_mcp_cleanup_failed' }, '清理到期本地连接失败');
+                });
+              },
+              Math.max(0, Date.parse(connection.expiresAt) - Date.now()),
+            );
+      timer?.unref();
       this.entries.set(connection.id, {
         userId: input.userId,
         token,

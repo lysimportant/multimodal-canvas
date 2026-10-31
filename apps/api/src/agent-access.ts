@@ -21,9 +21,24 @@ export type AgentConnection = {
   projectId: string;
   allowGeneration: boolean;
   createdAt: string;
-  expiresAt: string;
+  /** null 表示长期有效，停止、账号停用或撤销全部会话前一直可用。 */
+  expiresAt: string | null;
+};
+type IssueInput = {
+  userId: string;
+  projectId: string;
+  allowGeneration?: boolean;
+  /** 省略时长期有效；兼容旧客户端显式申请 1–24 小时。 */
+  expiresInHours?: number;
+  /** 仅限时连接受当前登录授权期限约束。 */
+  authorizedUntil?: Date;
 };
 export class AgentAccessConnectionLimitError extends Error {}
+
+/** 长期连接的存储到期时间；会话表要求非空到期时间。 */
+const PERMANENT_EXPIRES_AT = Date.UTC(9999, 11, 31);
+const URL_KEY_PATTERN =
+  /^([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\.([A-Za-z0-9_-]{43})$/;
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const storagePrefix = (projectId: string) => `mcp:v1:${digest(projectId)}:`;
@@ -55,13 +70,17 @@ export class AgentAccessService {
       .digest('base64url');
   }
 
-  issue(input: {
-    userId: string;
-    projectId: string;
-    allowGeneration?: boolean;
-    expiresInHours: number;
-    authorizedUntil: Date;
-  }): Promise<{ token: string; connection: AgentConnection }> {
+  private urlSignature(projectId: string, id: string) {
+    return createHmac('sha256', this.options.secret)
+      .update(`canvas-agent-url:v1:${projectId}:${id}`)
+      .digest('base64url');
+  }
+  private tokenOf(claims: AgentAccessClaims) {
+    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    return `${AGENT_TOKEN_PREFIX}${payload}.${this.sign(payload)}`;
+  }
+
+  issue(input: IssueInput): Promise<{ token: string; connection: AgentConnection }> {
     const key = JSON.stringify([input.userId, input.projectId]);
     const previous = this.issuanceQueues.get(key) ?? Promise.resolve();
     const operation = previous.then(() => this.issueScoped(input));
@@ -76,18 +95,15 @@ export class AgentAccessService {
     return operation;
   }
 
-  private async issueScoped(input: {
-    userId: string;
-    projectId: string;
-    allowGeneration?: boolean;
-    expiresInHours: number;
-    authorizedUntil: Date;
-  }): Promise<{ token: string; connection: AgentConnection }> {
+  private async issueScoped(
+    input: IssueInput,
+  ): Promise<{ token: string; connection: AgentConnection }> {
     if (!this.options.secret.trim()) throw new Error('Agent access signing key is unavailable');
     if (
-      !Number.isInteger(input.expiresInHours) ||
-      input.expiresInHours < 1 ||
-      input.expiresInHours > 24
+      input.expiresInHours !== undefined &&
+      (!Number.isInteger(input.expiresInHours) ||
+        input.expiresInHours < 1 ||
+        input.expiresInHours > 24)
     )
       throw new Error('Agent connection lifetime must be between 1 and 24 hours');
     for (const [id, expiry] of this.issued) if (expiry <= this.now()) this.issued.delete(id);
@@ -119,10 +135,13 @@ export class AgentAccessService {
       if (!user || user.status !== 'active') throw new Error('Active user required');
       if ((await this.list(input.userId, input.projectId)).length >= 20)
         throw new AgentAccessConnectionLimitError('Project agent connection limit reached');
-      const expiresAt = Math.min(
-        this.now() + input.expiresInHours * 3_600_000,
-        input.authorizedUntil.getTime(),
-      );
+      const expiresAt =
+        input.expiresInHours === undefined
+          ? PERMANENT_EXPIRES_AT
+          : Math.min(
+              this.now() + input.expiresInHours * 3_600_000,
+              input.authorizedUntil?.getTime() ?? Number.POSITIVE_INFINITY,
+            );
       if (!Number.isFinite(expiresAt) || expiresAt <= this.now())
         throw new Error('Authorization has expired');
       const claims = claimsSchema.parse({
@@ -132,8 +151,7 @@ export class AgentAccessService {
         allowGeneration: input.allowGeneration === undefined ? true : input.allowGeneration,
         expiresAt,
       });
-      const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
-      const token = `${AGENT_TOKEN_PREFIX}${payload}.${this.sign(payload)}`;
+      const token = this.tokenOf(claims);
       const session = await this.options.store.createSession({
         id: claims.id,
         userId: claims.userId,
@@ -196,6 +214,36 @@ export class AgentAccessService {
     };
   }
 
+  /** 服务器地址键由连接 ID 签名派生，不含内部令牌；API 重启或重新部署后保持不变。 */
+  urlKey(projectId: string, id: string): string {
+    return `${id}.${this.urlSignature(projectId, id)}`;
+  }
+
+  /** 由地址键还原同一连接的内部令牌；账号状态等完整校验仍由 verify 执行。 */
+  async resolveUrlKey(projectId: string, key: string): Promise<string | undefined> {
+    const match = URL_KEY_PATTERN.exec(key);
+    if (!match || !equal(match[2]!, this.urlSignature(projectId, match[1]!))) return undefined;
+    const session = await this.options.store.findSession(match[1]!);
+    const prefix = storagePrefix(projectId);
+    if (
+      !session ||
+      session.revokedAt ||
+      session.expiresAt.getTime() <= this.now() ||
+      !session.tokenHash.startsWith(prefix)
+    )
+      return undefined;
+    const claims = claimsSchema.safeParse({
+      id: session.id,
+      userId: session.userId,
+      projectId,
+      allowGeneration: session.tokenHash.slice(prefix.length, prefix.length + 1) === '1',
+      expiresAt: session.expiresAt.getTime(),
+    });
+    if (!claims.success) return undefined;
+    const token = this.tokenOf(claims.data);
+    return equal(session.tokenHash, tokenHash(claims.data, token)) ? token : undefined;
+  }
+
   async list(userId: string, projectId: string): Promise<AgentConnection[]> {
     const prefix = storagePrefix(projectId);
     return (await this.options.store.listSessions(userId))
@@ -237,7 +285,10 @@ export class AgentAccessService {
       projectId,
       allowGeneration,
       createdAt: session.createdAt.toISOString(),
-      expiresAt: session.expiresAt.toISOString(),
+      expiresAt:
+        session.expiresAt.getTime() >= PERMANENT_EXPIRES_AT
+          ? null
+          : session.expiresAt.toISOString(),
     };
   }
 }

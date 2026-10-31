@@ -231,7 +231,25 @@ describe('项目 MCP 专用访问令牌', () => {
     await expect(rotated.verify(issued.token)).resolves.toBeUndefined();
   });
 
-  it('8 小时默认申请受 authorizedUntil 限制，并在到期边界立即失效', async () => {
+  it('省略时长时长期有效，不受当前登录授权期限约束，撤销后立即失效', async () => {
+    const f = await fixture();
+    const { expiresInHours: _hours, ...input } = f.input;
+    const issued = await f.service.issue({
+      ...input,
+      authorizedUntil: new Date(f.clock.now + HOUR),
+    });
+    expect(issued.connection.expiresAt).toBeNull();
+    expect(decodedClaims(issued.token).expiresAt).toBe(Date.UTC(9999, 11, 31));
+    f.clock.now += 365 * 24 * HOUR;
+    await expect(f.service.verify(issued.token)).resolves.toBeDefined();
+    await expect(f.service.list(f.user.id, f.input.projectId)).resolves.toEqual([
+      issued.connection,
+    ]);
+    await f.service.revoke(f.user.id, f.input.projectId, issued.connection.id);
+    await expect(f.service.verify(issued.token)).resolves.toBeUndefined();
+  });
+
+  it('8 小时显式申请受 authorizedUntil 限制，并在到期边界立即失效', async () => {
     const f = await fixture();
     const authorizedUntil = new Date(f.clock.now + 3 * HOUR);
     const issued = await f.service.issue({ ...f.input, authorizedUntil });

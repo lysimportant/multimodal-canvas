@@ -16,7 +16,7 @@ import {
   AgentAccessConnectionLimitError,
   type AgentAccessClaims,
 } from './agent-access';
-import { AgentUrlConnectionLimitError, type AgentUrlConnections } from './agent-url-connections';
+import type { AgentUrlConnections } from './agent-url-connections';
 import { canvasAgentTools, executeCanvasTool } from './canvas-agent-tools';
 import { registerCanvasMcp, CanvasMcpToolError } from './canvas-mcp';
 import {
@@ -44,7 +44,8 @@ type ProjectParams = { projectId: string };
 const connectionSchema = z
   .object({
     allowGeneration: z.boolean().default(true),
-    expiresInHours: z.number().int().min(1).max(24).default(8),
+    /** 省略时长期有效；仅兼容旧客户端显式申请 1–24 小时。 */
+    expiresInHours: z.number().int().min(1).max(24).optional(),
   })
   .strict();
 // Agent 只能执行已经过画布校验的配置，禁止借普通运行接口覆盖素材或提示词。
@@ -109,7 +110,7 @@ function referencedAssetIds(canvas: CanvasDocument): Set<string> {
   return ids;
 }
 
-/** 注册项目连接与共用画布操作 API；只签发受当前登录授权期限约束的项目令牌。 */
+/** 注册项目连接与共用画布操作 API；连接默认长期有效，显式限时连接受当前登录授权期限约束。 */
 export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options): void {
   const { projectStore, assetStore, access } = options;
   const localConnections = access ? new LocalAgentConnections(app, access) : undefined;
@@ -161,7 +162,6 @@ export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options
       if (!parsed.success)
         return reply.code(400).send({ code: 'invalid_input', error: '连接权限或有效期无效' });
       try {
-        await options.urlConnections!.list(session.user.id, request.params.projectId);
         const connection = await options.urlConnections!.create({
           ...parsed.data,
           userId: session.user.id,
@@ -170,10 +170,7 @@ export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options
         });
         return reply.code(201).send({ connection });
       } catch (error) {
-        if (
-          error instanceof AgentAccessConnectionLimitError ||
-          error instanceof AgentUrlConnectionLimitError
-        )
+        if (error instanceof AgentAccessConnectionLimitError)
           return reply.code(409).send({
             code: 'connection_limit',
             error: 'Agent 连接数量已达上限，请先撤销不用的连接',

@@ -4,17 +4,17 @@
 
 ## 连接
 
-1. 启动画布 API/Web，或打开服务器部署的画布，登录并打开项目。此功能使用已有 `API_JWT_SECRET` 和会话存储；无需数据库迁移或新增部署密钥。匿名开发模式不能启用连接。本机模式使用 `localhost` 或 `127.0.0.1` 直接访问 API。
+1. 启动画布 API/Web，或打开服务器部署的画布，登录并打开项目。此功能使用已有 `API_JWT_SECRET` 和会话存储；无需数据库迁移或新增部署密钥。匿名开发模式不能启用连接。
 2. 点击工具栏的 **Agent**；手机端先打开画布菜单。入口会先保存当前编辑，冲突时先处理草稿。
-3. 选择 1–24 小时有效期（默认 8 小时）。新连接默认拥有当前项目已提供的全部画布工具权限，可以创建节点、连线、调参、发起生成、查询和取消任务，无需勾选生成权限。历史受限连接保留原权限，停止后重新启用即可使用新默认。
-4. 点击「启用本地连接」；访问服务器部署的 API 时，面板自动切换为「启用服务器连接」。选择 Codex 或 DeepSeek Harness 并复制配置，无需另填令牌或环境变量。重新打开面板可选择已有连接并再次复制配置；关闭面板后连接继续可用。
-5. 按下面的方法加载配置，然后让 Agent 调用 `get_canvas` 确认项目。结束后点击「停止」释放连接。连接到期或 API 重启后，重新启用并复制新地址。
+3. 点击「启用连接」。面板直接使用服务器连接地址，不探测本机监听，也无需选择有效期。新连接默认拥有当前项目已提供的全部画布工具权限，可以创建节点、连线、调参、发起生成、查询和取消任务，无需勾选生成权限。历史受限连接保留原权限，停止后重新启用即可使用新默认。
+4. 选择 Codex 或 DeepSeek Harness 并复制配置，无需另填令牌或环境变量。重新打开面板可选择已有连接并再次复制配置；关闭面板后连接继续可用。
+5. 按下面的方法加载配置一次，然后让 Agent 调用 `get_canvas` 确认项目。连接长期有效，不再需要时点击「停止」。
 
-本机连接地址为 `http://127.0.0.1:随机端口/mcp`，每个连接绑定当前用户和单个项目，有效期还受当前账号授权期限限制。仅监听本机回环地址，拒绝浏览器来源与异常 Host。服务端自动复用现有授权校验，本机连接的内部授权凭据不会返回面板或写入 Agent 配置。停止、到期、账号禁用或撤销全部会话后不可继续操作。
+服务器连接使用画布已配置的 API 地址，形如 `https://canvas.example/api/v1/projects/PROJECT_ID/mcp?connection=CONNECTION_ID.SIGNATURE`，可由本机 Codex、DSH 直接访问，不需要在本机启动画布 API。地址已包含当前项目的连接凭据，应妥善保管；无需另配 Authorization 头。API 只在该项目的 MCP 入口接受此凭据，拒绝浏览器来源，不会开放其他项目、账号管理或服务器命令执行权限。公网部署使用 HTTPS。项目自带的 Caddy 未启用请求访问日志，API 自身日志和遥测也不记录查询参数；如果自行添加代理访问日志，应隐藏 MCP 请求查询参数。
 
-服务器连接使用画布已配置的 API 地址，形如 `https://canvas.example/api/v1/projects/PROJECT_ID/mcp?connection=CONNECTION_KEY`，可由本机 Codex、DSH 直接访问，不需要在本机启动画布 API。地址已包含当前项目的连接凭据，应妥善保管；无需另配 Authorization 头。API 只在该项目的 MCP 入口接受此凭据，拒绝浏览器来源，不会开放其他项目、账号管理或服务器命令执行权限。公网部署使用 HTTPS。项目自带的 Caddy 未启用请求访问日志，API 自身日志和遥测也不记录查询参数；如果自行添加代理访问日志，应隐藏 MCP 请求查询参数。
+连接键由连接 ID 和 `API_JWT_SECRET` 派生签名，并对照持久会话存储校验，API 进程内不保存连接注册表。因此 API 重启、重新部署或多副本部署后原地址继续可用，Agent 配置无需更新；更换 `API_JWT_SECRET` 会使全部连接地址失效。连接在点击「停止」、账号禁用或撤销全部会话后立即失效。每个项目最多 20 个连接。
 
-本机 API 与 Agent 仍需位于同一网络环境；Docker、WSL、SSH 中的 `127.0.0.1` 可能指向另一环境，应使用可访问的服务器部署地址。两类连接均在停止、到期或 API 重启后失效，重启后需重新启用并复制配置。服务器连接注册表驻留当前 API 进程；多副本部署需要将连接管理和 MCP 请求路由到同一实例。
+兼容旧客户端：创建接口仍接受显式 `expiresInHours`（1–24），此类限时连接受当前登录授权期限约束，面板显示到期时间。后端保留的本机回环连接接口（`local-agent-connections`）不再由面板使用，API 关闭时会释放其端口。
 
 ### Codex
 
@@ -22,16 +22,16 @@
 
 ```toml
 [mcp_servers.canvas]
-url = "http://127.0.0.1:49152/mcp"
+url = "https://canvas.example/api/v1/projects/PROJECT_ID/mcp?connection=CONNECTION_ID.SIGNATURE"
 ```
 
-`49152` 仅为本机示例，服务器部署直接使用面板给出的完整地址。连接后可以发：
+以上仅为示例，直接使用面板给出的完整地址。连接后可以发：
 
 > 读取 canvas MCP 的当前画布和可用模型，告诉我有哪些节点，先不要生成。
 
 ### DeepSeek Harness
 
-将面板中的 Harness 配置保存为 `canvas-mcp.cordis.yml`，再用 Harness 的 `--patch` 加载；无需替换已有配置。它使用相同的 MCP 地址，本机和服务器连接均支持，不限于 Codex。
+将面板中的 Harness 配置加入 DSH 配置档的 `cordis.patch.yml`，例如 Windows 桌面版的 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`，然后重启 DSH。配置档里已有 `id: canvas-mcp` 时只替换其中的 `url`，不要重复添加。地址长期有效，加入一次即可。它使用相同的 MCP 地址，不限于 Codex。
 
 ```yaml
 - insert:
@@ -40,16 +40,20 @@ url = "http://127.0.0.1:49152/mcp"
       config:
         serverName: canvas
         transport: streamable-http
-        url: http://127.0.0.1:49152/mcp
+        url: https://canvas.example/api/v1/projects/PROJECT_ID/mcp?connection=CONNECTION_ID.SIGNATURE
 ```
+
+临时使用时也可保存为 `canvas-mcp.cordis.yml`，再用 `--patch` 加载：
 
 ```sh
 dsh web --patch ./canvas-mcp.cordis.yml
 ```
 
+DSH 报 `server is disconnected` 时，通常是配置档中仍是已停止或旧版限时连接的地址；在面板重新启用连接并替换 `url` 即可。
+
 其他支持 Streamable HTTP 的本地 MCP 客户端也可连接。同一接口不绑定 Codex、Harness 或具体模型。Agent 的规划使用其自身模型；调用 `run_node` 时使用画布中已配置的模型、参数和现有执行链。第一阶段从外部 Agent 发指令，画布显示过程；将外部 Agent 的聊天嵌入网页需要后续 SDK/运行器集成。
 
-原有受令牌保护的 `/v1/projects/:projectId/mcp` 与 `/agent-connections` 接口保留，已有客户端可继续使用；新的本地连接面板不再展示令牌接入流程。
+原有受令牌保护的 `/v1/projects/:projectId/mcp` 与 `/agent-connections` 接口保留，已有客户端可继续使用；连接面板不再展示令牌接入流程。
 
 ## 工具与典型流程
 
@@ -124,12 +128,12 @@ dsh web --patch ./canvas-mcp.cordis.yml
 
 `update_node.data` 按字段合并，`parameters` 出现时整体替换。只更新纯文本 `prompt` 会清除旧 `promptDocument`，避免实际执行仍使用旧正文；传入 `promptDocument` 时复用现有 mention 合同。连线角色、素材用途和提示词引用应一致。来源节点的资产必须同时指定 `assetVersion`，服务端生成规范固定版本 URL 并校验真实归属与版本；提交运行继续使用该版本。
 
-`run_node` 返回任务而不阻塞等待视频完成。同一次提交重试复用同一 `idempotencyKey`；修改配置后发起新生成需用新键。第一版没有跨多个独立提交的预算计费上限，新连接可在有效期内继续提交生成，仍受现有队列和账号额度约束。
+`run_node` 返回任务而不阻塞等待视频完成。同一次提交重试复用同一 `idempotencyKey`；修改配置后发起新生成需用新键。第一版没有跨多个独立提交的预算计费上限，连接在停止前可继续提交生成，仍受现有队列和账号额度约束。
 
 ## 人机协作与兼容性
 
-- 新增 `/v1/projects/:projectId/local-agent-connections` 的 GET/POST，以及 `/:connectionId` 的 DELETE，用于查询、启用和停止本机连接；返回连接元数据和回环 MCP 地址，不返回凭据。本地监听器代理到已有项目 MCP，继续执行账户、项目、生成权限和版本校验。
-- 新增 `/v1/projects/:projectId/agent-url-connections` 的 GET/POST，以及 `/:connectionId` 的 DELETE，用于服务器连接管理；返回含随机连接键的相对 `mcpPath`，前端按已配置的 API 地址生成完整 URL。两类创建接口省略 `allowGeneration` 时默认允许生成；兼容旧接口显式 `false` 和历史受限连接。
+- 新增 `/v1/projects/:projectId/agent-url-connections` 的 GET/POST，以及 `/:connectionId` 的 DELETE，用于服务器连接管理，也是面板唯一使用的连接接口；返回含 `CONNECTION_ID.SIGNATURE` 连接键的相对 `mcpPath`，前端按已配置的 API 地址生成完整 URL。省略 `expiresInHours` 时连接长期有效，`expiresAt` 返回 `null`；连接键可在 API 重启后由持久会话重新校验。
+- 保留 `/v1/projects/:projectId/local-agent-connections` 的 GET/POST，以及 `/:connectionId` 的 DELETE，仅为兼容旧客户端；返回连接元数据和回环 MCP 地址，不返回凭据。本地监听器代理到已有项目 MCP，继续执行账户、项目、生成权限和版本校验。两类创建接口省略 `allowGeneration` 时默认允许生成；兼容旧接口显式 `false` 和历史受限连接。
 - 新增 `POST /v1/projects/:projectId/canvas/operations`，现有全画布 PATCH 保留。操作以 revision 做存储层 CAS，旧版本或任一非法操作均不部分落盘。
 - 现有节点运行请求新增可选 `canvasRevision`，旧客户端可以不传；MCP 提交必须传且匹配，否则 409。项目令牌仅可提交 `projectId`、`canvasRevision`、`idempotencyKey`，不可借运行请求覆盖提示词或素材；配置变更必须先通过画布操作校验并保存。
 - SSE 新增 `canvas.updated`，仅广播项目 ID 和 revision。前端收到后拉取文档，并以 15 秒轮询/窗口恢复焦点兜底；`run.updated` 保持兼容。

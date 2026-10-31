@@ -690,18 +690,25 @@ describe('服务器 MCP 连接地址', () => {
     const created = await f.app.inject({ method: 'POST', url: path, payload, ...remote });
     expect(created.statusCode).toBe(201);
     const { connection } = created.json<{
-      connection: { id: string; projectId: string; allowGeneration: boolean; mcpPath: string };
+      connection: {
+        id: string;
+        projectId: string;
+        allowGeneration: boolean;
+        expiresAt: string | null;
+        mcpPath: string;
+      };
     }>();
     expect(connection.mcpPath).toMatch(
-      new RegExp(`^${f.projectPath}/mcp\\?connection=[A-Za-z0-9_-]{43}$`),
+      new RegExp(`^${f.projectPath}/mcp\\?connection=[\\da-f-]{36}\\.[A-Za-z0-9_-]{43}$`),
     );
+    expect(connection.expiresAt).toBeNull();
     expect(created.json()).not.toHaveProperty('token');
     expect(created.body).not.toContain('cva1.');
     const client = new Client({ name: 'synthetic-url-agent', version: '1.0.0' });
     clients.push(client);
     await client.connect(new StreamableHTTPClientTransport(new URL(connection.mcpPath, f.address)));
-    const mcp = (url = connection.mcpPath, headers: Record<string, string> = {}) =>
-      f.app.inject({
+    const mcp = (url = connection.mcpPath, headers: Record<string, string> = {}, app = f.app) =>
+      app.inject({
         method: 'POST',
         url,
         headers: {
@@ -744,7 +751,10 @@ describe('服务器 MCP 连接地址', () => {
       .toBe('succeeded');
     expect(edited.canvas.edges).toEqual([edge]);
     const listed = await f.app.inject({ method: 'GET', url: f.path, ...f.remote });
-    expect(listed.json()).toEqual({ available: true, connections: [f.urlConnection] });
+    expect(listed.json()).toEqual({
+      available: true,
+      connections: expect.arrayContaining([f.urlConnection]),
+    });
     expect(listed.body).not.toContain('cva1.');
     const revoked = await f.app.inject({
       method: 'DELETE',
@@ -754,8 +764,10 @@ describe('服务器 MCP 连接地址', () => {
     expect(revoked.statusCode).toBe(204);
     expect((await f.urlMcp()).statusCode).toBe(401);
     expect(
-      (await f.app.inject({ method: 'GET', url: f.path, ...f.remote })).json().connections,
-    ).toEqual([]);
+      (await f.app.inject({ method: 'GET', url: f.path, ...f.remote }))
+        .json<{ connections: Array<{ id: string }> }>()
+        .connections.map((connection) => connection.id),
+    ).toEqual([f.connection.connection.id]);
   });
 
   it('显式false的既有受限语义保留，其他账号或项目不能管理地址', async () => {
@@ -838,8 +850,10 @@ describe('服务器 MCP 连接地址', () => {
     expect((await f.urlMcp()).statusCode).toBe(401);
     if (state === 'revoked')
       expect(
-        (await f.app.inject({ method: 'GET', url: f.path, headers: f.headers })).json().connections,
-      ).toEqual([]);
+        (await f.app.inject({ method: 'GET', url: f.path, headers: f.headers }))
+          .json<{ connections: Array<{ id: string }> }>()
+          .connections.map((connection) => connection.id),
+      ).not.toContain(f.urlConnection.id);
   });
 
   it('本地、URL、旧Bearer并发签发共用每项目20上限', async () => {
@@ -867,7 +881,7 @@ describe('服务器 MCP 连接地址', () => {
     expect(listed.json().connections).toHaveLength(20);
   });
 
-  it('主服务关闭先撤销URL和本地授权，再关闭会话存储', async () => {
+  it('主服务关闭只撤销本地授权并保留URL连接，重启后原地址继续可用', async () => {
     const f = await urlFixture();
     const local = await f.app.inject({
       method: 'POST',
@@ -890,9 +904,20 @@ describe('服务器 MCP 连接地址', () => {
     });
     await f.app.close();
     expect(storeClosed).toBe(true);
-    expect(revoked).toEqual(
-      expect.arrayContaining([f.urlConnection.id, local.json().connection.id]),
-    );
+    expect(revoked).toContain(local.json().connection.id);
+    expect(revoked).not.toContain(f.urlConnection.id);
+    const restarted = buildApp({
+      logger: false,
+      ...f.context.appOptions,
+      projectStore: f.projectStore,
+      assetStore: f.assetStore,
+      runService: f.runService,
+    });
+    apps.push(restarted);
+    const reconnected = await f.urlMcp(undefined, {}, restarted);
+    expect(reconnected.statusCode).toBe(200);
+    expect(reconnected.body).toContain('"revision"');
+    expect(reconnected.body).not.toContain('"isError":true');
   });
 
   it('URL键不会进入请求日志或遥测', async () => {

@@ -1430,7 +1430,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     ? new AgentAccessService({ store: authStore, secret: jwtSecret })
     : undefined;
   const agentUrlConnections = agentAccess ? new AgentUrlConnections(agentAccess) : undefined;
-  app.addHook('preClose', async () => agentUrlConnections?.close());
   const requestAgentScopes = new WeakMap<object, AgentAccessClaims>();
   const maxActiveRunsPerProject = parsePositiveInt(process.env.RUN_MAX_ACTIVE_PER_PROJECT);
   const rateLimitPerMinute = parsePositiveInt(process.env.API_RATE_LIMIT_PER_MINUTE);
