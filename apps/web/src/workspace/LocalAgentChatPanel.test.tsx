@@ -129,6 +129,15 @@ describe('LocalAgentChatPanel', () => {
     );
   });
 
+  it('同源部署（API 基地址为空）时桥接命令回退到页面来源', async () => {
+    configuration.apiBaseUrl = '';
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    mount();
+    expect(await screen.findByRole('textbox', { name: '桥接程序启动命令' })).toHaveValue(
+      `node canvas-bridge.js --api ${window.location.origin} --token ${connectionKey} --project ${projectId} --agent claude`,
+    );
+  });
+
   it('无活跃 URL 连接时展示提示文字而非令牌', async () => {
     auth.apiFetch.mockResolvedValueOnce(Response.json({ available: true, connections: [] }));
     mount();

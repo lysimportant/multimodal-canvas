@@ -118,6 +118,8 @@ export function LocalAgentChatPanel({
   }, [open]);
 
   const baseUrl = API_BASE_URL.replace(/\/$/, '');
+  // 同源部署（VITE_API_BASE_URL 为空）时相对路径可用于请求，但桥接命令必须给出绝对地址。
+  const bridgeApiBaseUrl = baseUrl || window.location.origin;
 
   const connectSession = async () => {
     if (connecting || !projectId) return;
@@ -295,7 +297,7 @@ export function LocalAgentChatPanel({
   };
 
   const bridgeCmd = urlKey
-    ? `node canvas-bridge.js --api ${baseUrl} --token ${urlKey} --project ${projectId} --agent claude`
+    ? `node canvas-bridge.js --api ${bridgeApiBaseUrl} --token ${urlKey} --project ${projectId} --agent claude`
     : '（请先在 Agent 连接面板创建一个服务器连接，获取 token）';
 
   return (
