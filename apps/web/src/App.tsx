@@ -5972,7 +5972,7 @@ function WorkspaceApp({
               </div>
               <UiButton
                 type="button"
-                className="icon-button"
+                className="icon-button topbar-text-button"
                 aria-label="连接 Agent"
                 title="连接外部 Agent"
                 disabled={!isCanvasReady || isProjectLoading || !authUser}
@@ -6001,7 +6001,7 @@ function WorkspaceApp({
               </UiButton>
               <UiButton
                 type="button"
-                className="icon-button"
+                className="icon-button topbar-text-button"
                 aria-label="打开本地 Agent 聊天"
                 title="本地 Agent 聊天"
                 disabled={!isCanvasReady || isProjectLoading || !authUser}

@@ -872,6 +872,15 @@ h2 {
   color: #14633f;
 }
 
+/* 顶栏文字入口按钮按内容伸展，避免文字溢出 30px 图标按钮的边框。 */
+.icon-button.topbar-text-button {
+  font-size: 12px;
+  font-weight: 650;
+  padding-inline: 10px;
+  white-space: nowrap;
+  width: auto;
+}
+
 .search-field {
   background: #f7f8fa;
   border: 1px solid #e4e8ee;

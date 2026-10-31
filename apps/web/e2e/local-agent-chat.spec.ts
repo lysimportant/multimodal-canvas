@@ -111,6 +111,29 @@ async function expectNoHorizontalOverflow(locator: Locator) {
     .toBeLessThanOrEqual(1);
 }
 
+/** 按钮文字必须完整落在按钮自身盒子里，防止固定宽度把标签挤出边界。 */
+async function expectLabelInsideButton(locator: Locator) {
+  await expect
+    .poll(() =>
+      locator.evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const text = range.getBoundingClientRect();
+        const box = element.getBoundingClientRect();
+        return Math.ceil(
+          Math.max(
+            box.left - text.left,
+            text.right - box.right,
+            box.top - text.top,
+            text.bottom - box.bottom,
+            element.scrollWidth - element.clientWidth,
+          ),
+        );
+      }),
+    )
+    .toBeLessThanOrEqual(1);
+}
+
 async function openLocalAgent(page: Page, mobile: boolean) {
   if (mobile) {
     await page.getByRole('button', { name: '打开画布菜单', exact: true }).tap();
@@ -128,6 +151,15 @@ for (const width of [1440, 390, 320]) {
   test.describe(`${width}px 本地 Agent 聊天`, () => {
     test.use({ viewport: { width, height: width > 600 ? 900 : 844 }, hasTouch: width <= 600 });
     test('展示桥接命令并连接进入聊天界面，面板无横向溢出', async ({ page, localAgent }) => {
+      // 顶栏两个文字入口按钮按内容伸展，文字不得溢出按钮自身边框。
+      if (width > 600) {
+        await expectLabelInsideButton(
+          page.getByRole('button', { name: '连接 Agent', exact: true }),
+        );
+        await expectLabelInsideButton(
+          page.getByRole('button', { name: '打开本地 Agent 聊天', exact: true }),
+        );
+      }
       const panel = await openLocalAgent(page, width <= 600);
       await expect(panel).toBeInViewport({ ratio: 1 });
       const command = panel.getByRole('textbox', { name: '桥接程序启动命令', exact: true });
