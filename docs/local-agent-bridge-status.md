@@ -81,7 +81,16 @@ pnpm --filter ./apps/web test:e2e -- e2e/local-agent-chat.spec.ts               
 npx prettier --check <本轮改动与新增文件>        # 通过
 ```
 
+Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start -NoBrowser`）：
+
+- 镜像构建成功，`initialize/migrate` 正常退出，`postgres/redis/api/worker/web` 全部 healthy。
+- `GET http://127.0.0.1:8080/health` → `{"status":"ok","service":"api"}`。
+- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，259084 字节，与 `packages/bridge/dist/index.js` 完全一致；API 镜像内 `/app/dist/bridge/index.js` 存在。
+- web 产物（`/usr/share/caddy/assets/main-*.js`）包含 `node canvas-bridge.js --local --agent claude`、`127.0.0.1:17871`、`连接令牌`、`/v1/agent-bridge/download`，确认新面板已进入生产包。
+
 ## 五、如何使用（本机手工联调）
+
+当前 Docker 部署已重建，浏览器打开 http://localhost:8080 登录后，右上角「本地 Agent」就是新面板，桥接程序可直接在面板里下载（下载到的就是最新 259 KB 版本）。
 
 1. 在画布侧栏「下载桥接程序」，或直接从仓库取 `packages/bridge/dist/index.js` 并 `pnpm --filter ./packages/bridge build`。
 2. 本机运行：`node canvas-bridge.js --local --agent claude`（Agent 可换 `codex`/`gemini`/`opencode`/`qwen`；也可用 `--agent-cmd` 指定任意 ACP Agent 可执行文件）。首次运行会在 `~/.canvas-agent/local-agent.json` 生成令牌。
@@ -109,7 +118,7 @@ npx prettier --check <本轮改动与新增文件>        # 通过
 ## 七、未完成与风险
 
 1. **真实 Agent 全链路联调未做**：本机没有 Postgres/Redis 与画布数据库配置，API 只能用内存夹具；Agent 侧用合成 ACP Agent 验证。需要一台能起完整画布服务的机器手工跑一次 Claude Code / Codex。
-2. **Docker 镜像未重建**：运行中的 `multimodal-canvas-web:local` 是 2026-10-26 构建，不含本地 Agent 功能；需 `pwsh -File scripts/docker.ps1 Start` 重新构建后验证下载接口与侧栏。
+2. **Docker 镜像已重建并完成接口级验证**（2026-11-01）：`multimodal-canvas-web:local` / `api:local` 均为本次构建，下载接口返回新的 253 KB 桥接程序，web 产物包含新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
 3. **安全边界**：本机服务只监听回环地址且需令牌，但令牌明文保存在 `~/.canvas-agent/local-agent.json`；恶意网页无法读取该文件，但仍可通过 127.0.0.1 发起请求（无令牌会被拒）。若需更严格，可增加「首次连接确认」或 Origin 白名单（参考 infinite-canvas 的做法）。
 4. **画布连接上限**：`agent-access.ts:110-131` 仍是每进程全局 100 条 URL 连接上限，侧栏自动创建连接会加速消耗；建议改为按用户/项目维度限流（原 R1）。
 5. **中继模式保留但 UI 未暴露**：CLI 仍可用，文档未写详细步骤；如果确定不再使用，可后续删除 `apps/api/src/agent-bridge-routes.ts` 与对应测试，减小维护面积。
