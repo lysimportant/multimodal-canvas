@@ -1,146 +1,116 @@
-# 方案 B「本地 Agent 聊天侧栏」完成情况汇报
+# 本地 Agent 聊天侧栏：直连本地 Agent 改造
 
-日期：2026-10-31。对照计划：`C:\Users\Sui\.claude\plans\ancient-riding-prism.md`。
+日期：2026-11-01。本文替代前两版记录（方案 B 服务端中继）。改动尚未提交，见第六节。
 
-已定的产品决策：
+## 一、背景与结论
 
-- 画布工具调用一律自动放行，画布以外的操作（执行命令、改文件）也全部自动允许。
-- 桥接程序由画布服务器自带下载（`GET /v1/agent-bridge/download`）。
-- 本机 Agent 在每个项目专用的空文件夹 `~/.canvas-agent/<projectId>` 里工作。
+前两版实现的是「浏览器 → 画布 API 中继 → 本机桥接 → Agent」的中继模式：用户必须先在 Agent 连接面板创建服务器连接、把连接密钥贴进启动命令，Agent 事件经画布 API 的 SSE 转回浏览器。
 
-## 一、当前状态
+需求方明确要求改成 `github.com/basketikun/infinite-canvas` 那样的**直连本地 Agent**：本机跑一个守在 `127.0.0.1` 的小服务，画布侧栏直接连它，聊天数据不经过画布服务器。本轮因此做了两件事：
 
-除「真实 Agent 全链路联调」与「Docker 镜像构建」外全部完成，改动已分三批提交（见第四节）。
+1. `packages/bridge` 增加 `--local` 直连模式：本机启动 HTTP + SSE 服务，默认 `127.0.0.1:17871`，启动时打印 `Local URL` 与 `Connect token`。
+2. `LocalAgentChatPanel` 从「贴启动命令连服务器」改为「填本地地址 + 连接令牌直连本机服务」，聊天事件流直接读本机 SSE。
 
-| 模块                                               | 状态            | 说明                                                                                                                              |
-| -------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| 桥接 CLI `packages/bridge/`                        | ✅ 已重写并构建 | 基于 `@agentclientprotocol/sdk` 2.2.0 真实 API，产物 `dist/index.js` 237.7 KB，`--help` / 缺参退出码正确                          |
-| API 中继路由 `apps/api/src/agent-bridge-routes.ts` | ✅              | 7 个接口：connect（NDJSON 长连接、20 秒心跳）、创建会话、发送提示词、取消、SSE 事件流、桥接事件回传、匿名下载                     |
-| 下载默认路径                                       | ✅              | 改为 `import.meta.dirname`（ESM 产物）+ 存在性探测；API 构建时由 `scripts/copy-bridge.mjs` 复制到 `apps/api/dist/bridge/index.js` |
-| API 测试                                           | ✅              | `agent-bridge-routes.test.ts` 7 个用例；`agent-bridge-e2e.test.ts` 5 个进程级用例                                                 |
-| 侧栏 `LocalAgentChatPanel.tsx` / `.css`            | ✅              | 启动命令、下载、连接、发送、流式显示、停止、断开                                                                                  |
-| `App.tsx` 接入                                     | ✅              | 桌面与移动端「本地 Agent」入口；切换项目或账户时重置状态；抽屉 `open={open && !closed}` 修正                                      |
-| `AgentConnectionPanel` 的 Canvas Bridge 标签       | ✅              | 下载按钮、启动命令、复制按钮                                                                                                      |
-| E2E                                                | ✅              | `local-agent-chat` 3 个宽度通过、`agent-canvas` 10 个通过（合计 13 passed）                                                       |
-| 格式化 / 类型检查                                  | ✅              | 改动与新增文件 Prettier 干净；`pnpm typecheck` 17/17 通过                                                                         |
-| 文档                                               | ✅              | 本文与 `docs/canvas-agent-mcp.md`                                                                                                 |
+服务端中继模式（`--api/--token/--project`）**保留**作为备选：CLI 和 API 中继路由、它的测试都还在，只是 UI 默认不再使用。若以后要做「浏览器在 A 机器、Agent 在 B 机器」，再接回来。
 
-## 二、本轮修了什么
+## 二、当前架构
 
-### 1. 桥接程序重写（原问题 1 的 a～k）
-
-计划里写的 `ClientSideConnection` / `ndJsonStream` 旧 API 在 SDK 2.2.0 中已不存在，实际可用的是 `client()` → `connect(ndJsonStream(...))` → `connection.agent.buildSession(...)` → `ActiveSession`。重写后逐项对应：
-
-| 原问题                                           | 处理                                                                                                 |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| a 手写 JSON-RPC、缺 `jsonrpc`、从不 `initialize` | 改用 SDK；连接后显式 `request(methods.agent.initialize, …)`，再 `session/new`                        |
-| b 不保存 ACP `sessionId`                         | 由 `ActiveSession` 持有，`Map<bridgeSessionId, { acp, queue }>` 复用并串行化                         |
-| c 权限回复格式错误                               | 回 `{ outcome: { outcome: 'selected', optionId } }`，优先 `allow_always` → `allow_once` → 第一个选项 |
-| d 事件双重编码                                   | `TaskSink` 只序列化一次，按序批量 POST NDJSON                                                        |
-| e `taskId` 闭包捕获错任务                        | 按 `Map<acpSessionId, currentTaskId>` 动态取当前任务                                                 |
-| f 不发送 `done`                                  | prompt 正常结束发 `done`；异常发 `agent_error` + `done`                                              |
-| g `setTimeout` 代替 `await`                      | 全部改为 `await` / promise 链，`done` 保证最后                                                       |
-| h 断线不重连                                     | 指数退避 1→2→4…30 秒重连，收到 `ready` 后重置                                                        |
-| i 取消杀进程                                     | 改发 `session/cancel` 通知，会话保留可继续                                                           |
-| j 从令牌截取 `projectId`                         | `--project` 改为必填；面板启动命令同步补 `--project <projectId>`                                     |
-| k `--agent-args` 未传给 `spawn`                  | 与内置参数拼接后传入；另加 `--agent-cmd` 便于替换可执行文件                                          |
-
-额外发现并修复：
-
-- `build.mjs` 的 banner shebang 与源码首行 shebang 重复，构建产物 `node dist/index.js` 直接 `SyntaxError`；已删源码 shebang。
-- `packages/bridge` 缺 `@types/node` 导致 `typecheck` 失败；已补 devDependency（离线安装）。
-- 面板命令原缺 `--project`，而 `connect` 路由强制要求 `projectId`，连上也会 400/401。
-
-### 2. 构建与打包（原问题 2）
-
-- `pnpm --filter ./packages/bridge build` 生成 `packages/bridge/dist/index.js`。
-- 新增 `scripts/copy-bridge.mjs`；`apps/api` 的 build 改为 `tsc -p tsconfig.json && node ../../scripts/copy-bridge.mjs`。
-- `apps/api` devDependencies 增加 `@multimodal-canvas/bridge: workspace:*`，借 turbo `build.dependsOn: ["^build"]` 保证先构建桥接。
-- `Dockerfile` 安装层补 `COPY packages/bridge/package.json`，构建层补 `COPY scripts/copy-bridge.mjs`。
-- `pnpm-lock.yaml` / `pnpm-workspace.yaml` 已同步（含 SDK 2.2.0 的 `minimumReleaseAgeExclude`）。
-
-另修复一个只在生产 ESM 产物里才会炸的 bug：`agent-bridge-routes.ts` 下载默认路径原为 `join(dirname(__dirname), 'bridge', 'index.js')`。`apps/api` 是 `"type": "module"`，ESM 下 `__dirname` 不存在（vitest 会注入所以测试掩盖了它），且拼出的目录比产物少一层。现改为：
-
-```ts
-function defaultBridgeFilePath(): string {
-  const candidates = [
-    join(import.meta.dirname, 'bridge', 'index.js'),
-    resolvePath(import.meta.dirname, '..', '..', '..', 'packages', 'bridge', 'dist', 'index.js'),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
-}
+```
+浏览器画布 (侧栏)  ──HTTP+SSE(Bearer token)──▶  canvas-bridge --local (127.0.0.1:17871)  ──ACP(stdio)──▶  Agent CLI (claude/codex/…)
+        │                                                     │
+        └── 画布 API：创建/读取 URL 连接，渲染画布同步、MCP 工具调用 ──┘
 ```
 
-第二个候选兼容从 `src` 直接运行。下载接口已在端到端用例中验证返回 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`。
+- 聊天消息、流式输出、取消、断开全部走本机 `127.0.0.1`，不经画布服务器。
+- Agent 仍然需要画布 MCP 才能改画布：画布页面在建立会话时把自己的 MCP 地址（带连接密钥的 `mcpPath`）下发给本机桥接，桥接用 `withMcpServer({ type: 'http', … })` 注入。这样桥接不需要预先知道项目 ID，连接密钥也能在画布侧吊销。
+- 若项目还没有可用的 URL 连接，侧栏会自动创建一个（同 Agent 连接面板的行为）。
 
-### 3. E2E（原问题 3）
+### 本机接口协议（`packages/bridge` 的 `LocalAgentServer`）
 
-- `apps/web/e2e/local-agent-chat.spec.ts` 的夹具补 `GET /v1/account/newapi` 与 `POST /v1/account/newapi/sync`。
-- 另发现侧栏 Drawer 用 `open={!closed}` 忽略父组件 `open`，页面一加载抽屉就打开并挡住点击；已改为 `open={open && !closed}`。
-- `apps/web/e2e/agent-canvas.spec.ts` 有同型缺失（页面装载请求 account 接口被隔离夹具记为未声明），已在该 spec 自己的夹具内补齐，未改共享 helper。
+| 方法   | 路径                   | 说明                                                                  |
+| ------ | ---------------------- | --------------------------------------------------------------------- |
+| GET    | `/health`              | 免令牌；返回 `{ ok, name, version, agent }`，侧栏用它判断服务是否在跑 |
+| POST   | `/sessions`            | `{ projectId?, mcpUrl? }` → 201 `{ sessionId }`；按会话复用 ACP 会话  |
+| GET    | `/sessions/:id/events` | SSE：`data: <事件 JSON>`，20 秒 `: ping` 心跳                         |
+| POST   | `/sessions/:id/prompt` | `{ messages }` → 202 `{ taskId }`；并发发送 409 `prompt_in_progress`  |
+| POST   | `/sessions/:id/cancel` | 204；当前没有任务时 409 `no_active_task`                              |
+| DELETE | `/sessions/:id`        | 204，侧栏断开时通知桥接释放 ACP 会话                                  |
 
-### 4. 格式化（原问题 4）
+- 除 `/health` 外都要求 `Authorization: Bearer <Connect token>`。
+- 令牌持久化在 `~/.canvas-agent/local-agent.json`（权限 0600），首次启动自动生成；可用 `--local-token` 覆盖。
+- 仅监听回环地址；CORS 回显 `Origin`、允许 `authorization`/`content-type`、带 `access-control-allow-private-network: true`（Chrome 私有网络访问要求）。
+- 事件类型与旧中继模式一致（`agent_message_chunk` / `tool_call` / `usage_update` / `done` / `agent_error`），侧栏渲染逻辑不变。
+- 权限请求仍然全部自动放行：优先 `allow_always`，其次 `allow_once`，再退第一个选项。
 
-原问题列出的 4 个文件，加上本轮新增的 `agent-bridge-e2e.test.ts`、`fixtures/fake-acp-agent.mjs`，全部 `prettier --write` 后复检通过。
+## 三、本轮改动
 
-### 5. URL 连接长期有效审查（原问题 5）
+### 1. 桥接程序 `packages/bridge`
 
-三项重点全部核实（只读审查，未改代码）：
+- `src/index.ts` 重写为双模式（约 1350 行）：`--local` 直连服务 + 原有中继模式；公共的 `AgentHost` 负责 spawn Agent、ACP 会话复用/串行、权限自动放行、事件归一化。
+- 新增 `--local`、`--host`、`--port`（允许 `0` 由系统分配，测试用）、`--local-token` 参数；本地模式不需要 `--api/--token/--project`，中继模式缺参时提示可改用 `--local`。
+- 新增 `packages/bridge/test/local-agent.test.mjs`（`node --test`，9 个用例）与 `test/fixtures/fake-acp-agent.mjs`（合成 ACP Agent，支持正常流、权限请求、报错、取消分支，并记录收发报文）。
+- 版本号 `0.2.0`；`package.json` 增加 `"test": "node ./build.mjs && node --test test/local-agent.test.mjs"`。
+- 修掉一个重复推送问题：`session/update` 的 `tool_call` 与随后到达的权限请求都会推工具调用，现在用 `emittedToolCalls`（key 为 `acpSessionId:toolCallId`）去重。
 
-- **旧限时连接仍按原逻辑到期**：`agent-access.ts:223-245` 的 `resolveUrlKey` 仍校验 `session.expiresAt`，过期即拒。
-- **吊销后 URL 密钥立即失效**：`revoke()`（`agent-access.ts:265-276`）写吊销记录并删缓存，无状态签名不会“复活”。
-- **前端无残留「本地/服务器」模式**：`AgentConnectionPanel` 已去掉模式切换与有效期输入，无遗留调用与文案。
+### 2. 侧栏 `apps/web/src/workspace/LocalAgentChatPanel.tsx` / `.css`
 
-相关测试：API 73/73（canvas-agent-routes 43、agent-access 24、agent-url-connections 6），Web `AgentConnectionPanel` 37/37。
+- 未连接时显示：启动命令 `node canvas-bridge.js --local --agent claude`（可复制）、「下载桥接程序」按钮、「本地地址」（默认 `http://127.0.0.1:17871`）、「连接令牌」输入框、「连接」按钮。
+- 地址与令牌存 `localStorage`（key `canvas-agent-local-connection`），刷新后回填。
+- 连接顺序：校验令牌非空 → `GET /health` 探活 → 复用或创建画布 URL 连接拿 `mcpPath` → `POST /sessions`（带令牌与绝对 `mcpUrl`）→ 打开 SSE。
+- 连接失败分别提示：服务没启动、令牌无效（401）、画布连接数已达上限（409）、无法创建画布连接。
+- 断开时中止 SSE 并 `DELETE /sessions/:id`；切换项目或账户变化时重置。
+- 保留 8 秒请求超时，避免服务无响应时按钮一直转圈。
 
-遗留风险（未修，供后续跟进）：
+### 3. 测试
 
-| 编号 | 级别   | 说明                                                                                                                                 |
-| ---- | ------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| R1   | MEDIUM | `agent-access.ts:110-131` 每进程全局 100 连接上限；长期密钥不再释放条目，累计 100 个活连接后新建设全部 409。建议改为按用户维度限流。 |
-| R3   | LOW    | 吊销记录（tombstone）只增不减。                                                                                                      |
-| R4   | LOW    | `canvas-agent-routes.ts:150` 硬编码 `available: true`，面板的不可用分支成为死代码。                                                  |
-| R5   | LOW    | 文档未提示 `MemoryAuthStore` 下重启后旧密钥失效；升级后旧格式密钥需重新创建。                                                        |
-| R6   | LOW    | 缺少 HTTP 级过期用例（仅服务层单测覆盖）。                                                                                           |
+- `LocalAgentChatPanel.test.tsx` 重写为 15 个用例：默认值/回填、令牌校验、连接流程（含 `mcpUrl` 与 `Authorization` 头断言）、自动创建画布连接、各种失败提示、发送前保存画布、SSE 渲染、工具调用、停止、断开、账户重置。
+- `apps/web/e2e/local-agent-chat.spec.ts` 重写：mock 本机桥接 origin（含 CORS 预检、`/health`、`/sessions`、SSE、`DELETE`），1440 / 390 / 320 三个宽度验证启动命令、直连流程、`sessionCreates` 合同与面板不横向溢出；顶栏「连接 Agent」「本地 Agent」两个文字按钮继续校验文字不溢出按钮。
+- `packages/bridge/test/local-agent.test.mjs` 覆盖：health 免令牌、令牌校验/未知会话 404、完整流（chunk、tool_call 去重、usage、`done` 最后）、取消后继续、忙时 409、无任务取消 409、Agent 报错、空提示词 400、只 initialize 一次。
+- 原中继侧测试不受影响：`apps/api/src/agent-bridge-routes.test.ts`（7）与 `agent-bridge-e2e.test.ts`（5）全部通过，后者仍以真实 `packages/bridge/dist/index.js` 进程跑中继模式。
 
-### 6. 端到端验证（第 6 步）
-
-本机没有 `DATABASE_URL` / Postgres / Redis，起不了真实 API，因此端到端改为“真实桥接进程 + 内存 API 夹具 + 合成 ACP Agent”的进程级联调：
-
-- 新增 `apps/api/src/fixtures/fake-acp-agent.mjs`：最小 ACP Agent（stdio NDJSON），按提示词返回 chunk、tool call、权限请求、usage，支持报错与取消分支，并记录收发的每一条消息。
-- 新增 `apps/api/src/agent-bridge-e2e.test.ts`：`spawn` 真实 `packages/bridge/dist/index.js`，覆盖 5 个场景——提示词转发（chunk 拼接、tool_call、usage_update、`done` 最后）、`allow_always` 自动放行、取消后同一会话可继续、Agent 报错后仍可恢复、中继断线自动重连（ACP 会话复用、Agent 未重启），以及下载接口内容校验。
-
-未做：真实 Claude Code / Codex Agent 的全链路手工联调、Docker 镜像构建。
-
-### 7. 其他
-
-- MCP 地址里的令牌仍放在查询参数（沿用面板生成的 `mcpPath`）。这是受 `app.ts:1634` 限制：`?connection=` 与 `Authorization` 头互斥，混用会 400。该令牌只会出现在本机 Agent 的配置/日志里，如需更严格可后续给下载接口加鉴权或做日志脱敏。
-- `canvas-mcp.cordis.yml`（含连接令牌）已加入 `.gitignore`。
-- `回声-爱情漫画-分镜脚本.md` 与本功能无关，未提交。
-
-## 三、验证记录
+## 四、验证记录
 
 ```bash
-pnpm typecheck                       # 17/17 成功，37.8s
-pnpm --filter ./packages/bridge build # dist/index.js 237.7kb；--help 正常；缺参 exit 2
-pnpm --filter ./apps/api build       # tsc + copy-bridge → apps/api/dist/bridge/index.js
-pnpm --filter ./apps/api test        # 86 passed | 7 skipped（93 文件），1424 passed | 102 skipped（1526 用例），160s
-pnpm --filter ./apps/web test:e2e -- e2e/local-agent-chat.spec.ts e2e/agent-canvas.spec.ts  # 13 passed，1.1m
-npx prettier --check <本轮改动与新增文件>  # 全部通过
+pnpm --filter ./packages/bridge typecheck        # 通过
+pnpm --filter ./packages/bridge test             # 9/9 通过（含 build）
+pnpm --filter ./apps/api build                   # tsc + copy-bridge → apps/api/dist/bridge/index.js
+pnpm --filter ./apps/api exec vitest run src/agent-bridge-routes.test.ts src/agent-bridge-e2e.test.ts  # 12/12
+pnpm --filter ./apps/web typecheck               # 通过
+pnpm --filter ./apps/web exec vitest run src/workspace/LocalAgentChatPanel.test.tsx                    # 15/15
+pnpm --filter ./apps/web test:e2e -- e2e/local-agent-chat.spec.ts                                      # 3 passed（1440/390/320）
+npx prettier --check <本轮改动与新增文件>        # 通过
 ```
 
-Web 单测全量：2884 passed / 35 failed（2919）。35 个失败全部是既有用例的 5 秒超时（分布在 App、canvas-editor、NodeQuickEditor、SkillWorkbench 等与本次改动无关的文件），满载并发下复现；抽样隔离重跑 `NodeQuickEditor` + `App` 两个套件 398/398 全部通过，判定为机器负载导致的既有 flaky，不是本次回归。本次相关的 `LocalAgentChatPanel`、`AgentConnectionPanel` 用例均通过。
+## 五、如何使用（本机手工联调）
 
-## 四、提交
+1. 在画布侧栏「下载桥接程序」，或直接从仓库取 `packages/bridge/dist/index.js` 并 `pnpm --filter ./packages/bridge build`。
+2. 本机运行：`node canvas-bridge.js --local --agent claude`（Agent 可换 `codex`/`gemini`/`opencode`/`qwen`；也可用 `--agent-cmd` 指定任意 ACP Agent 可执行文件）。首次运行会在 `~/.canvas-agent/local-agent.json` 生成令牌。
+3. 记下终端打印的 `Local URL: http://127.0.0.1:17871` 与 `Connect token: …`。
+4. 打开画布右侧「本地 Agent」面板，确认地址、粘贴令牌，点「连接」。之后发消息即可；Agent 用画布 MCP 直接改当前项目，聊天内容只在浏览器与本机进程之间传输。
+5. 换端口用 `--port`，换 Agent 用 `--agent`；令牌可 `--local-token` 固定。诊断日志在 stderr（`[canvas-bridge …]`）。
+
+## 六、提交
+
+本轮改动尚未提交。工作区变更：
+
+- 修改：`packages/bridge/src/index.ts`、`packages/bridge/package.json`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,css,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`
+- 新增：`packages/bridge/test/local-agent.test.mjs`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`、本文
+
+历史提交（中继模式阶段）：
 
 1. `f9ebbd6` feat(agent): URL 连接改为长期有效，重启后无需重新连接
-2. `69fb7d9` feat(agent): 新增本地 Agent 桥接中继与 ACP 桥接 CLI（含构建脚本、Dockerfile、内存夹具端到端测试）
-3. feat(web): 新增本地 Agent 聊天侧栏与 E2E（本文档随该提交）
+2. `69fb7d9` feat(agent): 新增本地 Agent 桥接中继与 ACP 桥接 CLI
+3. `e429445` feat(web): 新增本地 Agent 聊天侧栏与验收用例
+4. `6eb5400` fix(web): 修复顶栏 Agent 与本地 Agent 按钮文字溢出
+5. `4f6ee62` fix(web): 同源部署时桥接命令回退到页面来源地址
 
-未提交：`canvas-mcp.cordis.yml`（已被 .gitignore 忽略）、`回声-爱情漫画-分镜脚本.md`。
+未提交无关文件：`回声-爱情漫画-分镜脚本.md`。
 
-## 五、建议后续
+## 七、未完成与风险
 
-1. 在有数据库的环境启动 API + Web，用真实 Agent 跑一遍：创建 URL 连接 → `node packages/bridge/dist/index.js --api http://localhost:8787 --token <urlKey> --project <projectId> --agent claude` → 发送「新建一个图片节点，提示词是一只橘猫，然后生成」→ 验证节点出现、侧栏流式、结束；再验证长任务停止后可继续、重启 API 自动重连。
-2. 跑一次 Docker 镜像构建，确认镜像内存在 `dist/bridge/index.js` 且下载接口 200。
-3. 按需处理 R1（连接上限按用户维度）、R3（tombstone 清理）、R4（`available` 真实状态）。
+1. **真实 Agent 全链路联调未做**：本机没有 Postgres/Redis 与画布数据库配置，API 只能用内存夹具；Agent 侧用合成 ACP Agent 验证。需要一台能起完整画布服务的机器手工跑一次 Claude Code / Codex。
+2. **Docker 镜像未重建**：运行中的 `multimodal-canvas-web:local` 是 2026-10-26 构建，不含本地 Agent 功能；需 `pwsh -File scripts/docker.ps1 Start` 重新构建后验证下载接口与侧栏。
+3. **安全边界**：本机服务只监听回环地址且需令牌，但令牌明文保存在 `~/.canvas-agent/local-agent.json`；恶意网页无法读取该文件，但仍可通过 127.0.0.1 发起请求（无令牌会被拒）。若需更严格，可增加「首次连接确认」或 Origin 白名单（参考 infinite-canvas 的做法）。
+4. **画布连接上限**：`agent-access.ts:110-131` 仍是每进程全局 100 条 URL 连接上限，侧栏自动创建连接会加速消耗；建议改为按用户/项目维度限流（原 R1）。
+5. **中继模式保留但 UI 未暴露**：CLI 仍可用，文档未写详细步骤；如果确定不再使用，可后续删除 `apps/api/src/agent-bridge-routes.ts` 与对应测试，减小维护面积。
+6. **`--local` 端口冲突**：17871 被占用时启动会失败并打印错误，目前需手动 `--port` 换端口。

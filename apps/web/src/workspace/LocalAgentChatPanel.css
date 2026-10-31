@@ -26,6 +26,14 @@
   gap: 8px;
 }
 
+.local-agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ant-color-text-secondary, #5b6472);
+}
+
 .local-agent-chat {
   display: flex;
   flex-direction: column;

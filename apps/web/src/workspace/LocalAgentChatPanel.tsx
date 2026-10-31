@@ -27,7 +27,60 @@ type Message = {
   pending?: boolean;
 };
 
+type UrlConnectionSummary = { mcpPath?: string; expiresAt?: string | null };
+
+type ActiveSession = { base: string; token: string; id: string };
+
 class LocalAgentError extends Error {}
+
+const DEFAULT_LOCAL_URL = 'http://127.0.0.1:17871';
+const CONFIG_STORAGE_KEY = 'canvas-agent-local-connection';
+const LOCAL_BRIDGE_COMMAND = 'node canvas-bridge.js --local --agent claude';
+const REQUEST_TIMEOUT_MS = 8_000;
+
+function normalizeLocalUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return DEFAULT_LOCAL_URL;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return withScheme.replace(/\/+$/, '');
+}
+
+function readStoredConfig(): { url: string; token: string } {
+  try {
+    const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY);
+    if (!raw) return { url: DEFAULT_LOCAL_URL, token: '' };
+    const parsed = JSON.parse(raw) as { url?: unknown; token?: unknown };
+    return {
+      url: typeof parsed.url === 'string' && parsed.url ? parsed.url : DEFAULT_LOCAL_URL,
+      token: typeof parsed.token === 'string' ? parsed.token : '',
+    };
+  } catch {
+    return { url: DEFAULT_LOCAL_URL, token: '' };
+  }
+}
+
+function writeStoredConfig(url: string, token: string): void {
+  try {
+    window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify({ url, token }));
+  } catch {
+    // 隐私模式下不可写，忽略。
+  }
+}
+
+/** 访问本机桥接服务：带超时，避免桥接未启动时长时间挂起。 */
+async function localFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function errorMessageOf(reason: unknown, fallback: string): string {
+  return reason instanceof LocalAgentError ? reason.message : fallback;
+}
 
 export function LocalAgentChatPanel({
   projectId,
@@ -35,8 +88,12 @@ export function LocalAgentChatPanel({
   onClose,
   saveCanvas,
 }: LocalAgentChatPanelProps) {
+  const stored = useRef(readStoredConfig());
   const [closed, setClosed] = useState(false);
   const [sessionId, setSessionId] = useState<string | undefined>();
+  const [sessionAgent, setSessionAgent] = useState<string | undefined>();
+  const [localUrl, setLocalUrl] = useState(stored.current.url);
+  const [token, setToken] = useState(stored.current.token);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [connecting, setConnecting] = useState(false);
@@ -44,54 +101,24 @@ export function LocalAgentChatPanel({
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
-  const [urlKey, setUrlKey] = useState<string | undefined>();
   const authGeneration = useRef(getAuthSessionGeneration());
   const live = useRef(true);
   const sseRef = useRef<AbortController | undefined>(undefined);
+  const sessionRef = useRef<ActiveSession | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // 面板打开时加载第一个活跃 URL 连接 key，用于生成桥接启动命令。
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await apiFetch(
-          `${API_BASE_URL.replace(/\/$/, '')}/v1/projects/${encodeURIComponent(projectId)}/agent-url-connections`,
-          {},
-          { expectedAuthGeneration: authGeneration.current },
-        );
-        if (!response.ok || cancelled) return;
-        const result = (await response.json()) as {
-          connections?: { mcpPath?: string; expiresAt?: string | null }[];
-        };
-        if (cancelled) return;
-        const active = (result.connections ?? []).find(
-          (c) => c.expiresAt === null || Date.parse(c.expiresAt ?? '') > Date.now(),
-        );
-        if (!active?.mcpPath) return;
-        const prefix = `/v1/projects/${encodeURIComponent(projectId)}/mcp?connection=`;
-        const key = active.mcpPath.startsWith(prefix)
-          ? active.mcpPath.slice(prefix.length)
-          : undefined;
-        if (key) setUrlKey(key);
-      } catch {
-        // 静默失败；bridgeCmd 会提示用户先创建连接。
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, projectId]);
 
   useEffect(() => {
     const unsub = subscribeAuthSession((_session) => {
       authGeneration.current = getAuthSessionGeneration();
+      sseRef.current?.abort();
+      sessionRef.current = undefined;
       setSessionId(undefined);
+      setSessionAgent(undefined);
       setMessages([]);
+      setStreaming(false);
+      setSending(false);
       setError(undefined);
       setNotice(undefined);
-      sseRef.current?.abort();
     });
     return unsub;
   }, []);
@@ -118,60 +145,71 @@ export function LocalAgentChatPanel({
   }, [open]);
 
   const baseUrl = API_BASE_URL.replace(/\/$/, '');
-  // 同源部署（VITE_API_BASE_URL 为空）时相对路径可用于请求，但桥接命令必须给出绝对地址。
+  // 同源部署（VITE_API_BASE_URL 为空）时相对路径可用于请求，但下载地址等需要绝对地址。
   const bridgeApiBaseUrl = baseUrl || window.location.origin;
 
-  const connectSession = async () => {
-    if (connecting || !projectId) return;
-    setConnecting(true);
-    setError(undefined);
+  const resolveMcpUrl = async (): Promise<string> => {
+    const endpoint = `${baseUrl}/v1/projects/${encodeURIComponent(projectId)}/agent-url-connections`;
+    let listed: Response | undefined;
     try {
-      const response = await apiFetch(
-        `${baseUrl}/v1/agent-bridge/sessions`,
+      listed = await apiFetch(endpoint, {}, { expectedAuthGeneration: authGeneration.current });
+    } catch {
+      listed = undefined;
+    }
+    if (listed?.ok) {
+      const payload = (await listed.json().catch(() => ({}))) as {
+        connections?: UrlConnectionSummary[];
+      };
+      const active = (payload.connections ?? []).find(
+        (connection) =>
+          connection.expiresAt === null || Date.parse(connection.expiresAt ?? '') > Date.now(),
+      );
+      if (active?.mcpPath) return `${bridgeApiBaseUrl}${active.mcpPath}`;
+    }
+    let created: Response;
+    try {
+      created = await apiFetch(
+        endpoint,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ projectId }),
+          body: JSON.stringify({ allowGeneration: true }),
         },
         { expectedAuthGeneration: authGeneration.current },
       );
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        const code = (body as { code?: string }).code;
-        if (code === 'bridge_not_connected')
-          throw new LocalAgentError('桥接程序未连接，请先在本机启动桥接程序后再试');
-        throw new LocalAgentError('连接失败，请重试');
-      }
-      const { sessionId: sid } = (await response.json()) as { sessionId: string };
-      if (!live.current) return;
-      setSessionId(sid);
-      startSse(sid);
-      setNotice('已连接');
-    } catch (reason) {
-      if (live.current)
-        setError(reason instanceof LocalAgentError ? reason.message : '连接失败，请重试');
-    } finally {
-      if (live.current) setConnecting(false);
+    } catch {
+      throw new LocalAgentError('无法连接画布服务，请检查网络后重试');
     }
+    if (created.status === 409) {
+      throw new LocalAgentError('画布连接数已达上限，请先在 Agent 连接面板删除旧连接');
+    }
+    if (!created.ok) throw new LocalAgentError('无法为当前项目创建画布连接，请稍后重试');
+    const payload = (await created.json().catch(() => ({}))) as {
+      connection?: { mcpPath?: string };
+    };
+    const mcpPath = payload.connection?.mcpPath;
+    if (!mcpPath) throw new LocalAgentError('画布服务未返回画布连接地址，请稍后重试');
+    return `${bridgeApiBaseUrl}${mcpPath}`;
   };
 
-  const startSse = (sid: string) => {
+  const startSse = (base: string, sid: string, secret: string) => {
     sseRef.current?.abort();
     const controller = new AbortController();
     sseRef.current = controller;
     let agentMsgId = '';
     void (async () => {
       try {
-        const response = await apiFetch(
-          `${baseUrl}/v1/agent-bridge/sessions/${encodeURIComponent(sid)}/stream`,
-          { signal: controller.signal },
-          { expectedAuthGeneration: authGeneration.current },
-        );
-        if (!response.ok || !response.body) return;
+        const response = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/events`, {
+          headers: { authorization: `Bearer ${secret}`, accept: 'text/event-stream' },
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`events ${response.status}`);
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
-        while (true) {
+        for (;;) {
           const { done, value } = await reader.read();
           if (done || controller.signal.aborted) break;
           buf += decoder.decode(value, { stream: true });
@@ -179,17 +217,17 @@ export function LocalAgentChatPanel({
           while ((idx = buf.indexOf('\n\n')) >= 0) {
             const block = buf.slice(0, idx);
             buf = buf.slice(idx + 2);
-            const dataLine = block.split('\n').find((l) => l.startsWith('data: '));
+            const dataLine = block.split('\n').find((line) => line.startsWith('data:'));
             if (!dataLine) continue;
-            let ev: AgentEvent;
+            let event: AgentEvent;
             try {
-              ev = JSON.parse(dataLine.slice(6));
+              event = JSON.parse(dataLine.slice(5).trim()) as AgentEvent;
             } catch {
               continue;
             }
             if (!live.current) break;
-            if (ev.type === 'agent_message_chunk') {
-              const text = ev.text;
+            if (event.type === 'agent_message_chunk') {
+              const text = event.text;
               setMessages((prev) => {
                 const last = prev[prev.length - 1];
                 if (last && last.id === agentMsgId && last.role === 'agent') {
@@ -201,19 +239,20 @@ export function LocalAgentChatPanel({
                 agentMsgId = Math.random().toString(36).slice(2);
                 return [...prev, { id: agentMsgId, role: 'agent', content: text, pending: true }];
               });
-            } else if (ev.type === 'done') {
+            } else if (event.type === 'done') {
               setStreaming(false);
               setMessages((prev) => {
                 const last = prev[prev.length - 1];
-                if (last && last.role === 'agent')
+                if (last && last.role === 'agent') {
                   return [...prev.slice(0, -1), { ...last, pending: false }];
+                }
                 return prev;
               });
-            } else if (ev.type === 'agent_error') {
+            } else if (event.type === 'agent_error') {
               setStreaming(false);
-              setError(ev.message ?? 'Agent 出错');
-            } else if (ev.type === 'tool_call') {
-              const name = ev.name ?? '';
+              setError(event.message ?? 'Agent 出错');
+            } else if (event.type === 'tool_call') {
+              const name = event.name ?? '';
               setMessages((prev) => [
                 ...prev,
                 {
@@ -227,13 +266,77 @@ export function LocalAgentChatPanel({
           }
         }
       } catch {
-        // SSE 中止或网络错误，不报错（用户主动断开属正常）。
+        // 主动中止或桥接退出时不报错。
       }
     })();
   };
 
+  const connectLocalAgent = async () => {
+    if (connecting) return;
+    const base = normalizeLocalUrl(localUrl);
+    const secret = token.trim();
+    if (!secret) {
+      setError('请先填入桥接程序启动时打印的连接令牌');
+      return;
+    }
+    setConnecting(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      let health: Response;
+      try {
+        health = await localFetch(`${base}/health`);
+      } catch {
+        throw new LocalAgentError('无法连接本地 Agent 服务，请确认桥接程序已在本机运行');
+      }
+      if (!health.ok) throw new LocalAgentError('本地 Agent 服务响应异常，请检查桥接程序');
+      const healthBody = (await health.json().catch(() => ({}))) as { agent?: string };
+
+      const mcpUrl = await resolveMcpUrl();
+
+      let sessionResponse: Response;
+      try {
+        sessionResponse = await localFetch(`${base}/sessions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${secret}`,
+          },
+          body: JSON.stringify({ projectId, mcpUrl }),
+        });
+      } catch {
+        throw new LocalAgentError('无法连接本地 Agent 服务，请确认桥接程序已在本机运行');
+      }
+      if (sessionResponse.status === 401) {
+        throw new LocalAgentError('连接令牌无效，请核对桥接程序启动时打印的 Connect token');
+      }
+      if (!sessionResponse.ok) {
+        throw new LocalAgentError('本地 Agent 服务拒绝了连接请求，请稍后重试');
+      }
+      const payload = (await sessionResponse.json().catch(() => ({}))) as { sessionId?: string };
+      if (!payload.sessionId) {
+        throw new LocalAgentError('本地 Agent 服务未返回会话编号，请升级桥接程序');
+      }
+      if (!live.current) return;
+      setLocalUrl(base);
+      setToken(secret);
+      writeStoredConfig(base, secret);
+      sessionRef.current = { base, token: secret, id: payload.sessionId };
+      setSessionId(payload.sessionId);
+      setSessionAgent(typeof healthBody.agent === 'string' ? healthBody.agent : undefined);
+      startSse(base, payload.sessionId, secret);
+      setNotice('已连接本机 Agent');
+    } catch (reason) {
+      if (live.current) setError(errorMessageOf(reason, '连接失败，请重试'));
+    } finally {
+      if (live.current) setConnecting(false);
+    }
+  };
+
   const sendPrompt = async () => {
     if (sending || streaming || !sessionId || !input.trim()) return;
+    const session = sessionRef.current;
+    if (!session) return;
     const text = input.trim();
     setInput('');
     setSending(true);
@@ -244,34 +347,35 @@ export function LocalAgentChatPanel({
     try {
       await saveCanvas();
       if (!live.current) return;
-      const response = await apiFetch(
-        `${baseUrl}/v1/agent-bridge/sessions/${encodeURIComponent(sessionId)}/prompt`,
+      const response = await localFetch(
+        `${session.base}/sessions/${encodeURIComponent(session.id)}/prompt`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${session.token}`,
+          },
           body: JSON.stringify({ messages: [{ role: 'user', content: text }] }),
         },
-        { expectedAuthGeneration: authGeneration.current },
       );
       if (!response.ok) throw new LocalAgentError('发送失败，请重试');
       setStreaming(true);
     } catch (reason) {
-      if (live.current)
-        setError(reason instanceof LocalAgentError ? reason.message : '发送失败，请重试');
+      if (live.current) setError(errorMessageOf(reason, '发送失败，请重试'));
     } finally {
       if (live.current) setSending(false);
     }
   };
 
   const cancelTask = async () => {
-    if (!sessionId) return;
+    const session = sessionRef.current;
+    if (!session) return;
     setError(undefined);
     try {
-      await apiFetch(
-        `${baseUrl}/v1/agent-bridge/sessions/${encodeURIComponent(sessionId)}/cancel`,
-        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
-        { expectedAuthGeneration: authGeneration.current },
-      );
+      await localFetch(`${session.base}/sessions/${encodeURIComponent(session.id)}/cancel`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${session.token}` },
+      });
       setStreaming(false);
     } catch {
       // 忽略取消失败。
@@ -279,26 +383,33 @@ export function LocalAgentChatPanel({
   };
 
   const disconnect = () => {
+    const session = sessionRef.current;
     sseRef.current?.abort();
+    sseRef.current = undefined;
+    sessionRef.current = undefined;
     setSessionId(undefined);
+    setSessionAgent(undefined);
     setMessages([]);
     setStreaming(false);
+    setSending(false);
     setNotice(undefined);
     setError(undefined);
+    if (session) {
+      void localFetch(`${session.base}/sessions/${encodeURIComponent(session.id)}`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${session.token}` },
+      }).catch(() => undefined);
+    }
   };
 
   const canSend = !!sessionId && !sending && !streaming && !!input.trim();
 
   const downloadBridge = () => {
-    const a = document.createElement('a');
-    a.href = `${baseUrl}/v1/agent-bridge/download`;
-    a.download = 'canvas-bridge.js';
-    a.click();
+    const anchor = document.createElement('a');
+    anchor.href = `${bridgeApiBaseUrl}/v1/agent-bridge/download`;
+    anchor.download = 'canvas-bridge.js';
+    anchor.click();
   };
-
-  const bridgeCmd = urlKey
-    ? `node canvas-bridge.js --api ${bridgeApiBaseUrl} --token ${urlKey} --project ${projectId} --agent claude`
-    : '（请先在 Agent 连接面板创建一个服务器连接，获取 token）';
 
   return (
     <Drawer
@@ -310,7 +421,7 @@ export function LocalAgentChatPanel({
       closable={{ placement: 'end', 'aria-label': '关闭本地 Agent 聊天' }}
       rootClassName="local-agent-chat-panel"
       onClose={() => {
-        sseRef.current?.abort();
+        disconnect();
         setClosed(true);
         onClose();
       }}
@@ -328,27 +439,46 @@ export function LocalAgentChatPanel({
       {!sessionId ? (
         <div className="local-agent-setup">
           <Typography.Paragraph>
-            从 Agent 连接面板获取服务地址和连接凭据，下载并运行桥接程序后即可在此聊天。
+            桥接程序运行在你自己电脑上，浏览器直接连它聊天，请求不经过画布服务器。
           </Typography.Paragraph>
-          <Typography.Title level={5}>启动命令</Typography.Title>
+          <Typography.Title level={5}>1. 启动桥接程序</Typography.Title>
           <Input.TextArea
             className="local-agent-cmd"
-            aria-label="桥接程序启动命令"
+            aria-label="启动命令"
             readOnly
-            value={bridgeCmd}
-            rows={3}
+            value={LOCAL_BRIDGE_COMMAND}
+            rows={2}
           />
           <div className="local-agent-setup-actions">
             <Button onClick={downloadBridge}>下载桥接程序</Button>
-            <Button
-              type="primary"
-              loading={connecting}
-              disabled={connecting}
-              onClick={() => void connectSession()}
-            >
-              连接
-            </Button>
           </div>
+          <Typography.Title level={5}>2. 填入连接信息</Typography.Title>
+          <label className="local-agent-field">
+            <span>本地地址</span>
+            <Input
+              aria-label="本地地址"
+              placeholder={DEFAULT_LOCAL_URL}
+              value={localUrl}
+              onChange={(event) => setLocalUrl(event.target.value)}
+            />
+          </label>
+          <label className="local-agent-field">
+            <span>连接令牌</span>
+            <Input.Password
+              aria-label="连接令牌"
+              placeholder="桥接程序启动时打印的 Connect token"
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+            />
+          </label>
+          <Button
+            type="primary"
+            loading={connecting}
+            disabled={connecting}
+            onClick={() => void connectLocalAgent()}
+          >
+            连接
+          </Button>
         </div>
       ) : (
         <div className="local-agent-chat">
@@ -373,10 +503,10 @@ export function LocalAgentChatPanel({
               placeholder="发送给 Agent…（Enter 发送，Shift+Enter 换行）"
               value={input}
               disabled={sending || streaming}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
                   if (canSend) void sendPrompt();
                 }
               }}

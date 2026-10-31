@@ -1,6 +1,8 @@
 # 外部 Agent 控制画布
 
-第一阶段提供内外共用的画布操作服务和标准 MCP Streamable HTTP 接口。本地 Codex、DeepSeek Harness（DSH）等客户端可以直接连接，无需填写令牌。外部 Agent 负责规划；画布 API 负责权限、结构和版本校验；现有 Run/Worker 执行生成。当前没有内置聊天 Agent，也不要求新增模型供应商。
+第一阶段提供内外共用的画布操作服务和标准 MCP Streamable HTTP 接口。本地 Codex、DeepSeek Harness（DSH）等客户端可以直接连接，无需填写令牌。外部 Agent 负责规划；画布 API 负责权限、结构和版本校验；现有 Run/Worker 执行生成。不要求新增模型供应商。
+
+画布也内置了「本地 Agent」聊天侧栏：在本机运行桥接程序（`canvas-bridge --local`）后，侧栏直连本机桥接并自动把当前项目的 MCP 地址注入给 Agent，不需要手工配置。本节面向希望用自己的 Codex、DSH 等客户端直接控制画布的场景，两者共用同一套 MCP 工具与连接凭据。本地 Agent 的启动与排查见 `docs/local-agent-bridge-status.md`。
 
 ## 连接
 
