@@ -20,6 +20,7 @@ COPY apps/worker/package.json ./apps/worker/package.json
 COPY packages/credential-crypto/package.json ./packages/credential-crypto/package.json
 COPY packages/domain/package.json ./packages/domain/package.json
 COPY packages/execution/package.json ./packages/execution/package.json
+COPY packages/bridge/package.json ./packages/bridge/package.json
 COPY packages/observability/package.json ./packages/observability/package.json
 COPY packages/providers/package.json ./packages/providers/package.json
 COPY packages/ui/package.json ./packages/ui/package.json
@@ -29,6 +30,7 @@ COPY turbo.json tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
 COPY scripts/build-runtime.mjs ./scripts/build-runtime.mjs
+COPY scripts/copy-bridge.mjs ./scripts/copy-bridge.mjs
 COPY scripts/docker/prepare-prisma.mjs ./scripts/docker/prepare-prisma.mjs
 # 浏览器统一访问同源 /v1，不把容器内部地址或凭据编译进静态文件。
 ENV VITE_API_BASE_URL=""

@@ -8,3 +8,6 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: true
   prisma: true
+
+minimumReleaseAgeExclude:
+  - '@agentclientprotocol/sdk@2.2.0'

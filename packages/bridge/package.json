@@ -1,0 +1,29 @@
+{
+  "name": "@multimodal-canvas/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "canvas-bridge": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node ./build.mjs",
+    "lint": "prettier --check . --ignore-path ../../.prettierignore",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.2.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}

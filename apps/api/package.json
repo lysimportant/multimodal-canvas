@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/copy-bridge.mjs",
     "dev": "tsx watch src/index.ts",
     "lint": "prettier --check . --ignore-path ../../.prettierignore",
     "test": "vitest run",
@@ -30,6 +30,7 @@
     "zod-to-json-schema": "3.24.6"
   },
   "devDependencies": {
+    "@multimodal-canvas/bridge": "workspace:*",
     "@types/node": "^22.13.10",
     "tsx": "^4.19.3",
     "vitest": "^3.0.8"

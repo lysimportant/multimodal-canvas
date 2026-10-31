@@ -8,6 +8,7 @@ import {
 } from './agent-access';
 import { AgentUrlConnections } from './agent-url-connections';
 import { registerCanvasAgentRoutes, isAgentRequestAllowed } from './canvas-agent-routes';
+import { registerAgentBridgeRoutes, closeAllBridgeConnections } from './agent-bridge-routes';
 import { AssetThumbnailService, sendAssetThumbnail } from './asset-thumbnails';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
@@ -202,6 +203,8 @@ export type BuildAppOptions = {
   s3DownloadMode?: S3DownloadMode;
   projectStore?: ProjectStore;
   runService?: RunService;
+  /** 本地 Agent 桥接程序打包文件路径；缺省 apps/api/dist/bridge/index.js。 */
+  bridgeFilePath?: string;
   /** 管理员全局并发配置；未注入实际队列存储时接口明确返回不可用。 */
   generationConcurrencyStore?: GenerationConcurrencyStore;
   /** Provider-like executor for an in-memory/local run service. */
@@ -1669,6 +1672,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           .code(401)
           .send({ code: 'agent_token_required', error: '请使用项目连接面板签发的 Agent 令牌' });
     }
+    if (/^\/v1\/agent-bridge\/(connect|download|tasks\/[^/]+\/events)$/.test(pathname)) {
+      // 桥接程序路由自行验证 url-key 或匿名；跳过全局 JWT 检查。
+      requestPrincipals.set(request, { method: 'anonymous' });
+      return;
+    }
     if (!authToken && !jwtSecret) {
       if (process.env.NODE_ENV === 'production') {
         return reply
@@ -1968,6 +1976,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         throw error;
       }
     },
+  });
+
+  registerAgentBridgeRoutes(app, {
+    urlConnections: agentUrlConnections,
+    bridgeFilePath: options.bridgeFilePath,
+    projectStore,
+    principals: requestPrincipals,
+    sessions: requestSessions,
+  });
+  app.addHook('preClose', () => {
+    closeAllBridgeConnections();
   });
 
   app.get('/v1/auth/me', async (request, reply) => {
