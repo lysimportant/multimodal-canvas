@@ -1,7 +1,12 @@
 import { Alert, Button, Drawer, Input, Select, Spin, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 
-import { apiFetch, getAuthSessionGeneration, subscribeAuthSession } from '../auth-client';
+import {
+  apiFetch,
+  getAuthSessionGeneration,
+  readAuthSession,
+  subscribeAuthSession,
+} from '../auth-client';
 import { API_BASE_URL } from './contracts';
 import './LocalAgentChatPanel.css';
 
@@ -129,6 +134,8 @@ export function LocalAgentChatPanel({
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   const authGeneration = useRef(getAuthSessionGeneration());
+  /** 最近一次已知的登录账号；令牌续期不算换号，不能打断正在进行的本地 Agent 会话。 */
+  const signedInUser = useRef<string | undefined>(readAuthSession()?.user.id);
   const live = useRef(true);
   const sseRef = useRef<AbortController | undefined>(undefined);
   const sessionRef = useRef<ActiveSession | undefined>(undefined);
@@ -137,6 +144,10 @@ export function LocalAgentChatPanel({
   useEffect(() => {
     const unsub = subscribeAuthSession((_session) => {
       authGeneration.current = getAuthSessionGeneration();
+      const nextUserId = _session?.user.id;
+      // 令牌续期、账号资料刷新都会触发这个回调；同一账号只更新代次，保留本地 Agent 连接。
+      if (nextUserId && nextUserId === signedInUser.current) return;
+      signedInUser.current = nextUserId;
       sseRef.current?.abort();
       sessionRef.current = undefined;
       setSessionId(undefined);

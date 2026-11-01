@@ -5,17 +5,26 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => {
-  let listener: ((session: null) => void) | undefined;
+  type MockSession = { user: { id: string; role?: string } } | null;
+  let listener: ((session: MockSession) => void) | undefined;
+  let stored: MockSession = null;
   return {
     apiFetch: vi.fn(),
     getAuthSessionGeneration: vi.fn(() => 7),
-    subscribeAuthSession: vi.fn((next: (session: null) => void) => {
+    readAuthSession: vi.fn(() => stored),
+    setStoredSession: (session: MockSession) => {
+      stored = session;
+    },
+    subscribeAuthSession: vi.fn((next: (session: MockSession) => void) => {
       listener = next;
       return () => {
         if (listener === next) listener = undefined;
       };
     }),
-    changeSession: () => listener?.(null),
+    changeSession: (session: MockSession = null) => {
+      stored = session;
+      listener?.(session);
+    },
   };
 });
 vi.mock('../auth-client', () => auth);
@@ -152,6 +161,7 @@ function sessionCallInit() {
 
 beforeEach(() => {
   auth.getAuthSessionGeneration.mockReturnValue(7);
+  auth.setStoredSession(null);
   configuration.apiBaseUrl = 'http://localhost:3000';
   window.localStorage.clear();
   vi.stubGlobal('fetch', localFetch);
@@ -482,5 +492,21 @@ describe('LocalAgentChatPanel（直连本地 Agent）', () => {
     });
     await waitFor(() => expect(screen.getByRole('button', { name: '连接' })).toBeInTheDocument());
     expect(screen.queryByRole('textbox', { name: '输入消息' })).not.toBeInTheDocument();
+  });
+
+  it('同一账号令牌续期不会断开本地 Agent 连接', async () => {
+    const user = userEvent.setup();
+    auth.setStoredSession({ user: { id: 'signed-in-user' } });
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal();
+    mount();
+    await connectWith(user);
+    act(() => {
+      auth.getAuthSessionGeneration.mockReturnValue(8);
+      // 续期：账号没变，只是收到会话通知。
+      auth.changeSession({ user: { id: 'signed-in-user' } });
+    });
+    expect(screen.getByRole('textbox', { name: '输入消息' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '连接' })).not.toBeInTheDocument();
   });
 });
