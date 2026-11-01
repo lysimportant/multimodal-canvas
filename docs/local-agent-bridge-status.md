@@ -1,6 +1,6 @@
 # 本地 Agent 聊天侧栏：直连本地 Agent 改造
 
-日期：2026-11-01。本文替代前两版记录（方案 B 服务端中继）。改动尚未提交，见第六节。
+日期：2026-11-01。本文替代前两版记录（方案 B 服务端中继）。本轮改动已提交，见第六节。
 
 ## 一、背景与结论
 
@@ -14,6 +14,8 @@
 服务端中继模式（`--api/--token/--project`）**保留**作为备选：CLI 和 API 中继路由、它的测试都还在，只是 UI 默认不再使用。若以后要做「浏览器在 A 机器、Agent 在 B 机器」，再接回来。
 
 之后又按需求方反馈补了一步「不要令牌」：`--local` 增加 `--no-token` 免令牌模式，只接受本机画布页面来源（首次连接自动记住），面板默认打印带 `--no-token` 的启动命令，并先调 `/health` 探测认证模式，需要令牌时才要求填写。
+
+最近一轮按实际使用反馈（连接后对话区空白、不能选模型、看不到思考过程）补齐了 4 项：模型选择（ACP `configOptions` → `/models`、`/model`）、思考链转发与折叠显示（`agent_thought_chunk`）、Agent 身份栏与启动中占位、Agent 连接面板 Canvas Bridge 标签的旧中继命令修正。
 
 ## 二、当前架构
 
@@ -29,20 +31,23 @@
 
 ### 本机接口协议（`packages/bridge` 的 `LocalAgentServer`）
 
-| 方法   | 路径                   | 说明                                                                          |
-| ------ | ---------------------- | ----------------------------------------------------------------------------- |
-| GET    | `/health`              | 免令牌；返回 `{ ok, name, version, agent, auth }`，侧栏用它判断服务与令牌模式 |
-| POST   | `/sessions`            | `{ projectId?, mcpUrl? }` → 201 `{ sessionId }`；按会话复用 ACP 会话          |
-| GET    | `/sessions/:id/events` | SSE：`data: <事件 JSON>`，20 秒 `: ping` 心跳                                 |
-| POST   | `/sessions/:id/prompt` | `{ messages }` → 202 `{ taskId }`；并发发送 409 `prompt_in_progress`          |
-| POST   | `/sessions/:id/cancel` | 204；当前没有任务时 409 `no_active_task`                                      |
-| DELETE | `/sessions/:id`        | 204，侧栏断开时通知桥接释放 ACP 会话                                          |
+| 方法   | 路径                   | 说明                                                                                                     |
+| ------ | ---------------------- | -------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`              | 免令牌；返回 `{ ok, name, version, agent, auth }`，侧栏用它判断服务与令牌模式                            |
+| POST   | `/sessions`            | `{ projectId?, mcpUrl? }` → 201 `{ sessionId, agent, models, currentModel? }`；建会话即启动 Agent 适配器 |
+| GET    | `/sessions/:id/models` | 返回 `{ sessionId, agent, models, currentModel? }`                                                       |
+| POST   | `/sessions/:id/model`  | `{ model }` → 200 同上；Agent 不支持模型切换时 409 `no_model_option`                                     |
+| GET    | `/sessions/:id/events` | SSE：`data: <事件 JSON>`，20 秒 `: ping` 心跳                                                            |
+| POST   | `/sessions/:id/prompt` | `{ messages }` → 202 `{ taskId }`；并发发送 409 `prompt_in_progress`                                     |
+| POST   | `/sessions/:id/cancel` | 204；当前没有任务时 409 `no_active_task`                                                                 |
+| DELETE | `/sessions/:id`        | 204，侧栏断开时通知桥接释放 ACP 会话                                                                     |
 
 - **令牌模式（默认）**：除 `/health` 外都要求 `Authorization: Bearer <Connect token>`。令牌持久化在 `~/.canvas-agent/local-agent.json`（权限 0600），首次启动自动生成；可用 `--local-token` 覆盖。
 - **免令牌模式（`--no-token`）**：不需要令牌，改为校验浏览器 `Origin`——只接受本机（loopback）画布页面。首个成功连接的页面来源会写入 `~/.canvas-agent/local-agent.json` 的 `allowedOrigins`；之后只放行同一来源（同端口视为同源）。没有 `Origin` 头返回 403 `origin_required`，非本机来源返回 403 `origin_rejected`。换访问地址导致被拒时，删除该文件的 `allowedOrigins` 后重启即可重新记住。
 - 仅监听回环地址；CORS 回显 `Origin`、允许 `authorization`/`content-type`、带 `access-control-allow-private-network: true`（Chrome 私有网络访问要求）。
-- 事件类型与旧中继模式一致（`agent_message_chunk` / `tool_call` / `usage_update` / `done` / `agent_error`），侧栏渲染逻辑不变。
+- 事件类型：`agent_message_chunk` / `agent_thought_chunk`（思考链）/ `tool_call` / `usage_update` / `done` / `agent_error`；侧栏把思考链渲染成可折叠的「思考过程」。
 - 权限请求仍然全部自动放行：优先 `allow_always`，其次 `allow_once`，再退第一个选项。
+- 模型能力来自 ACP 的 `NewSessionResponse.configOptions`：桥接只暴露 `category === 'model'` 的 select 选项（分组会拍平），切换时调用 `session/set_config_option`；Agent 没有该配置项时侧栏显示「模型由 Agent 启动参数决定」。
 
 ## 三、本轮改动
 
@@ -54,6 +59,10 @@
 - 新增 `packages/bridge/test/local-agent.test.mjs`（`node --test`，15 个用例）与 `test/fixtures/fake-acp-agent.mjs`（合成 ACP Agent，支持正常流、权限请求、报错、取消分支，并记录收发报文）。
 - 版本号 `0.2.0`；`package.json` 增加 `"test": "node ./build.mjs && node --test test/local-agent.test.mjs"`。
 - 修掉一个重复推送问题：`session/update` 的 `tool_call` 与随后到达的权限请求都会推工具调用，现在用 `emittedToolCalls`（key 为 `acpSessionId:toolCallId`）去重。
+- 会话建立即启动 Agent：`POST /sessions` 会 `await ensureSessionFor(...)` 真实创建 ACP 会话，失败返回 502 `agent_start_failed`（原因是侧栏之前看到「空白」的根因之一：启动失败没有任何反馈）。
+- 新增模型能力：`profile()` 从 `SessionConfigOption` 中取 `category === 'model'` 的 select 项，`flattenSelectOptions()` 拍平分组；`POST /sessions/:id/model` 调 `session/set_config_option` 并回写 `configOptions`。
+- 新增思考链：`agent_thought_chunk` 转成同名桥接事件；`config_option_update` 同步会话的配置项（模型选择变化时侧栏下拉框会自动更新）。
+- `session/new` 的 `NewSessionResponse.configOptions` 保存在 `HostSession.configOptions`。
 
 ### 2. 侧栏 `apps/web/src/workspace/LocalAgentChatPanel.tsx` / `.css`
 
@@ -62,24 +71,35 @@
 - 连接顺序：`GET /health` 探活并读取 `auth` 字段 → 仅令牌模式要求填写令牌 → 复用或创建画布 URL 连接拿 `mcpPath` → `POST /sessions`（需要令牌时才带 Authorization，始终带绝对 `mcpUrl`）→ 打开 SSE。
 - 连接失败分别提示：服务没启动、令牌无效（401）、桥接拒绝页面来源（403 `origin_required`/`origin_rejected`）、画布连接数已达上限（409）、无法创建画布连接。
 - 断开时中止 SSE 并 `DELETE /sessions/:id`；切换项目或账户变化时重置。
-- 保留 8 秒请求超时，避免服务无响应时按钮一直转圈。
+- 保留 8 秒请求超时，避免服务无响应时按钮一直转圈；建立会话单独用 120 秒超时（首次启动可能要下载 Agent 适配器），期间面板显示「正在启动本机 Agent…」占位与 Spin。
+- 聊天区顶部显示身份栏（`Agent：<启动命令/可执行文件>`）与模型下拉框（`aria-label="选择模型"`）；模型列表来自 `POST /sessions` 的返回，切换失败会回滚并提示。
+- 思考链渲染在每条 Agent 消息内：`<details>`「思考过程」+ `<pre>` 内容，默认折叠。
+- 流式期间只有用户消息、还没有任何 Agent 输出时，显示「Agent 正在响应…」占位，避免看起来无反应。
+- 若 Agent 没有模型配置项，身份栏右侧显示「模型由 Agent 启动参数决定」。
 
-### 3. 测试
+### 3. Agent 连接面板 `apps/web/src/workspace/AgentConnectionPanel.tsx`
 
-- `LocalAgentChatPanel.test.tsx` 重写为 16 个用例：默认值/回填、令牌模式缺令牌提示、免令牌模式无 Authorization 连接、连接流程（含 `mcpUrl` 与 `Authorization` 头断言）、自动创建画布连接、各种失败提示、发送前保存画布、SSE 渲染、工具调用、停止、断开、账户重置。
-- `apps/web/e2e/local-agent-chat.spec.ts` 重写：mock 本机桥接 origin（含 CORS 预检、`/health` 返回 `auth: 'none'`、`/sessions`、SSE、`DELETE`），1440 / 390 / 320 三个宽度验证启动命令、不填令牌直连、`sessionCreates` 中无 Authorization 且有绝对 `mcpUrl`、面板不横向溢出；顶栏「连接 Agent」「本地 Agent」两个文字按钮继续校验文字不溢出按钮。
-- `packages/bridge/test/local-agent.test.mjs` 覆盖：health 免令牌、令牌校验/未知会话 404、完整流（chunk、tool_call 去重、usage、`done` 最后）、取消后继续、忙时 409、无任务取消 409、Agent 报错、空提示词 400、只 initialize 一次；另有 6 个免令牌用例（`auth: 'none'`、无 Origin 403、外来源 403、首连记源并落盘、同源放行异源拒绝、重启后仍记住）。
+- Canvas Bridge 标签的启动命令从旧的中继命令 `node canvas-bridge.js --api … --token … --agent claude` 改为直连命令 `node canvas-bridge.js --local --no-token --agent claude`，并删掉只服务旧命令的 `bridgeKey`/`apiBase` 推导。
+- 说明文字改为：下载后在命令行运行该命令、本地服务地址 `http://127.0.0.1:17871`、到画布「本地 Agent」侧栏点连接、命令已带 `--no-token`、首次连接会自动记住画布页面来源。
+- 新增对应单测断言（命令不含 `--token`/`--api`，说明含 `127.0.0.1:17871` 与「命令已带 --no-token」）。
+
+### 4. 测试
+
+- `LocalAgentChatPanel.test.tsx` 重写为 19 个用例：默认值/回填、令牌模式缺令牌提示、免令牌模式无 Authorization 连接、连接流程（含 `mcpUrl` 与 `Authorization` 头断言）、自动创建画布连接、各种失败提示、发送前保存画布、SSE 渲染、工具调用、停止、断开、账户重置；本轮新增启动占位、身份+模型选择器与切换、思考链折叠 3 个用例。
+- `apps/web/e2e/local-agent-chat.spec.ts` 重写：mock 本机桥接 origin（含 CORS 预检、`/health` 返回 `auth: 'none'`、`/sessions` 返回 agent+models、`/model`、SSE 含思考链与正文、`DELETE`），1440 / 390 / 320 三个宽度验证启动命令、不填令牌直连、身份栏与模型下拉可见、思考过程可见、`sessionCreates` 中无 Authorization 且有绝对 `mcpUrl`、面板不横向溢出；顶栏「连接 Agent」「本地 Agent」两个文字按钮继续校验文字不溢出按钮。
+- `packages/bridge/test/local-agent.test.mjs` 16 个用例：health 免令牌、令牌校验/未知会话 404、完整流（chunk、tool_call 去重、usage、`done` 最后、思考链）、取消后继续、忙时 409、无任务取消 409、Agent 报错、空提示词 400、只 initialize 一次、会话返回身份与模型并可切换；另有 6 个免令牌用例（`auth: 'none'`、无 Origin 403、外来源 403、首连记源并落盘、同源放行异源拒绝、重启后仍记住）。
 - 原中继侧测试不受影响：`apps/api/src/agent-bridge-routes.test.ts`（7）与 `agent-bridge-e2e.test.ts`（5）全部通过，后者仍以真实 `packages/bridge/dist/index.js` 进程跑中继模式。
 
 ## 四、验证记录
 
 ```bash
 pnpm --filter ./packages/bridge typecheck        # 通过
-pnpm --filter ./packages/bridge test             # 15/15 通过（含 build）
+pnpm --filter ./packages/bridge test             # 16/16 通过（含 build，dist/index.js 262.5kb → 本轮 268.8KB）
 pnpm --filter ./apps/api build                   # tsc + copy-bridge → apps/api/dist/bridge/index.js
 pnpm --filter ./apps/api exec vitest run src/agent-bridge-routes.test.ts src/agent-bridge-e2e.test.ts  # 12/12
 pnpm --filter ./apps/web typecheck               # 通过
-pnpm --filter ./apps/web exec vitest run src/workspace/LocalAgentChatPanel.test.tsx                    # 16/16
+pnpm --filter ./apps/web exec vitest run src/workspace/LocalAgentChatPanel.test.tsx                    # 19/19
+pnpm --filter ./apps/web exec vitest run src/workspace/AgentConnectionPanel.test.tsx                   # 38/38
 pnpm --filter ./apps/web test:e2e -- e2e/local-agent-chat.spec.ts                                      # 3 passed（1440/390/320）
 npx prettier --check <本轮改动与新增文件>        # 通过
 ```
@@ -88,8 +108,8 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 
 - 镜像构建成功，`initialize/migrate` 正常退出，`postgres/redis/api/worker/web` 全部 healthy。
 - `GET http://127.0.0.1:8080/health` → `{"status":"ok","service":"api"}`。
-- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，263684 字节，与 `packages/bridge/dist/index.js` 哈希一致；下载文件 `--help` 含 `--no-token`，启动输出含 ASCII 行 `Auth: none (no token needed)`；API 镜像内 `/app/dist/bridge/index.js` 存在（263684 字节）。
-- web 产物（`/usr/share/caddy/assets/main-*.js`）包含 `--local --no-token --agent claude`、`127.0.0.1:17871`、`连接令牌`、`/v1/agent-bridge/download`，确认新面板已进入生产包。
+- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，**268757 字节**，与 `packages/bridge/dist/index.js` 哈希一致；API 镜像内 `/app/dist/bridge/index.js` 也是 268757 字节。
+- web 产物（`/usr/share/caddy/assets/main-*.js`）包含 `选择模型`、`思考过程`、`正在启动本机 Agent`、`canvas-bridge.js --local --no-token`，确认本轮新增的模型选择、思考链、启动占位与 Agent 面板命令都进入了生产包；`web` 镜像重建时间 2026-11-01 10:58。
 
 ## 五、如何使用（本机手工联调）
 
@@ -104,7 +124,9 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
    irm http://localhost:8080/v1/agent-bridge/download -OutFile canvas-bridge.js; node canvas-bridge.js --local --no-token --agent claude
    ```
 
-3. 打开画布右侧「本地 Agent」面板，地址保持默认 `http://127.0.0.1:17871`，令牌留空，点「连接」即可（首次连接会记住当前画布来源，之后免令牌直连）。
+3. 打开画布右侧「本地 Agent」面板，地址保持默认 `http://127.0.0.1:17871`，令牌留空，点「连接」即可（首次连接会记住当前画布来源，之后免令牌直连）。连接期间面板会显示「正在启动本机 Agent…」，成功后聊天区顶部出现 Agent 身份和模型下拉框；Agent 的思考过程会以可折叠的「思考过程」区块显示在消息上方。
+   - 模型下拉框的选项来自 Agent 自己（ACP `configOptions`），不是画布模型池；切换后立即对新一轮生效。若 Agent 没提供模型选项，这一栏显示「模型由 Agent 启动参数决定」。
+   - 若长时间没有任何输出：先看终端里桥接的 stderr（`[agent]` 前缀是 Agent 自己的日志），常见原因是 Agent CLI 未登录、适配器首次下载中，或模型正在长时间思考。
 
 **可选：令牌模式（更严格）**
 
@@ -121,7 +143,11 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
    - 新增：`packages/bridge/test/local-agent.test.mjs`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`
 2. `80943bb` feat(agent): 本地 Agent 支持免令牌直连（`--no-token` + 来源白名单）
    - 修改：`packages/bridge/src/index.ts`、`packages/bridge/test/local-agent.test.mjs`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、本文
-3. `docs(agent): 记录免令牌模式与 Docker 重建验证结果`（本文档随该提交更新，哈希见 `git log`）
+3. `80943bb` feat(agent): 本地 Agent 支持免令牌直连（`--no-token` + 来源白名单）
+   - 修改：`packages/bridge/src/index.ts`、`packages/bridge/test/local-agent.test.mjs`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、本文
+4. `6455758` feat(agent): 本地 Agent 支持模型选择、思考链与启动状态反馈
+   - 修改：`packages/bridge/src/index.ts`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`、`packages/bridge/test/local-agent.test.mjs`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,css,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、`apps/web/src/workspace/AgentConnectionPanel.{tsx,test.tsx}`
+5. `docs(agent): 记录模型选择与思考链改造`（本文档随该提交更新，哈希见 `git log`）
 
 历史提交（中继模式阶段）：
 
@@ -135,8 +161,8 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 
 ## 七、未完成与风险
 
-1. **真实 Agent 全链路联调未做**：本机没有 Postgres/Redis 与画布数据库配置，API 只能用内存夹具；Agent 侧用合成 ACP Agent 验证。需要一台能起完整画布服务的机器手工跑一次 Claude Code / Codex。
-2. **Docker 镜像已重建并完成接口级验证**（2026-11-01 09:08）：`multimodal-canvas-web:local` / `api:local` 均为本次构建，下载接口返回最新 263684 字节桥接程序（哈希一致），web 产物包含带 `--no-token` 的新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
+1. **真实 Agent 全链路联调未做**：本机没有 Postgres/Redis 与画布数据库配置，API 只能用内存夹具；Agent 侧用合成 ACP Agent 验证（它已模拟模型列表、思考链、权限请求、报错、取消分支）。需要一台能起完整画布服务的机器手工跑一次 Claude Code / Codex，确认真实适配器是否提供 `category === 'model'` 的配置项（不提供时侧栏显示「模型由 Agent 启动参数决定」，属预期）；思考链是否出现取决于适配器是否发送 `agent_thought_chunk`。
+2. **Docker 镜像已重建并完成接口级验证**（2026-11-01 09:08，随后本轮模型/思考链改动又重建一次）：`multimodal-canvas-web:local` / `api:local` 均为最新构建，下载接口返回最新桥接程序（哈希一致），web 产物包含带 `--no-token` 的新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
 3. **安全边界**：本机服务只监听回环地址。令牌模式下恶意网页拿不到令牌；免令牌模式下靠 `Origin` 白名单，但**首次连接的本机页面来源会被无条件信任并记住**——如果同时有其他本机网页在使用该端口，谁先连谁被记住。需要更严格时用 `--local-token`（令牌模式），或删除 `~/.canvas-agent/local-agent.json` 的 `allowedOrigins` 重置。恶意网页无法读取该文件，但能向 127.0.0.1 发请求（无 Origin / 异来源会被 403）。
 4. **画布连接上限**：`agent-access.ts:110-131` 仍是每进程全局 100 条 URL 连接上限，侧栏自动创建连接会加速消耗；建议改为按用户/项目维度限流（原 R1）。
 5. **中继模式保留但 UI 未暴露**：CLI 仍可用，文档未写详细步骤；如果确定不再使用，可后续删除 `apps/api/src/agent-bridge-routes.ts` 与对应测试，减小维护面积。
