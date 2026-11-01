@@ -270,6 +270,12 @@ for (const width of [1440, 390, 320]) {
 
       await panel.getByRole('button', { name: '关闭本地 Agent 聊天', exact: true }).click();
       await expect(panel).toBeHidden();
+
+      // 关闭只是收起界面：重新打开后仍保留会话与对话，不会重新建立会话。
+      const reopened = await openLocalAgent(page, width <= 600);
+      await expect(reopened.getByRole('textbox', { name: '输入消息', exact: true })).toBeVisible();
+      await expect(reopened.getByText('你好，我在。')).toBeVisible();
+      expect(localAgent.sessionCreates).toHaveLength(1);
     });
   });
 }

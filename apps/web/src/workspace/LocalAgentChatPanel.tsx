@@ -52,6 +52,7 @@ class LocalAgentError extends Error {}
 
 const DEFAULT_LOCAL_URL = 'http://127.0.0.1:17871';
 const CONFIG_STORAGE_KEY = 'canvas-agent-local-connection';
+const SESSION_STORAGE_KEY = 'canvas-agent-local-session';
 const LOCAL_BRIDGE_COMMAND = 'node canvas-bridge.js --local --no-token --agent claude';
 const REQUEST_TIMEOUT_MS = 8_000;
 /** 建立会话时要顺带启动 Agent（首次可能下载适配器），给更长的超时。 */
@@ -83,6 +84,60 @@ function writeStoredConfig(url: string, token: string): void {
     window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify({ url, token }));
   } catch {
     // 隐私模式下不可写，忽略。
+  }
+}
+
+/** 面板关闭、页面重载后恢复的会话快照；桥接进程还活着时可以直接续上。 */
+type StoredConversation = {
+  projectId: string;
+  baseUrl: string;
+  token: string;
+  sessionId: string;
+  agent?: string;
+  models: ModelOption[];
+  currentModel?: string;
+  messages: Message[];
+};
+
+function readStoredConversation(projectId: string): StoredConversation | undefined {
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as Partial<StoredConversation>;
+    if (parsed.projectId !== projectId) return undefined;
+    if (typeof parsed.sessionId !== 'string' || typeof parsed.baseUrl !== 'string') {
+      return undefined;
+    }
+    return {
+      projectId,
+      baseUrl: parsed.baseUrl,
+      token: typeof parsed.token === 'string' ? parsed.token : '',
+      sessionId: parsed.sessionId,
+      ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
+      models: Array.isArray(parsed.models) ? parsed.models : [],
+      ...(typeof parsed.currentModel === 'string' ? { currentModel: parsed.currentModel } : {}),
+      messages: Array.isArray(parsed.messages)
+        ? parsed.messages.filter(
+            (message): message is Message =>
+              typeof message === 'object' &&
+              message !== null &&
+              typeof (message as Message).id === 'string' &&
+              typeof (message as Message).content === 'string' &&
+              ((message as Message).role === 'user' || (message as Message).role === 'agent'),
+          )
+        : [],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredConversation(value: StoredConversation | undefined): void {
+  try {
+    if (value) window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(value));
+    else window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // 隐私模式或超配额时忽略；不影响当前会话。
   }
 }
 
@@ -118,15 +173,19 @@ export function LocalAgentChatPanel({
   saveCanvas,
 }: LocalAgentChatPanelProps) {
   const stored = useRef(readStoredConfig());
+  /** 页面重载或面板重新挂载时，当前标签页里保存的上一次本地会话。 */
+  const restored = useRef(readStoredConversation(projectId));
   const [closed, setClosed] = useState(false);
-  const [sessionId, setSessionId] = useState<string | undefined>();
-  const [sessionAgent, setSessionAgent] = useState<string | undefined>();
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [currentModel, setCurrentModel] = useState<string | undefined>();
+  const [sessionId, setSessionId] = useState<string | undefined>(restored.current?.sessionId);
+  const [sessionAgent, setSessionAgent] = useState<string | undefined>(restored.current?.agent);
+  const [models, setModels] = useState<ModelOption[]>(restored.current?.models ?? []);
+  const [currentModel, setCurrentModel] = useState<string | undefined>(
+    restored.current?.currentModel,
+  );
   const [switchingModel, setSwitchingModel] = useState(false);
   const [localUrl, setLocalUrl] = useState(stored.current.url);
   const [token, setToken] = useState(stored.current.token);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(restored.current?.messages ?? []);
   const [input, setInput] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [sending, setSending] = useState(false);
@@ -179,10 +238,8 @@ export function LocalAgentChatPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 关闭时中止 SSE。
-  useEffect(() => {
-    if (!open) sseRef.current?.abort();
-  }, [open]);
+  // 组件卸载时只关闭事件流，桥接里的会话继续保留。
+  useEffect(() => () => sseRef.current?.abort(), []);
 
   const baseUrl = API_BASE_URL.replace(/\/$/, '');
   // 同源部署（VITE_API_BASE_URL 为空）时相对路径可用于请求，但下载地址等需要绝对地址。
@@ -255,6 +312,21 @@ export function LocalAgentChatPanel({
           signal: controller.signal,
         });
         if (!response.ok || !response.body) {
+          if (
+            (response.status === 404 || response.status === 410) &&
+            sessionRef.current?.id === sid
+          ) {
+            // 桥接进程里已经没有这个会话（比如桥接重启过）：清掉旧记录，回到连接界面。
+            sessionRef.current = undefined;
+            writeStoredConversation(undefined);
+            setSessionId(undefined);
+            setSessionAgent(undefined);
+            setModels([]);
+            setCurrentModel(undefined);
+            setMessages([]);
+            setError('上次的本地 Agent 会话已失效，请重新连接');
+            return;
+          }
           throw new Error(`events ${response.status}`);
         }
         const reader = response.body.getReader();
@@ -276,7 +348,7 @@ export function LocalAgentChatPanel({
             } catch {
               continue;
             }
-            if (!live.current) break;
+            if (controller.signal.aborted) break;
             if (event.type === 'agent_message_chunk') {
               const text = event.text;
               appendToAgentMessage((message) => ({ ...message, content: message.content + text }));
@@ -317,6 +389,57 @@ export function LocalAgentChatPanel({
       }
     })();
   };
+
+  // 页面重载或组件重新挂载时，桥接进程还活着就直接续上会话并重新订阅事件流。
+  useEffect(() => {
+    const saved = restored.current;
+    if (!saved) return;
+    restored.current = undefined;
+    sessionRef.current = { base: saved.baseUrl, token: saved.token, id: saved.sessionId };
+    setNotice('已恢复上次的本地 Agent 会话');
+    startSse(saved.baseUrl, saved.sessionId, saved.token);
+    return () => sseRef.current?.abort();
+    // 只在首次挂载时执行：恢复逻辑依赖首次渲染时读到的快照。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 会话状态变化后写回 sessionStorage，关闭面板或刷新页面时据此恢复。
+  useEffect(() => {
+    const session = sessionRef.current;
+    if (!sessionId || !session) {
+      writeStoredConversation(undefined);
+      return;
+    }
+    writeStoredConversation({
+      projectId,
+      baseUrl: session.base,
+      token: session.token,
+      sessionId,
+      ...(sessionAgent ? { agent: sessionAgent } : {}),
+      models,
+      ...(currentModel ? { currentModel } : {}),
+      messages,
+    });
+  }, [projectId, sessionId, sessionAgent, models, currentModel, messages]);
+
+  // 切换项目时丢弃上一个项目的本地会话（桥接里的会话随后由断开逻辑清理）。
+  const activeProject = useRef(projectId);
+  useEffect(() => {
+    if (activeProject.current === projectId) return;
+    activeProject.current = projectId;
+    sseRef.current?.abort();
+    sseRef.current = undefined;
+    sessionRef.current = undefined;
+    setSessionId(undefined);
+    setSessionAgent(undefined);
+    setModels([]);
+    setCurrentModel(undefined);
+    setMessages([]);
+    setStreaming(false);
+    setSending(false);
+    setError(undefined);
+    setNotice(undefined);
+  }, [projectId]);
 
   const connectLocalAgent = async () => {
     if (connecting) return;
@@ -526,7 +649,7 @@ export function LocalAgentChatPanel({
       closable={{ placement: 'end', 'aria-label': '关闭本地 Agent 聊天' }}
       rootClassName="local-agent-chat-panel"
       onClose={() => {
-        disconnect();
+        // 只关闭界面，不结束会话：再次打开或刷新页面都保留对话，桥接进程继续跑着。
         setClosed(true);
         onClose();
       }}

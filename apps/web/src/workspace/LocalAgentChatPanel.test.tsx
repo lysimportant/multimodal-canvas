@@ -164,6 +164,7 @@ beforeEach(() => {
   auth.setStoredSession(null);
   configuration.apiBaseUrl = 'http://localhost:3000';
   window.localStorage.clear();
+  window.sessionStorage.clear();
   vi.stubGlobal('fetch', localFetch);
 });
 
@@ -508,5 +509,88 @@ describe('LocalAgentChatPanel（直连本地 Agent）', () => {
     });
     expect(screen.getByRole('textbox', { name: '输入消息' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '连接' })).not.toBeInTheDocument();
+  });
+
+  it('关闭面板不结束会话，重新打开保留对话', async () => {
+    const user = userEvent.setup();
+    const sseDeferred = deferred<Response>();
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal({ events: () => sseDeferred.promise });
+    const view = mount();
+    await connectWith(user);
+    await user.type(screen.getByRole('textbox', { name: '输入消息' }), 'hello');
+    await user.keyboard('{Enter}');
+    await act(async () =>
+      sseDeferred.resolve(
+        new Response(
+          sseStream(
+            `data: ${JSON.stringify({ type: 'agent_message_chunk', text: '保持住' })}\n\n`,
+            `data: ${JSON.stringify({ type: 'done' })}\n\n`,
+          ),
+          { status: 200 },
+        ),
+      ),
+    );
+    expect(await screen.findByText('保持住')).toBeVisible();
+
+    view.rerender(
+      <LocalAgentChatPanel
+        projectId={projectId}
+        open={false}
+        onClose={view.onClose}
+        saveCanvas={view.saveCanvas}
+      />,
+    );
+    view.rerender(
+      <LocalAgentChatPanel
+        projectId={projectId}
+        open
+        onClose={view.onClose}
+        saveCanvas={view.saveCanvas}
+      />,
+    );
+
+    expect(await screen.findByRole('textbox', { name: '输入消息' })).toBeInTheDocument();
+    expect(screen.getByText('保持住')).toBeVisible();
+    const removed = localFetch.mock.calls.some(
+      ([input, init]) =>
+        String(input) === `${localBase}/sessions/sess-abc` && init?.method === 'DELETE',
+    );
+    expect(removed).toBe(false);
+  });
+
+  it('页面重新挂载时从会话快照恢复对话并重新订阅事件', async () => {
+    const user = userEvent.setup();
+    const sseDeferred = deferred<Response>();
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal({ events: () => sseDeferred.promise });
+    const view = mount();
+    await connectWith(user);
+    await act(async () =>
+      sseDeferred.resolve(
+        new Response(
+          sseStream(
+            `data: ${JSON.stringify({ type: 'agent_message_chunk', text: '之前的回复' })}\n\n`,
+            `data: ${JSON.stringify({ type: 'done' })}\n\n`,
+          ),
+          { status: 200 },
+        ),
+      ),
+    );
+    expect(await screen.findByText('之前的回复')).toBeVisible();
+    const eventsBefore = localFetch.mock.calls.filter(([input]) =>
+      String(input).endsWith('/events'),
+    ).length;
+    view.unmount();
+
+    routeLocal();
+    mount();
+    expect(screen.getByRole('textbox', { name: '输入消息' })).toBeInTheDocument();
+    expect(screen.getByText('之前的回复')).toBeVisible();
+    await waitFor(() =>
+      expect(
+        localFetch.mock.calls.filter(([input]) => String(input).endsWith('/events')).length,
+      ).toBeGreaterThan(eventsBefore),
+    );
   });
 });
