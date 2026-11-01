@@ -88,8 +88,8 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 
 - 镜像构建成功，`initialize/migrate` 正常退出，`postgres/redis/api/worker/web` 全部 healthy。
 - `GET http://127.0.0.1:8080/health` → `{"status":"ok","service":"api"}`。
-- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，259084 字节，与 `packages/bridge/dist/index.js` 完全一致；API 镜像内 `/app/dist/bridge/index.js` 存在。
-- web 产物（`/usr/share/caddy/assets/main-*.js`）包含 `node canvas-bridge.js --local --agent claude`、`127.0.0.1:17871`、`连接令牌`、`/v1/agent-bridge/download`，确认新面板已进入生产包。
+- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，263591 字节，与 `packages/bridge/dist/index.js` 哈希一致；下载文件 `--help` 含 `--no-token`；API 镜像内 `/app/dist/bridge/index.js` 存在（263591 字节）。
+- web 产物（`/usr/share/caddy/assets/main-*.js`）包含 `--local --no-token --agent claude`、`127.0.0.1:17871`、`连接令牌`、`/v1/agent-bridge/download`，确认新面板已进入生产包。
 
 ## 五、如何使用（本机手工联调）
 
@@ -98,7 +98,12 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 **最短路径（推荐，不需要令牌）**：
 
 1. 浏览器侧栏点「下载桥接程序」，得到 `canvas-bridge.js`；或直接下载 `http://localhost:8080/v1/agent-bridge/download`（该地址匿名开放，不需要登录/令牌）。
-2. 本机终端运行：`node canvas-bridge.js --local --no-token --agent claude`（Agent 可换 `codex`/`gemini`/`opencode`/`qwen`；也可用 `--agent-cmd` 指定任意 ACP Agent 可执行文件）。
+2. 本机终端运行：`node canvas-bridge.js --local --no-token --agent claude`（Agent 可换 `codex`/`gemini`/`opencode`/`qwen`；也可用 `--agent-cmd` 指定任意 ACP Agent 可执行文件）。Windows 想省掉手动下载，可一条命令搞定：
+
+   ```powershell
+   irm http://localhost:8080/v1/agent-bridge/download -OutFile canvas-bridge.js; node canvas-bridge.js --local --no-token --agent claude
+   ```
+
 3. 打开画布右侧「本地 Agent」面板，地址保持默认 `http://127.0.0.1:17871`，令牌留空，点「连接」即可（首次连接会记住当前画布来源，之后免令牌直连）。
 
 **可选：令牌模式（更严格）**
@@ -109,10 +114,14 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 
 ## 六、提交
 
-已提交 `571e627` feat(agent): 本地 Agent 改为浏览器直连本机桥接，并推送到 `origin`（GitHub）与 `gitee`。该提交包含：
+已提交并推送到 `origin`（GitHub）与 `gitee`：
 
-- 修改：`packages/bridge/src/index.ts`、`packages/bridge/package.json`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,css,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、`docs/canvas-agent-mcp.md`、本文
-- 新增：`packages/bridge/test/local-agent.test.mjs`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`
+1. `571e627` feat(agent): 本地 Agent 改为浏览器直连本机桥接
+   - 修改：`packages/bridge/src/index.ts`、`packages/bridge/package.json`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,css,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、`docs/canvas-agent-mcp.md`、本文
+   - 新增：`packages/bridge/test/local-agent.test.mjs`、`packages/bridge/test/fixtures/fake-acp-agent.mjs`
+2. `80943bb` feat(agent): 本地 Agent 支持免令牌直连（`--no-token` + 来源白名单）
+   - 修改：`packages/bridge/src/index.ts`、`packages/bridge/test/local-agent.test.mjs`、`apps/web/src/workspace/LocalAgentChatPanel.{tsx,test.tsx}`、`apps/web/e2e/local-agent-chat.spec.ts`、本文
+3. `docs(agent): 记录免令牌模式与 Docker 重建验证结果`（本文档随该提交更新，哈希见 `git log`）
 
 历史提交（中继模式阶段）：
 
@@ -127,7 +136,7 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 ## 七、未完成与风险
 
 1. **真实 Agent 全链路联调未做**：本机没有 Postgres/Redis 与画布数据库配置，API 只能用内存夹具；Agent 侧用合成 ACP Agent 验证。需要一台能起完整画布服务的机器手工跑一次 Claude Code / Codex。
-2. **Docker 镜像已重建并完成接口级验证**（2026-11-01）：`multimodal-canvas-web:local` / `api:local` 均为本次构建，下载接口返回新的 253 KB 桥接程序，web 产物包含新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
+2. **Docker 镜像已重建并完成接口级验证**（2026-11-01 09:05）：`multimodal-canvas-web:local` / `api:local` 均为本次构建，下载接口返回最新 263591 字节桥接程序（哈希一致），web 产物包含带 `--no-token` 的新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
 3. **安全边界**：本机服务只监听回环地址。令牌模式下恶意网页拿不到令牌；免令牌模式下靠 `Origin` 白名单，但**首次连接的本机页面来源会被无条件信任并记住**——如果同时有其他本机网页在使用该端口，谁先连谁被记住。需要更严格时用 `--local-token`（令牌模式），或删除 `~/.canvas-agent/local-agent.json` 的 `allowedOrigins` 重置。恶意网页无法读取该文件，但能向 127.0.0.1 发请求（无 Origin / 异来源会被 403）。
 4. **画布连接上限**：`agent-access.ts:110-131` 仍是每进程全局 100 条 URL 连接上限，侧栏自动创建连接会加速消耗；建议改为按用户/项目维度限流（原 R1）。
 5. **中继模式保留但 UI 未暴露**：CLI 仍可用，文档未写详细步骤；如果确定不再使用，可后续删除 `apps/api/src/agent-bridge-routes.ts` 与对应测试，减小维护面积。
