@@ -66,7 +66,9 @@ const BACKOFF_MAX_MS = 30_000;
 const IS_WINDOWS = process.platform === 'win32';
 const DEFAULT_LOCAL_HOST = '127.0.0.1';
 const DEFAULT_LOCAL_PORT = 17_871;
-const LOCAL_CONFIG_PATH = join(homedir(), '.canvas-agent', 'local-agent.json');
+/** 桥接运行目录；可用 CANVAS_AGENT_HOME 覆盖（测试与多实例联调用）。 */
+const AGENT_HOME_DIR = process.env.CANVAS_AGENT_HOME?.trim() || join(homedir(), '.canvas-agent');
+const LOCAL_CONFIG_PATH = join(AGENT_HOME_DIR, 'local-agent.json');
 const MAX_BODY_BYTES = 1024 * 1024;
 const HEARTBEAT_MS = 20_000;
 
@@ -122,6 +124,7 @@ interface LocalOptions extends AgentSpec {
   mode: 'local';
   host: string;
   port: number;
+  noToken: boolean;
   localToken?: string;
 }
 
@@ -163,6 +166,7 @@ function usage(): string {
     '',
     '  启动后终端会打印 Local URL 与 Connect token，把它们填进画布右上角',
     '  「本地 Agent」面板即可连接；浏览器直接访问本机 127.0.0.1，不经服务端中继。',
+    '  加 --no-token 可跳过令牌：只允许本机画布页面连接（首次连接自动记住来源）。',
     '',
     '服务端中继模式：',
     '  node canvas-bridge.js --api <url> --token <key> --project <projectId> [options]',
@@ -176,6 +180,7 @@ function usage(): string {
     `  --port <n>         监听端口（默认 ${DEFAULT_LOCAL_PORT}）`,
     `  --host <addr>      监听地址（默认 ${DEFAULT_LOCAL_HOST}，只允许本机访问）`,
     '  --local-token <s>  固定连接令牌（默认读取/生成 ~/.canvas-agent/local-agent.json）',
+    '  --no-token         免令牌模式：只允许本机画布页面连接，首次连接自动记住来源',
     '',
     '中继模式选项：',
     '  --api <url>        画布 API 基地址，例如 http://localhost:8787',
@@ -199,8 +204,9 @@ function parseArgs(argv: string[]): CliOptions | null {
     'port',
     'host',
     'local-token',
+    'no-token',
   ]);
-  const booleanFlags = new Set(['local']);
+  const booleanFlags = new Set(['local', 'no-token']);
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] ?? '';
@@ -262,12 +268,17 @@ function parseArgs(argv: string[]): CliOptions | null {
     }
     const host = (values.get('host') ?? '').trim() || DEFAULT_LOCAL_HOST;
     const localToken = values.get('local-token')?.trim();
+    const noToken = values.has('no-token');
+    if (noToken && localToken) {
+      log.warn('--no-token 已启用，忽略 --local-token');
+    }
     return {
       mode: 'local',
       host,
       port,
+      noToken,
       ...spec,
-      ...(localToken ? { localToken } : {}),
+      ...(localToken && !noToken ? { localToken } : {}),
     };
   }
 
@@ -582,7 +593,7 @@ class AgentHost {
 
   /** Agent 的工作目录按项目隔离：~/.canvas-agent/<projectId>。 */
   workdirFor(projectId: string | undefined): string {
-    return join(homedir(), '.canvas-agent', projectId ? encodeURIComponent(projectId) : 'local');
+    return join(AGENT_HOME_DIR, projectId ? encodeURIComponent(projectId) : 'local');
   }
 
   async handlePrompt(prompt: PromptRequest, sink: EventSink): Promise<void> {
@@ -684,7 +695,7 @@ class AgentHost {
     const args = [...spec.args, ...this.spec.agentArgs];
     log.info(`starting agent: ${spec.cmd} ${args.join(' ')}`);
     const child = spawn(spec.cmd, args, {
-      cwd: join(homedir(), '.canvas-agent'),
+      cwd: AGENT_HOME_DIR,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS,
       env: process.env,
@@ -856,27 +867,82 @@ class AgentHost {
   }
 }
 
+interface LocalConfig {
+  token?: string;
+  allowedOrigins?: string[];
+}
+
+function readLocalConfig(): LocalConfig {
+  try {
+    const raw = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')) as unknown;
+    return typeof raw === 'object' && raw !== null ? (raw as LocalConfig) : {};
+  } catch {
+    // 首次运行或配置损坏时按空配置处理。
+    return {};
+  }
+}
+
+function writeLocalConfig(config: LocalConfig): void {
+  try {
+    mkdirSync(dirname(LOCAL_CONFIG_PATH), { recursive: true });
+    writeFileSync(LOCAL_CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    log.warn(`无法保存本地配置：${errorMessage(error)}`);
+  }
+}
+
 /** 本地模式：读取/生成稳定的连接令牌。 */
 function loadLocalToken(override?: string): string {
   if (override) {
     return override;
   }
-  try {
-    const raw = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')) as { token?: unknown };
-    if (typeof raw.token === 'string' && raw.token.length >= 16) {
-      return raw.token;
-    }
-  } catch {
-    // 首次运行或配置损坏时重新生成。
+  const config = readLocalConfig();
+  if (typeof config.token === 'string' && config.token.length >= 16) {
+    return config.token;
   }
   const token = randomBytes(24).toString('base64url');
-  try {
-    mkdirSync(dirname(LOCAL_CONFIG_PATH), { recursive: true });
-    writeFileSync(LOCAL_CONFIG_PATH, `${JSON.stringify({ token }, null, 2)}\n`, { mode: 0o600 });
-  } catch (error) {
-    log.warn(`无法保存本地连接令牌：${errorMessage(error)}`);
-  }
+  writeLocalConfig({ ...config, token });
   return token;
+}
+
+/** 免令牌模式记住的画布页面来源；只允许本机（loopback）页面。 */
+function loadAllowedOrigins(): string[] {
+  const config = readLocalConfig();
+  return Array.isArray(config.allowedOrigins)
+    ? config.allowedOrigins.filter((origin): origin is string => typeof origin === 'string')
+    : [];
+}
+
+function rememberOrigin(origin: string): void {
+  const config = readLocalConfig();
+  const key = originComparisonKey(origin);
+  const others = loadAllowedOrigins().filter((item) => originComparisonKey(item) !== key);
+  writeLocalConfig({ ...config, allowedOrigins: [...others, origin] });
+}
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function parseOrigin(origin: string): URL | undefined {
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackOrigin(origin: string): boolean {
+  const url = parseOrigin(origin);
+  return url ? LOOPBACK_HOSTNAMES.has(url.hostname) : false;
+}
+
+/** localhost / 127.0.0.1 / [::1] 视为同一来源，只按端口区分。 */
+function originComparisonKey(origin: string): string {
+  const url = parseOrigin(origin);
+  if (!url) {
+    return origin;
+  }
+  return isLoopbackOrigin(origin) ? `loopback:${url.port || '80'}` : origin;
 }
 
 class HttpError extends Error {
@@ -934,11 +1000,13 @@ interface LocalSessionState {
  *  - POST   /sessions/:id/cancel        → 取消当前任务
  *  - DELETE /sessions/:id               → 结束会话
  *
- * 除 /health 外都要求 `Authorization: Bearer <Connect token>`。
+ * 默认要求 `Authorization: Bearer <Connect token>`；用 --no-token 启动时改为
+ * 只允许本机画布页面来源（首次连接记住来源并写入配置文件），/health 暴露 auth 模式。
  */
 class LocalAgentServer {
   private readonly sessions = new Map<string, LocalSessionState>();
-  private readonly tokenBuffer: Buffer;
+  private readonly tokenBuffer?: Buffer;
+  private readonly allowedOrigins: Set<string>;
   private server?: Server;
   private closing = false;
 
@@ -946,12 +1014,14 @@ class LocalAgentServer {
     private readonly options: {
       host: string;
       port: number;
-      token: string;
+      token?: string;
+      allowedOrigins: string[];
       agentLabel: string;
     },
     private readonly host: AgentHost,
   ) {
-    this.tokenBuffer = Buffer.from(options.token);
+    this.tokenBuffer = options.token ? Buffer.from(options.token) : undefined;
+    this.allowedOrigins = new Set(options.allowedOrigins);
   }
 
   async start(): Promise<string> {
@@ -1009,14 +1079,13 @@ class LocalAgentServer {
           name: BRIDGE_NAME,
           version: BRIDGE_VERSION,
           agent: this.options.agentLabel,
+          auth: this.tokenBuffer ? 'token' : 'none',
         });
         return;
       }
-      if (!this.authorized(request)) {
-        this.sendJson(response, 401, {
-          code: 'invalid_token',
-          error: '连接令牌无效，请使用桥接启动时打印的 Connect token',
-        });
+      const denied = this.authorizationFailure(request);
+      if (denied) {
+        this.sendJson(response, denied.status, { code: denied.code, error: denied.error });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/sessions') {
@@ -1077,13 +1146,59 @@ class LocalAgentServer {
     response.setHeader('access-control-allow-private-network', 'true');
   }
 
-  private authorized(request: IncomingMessage): boolean {
-    const header = request.headers.authorization ?? '';
-    const match = /^Bearer\s+(.+)$/i.exec(header);
-    const presented = Buffer.from(match?.[1]?.trim() ?? '');
-    return (
-      presented.length === this.tokenBuffer.length && timingSafeEqual(presented, this.tokenBuffer)
-    );
+  /** 校验请求身份：令牌模式比对 Bearer，免令牌模式只放行本机画布页面来源。 */
+  private authorizationFailure(
+    request: IncomingMessage,
+  ): { status: number; code: string; error: string } | undefined {
+    if (this.tokenBuffer) {
+      const header = request.headers.authorization ?? '';
+      const match = /^Bearer\s+(.+)$/i.exec(header);
+      const presented = Buffer.from(match?.[1]?.trim() ?? '');
+      const ok =
+        presented.length === this.tokenBuffer.length &&
+        timingSafeEqual(presented, this.tokenBuffer);
+      return ok
+        ? undefined
+        : {
+            status: 401,
+            code: 'invalid_token',
+            error: '连接令牌无效，请使用桥接启动时打印的 Connect token',
+          };
+    }
+    const origin = typeof request.headers.origin === 'string' ? request.headers.origin.trim() : '';
+    if (!origin || origin === 'null') {
+      return {
+        status: 403,
+        code: 'origin_required',
+        error: '免令牌模式只接受浏览器页面连接，请从画布的「本地 Agent」面板连接',
+      };
+    }
+    if (!isLoopbackOrigin(origin)) {
+      return {
+        status: 403,
+        code: 'origin_rejected',
+        error: `免令牌模式只允许本机画布页面连接，已拒绝来源 ${origin}`,
+      };
+    }
+    if (this.allowedOrigins.size === 0) {
+      this.allowedOrigins.add(origin);
+      rememberOrigin(origin);
+      log.info(`local no-token mode: remembered origin ${origin}`);
+      return undefined;
+    }
+    const key = originComparisonKey(origin);
+    for (const allowed of this.allowedOrigins) {
+      if (originComparisonKey(allowed) === key) {
+        return undefined;
+      }
+    }
+    return {
+      status: 403,
+      code: 'origin_rejected',
+      error:
+        '免令牌模式只允许首次连接的本机画布页面；如果换了访问地址，' +
+        `请删除 ${LOCAL_CONFIG_PATH} 后重启桥接程序`,
+    };
   }
 
   private async createSession(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -1250,13 +1365,15 @@ function installShutdown(handler: () => Promise<void>): () => void {
 }
 
 async function runLocal(options: LocalOptions): Promise<void> {
-  const token = loadLocalToken(options.localToken);
+  const token = options.noToken ? undefined : loadLocalToken(options.localToken);
+  const allowedOrigins = loadAllowedOrigins();
   const host = new AgentHost(options);
   const server = new LocalAgentServer(
     {
       host: options.host,
       port: options.port,
-      token,
+      ...(token ? { token } : {}),
+      allowedOrigins,
       agentLabel: options.agentCmd ?? options.agent,
     },
     host,
@@ -1282,16 +1399,26 @@ async function runLocal(options: LocalOptions): Promise<void> {
     log.warn(`unhandled rejection: ${errorMessage(reason)}`);
   });
 
+  const authLines = token
+    ? [
+        `Connect token: ${token}`,
+        '在画布右上角「本地 Agent」面板填入上面的地址与令牌后点「连接」。',
+        `令牌已保存到 ${LOCAL_CONFIG_PATH}，下次启动复用。`,
+      ]
+    : [
+        '免令牌模式：画布页面直接连接，不需要填写令牌。',
+        allowedOrigins.length > 0
+          ? `已记住的页面来源：${allowedOrigins.join(', ')}`
+          : '首次连接会自动记住本机画布页面来源。',
+        `如需重置来源，删除 ${LOCAL_CONFIG_PATH} 后重启。`,
+      ];
   process.stdout.write(
     [
       '',
       'canvas-bridge 本地 Agent 已启动',
       `Local URL: ${url}`,
-      `Connect token: ${token}`,
+      ...authLines,
       `Agent: ${options.agentCmd ?? options.agent}`,
-      '',
-      '在画布右上角「本地 Agent」面板填入上面的地址与令牌后点「连接」。',
-      `令牌已保存到 ${LOCAL_CONFIG_PATH}，下次启动复用。`,
       '',
     ].join('\n') + '\n',
   );
@@ -1355,7 +1482,7 @@ async function main(): Promise<void> {
   if (!options) {
     return;
   }
-  mkdirSync(join(homedir(), '.canvas-agent'), { recursive: true });
+  mkdirSync(AGENT_HOME_DIR, { recursive: true });
   if (options.mode === 'local') {
     await runLocal(options);
   } else {

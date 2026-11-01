@@ -191,13 +191,28 @@ describe('LocalAgentChatPanel（直连本地 Agent）', () => {
     expect(screen.getByLabelText('连接令牌')).toHaveValue('stored-token');
   });
 
-  it('未填令牌时提示，且不发起任何请求', async () => {
+  it('令牌模式下未填令牌时提示，且不发起建立会话请求', async () => {
     const user = userEvent.setup();
+    routeLocal({ health: () => Response.json({ ok: true, agent: 'claude', auth: 'token' }) });
     mount();
     await user.click(screen.getByRole('button', { name: '连接' }));
-    expect(screen.getByText('请先填入桥接程序启动时打印的连接令牌')).toBeVisible();
-    expect(localFetch).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('请先填入桥接程序启动时打印的连接令牌，或用 --no-token 启动桥接'),
+    ).toBeVisible();
+    expect(sessionCallInit()).toBeUndefined();
     expect(auth.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('免令牌模式（--no-token）不填令牌也能连接，建立会话不带 Authorization', async () => {
+    const user = userEvent.setup();
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal({ health: () => Response.json({ ok: true, agent: 'claude', auth: 'none' }) });
+    mount();
+    await user.click(screen.getByRole('button', { name: '连接' }));
+    await screen.findByRole('textbox', { name: '输入消息' });
+    expect(screen.getByText('已连接本机 Agent')).toBeVisible();
+    const init = sessionCallInit();
+    expect(init?.headers).not.toHaveProperty('authorization');
   });
 
   it('连接流程：探活 → 复用画布连接 → 建立本地会话', async () => {

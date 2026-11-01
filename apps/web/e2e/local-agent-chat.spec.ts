@@ -53,7 +53,13 @@ async function installLocalAgentFixture(page: Page, baseURL: string | undefined)
         return route.fulfill({
           status: 200,
           headers: corsHeaders,
-          json: { ok: true, name: 'canvas-bridge', version: '0.2.0', agent: 'claude' },
+          json: {
+            ok: true,
+            name: 'canvas-bridge',
+            version: '0.2.0',
+            agent: 'claude',
+            auth: 'none',
+          },
         });
       if (url.pathname === '/sessions' && method === 'POST') {
         const headers = await request.allHeaders();
@@ -202,7 +208,7 @@ for (const width of [1440, 390, 320]) {
       const panel = await openLocalAgent(page, width <= 600);
       await expect(panel).toBeInViewport({ ratio: 1 });
       const command = panel.getByRole('textbox', { name: '启动命令', exact: true });
-      await expect(command).toHaveValue('node canvas-bridge.js --local --agent claude');
+      await expect(command).toHaveValue('node canvas-bridge.js --local --no-token --agent claude');
       await expectNoHorizontalOverflow(panel);
       await expectNoHorizontalOverflow(page.locator('.local-agent-chat-panel .ant-drawer-body'));
       await expectNoHorizontalOverflow(page.locator('html'));
@@ -210,7 +216,7 @@ for (const width of [1440, 390, 320]) {
       await expect(panel.getByLabel('本地地址', { exact: true })).toHaveValue(
         'http://127.0.0.1:17871',
       );
-      await panel.getByLabel('连接令牌', { exact: true }).fill('e2e-local-token');
+      // 面板命令带 --no-token：不填令牌也能连接。
       await panel.getByRole('button', { name: /^连\s*接$/ }).click();
       await expect(panel.getByRole('textbox', { name: '输入消息', exact: true })).toBeVisible();
       await expect(panel.getByText('已连接本机 Agent')).toBeVisible();
@@ -218,7 +224,7 @@ for (const width of [1440, 390, 320]) {
       const apiOrigin = new URL(process.env.VITE_API_BASE_URL ?? 'http://localhost:3000').origin;
       expect(localAgent.sessionCreates).toEqual([
         {
-          authorization: 'Bearer e2e-local-token',
+          authorization: undefined,
           body: { projectId: project.id, mcpUrl: `${apiOrigin}${localAgent.mcpPath}` },
         },
       ]);

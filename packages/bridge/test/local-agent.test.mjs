@@ -351,3 +351,145 @@ describe('canvas-bridge 本地直连模式', () => {
     assert.match(stderr, /local session created/);
   });
 });
+
+describe('canvas-bridge 免令牌模式（--no-token）', () => {
+  const NO_TOKEN_HOME = mkdtempSync(join(tmpdir(), 'canvas-bridge-no-token-'));
+  const ALLOWED_ORIGIN = 'http://127.0.0.1:5173';
+  const FOREIGN_ORIGIN = 'http://evil.example.test';
+  let server = null;
+  let localUrl = '';
+  let localStdout = '';
+  let localStderr = '';
+
+  async function waitFor(pattern, label, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const match = pattern.exec(localStdout);
+      if (match) {
+        return match;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`等待 ${label} 超时；stdout：${localStdout}\nstderr：${localStderr}`);
+      }
+      await sleep(20);
+    }
+  }
+
+  async function startBridge() {
+    localStdout = '';
+    localStderr = '';
+    server = spawn(
+      process.execPath,
+      [
+        BRIDGE_PATH,
+        '--local',
+        '--no-token',
+        '--port',
+        '0',
+        '--agent',
+        'claude',
+        '--agent-cmd',
+        process.execPath,
+        '--agent-args',
+        FAKE_AGENT_PATH,
+      ],
+      {
+        env: {
+          ...process.env,
+          CANVAS_AGENT_HOME: NO_TOKEN_HOME,
+          FAKE_AGENT_LOG: join(NO_TOKEN_HOME, 'fake-agent.ndjson'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    server.stderr.on('data', (chunk) => {
+      localStderr += chunk.toString();
+    });
+    server.stdout.on('data', (chunk) => {
+      localStdout += chunk.toString();
+    });
+    const urlMatch = await waitFor(/Local URL: (http:\/\/\S+)/, 'Local URL');
+    localUrl = urlMatch[1];
+    await waitFor(/免令牌模式/, '免令牌模式提示');
+  }
+
+  async function stopBridge() {
+    if (!server) {
+      return;
+    }
+    const current = server;
+    server = null;
+    current.kill();
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 5_000);
+      current.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  function createSessionFrom(origin) {
+    const headers = { 'content-type': 'application/json' };
+    if (origin) {
+      headers.origin = origin;
+    }
+    return fetch(`${localUrl}/sessions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ projectId: 'project-no-token' }),
+    });
+  }
+
+  before(startBridge);
+  after(stopBridge);
+
+  it('健康检查声明 auth: none，且令牌模式下才要求令牌', async () => {
+    const response = await fetch(`${localUrl}/health`);
+    assert.equal(response.status, 200);
+    const payload = await readJson(response);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.auth, 'none');
+  });
+
+  it('没有 Origin 头的请求被拒绝', async () => {
+    const response = await createSessionFrom(null);
+    assert.equal(response.status, 403);
+    assert.equal((await readJson(response)).code, 'origin_required');
+  });
+
+  it('非本机来源的页面被拒绝', async () => {
+    const response = await createSessionFrom(FOREIGN_ORIGIN);
+    assert.equal(response.status, 403);
+    assert.equal((await readJson(response)).code, 'origin_rejected');
+  });
+
+  it('首次来自本机画布页面的连接被记住，并写入配置文件', async () => {
+    const response = await createSessionFrom(ALLOWED_ORIGIN);
+    assert.equal(response.status, 201);
+    const payload = await readJson(response);
+    assert.equal(typeof payload.sessionId, 'string');
+
+    const config = JSON.parse(readFileSync(join(NO_TOKEN_HOME, 'local-agent.json'), 'utf8'));
+    assert.deepEqual(config.allowedOrigins, [ALLOWED_ORIGIN]);
+    assert.equal(config.token, undefined);
+  });
+
+  it('记住来源后，同来源新连接直接放行，异来源仍被拒绝', async () => {
+    const allowed = await createSessionFrom('http://localhost:5173');
+    assert.equal(allowed.status, 201);
+
+    const rejected = await createSessionFrom('http://127.0.0.1:9999');
+    assert.equal(rejected.status, 403);
+    assert.equal((await readJson(rejected)).code, 'origin_rejected');
+  });
+
+  it('重启后仍记住已授权的来源', async () => {
+    await stopBridge();
+    await startBridge();
+    assert.match(localStdout, /已记住的页面来源/);
+
+    const allowed = await createSessionFrom(ALLOWED_ORIGIN);
+    assert.equal(allowed.status, 201);
+  });
+});

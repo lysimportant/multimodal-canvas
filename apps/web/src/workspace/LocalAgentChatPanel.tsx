@@ -35,7 +35,7 @@ class LocalAgentError extends Error {}
 
 const DEFAULT_LOCAL_URL = 'http://127.0.0.1:17871';
 const CONFIG_STORAGE_KEY = 'canvas-agent-local-connection';
-const LOCAL_BRIDGE_COMMAND = 'node canvas-bridge.js --local --agent claude';
+const LOCAL_BRIDGE_COMMAND = 'node canvas-bridge.js --local --no-token --agent claude';
 const REQUEST_TIMEOUT_MS = 8_000;
 
 function normalizeLocalUrl(raw: string): string {
@@ -65,6 +65,12 @@ function writeStoredConfig(url: string, token: string): void {
   } catch {
     // 隐私模式下不可写，忽略。
   }
+}
+
+/** 免令牌模式不带 Authorization；桥接启动时配置了令牌则统一用 Bearer。 */
+function authorizationHeaders(secret: string): Record<string, string> {
+  const trimmed = secret.trim();
+  return trimmed ? { authorization: `Bearer ${trimmed}` } : {};
 }
 
 /** 访问本机桥接服务：带超时，避免桥接未启动时长时间挂起。 */
@@ -200,7 +206,7 @@ export function LocalAgentChatPanel({
     void (async () => {
       try {
         const response = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/events`, {
-          headers: { authorization: `Bearer ${secret}`, accept: 'text/event-stream' },
+          headers: { ...authorizationHeaders(secret), accept: 'text/event-stream' },
           signal: controller.signal,
         });
         if (!response.ok || !response.body) {
@@ -275,10 +281,6 @@ export function LocalAgentChatPanel({
     if (connecting) return;
     const base = normalizeLocalUrl(localUrl);
     const secret = token.trim();
-    if (!secret) {
-      setError('请先填入桥接程序启动时打印的连接令牌');
-      return;
-    }
     setConnecting(true);
     setError(undefined);
     setNotice(undefined);
@@ -290,7 +292,15 @@ export function LocalAgentChatPanel({
         throw new LocalAgentError('无法连接本地 Agent 服务，请确认桥接程序已在本机运行');
       }
       if (!health.ok) throw new LocalAgentError('本地 Agent 服务响应异常，请检查桥接程序');
-      const healthBody = (await health.json().catch(() => ({}))) as { agent?: string };
+      const healthBody = (await health.json().catch(() => ({}))) as {
+        agent?: string;
+        auth?: string;
+      };
+      // 桥接以 --no-token 启动时只认本机画布页面来源，不需要令牌；旧版本没有 auth 字段，按令牌模式处理。
+      const requiresToken = healthBody.auth !== 'none';
+      if (requiresToken && !secret) {
+        throw new LocalAgentError('请先填入桥接程序启动时打印的连接令牌，或用 --no-token 启动桥接');
+      }
 
       const mcpUrl = await resolveMcpUrl();
 
@@ -298,10 +308,7 @@ export function LocalAgentChatPanel({
       try {
         sessionResponse = await localFetch(`${base}/sessions`, {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${secret}`,
-          },
+          headers: { 'content-type': 'application/json', ...authorizationHeaders(secret) },
           body: JSON.stringify({ projectId, mcpUrl }),
         });
       } catch {
@@ -311,6 +318,15 @@ export function LocalAgentChatPanel({
         throw new LocalAgentError('连接令牌无效，请核对桥接程序启动时打印的 Connect token');
       }
       if (!sessionResponse.ok) {
+        const failure = (await sessionResponse.json().catch(() => ({}))) as {
+          code?: string;
+          error?: string;
+        };
+        if (failure.code === 'origin_rejected' || failure.code === 'origin_required') {
+          throw new LocalAgentError(
+            failure.error ?? '桥接程序拒绝了当前页面来源，请检查桥接程序的启动方式',
+          );
+        }
         throw new LocalAgentError('本地 Agent 服务拒绝了连接请求，请稍后重试');
       }
       const payload = (await sessionResponse.json().catch(() => ({}))) as { sessionId?: string };
@@ -353,7 +369,7 @@ export function LocalAgentChatPanel({
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            authorization: `Bearer ${session.token}`,
+            ...authorizationHeaders(session.token),
           },
           body: JSON.stringify({ messages: [{ role: 'user', content: text }] }),
         },
@@ -374,7 +390,7 @@ export function LocalAgentChatPanel({
     try {
       await localFetch(`${session.base}/sessions/${encodeURIComponent(session.id)}/cancel`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${session.token}` },
+        headers: { ...authorizationHeaders(session.token) },
       });
       setStreaming(false);
     } catch {
@@ -397,7 +413,7 @@ export function LocalAgentChatPanel({
     if (session) {
       void localFetch(`${session.base}/sessions/${encodeURIComponent(session.id)}`, {
         method: 'DELETE',
-        headers: { authorization: `Bearer ${session.token}` },
+        headers: { ...authorizationHeaders(session.token) },
       }).catch(() => undefined);
     }
   };
@@ -466,10 +482,13 @@ export function LocalAgentChatPanel({
             <span>连接令牌</span>
             <Input.Password
               aria-label="连接令牌"
-              placeholder="桥接程序启动时打印的 Connect token"
+              placeholder="用 --no-token 启动时可留空"
               value={token}
               onChange={(event) => setToken(event.target.value)}
             />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              上面的命令带 --no-token，通常不用填令牌；只有用 --local-token 启动时才需要。
+            </Typography.Text>
           </label>
           <Button
             type="primary"
