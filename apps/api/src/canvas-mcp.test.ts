@@ -75,6 +75,10 @@ describe('画布无状态 Streamable HTTP MCP', () => {
     expect(client.getServerVersion()).toEqual({ name: 'multimodal-canvas', version: '1.0.0' });
     expect(client.getServerCapabilities()).toMatchObject({ tools: { listChanged: false } });
     expect(client.getInstructions()).toContain('run_node 必须携带唯一幂等键');
+    expect(client.getInstructions()).toContain(
+      'create_node 的显示尺寸写在 node.width / node.height',
+    );
+    expect(client.getInstructions()).toContain('update_node');
     expect(transport.sessionId).toBeUndefined();
     expect((await client.listTools()).tools).toEqual(tools);
     const result = await client.callTool({ name: 'inspect_canvas', arguments: { label: '示例' } });
