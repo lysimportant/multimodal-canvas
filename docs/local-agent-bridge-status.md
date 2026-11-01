@@ -88,7 +88,7 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 
 - 镜像构建成功，`initialize/migrate` 正常退出，`postgres/redis/api/worker/web` 全部 healthy。
 - `GET http://127.0.0.1:8080/health` → `{"status":"ok","service":"api"}`。
-- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，263591 字节，与 `packages/bridge/dist/index.js` 哈希一致；下载文件 `--help` 含 `--no-token`；API 镜像内 `/app/dist/bridge/index.js` 存在（263591 字节）。
+- `GET http://127.0.0.1:8080/v1/agent-bridge/download` → 200、`application/javascript`、`attachment; filename="canvas-bridge.js"`，263684 字节，与 `packages/bridge/dist/index.js` 哈希一致；下载文件 `--help` 含 `--no-token`，启动输出含 ASCII 行 `Auth: none (no token needed)`；API 镜像内 `/app/dist/bridge/index.js` 存在（263684 字节）。
 - web 产物（`/usr/share/caddy/assets/main-*.js`）包含 `--local --no-token --agent claude`、`127.0.0.1:17871`、`连接令牌`、`/v1/agent-bridge/download`，确认新面板已进入生产包。
 
 ## 五、如何使用（本机手工联调）
@@ -136,7 +136,7 @@ Docker 部署重建（2026-11-01，`pwsh -File scripts/docker.ps1 -Action Start 
 ## 七、未完成与风险
 
 1. **真实 Agent 全链路联调未做**：本机没有 Postgres/Redis 与画布数据库配置，API 只能用内存夹具；Agent 侧用合成 ACP Agent 验证。需要一台能起完整画布服务的机器手工跑一次 Claude Code / Codex。
-2. **Docker 镜像已重建并完成接口级验证**（2026-11-01 09:05）：`multimodal-canvas-web:local` / `api:local` 均为本次构建，下载接口返回最新 263591 字节桥接程序（哈希一致），web 产物包含带 `--no-token` 的新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
+2. **Docker 镜像已重建并完成接口级验证**（2026-11-01 09:08）：`multimodal-canvas-web:local` / `api:local` 均为本次构建，下载接口返回最新 263684 字节桥接程序（哈希一致），web 产物包含带 `--no-token` 的新面板。仍未做的是「已登录浏览器里点一遍」——需要用户登录画布后手工确认连接与聊天。
 3. **安全边界**：本机服务只监听回环地址。令牌模式下恶意网页拿不到令牌；免令牌模式下靠 `Origin` 白名单，但**首次连接的本机页面来源会被无条件信任并记住**——如果同时有其他本机网页在使用该端口，谁先连谁被记住。需要更严格时用 `--local-token`（令牌模式），或删除 `~/.canvas-agent/local-agent.json` 的 `allowedOrigins` 重置。恶意网页无法读取该文件，但能向 127.0.0.1 发请求（无 Origin / 异来源会被 403）。
 4. **画布连接上限**：`agent-access.ts:110-131` 仍是每进程全局 100 条 URL 连接上限，侧栏自动创建连接会加速消耗；建议改为按用户/项目维度限流（原 R1）。
 5. **中继模式保留但 UI 未暴露**：CLI 仍可用，文档未写详细步骤；如果确定不再使用，可后续删除 `apps/api/src/agent-bridge-routes.ts` 与对应测试，减小维护面积。

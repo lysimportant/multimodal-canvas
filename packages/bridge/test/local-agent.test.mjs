@@ -445,6 +445,7 @@ describe('canvas-bridge 免令牌模式（--no-token）', () => {
   after(stopBridge);
 
   it('健康检查声明 auth: none，且令牌模式下才要求令牌', async () => {
+    assert.match(localStdout, /Auth: none/);
     const response = await fetch(`${localUrl}/health`);
     assert.equal(response.status, 200);
     const payload = await readJson(response);

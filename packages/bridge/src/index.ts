@@ -1417,6 +1417,7 @@ async function runLocal(options: LocalOptions): Promise<void> {
       '',
       'canvas-bridge 本地 Agent 已启动',
       `Local URL: ${url}`,
+      `Auth: ${token ? 'token (paste the Connect token below)' : 'none (no token needed)'}`,
       ...authLines,
       `Agent: ${options.agentCmd ?? options.agent}`,
       '',
