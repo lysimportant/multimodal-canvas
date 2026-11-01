@@ -266,20 +266,8 @@ function ConnectionSession({
       ].join('\n')
     : '';
 
-  const bridgeKey = mcpUrl ? (mcpUrl.split('connection=')[1] ?? '') : '';
-  const apiBase = mcpUrl
-    ? (() => {
-        try {
-          const u = new URL(mcpUrl);
-          return `${u.protocol}//${u.host}`;
-        } catch {
-          return API_BASE_URL;
-        }
-      })()
-    : '';
-  const bridgeTemplate = bridgeKey
-    ? `node canvas-bridge.js --api ${apiBase} --token ${bridgeKey} --agent claude`
-    : '';
+  // 桥接程序由浏览器直连本机，不再经由画布 API 中继，因此命令固定为本地模式。
+  const bridgeTemplate = 'node canvas-bridge.js --local --no-token --agent claude';
 
   return (
     <Drawer
@@ -395,8 +383,9 @@ function ConnectionSession({
                   children: (
                     <>
                       <Typography.Paragraph>
-                        下载桥接程序后在命令行运行，即可在画布「本地 Agent」侧栏与本机 Agent 聊天。
-                        Agent 通过画布 MCP 操控当前项目，无需额外令牌。
+                        下载桥接程序后，在命令行运行下方命令，本地服务地址为
+                        http://127.0.0.1:17871，然后到画布「本地 Agent」侧栏点连接。命令已带
+                        --no-token，不需要令牌，首次连接会自动记住画布页面来源。
                       </Typography.Paragraph>
                       <Button
                         onClick={() => {

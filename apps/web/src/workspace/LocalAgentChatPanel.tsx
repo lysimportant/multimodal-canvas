@@ -1,4 +1,4 @@
-import { Alert, Button, Drawer, Input, Spin, Typography } from 'antd';
+import { Alert, Button, Drawer, Input, Select, Spin, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 
 import { apiFetch, getAuthSessionGeneration, subscribeAuthSession } from '../auth-client';
@@ -15,6 +15,7 @@ export type LocalAgentChatPanelProps = {
 
 type AgentEvent =
   | { type: 'agent_message_chunk'; text: string }
+  | { type: 'agent_thought_chunk'; text: string }
   | { type: 'tool_call'; name: string; status?: string }
   | { type: 'usage_update'; inputTokens?: number; outputTokens?: number }
   | { type: 'done' }
@@ -24,7 +25,18 @@ type Message = {
   id: string;
   role: 'user' | 'agent';
   content: string;
+  /** Agent 的思考过程（可折叠展示）。 */
+  thinking?: string;
   pending?: boolean;
+};
+
+type ModelOption = { value: string; name: string; description?: string };
+
+type SessionProfile = {
+  sessionId?: string;
+  agent?: string;
+  models?: ModelOption[];
+  currentModel?: string;
 };
 
 type UrlConnectionSummary = { mcpPath?: string; expiresAt?: string | null };
@@ -37,6 +49,8 @@ const DEFAULT_LOCAL_URL = 'http://127.0.0.1:17871';
 const CONFIG_STORAGE_KEY = 'canvas-agent-local-connection';
 const LOCAL_BRIDGE_COMMAND = 'node canvas-bridge.js --local --no-token --agent claude';
 const REQUEST_TIMEOUT_MS = 8_000;
+/** 建立会话时要顺带启动 Agent（首次可能下载适配器），给更长的超时。 */
+const CONNECT_TIMEOUT_MS = 120_000;
 
 function normalizeLocalUrl(raw: string): string {
   const trimmed = raw.trim();
@@ -74,9 +88,13 @@ function authorizationHeaders(secret: string): Record<string, string> {
 }
 
 /** 访问本机桥接服务：带超时，避免桥接未启动时长时间挂起。 */
-async function localFetch(url: string, init: RequestInit = {}): Promise<Response> {
+async function localFetch(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
@@ -98,6 +116,9 @@ export function LocalAgentChatPanel({
   const [closed, setClosed] = useState(false);
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [sessionAgent, setSessionAgent] = useState<string | undefined>();
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [currentModel, setCurrentModel] = useState<string | undefined>();
+  const [switchingModel, setSwitchingModel] = useState(false);
   const [localUrl, setLocalUrl] = useState(stored.current.url);
   const [token, setToken] = useState(stored.current.token);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -120,6 +141,8 @@ export function LocalAgentChatPanel({
       sessionRef.current = undefined;
       setSessionId(undefined);
       setSessionAgent(undefined);
+      setModels([]);
+      setCurrentModel(undefined);
       setMessages([]);
       setStreaming(false);
       setSending(false);
@@ -203,6 +226,17 @@ export function LocalAgentChatPanel({
     const controller = new AbortController();
     sseRef.current = controller;
     let agentMsgId = '';
+    /** 把一段内容合并进本轮最后一条 Agent 消息（没有就新建）。 */
+    const appendToAgentMessage = (mutate: (message: Message) => Message) => {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.id === agentMsgId && last.role === 'agent') {
+          return [...prev.slice(0, -1), mutate({ ...last, pending: true })];
+        }
+        agentMsgId = Math.random().toString(36).slice(2);
+        return [...prev, mutate({ id: agentMsgId, role: 'agent', content: '', pending: true })];
+      });
+    };
     void (async () => {
       try {
         const response = await fetch(`${base}/sessions/${encodeURIComponent(sid)}/events`, {
@@ -234,17 +268,13 @@ export function LocalAgentChatPanel({
             if (!live.current) break;
             if (event.type === 'agent_message_chunk') {
               const text = event.text;
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                if (last && last.id === agentMsgId && last.role === 'agent') {
-                  return [
-                    ...prev.slice(0, -1),
-                    { ...last, content: last.content + text, pending: true },
-                  ];
-                }
-                agentMsgId = Math.random().toString(36).slice(2);
-                return [...prev, { id: agentMsgId, role: 'agent', content: text, pending: true }];
-              });
+              appendToAgentMessage((message) => ({ ...message, content: message.content + text }));
+            } else if (event.type === 'agent_thought_chunk') {
+              const text = event.text;
+              appendToAgentMessage((message) => ({
+                ...message,
+                thinking: (message.thinking ?? '') + text,
+              }));
             } else if (event.type === 'done') {
               setStreaming(false);
               setMessages((prev) => {
@@ -306,11 +336,15 @@ export function LocalAgentChatPanel({
 
       let sessionResponse: Response;
       try {
-        sessionResponse = await localFetch(`${base}/sessions`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...authorizationHeaders(secret) },
-          body: JSON.stringify({ projectId, mcpUrl }),
-        });
+        sessionResponse = await localFetch(
+          `${base}/sessions`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...authorizationHeaders(secret) },
+            body: JSON.stringify({ projectId, mcpUrl }),
+          },
+          CONNECT_TIMEOUT_MS,
+        );
       } catch {
         throw new LocalAgentError('无法连接本地 Agent 服务，请确认桥接程序已在本机运行');
       }
@@ -322,14 +356,18 @@ export function LocalAgentChatPanel({
           code?: string;
           error?: string;
         };
-        if (failure.code === 'origin_rejected' || failure.code === 'origin_required') {
+        if (
+          failure.code === 'origin_rejected' ||
+          failure.code === 'origin_required' ||
+          failure.code === 'agent_start_failed'
+        ) {
           throw new LocalAgentError(
             failure.error ?? '桥接程序拒绝了当前页面来源，请检查桥接程序的启动方式',
           );
         }
         throw new LocalAgentError('本地 Agent 服务拒绝了连接请求，请稍后重试');
       }
-      const payload = (await sessionResponse.json().catch(() => ({}))) as { sessionId?: string };
+      const payload = (await sessionResponse.json().catch(() => ({}))) as SessionProfile;
       if (!payload.sessionId) {
         throw new LocalAgentError('本地 Agent 服务未返回会话编号，请升级桥接程序');
       }
@@ -339,7 +377,15 @@ export function LocalAgentChatPanel({
       writeStoredConfig(base, secret);
       sessionRef.current = { base, token: secret, id: payload.sessionId };
       setSessionId(payload.sessionId);
-      setSessionAgent(typeof healthBody.agent === 'string' ? healthBody.agent : undefined);
+      setSessionAgent(
+        typeof payload.agent === 'string'
+          ? payload.agent
+          : typeof healthBody.agent === 'string'
+            ? healthBody.agent
+            : undefined,
+      );
+      setModels(Array.isArray(payload.models) ? payload.models : []);
+      setCurrentModel(typeof payload.currentModel === 'string' ? payload.currentModel : undefined);
       startSse(base, payload.sessionId, secret);
       setNotice('已连接本机 Agent');
     } catch (reason) {
@@ -398,6 +444,36 @@ export function LocalAgentChatPanel({
     }
   };
 
+  const changeModel = async (value: string) => {
+    const session = sessionRef.current;
+    if (!session || switchingModel || value === currentModel) return;
+    const previous = currentModel;
+    setSwitchingModel(true);
+    setCurrentModel(value);
+    setError(undefined);
+    try {
+      const response = await localFetch(
+        `${session.base}/sessions/${encodeURIComponent(session.id)}/model`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...authorizationHeaders(session.token) },
+          body: JSON.stringify({ model: value }),
+        },
+      );
+      if (!response.ok) throw new LocalAgentError('切换模型失败，请重试');
+      const payload = (await response.json().catch(() => ({}))) as SessionProfile;
+      if (typeof payload.currentModel === 'string') setCurrentModel(payload.currentModel);
+      if (Array.isArray(payload.models)) setModels(payload.models);
+    } catch (reason) {
+      if (live.current) {
+        setCurrentModel(previous);
+        setError(errorMessageOf(reason, '切换模型失败，请重试'));
+      }
+    } finally {
+      if (live.current) setSwitchingModel(false);
+    }
+  };
+
   const disconnect = () => {
     const session = sessionRef.current;
     sseRef.current?.abort();
@@ -405,6 +481,8 @@ export function LocalAgentChatPanel({
     sessionRef.current = undefined;
     setSessionId(undefined);
     setSessionAgent(undefined);
+    setModels([]);
+    setCurrentModel(undefined);
     setMessages([]);
     setStreaming(false);
     setSending(false);
@@ -453,54 +531,89 @@ export function LocalAgentChatPanel({
       )}
 
       {!sessionId ? (
-        <div className="local-agent-setup">
-          <Typography.Paragraph>
-            桥接程序运行在你自己电脑上，浏览器直接连它聊天，请求不经过画布服务器。
-          </Typography.Paragraph>
-          <Typography.Title level={5}>1. 启动桥接程序</Typography.Title>
-          <Input.TextArea
-            className="local-agent-cmd"
-            aria-label="启动命令"
-            readOnly
-            value={LOCAL_BRIDGE_COMMAND}
-            rows={2}
-          />
-          <div className="local-agent-setup-actions">
-            <Button onClick={downloadBridge}>下载桥接程序</Button>
+        connecting ? (
+          <div className="local-agent-starting" role="status">
+            <Spin />
+            <div>
+              <Typography.Text strong>正在启动本机 Agent…</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+                首次启动可能需要下载 Agent 适配器，请稍候。
+              </Typography.Paragraph>
+            </div>
           </div>
-          <Typography.Title level={5}>2. 填入连接信息</Typography.Title>
-          <label className="local-agent-field">
-            <span>本地地址</span>
-            <Input
-              aria-label="本地地址"
-              placeholder={DEFAULT_LOCAL_URL}
-              value={localUrl}
-              onChange={(event) => setLocalUrl(event.target.value)}
+        ) : (
+          <div className="local-agent-setup">
+            <Typography.Paragraph>
+              桥接程序运行在你自己电脑上，浏览器直接连它聊天，请求不经过画布服务器。
+            </Typography.Paragraph>
+            <Typography.Title level={5}>1. 启动桥接程序</Typography.Title>
+            <Input.TextArea
+              className="local-agent-cmd"
+              aria-label="启动命令"
+              readOnly
+              value={LOCAL_BRIDGE_COMMAND}
+              rows={2}
             />
-          </label>
-          <label className="local-agent-field">
-            <span>连接令牌</span>
-            <Input.Password
-              aria-label="连接令牌"
-              placeholder="用 --no-token 启动时可留空"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              上面的命令带 --no-token，通常不用填令牌；只有用 --local-token 启动时才需要。
-            </Typography.Text>
-          </label>
-          <Button
-            type="primary"
-            loading={connecting}
-            disabled={connecting}
-            onClick={() => void connectLocalAgent()}
-          >
-            连接
-          </Button>
-        </div>
+            <div className="local-agent-setup-actions">
+              <Button onClick={downloadBridge}>下载桥接程序</Button>
+            </div>
+            <Typography.Title level={5}>2. 填入连接信息</Typography.Title>
+            <label className="local-agent-field">
+              <span>本地地址</span>
+              <Input
+                aria-label="本地地址"
+                placeholder={DEFAULT_LOCAL_URL}
+                value={localUrl}
+                onChange={(event) => setLocalUrl(event.target.value)}
+              />
+            </label>
+            <label className="local-agent-field">
+              <span>连接令牌</span>
+              <Input.Password
+                aria-label="连接令牌"
+                placeholder="用 --no-token 启动时可留空"
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                上面的命令带 --no-token，通常不用填令牌；只有用 --local-token 启动时才需要。
+              </Typography.Text>
+            </label>
+            <Button
+              type="primary"
+              loading={connecting}
+              disabled={connecting}
+              onClick={() => void connectLocalAgent()}
+            >
+              连接
+            </Button>
+          </div>
+        )
       ) : (
         <div className="local-agent-chat">
+          <div className="local-agent-identity">
+            <Typography.Text>{`Agent：${sessionAgent ?? '未知'}`}</Typography.Text>
+            {models.length > 0 ? (
+              <Select
+                aria-label="选择模型"
+                size="small"
+                style={{ minWidth: 150 }}
+                value={currentModel}
+                loading={switchingModel}
+                disabled={switchingModel || sending || streaming}
+                options={models.map((model) => ({
+                  value: model.value,
+                  label: model.name,
+                  ...(model.description ? { title: model.description } : {}),
+                }))}
+                onChange={(value) => void changeModel(value)}
+              />
+            ) : (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                模型由 Agent 启动参数决定
+              </Typography.Text>
+            )}
+          </div>
           <div className="local-agent-messages" aria-live="polite" aria-label="Agent 聊天记录">
             {messages.length === 0 && (
               <Typography.Text type="secondary">
@@ -509,10 +622,22 @@ export function LocalAgentChatPanel({
             )}
             {messages.map((msg) => (
               <div key={msg.id} className={`local-agent-msg local-agent-msg--${msg.role}`}>
-                <pre className="local-agent-msg-content">{msg.content}</pre>
+                {msg.thinking && (
+                  <details className="local-agent-thought">
+                    <summary>思考过程</summary>
+                    <pre className="local-agent-thought-content">{msg.thinking}</pre>
+                  </details>
+                )}
+                {msg.content && <pre className="local-agent-msg-content">{msg.content}</pre>}
                 {msg.pending && <Spin size="small" />}
               </div>
             ))}
+            {streaming && messages[messages.length - 1]?.role === 'user' && (
+              <div className="local-agent-pending" role="status">
+                <Spin size="small" />
+                <span>Agent 正在响应…</span>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
           <div className="local-agent-input-row">

@@ -172,6 +172,23 @@ describe('Agent 连接面板', () => {
     expect(screen.queryByRole('textbox', { name: 'MCP 服务地址' })).not.toBeInTheDocument();
   });
 
+  it('Canvas Bridge 标签展示浏览器直连本机桥接的启动命令', async () => {
+    const user = userEvent.setup();
+    auth.apiFetch.mockResolvedValueOnce(listResponse([connection]));
+    mount();
+    await user.click(await screen.findByRole('tab', { name: 'Canvas Bridge' }));
+    const command = (await screen.findByRole('textbox', {
+      name: '桥接程序启动命令',
+    })) as HTMLTextAreaElement;
+    expect(command.value).toBe('node canvas-bridge.js --local --no-token --agent claude');
+    expect(command.value).not.toContain('--token');
+    expect(command.value).not.toContain('--api');
+    expect(screen.getByText(/127\.0\.0\.1:17871/)).toBeVisible();
+    expect(screen.getByText(/命令已带 --no-token/)).toBeVisible();
+    expect(screen.getByRole('button', { name: '下载桥接程序' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '复制启动命令' })).toBeEnabled();
+  });
+
   it('加载失败可重试，复制失败保留可手动选择的配置', async () => {
     const user = userEvent.setup();
     const writeText = vi

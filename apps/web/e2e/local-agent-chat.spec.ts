@@ -67,7 +67,31 @@ async function installLocalAgentFixture(page: Page, baseURL: string | undefined)
         return route.fulfill({
           status: 201,
           headers: corsHeaders,
-          json: { sessionId },
+          json: {
+            sessionId,
+            agent: 'claude',
+            models: [
+              { value: 'fake-small', name: 'Fake Small', description: '快速模型' },
+              { value: 'fake-large', name: 'Fake Large', description: '更强模型' },
+            ],
+            currentModel: 'fake-small',
+          },
+        });
+      }
+      if (url.pathname === `/sessions/${sessionId}/model` && method === 'POST') {
+        const body = request.postDataJSON() as { model?: string };
+        return route.fulfill({
+          status: 200,
+          headers: corsHeaders,
+          json: {
+            sessionId,
+            agent: 'claude',
+            models: [
+              { value: 'fake-small', name: 'Fake Small', description: '快速模型' },
+              { value: 'fake-large', name: 'Fake Large', description: '更强模型' },
+            ],
+            currentModel: body.model,
+          },
         });
       }
       if (url.pathname === `/sessions/${sessionId}/events` && method === 'GET')
@@ -78,7 +102,13 @@ async function installLocalAgentFixture(page: Page, baseURL: string | undefined)
             'content-type': 'text/event-stream',
             'cache-control': 'no-store',
           },
-          body: `: connected\n\ndata: ${JSON.stringify({ type: 'done' })}\n\n`,
+          body: `: connected\n\ndata: ${JSON.stringify({
+            type: 'agent_thought_chunk',
+            text: '先想一下再回答',
+          })}\n\ndata: ${JSON.stringify({
+            type: 'agent_message_chunk',
+            text: '你好，我在。',
+          })}\n\ndata: ${JSON.stringify({ type: 'done' })}\n\n`,
         });
       if (url.pathname === `/sessions/${sessionId}` && method === 'DELETE')
         return route.fulfill({ status: 204, headers: corsHeaders });
@@ -216,10 +246,15 @@ for (const width of [1440, 390, 320]) {
       await expect(panel.getByLabel('本地地址', { exact: true })).toHaveValue(
         'http://127.0.0.1:17871',
       );
-      // 面板命令带 --no-token：不填令牌也能连接。
+      // 面板命令带 --no-token：不填令牌也能连。
       await panel.getByRole('button', { name: /^连\s*接$/ }).click();
       await expect(panel.getByRole('textbox', { name: '输入消息', exact: true })).toBeVisible();
       await expect(panel.getByText('已连接本机 Agent')).toBeVisible();
+      // 连接后展示 Agent 身份、模型选择器，并把思考链渲染为可折叠区块。
+      await expect(panel.getByText(/Agent：claude/)).toBeVisible();
+      await expect(panel.getByRole('combobox', { name: '选择模型' })).toBeVisible();
+      await expect(panel.getByText('思考过程')).toBeVisible();
+      await expect(panel.getByText('你好，我在。')).toBeVisible();
 
       const apiOrigin = new URL(process.env.VITE_API_BASE_URL ?? 'http://localhost:3000').origin;
       expect(localAgent.sessionCreates).toEqual([

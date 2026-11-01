@@ -255,6 +255,11 @@ describe('canvas-bridge 本地直连模式', () => {
       const usage = stream.events.find((event) => event.type === 'usage_update');
       assert.equal(usage?.inputTokens, 12);
       assert.equal(usage?.outputTokens, 200_000);
+      const thoughts = stream.events
+        .filter((event) => event.type === 'agent_thought_chunk')
+        .map((event) => event.text)
+        .join('');
+      assert.match(thoughts, /先想一下/);
       assert.equal(stream.events.at(-1)?.type, 'done');
       assert.equal(
         stream.events.filter((event) => event.type === 'done').length,
@@ -342,6 +347,51 @@ describe('canvas-bridge 本地直连模式', () => {
     } finally {
       await channel(`/sessions/${sessionId}`, { method: 'DELETE' });
     }
+  });
+
+  it('建会话时返回身份与模型，并可读取与切换模型', async () => {
+    const createdResponse = await channel('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'project-models' }),
+    });
+    const createdText = await createdResponse.text();
+    assert.equal(createdResponse.status, 201, createdText);
+    const created = JSON.parse(createdText);
+    assert.equal(created.agent, process.execPath);
+    assert.deepEqual(
+      created.models.map((model) => model.value),
+      ['fake-small', 'fake-large'],
+    );
+    assert.equal(created.currentModel, 'fake-small');
+
+    const modelsResponse = await channel(`/sessions/${created.sessionId}/models`);
+    assert.equal(modelsResponse.status, 200);
+    const profile = await readJson(modelsResponse);
+    assert.deepEqual(
+      profile.models.map((model) => model.value),
+      ['fake-small', 'fake-large'],
+    );
+    assert.equal(profile.currentModel, 'fake-small');
+
+    const switchResponse = await channel(`/sessions/${created.sessionId}/model`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'fake-large' }),
+    });
+    assert.equal(switchResponse.status, 200);
+    const switched = await readJson(switchResponse);
+    assert.equal(switched.currentModel, 'fake-large');
+
+    const invalid = await channel(`/sessions/${created.sessionId}/model`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'not-a-model' }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await readJson(invalid)).code, 'invalid_model');
+
+    await channel(`/sessions/${created.sessionId}`, { method: 'DELETE' });
   });
 
   it('整个流程只初始化一次 Agent，且每个会话复用自己的 ACP 会话', async () => {

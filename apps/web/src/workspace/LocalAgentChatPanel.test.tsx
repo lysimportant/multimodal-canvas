@@ -103,6 +103,7 @@ type LocalRoutes = {
   events?: () => Response | Promise<Response>;
   prompt?: () => Response | Promise<Response>;
   cancel?: () => Response | Promise<Response>;
+  model?: (init?: RequestInit) => Response | Promise<Response>;
   remove?: () => Response | Promise<Response>;
 };
 
@@ -124,6 +125,9 @@ function routeLocal(routes: LocalRoutes = {}) {
     }
     if (url === `${localBase}/sessions/sess-abc/cancel` && method === 'POST') {
       return routes.cancel?.() ?? new Response(null, { status: 204 });
+    }
+    if (url === `${localBase}/sessions/sess-abc/model` && method === 'POST') {
+      return routes.model?.(init) ?? Response.json({ sessionId: 'sess-abc', currentModel: 'x' });
     }
     if (url === `${localBase}/sessions/sess-abc` && method === 'DELETE') {
       return routes.remove?.() ?? new Response(null, { status: 204 });
@@ -303,6 +307,76 @@ describe('LocalAgentChatPanel（直连本地 Agent）', () => {
     expect(
       await screen.findByText('连接令牌无效，请核对桥接程序启动时打印的 Connect token'),
     ).toBeVisible();
+  });
+
+  it('建立会话期间显示启动占位，完成后进入聊天界面', async () => {
+    const user = userEvent.setup();
+    const sessionDeferred = deferred<Response>();
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal({ session: () => sessionDeferred.promise });
+    mount();
+    await user.type(screen.getByLabelText('连接令牌'), 'test-token');
+    await user.click(screen.getByRole('button', { name: '连接' }));
+    expect(await screen.findByText('正在启动本机 Agent…')).toBeVisible();
+    await act(async () =>
+      sessionDeferred.resolve(Response.json({ sessionId: 'sess-abc' }, { status: 201 })),
+    );
+    expect(await screen.findByRole('textbox', { name: '输入消息' })).toBeInTheDocument();
+  });
+
+  it('连接后展示 Agent 身份与模型选择器，并可通过本机接口切换模型', async () => {
+    const user = userEvent.setup();
+    const models = [
+      { value: 'fake-small', name: 'Fake Small', description: '快速模型' },
+      { value: 'fake-large', name: 'Fake Large', description: '更强模型' },
+    ];
+    const profile = { sessionId: 'sess-abc', agent: 'claude', models };
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal({
+      session: () => Response.json({ ...profile, currentModel: 'fake-small' }, { status: 201 }),
+      model: (init) => {
+        expect(JSON.parse(String(init?.body))).toEqual({ model: 'fake-large' });
+        return Response.json({ ...profile, currentModel: 'fake-large' });
+      },
+    });
+    mount(true);
+    await connectWith(user);
+    expect(screen.getByText('Agent：claude')).toBeVisible();
+    await user.click(screen.getByRole('combobox', { name: '选择模型' }));
+    await user.click(await screen.findByText('Fake Large'));
+    await waitFor(() => {
+      const modelCall = localFetch.mock.calls.find(([input]) =>
+        String(input).endsWith('/sessions/sess-abc/model'),
+      );
+      expect(modelCall?.[1]?.method).toBe('POST');
+    });
+  });
+
+  it('agent_thought_chunk 渲染为可折叠的思考过程', async () => {
+    const user = userEvent.setup();
+    const sseDeferred = deferred<Response>();
+    auth.apiFetch.mockResolvedValueOnce(urlConnectionsResponse());
+    routeLocal({ events: () => sseDeferred.promise });
+    mount(true);
+    await connectWith(user);
+    await user.type(screen.getByRole('textbox', { name: '输入消息' }), 'think please');
+    await user.keyboard('{Enter}');
+    const thoughtEvent = `data: ${JSON.stringify({
+      type: 'agent_thought_chunk',
+      text: '先想一下再回答',
+    })}\n\n`;
+    const chunkEvent = `data: ${JSON.stringify({ type: 'agent_message_chunk', text: '最终答案' })}\n\n`;
+    const doneEvent = `data: ${JSON.stringify({ type: 'done' })}\n\n`;
+    await act(async () =>
+      sseDeferred.resolve(
+        new Response(sseStream(thoughtEvent, chunkEvent, doneEvent), { status: 200 }),
+      ),
+    );
+    expect(await screen.findByText('思考过程')).toBeVisible();
+    expect(screen.getByText('先想一下再回答')).toBeInTheDocument();
+    await user.click(screen.getByText('思考过程'));
+    expect(screen.getByText('先想一下再回答')).toBeVisible();
+    expect(screen.getByText('最终答案')).toBeVisible();
   });
 
   it('发送前调用 saveCanvas，然后 POST 本机 prompt，SSE 事件更新消息列表', async () => {

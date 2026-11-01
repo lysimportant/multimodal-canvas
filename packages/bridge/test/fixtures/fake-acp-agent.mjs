@@ -43,6 +43,37 @@ const pending = new Map();
 let sessionCount = 0;
 let promptWaiting = null;
 
+const FAKE_MODELS = [
+  { value: 'fake-small', name: 'Fake Small', description: '快速模型' },
+  { value: 'fake-large', name: 'Fake Large', description: '更强模型' },
+];
+let currentModel = 'fake-small';
+
+function configOptions() {
+  return [
+    {
+      id: 'model',
+      name: '模型',
+      description: '选择 Agent 使用的模型',
+      category: 'model',
+      type: 'select',
+      currentValue: currentModel,
+      options: FAKE_MODELS,
+    },
+    {
+      id: 'thought-level',
+      name: '思考深度',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'medium',
+      options: [
+        { value: 'low', name: '低' },
+        { value: 'medium', name: '中' },
+      ],
+    },
+  ];
+}
+
 function promptText(params) {
   const blocks = Array.isArray(params?.prompt) ? params.prompt : [];
   return blocks
@@ -103,6 +134,13 @@ async function handlePrompt(id, params) {
   notify('session/update', {
     sessionId: currentSessionId,
     update: {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: '先想一下再回答…' },
+    },
+  });
+  notify('session/update', {
+    sessionId: currentSessionId,
+    update: {
       sessionUpdate: 'tool_call',
       toolCallId: 'fake-tool-1',
       title: '画布：新建图片节点',
@@ -153,7 +191,24 @@ reader.on('line', (line) => {
     case 'session/new':
       sessionCount += 1;
       currentSessionId = `fake-acp-session-${sessionCount}`;
-      reply(id, { sessionId: currentSessionId });
+      currentModel = 'fake-small';
+      reply(id, { sessionId: currentSessionId, configOptions: configOptions() });
+      return;
+    case 'session/set_config_option':
+      if (params?.configId !== 'model') {
+        replyError(id, -32602, `unsupported config option: ${String(params?.configId)}`);
+        return;
+      }
+      if (!FAKE_MODELS.some((model) => model.value === params?.value)) {
+        replyError(id, -32602, `unknown model: ${String(params?.value)}`);
+        return;
+      }
+      currentModel = params.value;
+      notify('session/update', {
+        sessionId: currentSessionId,
+        update: { sessionUpdate: 'config_option_update', configOptions: configOptions() },
+      });
+      reply(id, { configOptions: configOptions() });
       return;
     case 'session/prompt':
       void handlePrompt(id, params);

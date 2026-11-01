@@ -55,6 +55,7 @@ import {
   type ClientConnection,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type SessionConfigOption,
   type SessionUpdate,
   type StopReason,
 } from '@agentclientprotocol/sdk';
@@ -85,10 +86,52 @@ const AGENT_BINARIES: Record<AgentName, { cmd: string; args: string[] }> = {
 /** 画布侧栏认识的事件类型。 */
 type BridgeEvent =
   | { type: 'agent_message_chunk'; text: string }
+  /** Agent 的思考过程（ACP agent_thought_chunk），侧栏折叠展示。 */
+  | { type: 'agent_thought_chunk'; text: string }
   | { type: 'tool_call'; name: string; status?: string }
   | { type: 'usage_update'; inputTokens?: number; outputTokens?: number }
   | { type: 'done' }
   | { type: 'agent_error'; message: string };
+
+/** 会话可选的模型（来源：ACP session/new 返回的 configOptions 中 category=model 的 select）。 */
+interface ModelOption {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+/** 会话身份信息：Agent 名称、可选模型与当前模型。 */
+interface SessionProfile {
+  agent: string;
+  models: ModelOption[];
+  currentModel?: string;
+}
+
+/** 把 select 类型的选项（可能带分组）拍平成列表。 */
+function flattenSelectOptions(options: readonly unknown[]): ModelOption[] {
+  const models: ModelOption[] = [];
+  for (const entry of options) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const record = entry as {
+      value?: unknown;
+      name?: unknown;
+      description?: unknown;
+      options?: unknown;
+    };
+    if (Array.isArray(record.options)) {
+      models.push(...flattenSelectOptions(record.options));
+      continue;
+    }
+    if (typeof record.value === 'string' && typeof record.name === 'string') {
+      models.push({
+        value: record.value,
+        name: record.name,
+        ...(typeof record.description === 'string' ? { description: record.description } : {}),
+      });
+    }
+  }
+  return models;
+}
 
 /** 一次提示词请求（本地模式与中继模式共用）。 */
 interface PromptRequest {
@@ -571,6 +614,8 @@ interface HostSession {
   cwd: string;
   acp: ActiveSession;
   queue: Promise<void>;
+  /** session/new 与 config_option_update 下发的配置项（含模型选择）。 */
+  configOptions: SessionConfigOption[];
 }
 
 interface TurnRecord {
@@ -649,35 +694,97 @@ class AgentHost {
   }
 
   private async ensureSession(prompt: PromptRequest): Promise<HostSession> {
-    const existing = this.sessions.get(prompt.sessionId);
+    return this.ensureSessionFor(prompt.sessionId, prompt.projectId, prompt.mcpUrl);
+  }
+
+  /**
+   * 取得（必要时创建）某个桥接会话对应的 ACP 会话。
+   *
+   * 本地模式在浏览器点「连接」时就会调用它，这样能立刻拿到 Agent 身份与可选模型，
+   * 也把「Agent 启动失败」暴露在连接阶段而不是第一条消息之后。
+   */
+  async ensureSessionFor(
+    bridgeSessionId: string,
+    projectId?: string,
+    mcpUrl?: string,
+  ): Promise<HostSession> {
+    const existing = this.sessions.get(bridgeSessionId);
     if (existing) {
       return existing;
     }
     const connection = await this.ensureConnection();
-    const cwd = this.workdirFor(prompt.projectId);
+    const cwd = this.workdirFor(projectId);
     mkdirSync(cwd, { recursive: true });
     const builder = connection.agent.buildSession(cwd);
-    if (prompt.mcpUrl) {
+    if (mcpUrl) {
       builder.withMcpServer({
         type: 'http',
         name: 'canvas',
-        url: prompt.mcpUrl,
+        url: mcpUrl,
         headers: [],
       });
     }
     const acp = await builder.start();
     const session: HostSession = {
-      bridgeSessionId: prompt.sessionId,
+      bridgeSessionId,
       cwd,
       acp,
       queue: Promise.resolve(),
+      configOptions: acp.newSessionResponse.configOptions ?? [],
     };
-    this.sessions.set(prompt.sessionId, session);
+    this.sessions.set(bridgeSessionId, session);
     log.info(
-      `session ready: bridge=${prompt.sessionId} acp=${acp.sessionId} ` +
-        `mcp=${prompt.mcpUrl ? 'canvas' : 'none'} cwd=${cwd}`,
+      `session ready: bridge=${bridgeSessionId} acp=${acp.sessionId} ` +
+        `mcp=${mcpUrl ? 'canvas' : 'none'} cwd=${cwd}`,
     );
     return session;
+  }
+
+  /** 会话身份信息：Agent 名称、可选模型、当前模型。 */
+  profile(bridgeSessionId: string): SessionProfile | undefined {
+    const session = this.sessions.get(bridgeSessionId);
+    if (!session) {
+      return undefined;
+    }
+    const select = this.modelSelect(session);
+    const models = select ? flattenSelectOptions(select.options) : [];
+    return {
+      agent: this.spec.agentCmd ?? this.spec.agent,
+      models,
+      ...(select ? { currentModel: select.currentValue } : {}),
+    };
+  }
+
+  /** 切换会话模型（ACP session/set_config_option）。 */
+  async setModel(bridgeSessionId: string, value: string): Promise<SessionProfile> {
+    const session = this.sessions.get(bridgeSessionId);
+    const connection = this.connection;
+    const select = session ? this.modelSelect(session) : undefined;
+    if (!session || !connection || !select) {
+      throw new Error('当前会话不支持模型选择');
+    }
+    const response = await connection.agent.request(methods.agent.session.setConfigOption, {
+      sessionId: session.acp.sessionId,
+      configId: select.id,
+      value,
+    });
+    session.configOptions = response.configOptions ?? session.configOptions;
+    log.info(`session ${bridgeSessionId} model -> ${value}`);
+    return (
+      this.profile(bridgeSessionId) ?? {
+        agent: this.spec.agentCmd ?? this.spec.agent,
+        models: [],
+      }
+    );
+  }
+
+  private modelSelect(
+    session: HostSession,
+  ): (SessionConfigOption & { type: 'select' }) | undefined {
+    return session.configOptions.find(
+      (option): option is SessionConfigOption & { type: 'select' } =>
+        option.type === 'select' && option.category === 'model',
+    );
   }
 
   private async ensureConnection(): Promise<ClientConnection> {
@@ -849,6 +956,16 @@ class AgentHost {
         }
         return;
       }
+      case 'agent_thought_chunk': {
+        if (update.content.type === 'text' && update.content.text) {
+          sink.push({ type: 'agent_thought_chunk', text: update.content.text });
+        }
+        return;
+      }
+      case 'config_option_update': {
+        session.configOptions = update.configOptions;
+        return;
+      }
       case 'tool_call': {
         const name = update.title || update.name || update.toolCallId;
         this.emittedToolCalls.add(`${session.acp.sessionId}:${update.toolCallId}`);
@@ -994,8 +1111,10 @@ interface LocalSessionState {
  * 本地 Agent 服务：监听 127.0.0.1，供画布页面直接连接。
  *
  *  - GET    /health                     → 服务信息（无需令牌，用于探测）
- *  - POST   /sessions                   → 建立桥接会话，body { projectId?, mcpUrl? }
+ *  - POST   /sessions                   → 建立桥接会话并启动 Agent，body { projectId?, mcpUrl? }
  *  - GET    /sessions/:id/events        → SSE 事件流
+ *  - GET    /sessions/:id/models        → 会话身份与可选模型
+ *  - POST   /sessions/:id/model         → 切换模型，body { model }
  *  - POST   /sessions/:id/prompt        → 发送提示词，body { messages }
  *  - POST   /sessions/:id/cancel        → 取消当前任务
  *  - DELETE /sessions/:id               → 结束会话
@@ -1092,7 +1211,10 @@ class LocalAgentServer {
         await this.createSession(request, response);
         return;
       }
-      const match = /^\/sessions\/([A-Za-z0-9-]+)(\/events|\/prompt|\/cancel)?$/.exec(url.pathname);
+      const match =
+        /^\/sessions\/([A-Za-z0-9-]+)(\/events|\/prompt|\/cancel|\/models|\/model)?$/.exec(
+          url.pathname,
+        );
       if (!match) {
         this.sendJson(response, 404, { code: 'not_found', error: '未知接口' });
         return;
@@ -1105,6 +1227,14 @@ class LocalAgentServer {
       const action = match[2] ?? '';
       if (request.method === 'GET' && action === '/events') {
         this.openEvents(response, session);
+        return;
+      }
+      if (request.method === 'GET' && action === '/models') {
+        this.sendProfile(response, session);
+        return;
+      }
+      if (request.method === 'POST' && action === '/model') {
+        await this.setModel(request, response, session);
         return;
       }
       if (request.method === 'POST' && action === '/prompt') {
@@ -1231,7 +1361,54 @@ class LocalAgentServer {
       `local session created: ${session.id} project=${projectId ?? '-'} ` +
         `mcp=${mcpUrl ? 'canvas' : 'none'}`,
     );
-    this.sendJson(response, 201, { sessionId: session.id });
+    // 立即启动 Agent 并建立 ACP 会话：连接阶段就能拿到身份/模型，也把启动失败暴露在这里。
+    try {
+      await this.host.ensureSessionFor(session.id, projectId, mcpUrl);
+    } catch (error) {
+      this.sessions.delete(session.id);
+      log.warn(`local session ${session.id} agent start failed: ${errorMessage(error)}`);
+      throw new HttpError(502, 'agent_start_failed', `无法启动本机 Agent：${errorMessage(error)}`);
+    }
+    const profile = this.host.profile(session.id) ?? {
+      agent: this.options.agentLabel,
+      models: [],
+    };
+    this.sendJson(response, 201, { sessionId: session.id, ...profile });
+  }
+
+  /** 返回会话身份与可选模型（等价于 POST /sessions 时的响应）。 */
+  private sendProfile(response: ServerResponse, session: LocalSessionState): void {
+    const profile = this.host.profile(session.id);
+    if (!profile) {
+      this.sendJson(response, 409, { code: 'session_not_ready', error: '会话还没有准备好' });
+      return;
+    }
+    this.sendJson(response, 200, { sessionId: session.id, ...profile });
+  }
+
+  private async setModel(
+    request: IncomingMessage,
+    response: ServerResponse,
+    session: LocalSessionState,
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    const value = typeof body.model === 'string' ? body.model.trim() : '';
+    if (!value) {
+      throw new HttpError(400, 'invalid_model', '缺少 model 参数');
+    }
+    const profile = this.host.profile(session.id);
+    if (!profile) {
+      this.sendJson(response, 409, { code: 'session_not_ready', error: '会话还没有准备好' });
+      return;
+    }
+    if (profile.models.length === 0) {
+      throw new HttpError(409, 'no_model_option', '当前 Agent 不支持选择模型');
+    }
+    if (!profile.models.some((model) => model.value === value)) {
+      throw new HttpError(400, 'invalid_model', `未知模型：${value}`);
+    }
+    const updated = await this.host.setModel(session.id, value);
+    this.sendJson(response, 200, { sessionId: session.id, ...updated });
   }
 
   private openEvents(response: ServerResponse, session: LocalSessionState): void {
