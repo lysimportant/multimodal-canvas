@@ -330,6 +330,109 @@ describe('内存执行的冻结 txt 水合', () => {
   );
 });
 
+/** 客户端在新运行被接受后即解绑旧结果；新提交不能回退到提示词正文。 */
+describe('最新运行状态决定旧文字结果是否解绑', () => {
+  it.each(['failed', 'cancelled'] as const)(
+    '最新运行 %s 时拒绝新提交，即使更早的成功结果和提示词仍在',
+    async (status) => {
+      const context = await fixture();
+      await archiveText(context);
+      context.history.push({
+        ...structuredClone(context.history[0]!),
+        id: `newer-${status}-run`,
+        status,
+        createdAt: '2026-10-01T00:00:00.000Z',
+        result: undefined,
+      });
+      await expect(
+        withConnectedTextInputs({
+          projectId: context.project.id,
+          canvas: context.saved,
+          targetNodeId: 'target',
+          runService: context.runService,
+        }),
+      ).rejects.toThrow('节点「已有提示词」的最新生成未成功，旧输出已解绑');
+    },
+  );
+
+  it.each([
+    'queued',
+    'preparing',
+    'running',
+    'processing',
+    'archiving',
+    'cancel_requested',
+  ] as const)('最新运行 %s 时提示等待完成，不回退旧正文', async (status) => {
+    const context = await fixture();
+    await archiveText(context);
+    context.history.push({
+      ...structuredClone(context.history[0]!),
+      id: `newer-${status}-run`,
+      status,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      result: undefined,
+    });
+    await expect(
+      withConnectedTextInputs({
+        projectId: context.project.id,
+        canvas: context.saved,
+        targetNodeId: 'target',
+        runService: context.runService,
+      }),
+    ).rejects.toThrow('节点「已有提示词」的生成任务尚未完成');
+  });
+
+  it('最新成功运行仍引用其冻结版本，旧成功结果不覆盖新版本', async () => {
+    const context = await fixture();
+    await archiveText(context);
+    context.history.push({
+      ...structuredClone(context.history[0]!),
+      id: 'newer-succeeded-run',
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:01:00.000Z',
+      result: {
+        ...context.history[0]!.result!,
+        asset: {
+          assetId: context.history[0]!.result!.asset!.assetId,
+          version: 2,
+          mimeType: 'text/plain',
+        },
+      },
+    });
+    const projected = await withConnectedTextInputs({
+      projectId: context.project.id,
+      canvas: context.saved,
+      targetNodeId: 'target',
+      runService: context.runService,
+    });
+    expect(projected.sourceVersions).toEqual({ 'text-source': 2 });
+    expect(projected.canvas.nodes[1].data.contentUrl).toContain('/versions/2/content');
+    expect(context.saved.nodes[1].data.mode).toBe('generate');
+  });
+
+  it('最新失败运行在提交路由上返回 400，不创建下游运行', async () => {
+    const context = await fixture();
+    await archiveText(context);
+    context.history.push({
+      ...structuredClone(context.history[0]!),
+      id: 'newer-failed-run',
+      status: 'failed',
+      createdAt: '2026-10-01T00:00:00.000Z',
+      result: undefined,
+    });
+    const create = vi.spyOn(context.runService, 'create');
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/nodes/target/runs',
+      payload: { projectId: context.project.id },
+    });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json().error).toContain('节点「已有提示词」的最新生成未成功，旧输出已解绑');
+    expect(create).not.toHaveBeenCalled();
+    expect(context.fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('连线文字到图片的完整提交', () => {
   it.each(['skill-document', 'plain-text', 'archived-txt'] as const)(
     '%s 仅调用一次 images/generations，原样发送正文并保留4K',

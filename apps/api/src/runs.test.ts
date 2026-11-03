@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createIdempotentRunId,
   createRunSnapshot,
+  DEFAULT_RUN_QUEUE_ATTEMPTS,
+  DEFAULT_RUN_QUEUE_BACKOFF_MS,
   MemoryRunService,
+  resolveRunQueueRetryPolicy,
   snapshotFingerprint,
   type RunExecutorRequest,
 } from './runs';
@@ -898,6 +901,48 @@ describe('provider webhook lifecycle updates', () => {
     } finally {
       releaseExecutor();
       await service.close();
+    }
+  });
+});
+
+describe('run queue retry policy', () => {
+  it('defaults to three attempts with exponential 2s backoff', () => {
+    expect(resolveRunQueueRetryPolicy({})).toEqual({
+      attempts: DEFAULT_RUN_QUEUE_ATTEMPTS,
+      backoffMs: DEFAULT_RUN_QUEUE_BACKOFF_MS,
+    });
+    expect(DEFAULT_RUN_QUEUE_ATTEMPTS).toBe(3);
+    expect(DEFAULT_RUN_QUEUE_BACKOFF_MS).toBe(2_000);
+  });
+
+  it('reads attempts and backoff from the deployment environment', () => {
+    expect(
+      resolveRunQueueRetryPolicy({
+        RUN_QUEUE_ATTEMPTS: '5',
+        RUN_QUEUE_BACKOFF_MS: '1500',
+      }),
+    ).toEqual({ attempts: 5, backoffMs: 1_500 });
+  });
+
+  it('treats blank environment values as unset', () => {
+    expect(
+      resolveRunQueueRetryPolicy({ RUN_QUEUE_ATTEMPTS: ' ', RUN_QUEUE_BACKOFF_MS: '' }),
+    ).toEqual({
+      attempts: DEFAULT_RUN_QUEUE_ATTEMPTS,
+      backoffMs: DEFAULT_RUN_QUEUE_BACKOFF_MS,
+    });
+  });
+
+  it('rejects out-of-range or non-integer values instead of silently clamping', () => {
+    for (const invalid of ['0', '11', '2.5', 'many']) {
+      expect(() => resolveRunQueueRetryPolicy({ RUN_QUEUE_ATTEMPTS: invalid })).toThrow(
+        'RUN_QUEUE_ATTEMPTS 必须是 1~10 之间的整数',
+      );
+    }
+    for (const invalid of ['99', '60001', '1.5']) {
+      expect(() => resolveRunQueueRetryPolicy({ RUN_QUEUE_BACKOFF_MS: invalid })).toThrow(
+        'RUN_QUEUE_BACKOFF_MS 必须是 100~60000 之间的整数',
+      );
     }
   });
 });

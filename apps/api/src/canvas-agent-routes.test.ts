@@ -10,6 +10,7 @@ import { MemoryAssetStore } from './assets';
 import { TestAuthContext } from './fixtures/auth-session';
 import { MemoryAiSettingsStore } from './fixtures/memory-ai-settings';
 import { buildApp, type BuildAppOptions } from './fixtures/test-app';
+import type { MediaDerivative, MediaDerivativeGenerator } from './media';
 import { MemoryProjectStore } from './projects';
 import { MemoryRunService } from './runs';
 
@@ -98,10 +99,11 @@ async function expectToolError(
 }
 
 /** 合成登录和业务数据只驻留内存；官方 SDK 连接每例独立的随机本机端口。 */
-async function fixture(
-  allowGeneration = true,
-  extra: Pick<BuildAppOptions, 'logger' | 'observability'> = {},
-) {
+type FixtureOptions = Pick<
+  BuildAppOptions,
+  'logger' | 'observability' | 'mediaDerivativeGenerator'
+>;
+async function fixture(allowGeneration = true, extra: FixtureOptions = {}) {
   const context = new TestAuthContext();
   const session = await context.session({ email: 'canvas-agent@example.test', role: 'admin' });
   const headers = { authorization: `Bearer ${session.accessToken}` };
@@ -279,6 +281,9 @@ describe('项目 Agent 路由与官方 MCP Client 集成', () => {
     expect(changed.canvas).toMatchObject({ revision: 1, edges: [edge] });
     expect(changed.canvas.nodes.find((node) => node.id === 'target')).toMatchObject({
       position: { x: 420, y: 80 },
+      // create_node 未给尺寸时按媒体类型补齐卡片尺寸（文字节点 320×200），不再是近方形默认卡。
+      width: 320,
+      height: 200,
       data: { prompt: '输出合成内容摘要', parameters: { temperature: 0.4, max_tokens: 128 } },
     });
     // 添加更新的素材版本后仍须按建图时明确选中的旧版执行。
@@ -621,7 +626,7 @@ describe('项目 Agent 路由与官方 MCP Client 集成', () => {
     );
   });
 
-  it('get_image 拒绝非图片与超过4MiB的版本，超限不读取素材正文', async () => {
+  it('get_image 不再因体积拒绝：超限返回缩略图预览，无预览时仍返回原图', async () => {
     const f = await fixture();
     const text = await f.asset();
     await expectToolError(
@@ -631,23 +636,111 @@ describe('项目 Agent 路由与官方 MCP Client 集成', () => {
       400,
       'unsupported_image',
     );
-    const oversized = await f.assetStore.create({
-      name: 'synthetic-oversized.png',
+    const thumbnail = Buffer.from('synthetic-thumbnail');
+    const withPreview = await f.assetStore.create({
+      name: 'synthetic-preview.png',
       mediaType: 'image',
       mimeType: 'image/png',
-      content: Buffer.alloc(4 * 1024 * 1024 + 1),
+      content: Buffer.alloc(2048, 1),
       projectId: f.projectId,
       ownerId: f.session.user.id,
     });
-    const readContent = vi.spyOn(f.assetStore, 'getVersionContent');
-    await expectToolError(
-      f.client,
-      'get_image',
-      { assetId: oversized.id, version: 1 },
-      413,
-      'image_too_large',
+    await f.assetStore.putDerivative(
+      withPreview.id,
+      'thumbnail',
+      { mimeType: 'image/jpeg', content: thumbnail },
+      { projectId: f.projectId },
     );
-    expect(readContent).not.toHaveBeenCalled();
+    const withoutPreview = await f.assetStore.create({
+      name: 'synthetic-no-preview.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.alloc(2048, 2),
+      projectId: f.projectId,
+      ownerId: f.session.user.id,
+    });
+    const previousLimit = process.env.AGENT_IMAGE_READ_LIMIT_BYTES;
+    const readContent = vi.spyOn(f.assetStore, 'getVersionContent');
+    process.env.AGENT_IMAGE_READ_LIMIT_BYTES = '1024';
+    try {
+      const preview = await f.client.callTool({
+        name: 'get_image',
+        arguments: { assetId: withPreview.id, version: 1 },
+      });
+      expect(preview.isError).not.toBe(true);
+      expect(preview.structuredContent).toEqual({
+        assetId: withPreview.id,
+        version: 1,
+        derivative: 'thumbnail',
+      });
+      expect(preview.content).toContainEqual({
+        type: 'image',
+        data: thumbnail.toString('base64'),
+        mimeType: 'image/jpeg',
+      });
+      expect(readContent).not.toHaveBeenCalled();
+      const original = await f.client.callTool({
+        name: 'get_image',
+        arguments: { assetId: withoutPreview.id, version: 1 },
+      });
+      expect(original.isError).not.toBe(true);
+      expect(original.structuredContent).toEqual({ assetId: withoutPreview.id, version: 1 });
+      expect(original.content).toContainEqual({
+        type: 'image',
+        data: Buffer.alloc(2048, 2).toString('base64'),
+        mimeType: 'image/png',
+      });
+      expect(readContent).toHaveBeenCalled();
+    } finally {
+      readContent.mockRestore();
+      if (previousLimit === undefined) delete process.env.AGENT_IMAGE_READ_LIMIT_BYTES;
+      else process.env.AGENT_IMAGE_READ_LIMIT_BYTES = previousLimit;
+    }
+  });
+
+  it('get_image 超限且无持久化缩略图时，按需生成缩略图预览', async () => {
+    const thumbnail = Buffer.from('generated-thumbnail');
+    const generate = vi.fn(async (): Promise<MediaDerivative[]> => [
+      { kind: 'thumbnail', mimeType: 'image/jpeg', content: thumbnail },
+    ]);
+    const generator: MediaDerivativeGenerator = { generate };
+    const f = await fixture(true, { mediaDerivativeGenerator: generator });
+    const image = await f.assetStore.create({
+      name: 'synthetic-generated-preview.png',
+      mediaType: 'image',
+      mimeType: 'image/png',
+      content: Buffer.alloc(2048, 3),
+      projectId: f.projectId,
+      ownerId: f.session.user.id,
+    });
+    const previousLimit = process.env.AGENT_IMAGE_READ_LIMIT_BYTES;
+    process.env.AGENT_IMAGE_READ_LIMIT_BYTES = '1024';
+    try {
+      const result = await f.client.callTool({
+        name: 'get_image',
+        arguments: { assetId: image.id, version: 1 },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({
+        assetId: image.id,
+        version: 1,
+        derivative: 'thumbnail',
+      });
+      expect(result.content).toContainEqual({
+        type: 'image',
+        data: thumbnail.toString('base64'),
+        mimeType: 'image/jpeg',
+      });
+      expect(generate).toHaveBeenCalledTimes(1);
+      // 生成后写回持久化衍生图：第二次读图不再重新解码原图。
+      const stored = await f.assetStore.getDerivative(image.id, 'thumbnail', {
+        projectId: f.projectId,
+      });
+      expect(stored?.content.equals(thumbnail)).toBe(true);
+    } finally {
+      if (previousLimit === undefined) delete process.env.AGENT_IMAGE_READ_LIMIT_BYTES;
+      else process.env.AGENT_IMAGE_READ_LIMIT_BYTES = previousLimit;
+    }
   });
 
   it('即使拥有其他项目，当前连接仍不能读取或取消其他项目的运行', async () => {

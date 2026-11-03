@@ -147,7 +147,7 @@ describe('API error boundary', () => {
     }
   });
 
-  it('publishes only the public run fields over SSE', async () => {
+  it('publishes only the public run record over SSE, including the summarized snapshot', async () => {
     const internalMarker = 'internal-run-boundary-marker';
     let projectId = '';
     const runService = testRunService(async (requestedProjectId) => {
@@ -247,6 +247,8 @@ describe('API error boundary', () => {
         attempt: 2,
         provider: 'mock',
         modelAlias: 'mock-text',
+        // Agent/MCP 触发的运行没有本页提交记录（POST 响应）可回填，事件必须自带摘要快照。
+        snapshot: { canvasRevision: 0, inputCount: 0, inputs: [] },
         result: {
           provider: 'mock',
           summary: 'public result',

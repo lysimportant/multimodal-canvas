@@ -25,6 +25,11 @@ export const promptSkillSchema = {
       description: '保留用户原文；不允许全空白',
     },
     version: { type: 'string', description: '内置定义版本，或自定义项的 1.0.<revision-1>' },
+    kind: {
+      type: 'string',
+      enum: ['prompt-optimization', 'text'],
+      description: '技能用途；缺省为提示词优化技能，text 为创作型技能',
+    },
     builtin: { type: 'boolean' },
     enabled: { type: 'boolean' },
     revision: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },

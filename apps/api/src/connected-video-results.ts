@@ -1,6 +1,11 @@
 import { type CanvasDocument, type RunResultAsset } from '@multimodal-canvas/domain';
 
-import { RunServiceError, type RunService } from './runs';
+import {
+  assertLatestRunOutputUsable,
+  latestRunsByTargetNode,
+  RunServiceError,
+  type RunService,
+} from './runs';
 
 /** 文字和视频节点消费已有视频，不必再次运行其生成链。 */
 const videoInputHandles = new Set(['input:content']);
@@ -18,8 +23,9 @@ type ConnectedVideoResults = {
  * 将目标连线中的已有生成视频投影为固定来源，阻断无关上游的再次生成。
  * @param input 已授权项目、目标、持久化画布和只读运行查询。
  * @returns 独立执行画布及结果版本；没有成功结果的视频源保留原 DAG 语义。
- * @throws RunServiceError 已有结果缺少不可变版本。
- * @remarks 只采用同项目同节点的成功归档结果；资产权限、归档及版本有效性仍由提交边界复核。
+ * @throws RunServiceError 已有结果缺少不可变版本，或来源节点最新一次生成未成功/尚未完成。
+ * @remarks 只采用同项目同节点的成功归档结果，并以全部状态的最新运行判定旧输出是否已解绑；
+ *   资产权限、归档及版本有效性仍由提交边界复核。
  */
 export async function withConnectedVideoResults(input: {
   projectId: string;
@@ -45,13 +51,17 @@ export async function withConnectedVideoResults(input: {
       !node.data.manualOutput,
   );
   if (sources.length === 0) return unchanged;
-  const runs = (await input.runService.listByProject(input.projectId))
+  const projectRuns = await input.runService.listByProject(input.projectId);
+  const latestRuns = latestRunsByTargetNode(projectRuns, input.projectId);
+  const succeededRuns = projectRuns
     .filter((run) => run.projectId === input.projectId && run.status === 'succeeded')
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const results = new Map<string, RunResultAsset>();
   const sourceVersions: Record<string, number> = {};
   for (const source of sources) {
-    const result = runs.find(
+    // 较新的失败、取消或未完成运行意味着旧结果已解绑，不能继续作为新提交的来源。
+    assertLatestRunOutputUsable(latestRuns.get(source.id), source.data.label);
+    const result = succeededRuns.find(
       (run) =>
         run.targetNodeId === source.id &&
         run.result?.targetNodeId === source.id &&

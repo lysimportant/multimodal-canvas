@@ -56,6 +56,44 @@ const MOCK_VIDEO_MP4_BASE64 =
 const MOCK_VIDEO_MP4 = Buffer.from(MOCK_VIDEO_MP4_BASE64, 'base64');
 
 export const RUN_QUEUE_NAME = 'multimodal-canvas-runs';
+export const DEFAULT_RUN_QUEUE_ATTEMPTS = 3;
+export const DEFAULT_RUN_QUEUE_BACKOFF_MS = 2_000;
+export type RunQueueRetryPolicy = { attempts: number; backoffMs: number };
+
+function resolveQueueInteger(
+  raw: string | undefined,
+  options: { name: string; fallback: number; min: number; max: number },
+): number {
+  if (raw === undefined || raw.trim() === '') return options.fallback;
+  const value = Number(raw.trim());
+  if (!Number.isInteger(value) || value < options.min || value > options.max) {
+    throw new Error(`${options.name} 必须是 ${options.min}~${options.max} 之间的整数`);
+  }
+  return value;
+}
+
+/**
+ * “生成已完成但结果归档失败”时 Worker 只会重试归档、不会重新生成；队列重试
+ * 次数与退避间隔可由部署环境调整，默认保留原先的 3 次 / 2 秒指数退避。
+ */
+export function resolveRunQueueRetryPolicy(
+  environment: NodeJS.ProcessEnv = process.env,
+): RunQueueRetryPolicy {
+  return {
+    attempts: resolveQueueInteger(environment.RUN_QUEUE_ATTEMPTS, {
+      name: 'RUN_QUEUE_ATTEMPTS',
+      fallback: DEFAULT_RUN_QUEUE_ATTEMPTS,
+      min: 1,
+      max: 10,
+    }),
+    backoffMs: resolveQueueInteger(environment.RUN_QUEUE_BACKOFF_MS, {
+      name: 'RUN_QUEUE_BACKOFF_MS',
+      fallback: DEFAULT_RUN_QUEUE_BACKOFF_MS,
+      min: 100,
+      max: 60_000,
+    }),
+  };
+}
 export type RunProviderName = 'mock' | 'newapi';
 export type RunCreateOptions = {
   idempotencyKey?: string;
@@ -180,6 +218,49 @@ export interface RunService {
   recover?(runId: string, options?: RunRecoveryOptions): Promise<RunRecord>;
   cancel(runId: string): Promise<RunRecord>;
   close(): Promise<void>;
+}
+
+/**
+ * 按目标节点取项目内全部状态中最新的一次运行。
+ *
+ * 旧结果能否继续作为下游新提交的来源，取决于该节点最新运行是否成功：较新的失败、
+ * 取消或未完成运行意味着旧输出已经解绑；已提交运行冻结的快照按原样保留。
+ * @param runs 项目运行记录，可包含全部状态。
+ * @param projectId 当前项目；其他项目的记录不参与判定。
+ * @returns 以目标节点 ID 为键的最新运行；没有任何运行的节点不产生条目。
+ */
+export function latestRunsByTargetNode(
+  runs: readonly RunRecord[],
+  projectId: string,
+): Map<string, RunRecord> {
+  const sorted = [...runs]
+    .filter((run) => run.projectId === projectId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const latest = new Map<string, RunRecord>();
+  for (const run of sorted) {
+    if (!latest.has(run.targetNodeId)) latest.set(run.targetNodeId, run);
+  }
+  return latest;
+}
+
+/**
+ * 校验来源节点最新一次生成是否仍可被新的下游提交引用。
+ * @param latestRun 该节点在全部状态中的最新运行；没有任何运行时为 undefined。
+ * @param label 节点显示名称，用于给出可定位的中文错误。
+ * @throws RunServiceError 最新运行失败/取消（旧输出已解绑）或尚未完成。
+ */
+export function assertLatestRunOutputUsable(latestRun: RunRecord | undefined, label: string): void {
+  if (!latestRun || latestRun.status === 'succeeded') return;
+  if (latestRun.status === 'failed' || latestRun.status === 'cancelled') {
+    throw new RunServiceError(
+      'invalid_target',
+      `节点「${label}」的最新生成未成功，旧输出已解绑，请重新生成或手动固定结果后再提交`,
+    );
+  }
+  throw new RunServiceError(
+    'invalid_target',
+    `节点「${label}」的生成任务尚未完成，暂无可引用输出，请等待完成后再提交`,
+  );
 }
 
 /** 判断节点是否直接提供已有资产；手动输出作为目标显式重跑时仍执行原模型。 */
@@ -1525,6 +1606,7 @@ export class BullMqRunService implements RunService {
   }
   private readonly queue: Queue<RunJobData>;
   private readonly providerName: RunProviderName;
+  private readonly queueRetryPolicy: RunQueueRetryPolicy;
   private readonly execution?: PrismaExecutionService;
   private readonly persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
     Partial<
@@ -1544,6 +1626,8 @@ export class BullMqRunService implements RunService {
     queueName?: string;
     providerName?: RunProviderName;
     execution?: PrismaExecutionService;
+    /** 测试可注入的环境变量表；默认读取 process.env。 */
+    environment?: NodeJS.ProcessEnv;
     persistence?: Pick<PrismaRunPersistence, 'ensureRun'> &
       Partial<
         Pick<
@@ -1564,6 +1648,7 @@ export class BullMqRunService implements RunService {
     this.providerName = options.providerName ?? 'mock';
     this.persistence = options.persistence;
     this.execution = options.execution;
+    this.queueRetryPolicy = resolveRunQueueRetryPolicy(options.environment ?? process.env);
   }
 
   async create(snapshot: RunSnapshot, options: RunCreateOptions = {}): Promise<RunRecord> {
@@ -1957,6 +2042,8 @@ export class BullMqRunService implements RunService {
     try {
       job = await this.queue.add('run', data, {
         jobId: runId,
+        attempts: this.queueRetryPolicy.attempts,
+        backoff: { type: 'exponential', delay: this.queueRetryPolicy.backoffMs },
         removeOnComplete: false,
         removeOnFail: false,
       });
@@ -2143,8 +2230,8 @@ export class BullMqRunService implements RunService {
             await this.queue.add('run', queueData, {
               jobId: entry.runId,
               // 使用同一运行恢复已归档结果与发送状态；Worker 的发送意图阻止重复生成。
-              attempts: 3,
-              backoff: { type: 'exponential', delay: 2_000 },
+              attempts: this.queueRetryPolicy.attempts,
+              backoff: { type: 'exponential', delay: this.queueRetryPolicy.backoffMs },
               removeOnComplete: false,
               removeOnFail: false,
             });

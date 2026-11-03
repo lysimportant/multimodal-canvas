@@ -244,7 +244,7 @@ describe('连线已有生成视频的运行边界', () => {
     },
   );
 
-  it('较晚失败或另一个项目的成功记录不能替换正在引用的视频', async () => {
+  it('较晚失败运行解绑旧视频，另一个项目的成功记录不能替换', async () => {
     const context = await fixture();
     context.history.push(
       {
@@ -265,18 +265,95 @@ describe('连线已有生成视频的运行边界', () => {
         },
       },
     );
+    const createRun = vi.spyOn(context.runService, 'create');
     const response = await context.app.inject({
       method: 'POST',
       url: '/v1/nodes/consumer-target/runs',
       payload: { projectId: context.project.id },
     });
-    expect(response.statusCode, response.body).toBe(202);
-    const run = await completedRun(context.runService, response.json().run.id);
-    expect(run.status, JSON.stringify(run.error)).toBe('succeeded');
-    expect(run.snapshot.inputs[0]).toMatchObject({
-      sourceAssetId: context.asset.id,
-      sourceAssetVersion: 1,
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json().error).toContain('节点「已有视频」的最新生成未成功，旧输出已解绑');
+    expect(createRun).not.toHaveBeenCalled();
+    expect(context.fetchImpl).not.toHaveBeenCalled();
+    expect(await context.projectStore.getCanvas(context.project.id)).toEqual(context.saved);
+  });
+});
+
+/** 客户端在新运行被接受后即解绑旧结果；新提交必须遵循同一最新状态。 */
+describe('最新运行状态决定旧视频是否解绑', () => {
+  it.each(['failed', 'cancelled'] as const)(
+    '最新运行 %s 时拒绝新提交，即使更早的成功结果仍在',
+    async (status) => {
+      const context = await fixture();
+      context.history.push({
+        ...structuredClone(context.history[0]!),
+        id: `newer-${status}-run`,
+        status,
+        createdAt: '2026-10-25T00:00:00.000Z',
+        result: undefined,
+      });
+      await expect(
+        withConnectedVideoResults({
+          projectId: context.project.id,
+          canvas: context.saved,
+          targetNodeId: 'consumer-target',
+          runService: context.runService,
+        }),
+      ).rejects.toThrow('节点「已有视频」的最新生成未成功，旧输出已解绑');
+    },
+  );
+
+  it.each([
+    'queued',
+    'preparing',
+    'running',
+    'processing',
+    'archiving',
+    'cancel_requested',
+  ] as const)('最新运行 %s 时提示等待完成，不复用旧视频', async (status) => {
+    const context = await fixture();
+    context.history.push({
+      ...structuredClone(context.history[0]!),
+      id: `newer-${status}-run`,
+      status,
+      createdAt: '2026-10-25T00:00:00.000Z',
+      result: undefined,
     });
+    await expect(
+      withConnectedVideoResults({
+        projectId: context.project.id,
+        canvas: context.saved,
+        targetNodeId: 'consumer-target',
+        runService: context.runService,
+      }),
+    ).rejects.toThrow('节点「已有视频」的生成任务尚未完成');
+  });
+
+  it('最新成功运行仍是可投影来源，旧成功结果不覆盖新版本', async () => {
+    const context = await fixture();
+    context.history.push({
+      ...structuredClone(context.history[0]!),
+      id: 'newer-succeeded-run',
+      createdAt: '2026-10-25T00:00:00.000Z',
+      updatedAt: '2026-10-25T00:01:00.000Z',
+      result: {
+        ...context.history[0]!.result!,
+        asset: { assetId: context.asset.id, version: 2, mimeType: 'video/mp4' },
+      },
+    });
+    const projected = await withConnectedVideoResults({
+      projectId: context.project.id,
+      canvas: context.saved,
+      targetNodeId: 'consumer-target',
+      runService: context.runService,
+    });
+    expect(projected.sourceVersions).toEqual({ 'video-source': 2 });
+    expect(projected.canvas.nodes[0]!.data).toMatchObject({
+      mode: 'source',
+      assetId: context.asset.id,
+      contentUrl: `/v1/assets/${context.asset.id}/versions/2/content`,
+    });
+    expect(context.saved.nodes[0]!.data.mode).toBe('generate');
   });
 });
 

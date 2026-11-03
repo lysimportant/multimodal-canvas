@@ -14,6 +14,10 @@ x-runtime-environment: &runtime-environment
   API_TRUST_PROXY_HOPS: '1'
   RUN_SERVICE: bullmq
   RUN_QUEUE_NAME: ${RUN_QUEUE_NAME:-canvas-accounts-v1}
+  # 归档失败只会重试归档、不会重新生成；部署可调队列重试次数（1-10）与指数退避基数（100-60000ms）。
+  # 留空使用代码默认值 3 次 / 2000ms。
+  RUN_QUEUE_ATTEMPTS: ${RUN_QUEUE_ATTEMPTS:-}
+  RUN_QUEUE_BACKOFF_MS: ${RUN_QUEUE_BACKOFF_MS:-}
   WORKER_PROVIDER: newapi
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-20}
   S3_ENDPOINT: ${S3_ENDPOINT:?必须配置 Cloudflare R2 S3_ENDPOINT}

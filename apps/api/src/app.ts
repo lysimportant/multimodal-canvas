@@ -436,7 +436,12 @@ type PublicRunRecord = PublicRunFields & {
   snapshot: PublicRunSnapshot;
 };
 
-type PublicRunEvent = PublicRunFields;
+/**
+ * SSE 生命周期事件与 REST 使用同一份公开运行记录（含摘要快照）。
+ * 触发方可能不是本页（例如 Agent/MCP 通过 run_node 提交），前端只有拿到完整记录，
+ * 才能把「首次见到的运行」直接渲染成进度与结果；否则只能等刷新后的 REST 恢复。
+ */
+type PublicRunEvent = PublicRunRecord;
 
 type RunNodeModelResolution = {
   targetModelAlias: string;
@@ -1964,6 +1969,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     urlConnections: agentUrlConnections,
     projectStore,
     assetStore,
+    thumbnails: assetThumbnails,
     runService,
     principals: requestPrincipals,
     sessions: requestSessions,
@@ -3290,6 +3296,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           const skill = await promptSkillStore.get(ownerId, body.skillId);
           if (!skill || skill.enabled === false)
             return reply.code(400).send({ error: 'unknown or disabled prompt skill' });
+          // 创作型技能由用户或 Agent 在文本节点中使用，不进入提示词优化合同。
+          if (skill.kind === 'text')
+            return reply.code(400).send({
+              code: 'PROMPT_SKILL_NOT_OPTIMIZABLE',
+              error: '该 Skill 是创作型技能，不能用于提示词优化；请在文本节点中使用',
+            });
           if (body.skillVersion && body.skillVersion !== skill.version)
             return reply.code(409).send({
               code: 'PROMPT_SKILL_VERSION_CONFLICT',
@@ -5425,8 +5437,7 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
 }
 
 function toPublicRunEvent(run: RunRecord): PublicRunEvent {
-  const { snapshot: _snapshot, ...event } = toPublicRunRecord(run);
-  return event;
+  return toPublicRunRecord(run);
 }
 
 function toPublicRunResultAsset(asset: RunResultAsset): PublicRunResultAsset {

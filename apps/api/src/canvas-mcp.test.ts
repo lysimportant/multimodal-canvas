@@ -78,6 +78,8 @@ describe('画布无状态 Streamable HTTP MCP', () => {
     expect(client.getInstructions()).toContain(
       'create_node 的显示尺寸写在 node.width / node.height',
     );
+    expect(client.getInstructions()).toContain('按 data.parameters.aspectRatio 推导长方形卡片');
+    expect(client.getInstructions()).toContain('素材引用与连线必须双写');
     expect(client.getInstructions()).toContain('update_node');
     expect(transport.sessionId).toBeUndefined();
     expect((await client.listTools()).tools).toEqual(tools);

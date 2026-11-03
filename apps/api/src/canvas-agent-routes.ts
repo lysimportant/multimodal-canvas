@@ -8,6 +8,7 @@ import {
 } from '@multimodal-canvas/domain';
 import type { AuthPrincipal } from './auth';
 import type { AuthenticatedSession } from './auth-service';
+import type { AssetThumbnailService } from './asset-thumbnails';
 import type { AssetStore } from './assets';
 import { ProjectStoreError, type ProjectStore } from './projects';
 import type { RunService } from './runs';
@@ -30,6 +31,8 @@ type Options = {
   urlConnections?: AgentUrlConnections;
   projectStore: ProjectStore;
   assetStore: AssetStore;
+  /** 生成缩略图预览；缺省时大图只能回退已持久化的衍生图或原图。 */
+  thumbnails?: AssetThumbnailService;
   runService: RunService;
   principals: WeakMap<object, AuthPrincipal>;
   sessions: WeakMap<object, AuthenticatedSession>;
@@ -57,6 +60,20 @@ const agentRunSchema = z
   })
   .strict();
 
+/**
+ * Agent 读图的原图直读上限。超过上限不再拒绝读取，而是回退缩略图预览，因此这里只控制
+ * 单次传输体积，不是可用性限制；可用环境变量 AGENT_IMAGE_READ_LIMIT_BYTES 调整。
+ * 默认 2MiB：Agent 侧视觉模型对大图的 base64 解码不稳定（超大字符串会触发调用栈溢出），
+ * 而缩略图长边 640 像素、通常只有几十 KB，足以让 Agent 完成内容自检。
+ */
+const DEFAULT_AGENT_IMAGE_READ_LIMIT_BYTES = 2 * 1024 * 1024;
+function agentImageReadLimitBytes(): number {
+  const configured = Number(process.env.AGENT_IMAGE_READ_LIMIT_BYTES);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_AGENT_IMAGE_READ_LIMIT_BYTES;
+}
+
 /** 令牌只授权固定画布业务路由；不能管理账号、凭据或另发连接令牌。 */
 export async function isAgentRequestAllowed(
   request: FastifyRequest,
@@ -75,7 +92,11 @@ export async function isAgentRequestAllowed(
   )
     return request.method === 'GET';
   if (path === `${projectPath}/canvas/operations`) return request.method === 'POST';
+  // 项目运行历史只读：Agent 可以核对已有运行状态与错误，不需要为此新建节点或触发生成。
+  if (path === `${projectPath}/runs`) return request.method === 'GET';
   if (path === '/v1/models') return request.method === 'GET';
+  // 技能目录是账号级只读资源；连接令牌只能读取，不能创建、修改或删除技能。
+  if (path === '/v1/prompt-skills') return request.method === 'GET';
   if (/^\/v1\/nodes\/[^/]+\/runs$/.test(path)) {
     const body = agentRunSchema.safeParse(request.body);
     return (
@@ -463,15 +484,41 @@ export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options
         (entry) => entry.version === Number(rawVersion),
       );
       if (!version) return reply.code(404).send({ error: 'image version not found' });
-      const maxBytes = 4 * 1024 * 1024;
-      if (version.sizeBytes > maxBytes)
+      // 体积上限只决定返回原图还是缩略图预览，不再以 413 拒绝读取。
+      if (version.sizeBytes <= agentImageReadLimitBytes()) {
+        const content = await assetStore.getVersionContent(assetId, version.version, scope);
+        if (!content) return reply.code(404).send({ error: 'image version not found' });
         return reply
-          .code(413)
-          .send({ code: 'image_too_large', error: 'Agent 图片读取上限为4MiB，请使用较小图片' });
+          .header('cache-control', 'no-store')
+          .send({ image: { data: content.toString('base64'), mimeType: asset.mimeType } });
+      }
+      // 已持久化的缩略图可直接复用；缺失时按需生成，避免为一次预览下载整张原图。
+      const storedThumbnail = await assetStore
+        .getDerivative(assetId, 'thumbnail', scope)
+        .catch(() => undefined);
+      if (storedThumbnail && storedThumbnail.content.byteLength > 0)
+        return reply.header('cache-control', 'no-store').send({
+          image: {
+            data: storedThumbnail.content.toString('base64'),
+            mimeType: storedThumbnail.mimeType,
+            derivative: 'thumbnail',
+          },
+        });
+      const generatedThumbnail = options.thumbnails
+        ? await options.thumbnails
+            .get({ assetId, scope, version: version.version })
+            .catch(() => undefined)
+        : undefined;
+      if (generatedThumbnail && generatedThumbnail.content.byteLength > 0)
+        return reply.header('cache-control', 'no-store').send({
+          image: {
+            data: generatedThumbnail.content.toString('base64'),
+            mimeType: generatedThumbnail.mimeType,
+            derivative: 'thumbnail',
+          },
+        });
       const content = await assetStore.getVersionContent(assetId, version.version, scope);
       if (!content) return reply.code(404).send({ error: 'image version not found' });
-      if (content.length > maxBytes)
-        return reply.code(413).send({ code: 'image_too_large', error: 'Agent 图片读取上限为4MiB' });
       return reply
         .header('cache-control', 'no-store')
         .send({ image: { data: content.toString('base64'), mimeType: asset.mimeType } });

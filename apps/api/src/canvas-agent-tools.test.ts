@@ -12,8 +12,15 @@ describe('画布 MCP 工具契约', () => {
     expect(byName.get('apply_canvas_operations')?.description).toContain(
       'width、height 等显示尺寸写在 node 顶层',
     );
+    expect(byName.get('apply_canvas_operations')?.description).toContain(
+      '按 data.parameters.aspectRatio 推导长方形卡片',
+    );
+    expect(byName.get('apply_canvas_operations')?.description).toContain('素材引用与连线必须双写');
     expect(byName.get('apply_canvas_operations')?.description).toContain('update_node');
     expect(byName.get('run_node')?.description).toContain('idempotencyKey');
+    expect(byName.get('apply_canvas_operations')?.description).toContain('不是验证或测试环境');
+    expect(byName.get('run_node')?.description).toContain('禁止为验证');
+    expect(byName.get('get_run')?.description).toContain('list_project_runs');
   });
 
   it('工具清单与执行入口共用同一份 schema', () => {
@@ -26,6 +33,9 @@ describe('画布 MCP 工具契约', () => {
       'run_node',
       'get_run',
       'cancel_run',
+      'list_project_runs',
+      'list_prompt_skills',
+      'get_prompt_skill',
     ]);
   });
 });

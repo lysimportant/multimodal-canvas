@@ -291,7 +291,7 @@ describe('连线图片版本与授权回归', () => {
     );
   });
 
-  it('较晚失败或另一个项目的成功记录不能替换正在引用的图片', async () => {
+  it('较晚失败运行解绑旧图片，另一个项目的成功记录不能替换', async () => {
     const fixture = await referenceFixture();
     fixture.history.push(
       {
@@ -309,18 +309,128 @@ describe('连线图片版本与授权回归', () => {
         result: { ...fixture.history[0].result!, asset: { assetId: 'foreign-image', version: 2 } },
       },
     );
+    const createRun = vi.spyOn(fixture.runService, 'create');
     const response = await fixture.app.inject({
       method: 'POST',
       url: '/v1/nodes/image-target/runs',
       payload: { projectId: fixture.project.id },
     });
-    expect(response.statusCode, response.body).toBe(202);
-    const run = await completedRun(fixture.runService, response.json().run.id);
-    expect(run.status, run.error).toBe('succeeded');
-    expect(run.snapshot.inputs[0]).toMatchObject({
-      sourceAssetId: fixture.asset.id,
-      sourceAssetVersion: 1,
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json().error).toContain('节点「已有图片」的最新生成未成功，旧输出已解绑');
+    expect(createRun).not.toHaveBeenCalled();
+    expect(fixture.fetchImpl).not.toHaveBeenCalled();
+    expect(await fixture.projectStore.getCanvas(fixture.project.id)).toEqual(fixture.saved);
+  });
+});
+
+/** 客户端在新运行被接受后即解绑旧结果；新提交必须遵循同一最新状态。 */
+describe('最新运行状态决定旧图片是否解绑', () => {
+  it.each(['failed', 'cancelled'] as const)(
+    '最新运行 %s 时拒绝新提交，即使更早的成功结果仍在',
+    async (status) => {
+      const fixture = await referenceFixture();
+      fixture.history.push({
+        ...structuredClone(fixture.history[0]),
+        id: `newer-${status}-run`,
+        status,
+        createdAt: '2026-09-29T00:00:00.000Z',
+        result: undefined,
+      });
+      await expect(
+        withConnectedImageResults({
+          projectId: fixture.project.id,
+          canvas: fixture.saved,
+          targetNodeId: 'image-target',
+          runService: fixture.runService,
+        }),
+      ).rejects.toThrow('节点「已有图片」的最新生成未成功，旧输出已解绑');
+    },
+  );
+
+  it.each([
+    'queued',
+    'preparing',
+    'running',
+    'processing',
+    'archiving',
+    'cancel_requested',
+  ] as const)('最新运行 %s 时提示等待完成，不复用旧图片', async (status) => {
+    const fixture = await referenceFixture();
+    fixture.history.push({
+      ...structuredClone(fixture.history[0]),
+      id: `newer-${status}-run`,
+      status,
+      createdAt: '2026-09-29T00:00:00.000Z',
+      result: undefined,
     });
+    await expect(
+      withConnectedImageResults({
+        projectId: fixture.project.id,
+        canvas: fixture.saved,
+        targetNodeId: 'image-target',
+        runService: fixture.runService,
+      }),
+    ).rejects.toThrow('节点「已有图片」的生成任务尚未完成');
+  });
+
+  it('最新成功运行仍是可投影来源，旧成功结果不覆盖新版本', async () => {
+    const fixture = await referenceFixture();
+    fixture.history.push({
+      ...structuredClone(fixture.history[0]),
+      id: 'newer-succeeded-run',
+      createdAt: '2026-09-29T00:00:00.000Z',
+      updatedAt: '2026-09-29T00:01:00.000Z',
+      result: {
+        ...fixture.history[0].result!,
+        asset: { assetId: fixture.asset.id, version: 2, mimeType: 'image/png' },
+      },
+    });
+    const projected = await withConnectedImageResults({
+      projectId: fixture.project.id,
+      canvas: fixture.saved,
+      targetNodeId: 'image-target',
+      runService: fixture.runService,
+    });
+    expect(projected.sourceVersions).toEqual({ 'image-source': 2 });
+    expect(projected.canvas.nodes[1].data).toMatchObject({
+      mode: 'source',
+      assetId: fixture.asset.id,
+      contentUrl: `/v1/assets/${fixture.asset.id}/versions/2/content`,
+    });
+    expect(fixture.saved.nodes[1].data.mode).toBe('generate');
+  });
+
+  it('来源节点没有运行记录时保留原 DAG 语义', async () => {
+    const fixture = await referenceFixture();
+    fixture.history.splice(0);
+    const projected = await withConnectedImageResults({
+      projectId: fixture.project.id,
+      canvas: fixture.saved,
+      targetNodeId: 'image-target',
+      runService: fixture.runService,
+    });
+    expect(projected.canvas).toBe(fixture.saved);
+    expect(projected.sourceVersions).toEqual({});
+  });
+
+  it('没有运行记录时显式原图错误保留原提示', async () => {
+    const fixture = await referenceFixture('input:imageEdit');
+    fixture.history.splice(0);
+    const canvas = structuredClone(fixture.saved);
+    canvas.nodes[2].data.imageEditSource = {
+      sourceNodeId: 'image-source',
+      assetId: fixture.asset.id,
+      version: 1,
+      sourceKind: 'result',
+    };
+    await expect(
+      withConnectedImageResults({
+        projectId: fixture.project.id,
+        canvas,
+        targetNodeId: 'image-target',
+        runService: fixture.runService,
+      }),
+    ).rejects.toThrow('节点「已有图片」的原图生成结果已不可用，请重新选择原图');
   });
 });
 
