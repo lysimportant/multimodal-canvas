@@ -98,6 +98,7 @@ vi.mock('./node-asset-download', () => ({ fetchNodeAssetDownload: vi.fn() }));
 vi.mock('../export-utils', () => ({ downloadProjectExport: vi.fn() }));
 
 import type { NodeProps } from '@xyflow/react';
+import type { RunRecord } from '@multimodal-canvas/domain';
 import type { AssetFlowNode } from '../canvas-utils';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
@@ -126,6 +127,7 @@ import {
   NodeRunControlStoreContext,
   NodeStopContext,
 } from './node-run-control';
+import { NodeRunContext } from './node-run-context';
 
 /** 更新测试视口并广播一次变更；调用返回前完成由订阅触发的 React 更新。 */
 function updateViewport(patch: Partial<Pick<typeof viewportMock, 'x' | 'y' | 'zoom'>>) {
@@ -187,6 +189,8 @@ function renderNode(
     content?: NodeContentHandlers;
     editImage?: NodeImageEditHandler;
     openPrompt?: NodePromptHandler;
+    /** 最近一次运行记录；用于归档失败诊断等只读展示。 */
+    runs?: Readonly<Record<string, RunRecord>>;
   } = {},
   onRecover?: (nodeId: string) => void | Promise<void>,
 ) {
@@ -205,7 +209,9 @@ function renderNode(
                 <NodeContentContext.Provider value={actions.content ?? null}>
                   <NodeImageEditContext.Provider value={actions.editImage ?? null}>
                     <NodePromptContext.Provider value={actions.openPrompt ?? null}>
-                      <AssetNode {...props} />
+                      <NodeRunContext.Provider value={actions.runs ?? null}>
+                        <AssetNode {...props} />
+                      </NodeRunContext.Provider>
                     </NodePromptContext.Provider>
                   </NodeImageEditContext.Provider>
                 </NodeContentContext.Provider>
@@ -654,13 +660,20 @@ describe('AssetNode result presentation', () => {
     expect(editImage).not.toHaveBeenCalled();
   });
 
-  it('旧结果与新执行分别显示计时，手动版本不继承旧生成耗时', async () => {
+  it('受理新运行后旧结果与旧耗时不再回显，手动版本不继承旧生成耗时', async () => {
     const base = makeNode({
       createdAt: '2026-09-15T09:30:00.000Z',
       assetId: 'asset-1',
       contentUrl: '/v1/assets/asset-1/versions/1/content',
       runStatus: 'running',
       nodeTiming: { nodeId: 'node_1', startedAt: new Date(Date.now() - 2_000).toISOString() },
+      // 防御性断言：即使运行时字段残留旧成功结果的展示关联，受理新运行后也不能当作当前输出。
+      resultAsset: {
+        assetId: 'old-bound-result',
+        version: 1,
+        contentUrl: 'https://example.test/old-bound.png',
+        mimeType: 'image/png',
+      },
       resultTiming: {
         nodeId: 'node_1',
         startedAt: '2026-09-16T10:00:00.000Z',
@@ -669,23 +682,22 @@ describe('AssetNode result presentation', () => {
       },
     });
     const view = renderNode(base);
+    expect(document.querySelector('.flow-node-preview img')).toBeNull();
     const toolbar = screen.getByRole('group', { name: '节点操作：文案生成' });
-    expect(within(toolbar).getByText('12秒')).toBeInTheDocument();
+    expect(within(toolbar).queryByText('12秒')).not.toBeInTheDocument();
     expect(within(toolbar).getByText('耗时')).toBeInTheDocument();
-    expect(within(toolbar).queryByText('结果耗时')).not.toBeInTheDocument();
     expect(within(toolbar).getByText('当前执行')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
     const info = within(screen.getByRole('dialog', { name: '节点信息' }));
-    expect(info.getByText('耗时')).toBeInTheDocument();
-    expect(info.getByText('12秒')).toBeInTheDocument();
     expect(info.getByText('当前执行')).toBeInTheDocument();
+    expect(info.queryByText('12秒')).not.toBeInTheDocument();
+    expect(info.getByText('耗时', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
+      '未记录',
+    );
+    expect(info.getByText('结果回显时间').nextElementSibling).toHaveTextContent('未记录');
     expect(
       info.getByText('节点创建时间').nextElementSibling?.querySelector('time'),
     ).toHaveAttribute('datetime', '2026-09-15T09:30:00.000Z');
-    expect(
-      info.getByText('结果回显时间').nextElementSibling?.querySelector('time'),
-    ).toHaveAttribute('datetime', '2026-09-16T10:00:12.400Z');
-    expect(info.getByText('结果回显时间').nextElementSibling).toHaveTextContent('服务端完成');
     view.rerender(
       <AssetNode
         {...({
@@ -707,12 +719,18 @@ describe('AssetNode result presentation', () => {
     ).toHaveAttribute('datetime', '2026-09-15T09:30:00.000Z');
   });
 
-  it('新生成失败仍展示旧结果，同时在信息面板保留失败原因和旧结果耗时', async () => {
+  it('新生成失败不再回显旧结果，失败原因与本次耗时仍可见', async () => {
     const { container } = renderNode(
       makeNode({
         mediaType: 'image',
         runStatus: 'failed',
         runError: '供应商超时，未重发请求',
+        nodeTiming: {
+          nodeId: 'node_1',
+          startedAt: '2026-09-17T00:00:00.000Z',
+          finishedAt: '2026-09-17T00:00:03.000Z',
+          outcome: 'failed',
+        },
         resultAsset: {
           assetId: 'old-image',
           version: 1,
@@ -727,19 +745,18 @@ describe('AssetNode result presentation', () => {
         },
       }),
     );
-    expect(container.querySelector('.flow-node-preview img')).toHaveAttribute(
-      'src',
-      'https://example.test/old.png',
-    );
+    // 受理新运行后旧结果已解绑：失败节点不把旧资产当作当前输出，旧版本仍可在运行记录中查看。
+    expect(container.querySelector('.flow-node-preview img')).toBeNull();
     expect(screen.getByLabelText('运行失败')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '查看节点信息' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('供应商超时，未重发请求');
-    expect(
-      within(screen.getByRole('dialog', { name: '节点信息' })).getByText('12秒'),
-    ).toBeInTheDocument();
+    const info = within(screen.getByRole('dialog', { name: '节点信息' }));
+    expect(info.getByRole('alert')).toHaveTextContent('供应商超时，未重发请求');
+    expect(info.queryByText('12秒')).not.toBeInTheDocument();
+    expect(info.getByText('耗时', { selector: 'dt' }).nextElementSibling).toHaveTextContent('3秒');
+    expect(info.getByText('结果回显时间').nextElementSibling).toHaveTextContent('未记录');
   });
 
-  it('失败视频保留旧预览时仍并排显示获取资源和重试生成', async () => {
+  it('失败视频不再保留旧预览，仍并排显示获取资源和重试生成', async () => {
     const onRecover = vi.fn().mockResolvedValue(undefined);
     const onRetry = vi.fn().mockResolvedValue(undefined);
     const { container } = renderNode(
@@ -765,7 +782,7 @@ describe('AssetNode result presentation', () => {
       onRecover,
     );
 
-    expect(container.querySelector('video')).toHaveAttribute('src', 'https://example.test/old.mp4');
+    expect(container.querySelector('video')).toBeNull();
     expect(screen.getByRole('button', { name: '获取资源' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
 
@@ -801,10 +818,10 @@ describe('AssetNode result presentation', () => {
     await waitFor(() => expect(onRecover).toHaveBeenCalledExactlyOnceWith('node_1'));
   });
 
-  it('取消视频任务但保留旧预览时只显示重试生成', () => {
+  it('取消视频任务后不保留旧预览，只显示重试生成', () => {
     const onRecover = vi.fn().mockResolvedValue(undefined);
     const onRetry = vi.fn().mockResolvedValue(undefined);
-    renderNode(
+    const { container } = renderNode(
       makeNode({
         mediaType: 'video',
         runStatus: 'cancelled',
@@ -825,6 +842,7 @@ describe('AssetNode result presentation', () => {
       onRecover,
     );
 
+    expect(container.querySelector('video')).toBeNull();
     expect(screen.queryByRole('button', { name: '获取资源' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
   });
@@ -2558,4 +2576,80 @@ it('首次挂载沿用共享端口测量，只有语义端口布局改变才强�
   expect(updateNodeInternalsMock).not.toHaveBeenCalled();
   view.rerender(scene({ ...node.data, videoMode: 'first_last_frame' }));
   expect(updateNodeInternalsMock).toHaveBeenCalledExactlyOnceWith(node.id);
+});
+
+describe('归档失败诊断', () => {
+  /** 服务端 providerJob.payload 中的归档诊断字段，经运行记录传到节点信息。 */
+  const archiveRun = {
+    id: 'run_archive_failed',
+    projectId: 'project_1',
+    targetNodeId: 'node_1',
+    status: 'failed',
+    error:
+      '生成已完成，归档失败（第 2 次尝试）：上游结果传输中断（已接收 1024 字节，Error：aborted，code ECONNRESET）。仅重试归档，不会重新生成',
+    snapshot: { inputs: [] },
+    providerJob: {
+      payload: {
+        firstArchiveError: 'provider result download cancelled or timed out',
+        lastArchiveError: '上游结果传输中断（已接收 1024 字节，Error：aborted，code ECONNRESET）',
+        archiveAttempt: 2,
+        archiveStage: 'download',
+        archiveFailures: [
+          {
+            attempt: 1,
+            message: 'provider result download cancelled or timed out',
+            at: '2026-11-02T15:40:47.790Z',
+          },
+          {
+            attempt: 2,
+            message: '上游结果传输中断（已接收 1024 字节，Error：aborted，code ECONNRESET）',
+            at: '2026-11-02T15:42:14.786Z',
+          },
+        ],
+      },
+    },
+  } as unknown as RunRecord;
+
+  it('节点信息展示归档阶段、尝试次数与首末错误', async () => {
+    renderNode(
+      makeNode({
+        runStatus: 'failed',
+        runError: '生成已完成，归档失败（第 2 次尝试）：上游结果传输中断（已接收 1024 字节）',
+      }),
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      { runs: { node_1: archiveRun } },
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const info = within(screen.getByRole('dialog', { name: '节点信息' }));
+    expect(info.getByTestId('failure-diagnostics')).toBeInTheDocument();
+    expect(info.getByText('归档阶段')).toBeInTheDocument();
+    expect(info.getByTestId('failure-diagnostics-archive-stage')).toHaveTextContent('结果下载');
+    expect(info.getByTestId('failure-diagnostics-archive-attempt')).toHaveTextContent(
+      '第 2 次尝试',
+    );
+    expect(info.getByTestId('failure-diagnostics-archive-last-error')).toHaveTextContent(
+      '上游结果传输中断（已接收 1024 字节，Error：aborted，code ECONNRESET）',
+    );
+    expect(info.getByTestId('failure-diagnostics-archive-first-error')).toHaveTextContent(
+      'provider result download cancelled or timed out',
+    );
+    const attempts = info.getByTestId('failure-diagnostics-archive-attempts');
+    expect(attempts).toBeInTheDocument();
+    expect(within(attempts).getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  it('缺少运行记录或仅普通失败时不渲染归档诊断', async () => {
+    renderNode(makeNode({ runStatus: 'failed', runError: '上游生成失败' }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '查看节点信息' }));
+    const info = within(screen.getByRole('dialog', { name: '节点信息' }));
+    expect(info.getByText('错误', { selector: 'dt' })).toBeInTheDocument();
+    expect(info.queryByTestId('failure-diagnostics')).toBeNull();
+  });
 });

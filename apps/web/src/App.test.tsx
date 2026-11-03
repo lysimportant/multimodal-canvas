@@ -3476,6 +3476,23 @@ describe('App 历史与共享保存快照', () => {
         }),
       ),
     );
+    // 实时完成先交给画布判断可见性；画布回调后才弹提示。
+    await waitFor(() =>
+      expect(view.canvas!.focusOfferRequest).toMatchObject({
+        nodeId: 'empty-one',
+        label: 'empty-one',
+      }),
+    );
+    expect(screen.queryByText(/已生成完成/)).not.toBeInTheDocument();
+    act(() => view.canvas!.onCompletedNodeOffscreen!('empty-one', 'empty-one'));
+    expect(
+      await screen.findByText('「empty-one」已生成完成，是否聚焦到该节点？'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /聚\s*焦/ }));
+    expect(view.canvas!.revealNodesRequest).toMatchObject({
+      nodeIds: ['empty-one'],
+      requestId: 1,
+    });
     act(() => view.canvas!.onNodesChange([{ type: 'remove', id: 'empty-one' }]));
     expect(view.canvas!.nodes.map((node) => node.id)).not.toContain('empty-one');
     act(() => view.canvas!.onUndoCanvas?.());
@@ -3485,6 +3502,40 @@ describe('App 历史与共享保存快照', () => {
       runProgress: 100,
       resultAsset,
     });
+  });
+
+  it('打开项目恢复历史成功运行时不弹完成提示', async () => {
+    const api = fetchMock.getMockImplementation()!;
+    const restored = runRecord({
+      id: 'run-restored',
+      targetNodeId: 'empty-one',
+      status: 'succeeded',
+      progress: 100,
+      error: undefined,
+      result: {
+        summary: '恢复的历史结果',
+        mediaType: 'text',
+        targetNodeId: 'empty-one',
+        provider: 'newapi',
+        inputCount: 0,
+        asset: { assetId: 'restored-asset', version: 1, contentUrl: '/synthetic/restored' },
+      },
+    });
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(`/v1/projects/${project.id}/runs`) && (init?.method ?? 'GET') === 'GET') {
+        return Promise.resolve(json({ runs: [restored] }));
+      }
+      return api(input, init);
+    });
+    await renderCanvas(1);
+    await waitFor(() =>
+      expect(view.canvas!.nodes.find((node) => node.id === 'empty-one')?.data.runStatus).toBe(
+        'succeeded',
+      ),
+    );
+    expect(screen.queryByText(/已生成完成/)).not.toBeInTheDocument();
+    expect(view.canvas!.focusOfferRequest).toBeNull();
   });
 
   it('保存进行中继续编辑保留原请求，新编辑在下一修订串行保存', async () => {
@@ -3590,5 +3641,274 @@ describe('App 历史与共享保存快照', () => {
     act(() => view.canvas!.onRenameGroup?.('group-a', '新组名'));
     await waitFor(() => expect(canvasRequests()).toHaveLength(1));
     expect(JSON.parse(String(canvasRequests()[0][1]?.body)).groups[0].name).toBe('新组名');
+  });
+});
+
+describe('App 运行受理后的结果解绑', () => {
+  /** 旧成功运行绑定的资产：解绑只影响当前展示，资产版本仍留在资源库与运行记录中。 */
+  const oldResultAsset = {
+    assetId: 'old-result-asset',
+    version: 1,
+    contentUrl: '/v1/assets/old-result-asset/content',
+    mimeType: 'image/png',
+    sizeBytes: 1024,
+  };
+  const oldResultTiming = {
+    nodeId: 'image-node',
+    startedAt: '2026-09-25T00:00:00.000Z',
+    finishedAt: '2026-09-25T00:00:12.400Z',
+    outcome: 'succeeded' as const,
+  };
+
+  /** 画布文档本身不保存 resultAsset，旧结果由打开项目时的运行记录恢复并绑定。 */
+  function oldSucceededRun() {
+    return runRecord({
+      id: 'run-old-succeeded',
+      targetNodeId: 'image-node',
+      status: 'succeeded',
+      progress: 100,
+      error: undefined,
+      result: {
+        provider: 'newapi',
+        summary: '旧结果',
+        targetNodeId: 'image-node',
+        mediaType: 'image',
+        inputCount: 0,
+        asset: oldResultAsset,
+      },
+      nodeTimings: { 'image-node': oldResultTiming },
+    });
+  }
+
+  /** 捕获项目运行事件流，测试直接发布运行生命周期事件。 */
+  function captureRunEvents() {
+    let onEvent: Parameters<typeof auth.openAuthEventStream>[1] | undefined;
+    vi.mocked(auth.openAuthEventStream).mockImplementation(async (_url, callback) => {
+      onEvent = callback;
+    });
+    return (run: PublicRunRecord) => {
+      if (!onEvent) throw new Error('项目运行事件尚未订阅');
+      onEvent('run.updated', JSON.stringify(run));
+    };
+  }
+
+  /** 新运行被受理后的生命周期事件；没有 result.asset 表示旧结果已解绑。 */
+  function acceptedRun(
+    status: RunRecord['status'] = 'running',
+    updatedAt = '2026-09-26T00:00:02.000Z',
+  ) {
+    return runRecord({
+      id: 'run-new',
+      targetNodeId: 'image-node',
+      status,
+      progress: status === 'running' ? 5 : 0,
+      error: status === 'failed' ? '新请求失败' : undefined,
+      createdAt: '2026-09-26T00:00:00.000Z',
+      updatedAt,
+      snapshot: imageRunSnapshot(2, 'image-new'),
+    });
+  }
+
+  beforeEach(() => {
+    canvas = { revision: 1, nodes: [imageNode('image-node', 'image-old')], edges: [] };
+    // 旧结果同时存在于资源库；解绑当前展示不能把它从资源库或运行记录中删除。
+    resourceAssets = [
+      {
+        id: 'old-result-asset',
+        name: '旧结果',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        contentUrl: '/v1/assets/old-result-asset/content',
+        sizeBytes: 1024,
+        status: 'ready',
+        tags: [],
+      },
+    ];
+    projectRuns = [oldSucceededRun()];
+  });
+
+  it('受理新运行后立即解绑旧结果，旧资产与运行记录仍然保留', async () => {
+    const emit = captureRunEvents();
+    await renderCanvas(0);
+    await waitFor(() =>
+      expect(view.canvas!.nodes[0]?.data.resultAsset).toMatchObject({
+        assetId: 'old-result-asset',
+        version: 1,
+      }),
+    );
+
+    act(() => emit(acceptedRun()));
+    await waitFor(() => {
+      const data = view.canvas!.nodes[0]?.data;
+      expect(data?.resultAsset).toBeUndefined();
+      expect(data?.resultTiming).toBeUndefined();
+      expect(data?.runStatus).toBe('running');
+    });
+    // 解绑只停止把旧结果当作当前输出，资产与历史运行没有被删除。
+    expect(view.resource?.assets.map((entry) => entry.id)).toContain('old-result-asset');
+    expect(projectRuns[0]?.result?.asset?.assetId).toBe('old-result-asset');
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+
+    // 新运行成功后只绑定新结果，不回填旧资产。
+    const newResultAsset = {
+      assetId: 'new-result-asset',
+      version: 1,
+      contentUrl: '/v1/assets/new-result-asset/content',
+      mimeType: 'image/png',
+    };
+    act(() =>
+      emit({
+        ...acceptedRun('succeeded', '2026-09-26T00:00:05.000Z'),
+        progress: 100,
+        result: {
+          provider: 'newapi',
+          summary: '新结果',
+          targetNodeId: 'image-node',
+          mediaType: 'image',
+          inputCount: 0,
+          asset: newResultAsset,
+        },
+        nodeTimings: {
+          'image-node': {
+            nodeId: 'image-node',
+            startedAt: '2026-09-26T00:00:00.000Z',
+            finishedAt: '2026-09-26T00:00:05.000Z',
+            outcome: 'succeeded' as const,
+          },
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(view.canvas!.nodes[0]?.data.resultAsset).toMatchObject({
+        assetId: 'new-result-asset',
+        version: 1,
+      }),
+    );
+    expect(view.canvas!.nodes[0]?.data.resultTiming?.finishedAt).toBe('2026-09-26T00:00:05.000Z');
+  });
+
+  it('提交被拒绝时保留当前结果展示', async () => {
+    await renderCanvas(0);
+    await waitFor(() =>
+      expect(view.canvas!.nodes[0]?.data.resultAsset).toMatchObject({
+        assetId: 'old-result-asset',
+      }),
+    );
+    const api = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/nodes/image-node/runs' && init?.method === 'POST')
+        return Promise.resolve(json({ error: '提交被拒绝：项目正在同步' }, 500));
+      return api(input, init);
+    });
+
+    act(() => view.canvas!.onRunNode(view.canvas!.nodes[0]));
+    await screen.findByText('提交被拒绝：项目正在同步');
+    // 提交被拒绝不算受理新运行，旧结果继续作为当前输出。
+    expect(view.canvas!.nodes[0]?.data.resultAsset).toMatchObject({
+      assetId: 'old-result-asset',
+    });
+    expect(view.canvas!.nodes[0]?.data.resultTiming?.outcome).toBe('succeeded');
+    expect(view.canvas!.nodes[0]?.data.runStatus).toBe('succeeded');
+  });
+
+  it.each(['failed', 'cancelled'] as const)('受理后的新运行 %s 不会恢复旧结果', async (status) => {
+    const emit = captureRunEvents();
+    await renderCanvas(0);
+    await waitFor(() =>
+      expect(view.canvas!.nodes[0]?.data.resultAsset).toMatchObject({
+        assetId: 'old-result-asset',
+      }),
+    );
+    act(() => emit(acceptedRun()));
+    await waitFor(() => expect(view.canvas!.nodes[0]?.data.resultAsset).toBeUndefined());
+
+    act(() => emit(acceptedRun(status, '2026-09-26T00:00:03.000Z')));
+    await waitFor(() => {
+      const data = view.canvas!.nodes[0]?.data;
+      expect(data?.runStatus).toBe(status);
+      expect(data?.resultAsset).toBeUndefined();
+      expect(data?.resultTiming).toBeUndefined();
+    });
+  });
+
+  it('迟到的旧成功运行事件不能重新挂回旧结果', async () => {
+    const emit = captureRunEvents();
+    await renderCanvas(0);
+    await waitFor(() =>
+      expect(view.canvas!.nodes[0]?.data.resultAsset).toMatchObject({
+        assetId: 'old-result-asset',
+      }),
+    );
+    act(() => emit(acceptedRun()));
+    await waitFor(() => expect(view.canvas!.nodes[0]?.data.resultAsset).toBeUndefined());
+
+    // 例如重连后补发的旧成功事件：createdAt 更早，按排序规则被忽略。
+    act(() => emit({ ...oldSucceededRun(), updatedAt: '2026-09-26T00:00:02.000Z' }));
+    expect(view.canvas!.nodes[0]?.data.resultAsset).toBeUndefined();
+    expect(view.canvas!.nodes[0]?.data.runStatus).toBe('running');
+  });
+
+  it('重载时最新运行为失败，不回填更早的成功结果', async () => {
+    projectRuns = [
+      oldSucceededRun(),
+      runRecord({
+        id: 'run-new-failed',
+        targetNodeId: 'image-node',
+        status: 'failed',
+        progress: 100,
+        error: '新请求失败',
+        createdAt: '2026-09-25T09:00:00.000Z',
+        updatedAt: '2026-09-25T09:00:03.000Z',
+        snapshot: imageRunSnapshot(2, 'image-new'),
+        nodeTimings: {
+          'image-node': {
+            nodeId: 'image-node',
+            startedAt: '2026-09-25T09:00:00.000Z',
+            finishedAt: '2026-09-25T09:00:03.000Z',
+            outcome: 'failed',
+          },
+        },
+      }),
+    ];
+    await renderCanvas(1);
+    await waitFor(() => expect(view.canvas!.nodes[0]?.data.runStatus).toBe('failed'));
+    expect(view.canvas!.nodes[0]?.data.resultAsset).toBeUndefined();
+    expect(view.canvas!.nodes[0]?.data.resultTiming).toBeUndefined();
+  });
+
+  it('受理新运行后下游节点标记待更新，不再把旧上游输出当作有效输入', async () => {
+    const downstream = imageNode('downstream-node', 'image-old');
+    downstream.data = { ...downstream.data, prompt: '基于上游结果生成' };
+    canvas = {
+      revision: 1,
+      nodes: [imageNode('image-node', 'image-old'), downstream],
+      edges: [
+        {
+          id: 'edge-parent-downstream',
+          sourceNodeId: 'image-node',
+          targetNodeId: 'downstream-node',
+          sourceHandle: 'output:image',
+          targetHandle: 'input:content',
+          order: 0,
+        },
+      ],
+    };
+    const emit = captureRunEvents();
+    await renderCanvas(0);
+    await waitFor(() =>
+      expect(
+        view.canvas!.nodes.find((node) => node.id === 'image-node')?.data.resultAsset,
+      ).toMatchObject({ assetId: 'old-result-asset' }),
+    );
+
+    act(() => emit(acceptedRun()));
+    await waitFor(() => {
+      const parent = view.canvas!.nodes.find((node) => node.id === 'image-node');
+      const child = view.canvas!.nodes.find((node) => node.id === 'downstream-node');
+      expect(parent?.data.resultAsset).toBeUndefined();
+      expect(child?.data.stale).toBe(true);
+      expect(child?.data.resultAsset).toBeUndefined();
+    });
   });
 });

@@ -109,6 +109,14 @@ describe('桌面节点输入区高度', () => {
     expect(editorCss).not.toMatch(/\.node-quick-editor-field textarea \{[^}]*min-height:/);
   });
 
+  it('弹出编辑器高度跟随内容，提示词保持唯一滚动层且不出现第二条滚动条', () => {
+    expect(editorCss).toMatch(
+      /\.node-quick-editor-dialog\.node-quick-editor-dialog \{ width: min\(860px, calc\(100vw - 32px\)\); height: auto; max-height: calc\(100dvh - 40px\); \}/,
+    );
+    // 固定 720px 高度会让内容溢出到窗口本体，重新出现第二条滚动条。
+    expect(editorCss).not.toMatch(/height: min\(720px, calc\(100dvh - 40px\)\);/);
+  });
+
   it('纯文本与资源引用输入在鼠标或键盘聚焦时保持无边框和阴影', () => {
     expect(editorCss).toMatch(
       /:is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\), :is\(\.node-quick-editor, \.node-quick-editor-dialog\) \.node-quick-editor-prompt :is\(textarea, \.resource-mention-input\):is\(:focus, :focus-visible\) \{ border: 0 solid transparent; outline: none; box-shadow: none; \}/,

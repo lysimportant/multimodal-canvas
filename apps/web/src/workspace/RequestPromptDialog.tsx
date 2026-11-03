@@ -16,7 +16,13 @@ export type RequestPromptDialogState =
   | { status: 'loading' }
   | { status: 'ready'; record: RequestPromptRecord; recordId?: string; timing?: NodeTiming }
   | { status: 'missing' }
-  | { status: 'input'; text: string; historical: boolean }
+  | {
+      status: 'input';
+      text: string;
+      historical: boolean;
+      /** 节点没有当前输出时回退展示的是最新运行的输入快照，需要与当前提示词/历史快照区分。 */
+      latestRun?: boolean;
+    }
   | { status: 'failed'; message?: string };
 
 type RequestPromptDialogProps = {
@@ -171,7 +177,13 @@ export function RequestPromptDialog({
           ) : null}
           {state.status === 'input' ? (
             <section className="request-prompt-block">
-              <h3>{state.historical ? '历史输入快照，未记录最终请求' : '当前提示词，尚未生成'}</h3>
+              <h3>
+                {state.latestRun
+                  ? '最新运行请求（当前没有可用输出）'
+                  : state.historical
+                    ? '历史输入快照，未记录最终请求'
+                    : '当前提示词，尚未生成'}
+              </h3>
               <pre className="request-prompt-text">{state.text}</pre>
             </section>
           ) : null}

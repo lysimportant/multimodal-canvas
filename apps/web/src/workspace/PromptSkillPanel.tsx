@@ -159,10 +159,12 @@ function PromptSkillPanelSession({
   const requestRef = useRef<AbortController | undefined>(undefined);
   const pendingRef = useRef<PendingPromptOptimization | undefined>(undefined);
   const skill = skills.find((entry) => entry.id === skillId);
+  // 创作型技能（kind=text）不参与提示词优化，只能在技能工作台用于新建文本节点。
+  const optimizationSkills = skills.filter((entry) => entry.kind !== 'text');
   const skillOptions: NonNullable<SelectProps<string>['options']> = [
     { value: '', label: '不使用 Skill' },
-    ...Array.from(new Set(skills.map((entry) => entry.category))).flatMap((category) =>
-      skills
+    ...Array.from(new Set(optimizationSkills.map((entry) => entry.category))).flatMap((category) =>
+      optimizationSkills
         .filter((entry) => entry.category === category)
         .map((entry) => ({
           value: entry.id,
@@ -174,7 +176,7 @@ function PromptSkillPanelSession({
         })),
     ),
   ];
-  const skillAvailable = skill !== undefined && skill.enabled !== false;
+  const skillAvailable = skill !== undefined && skill.enabled !== false && skill.kind !== 'text';
   const textModels = models;
   const selectedModel = textModels.find((model) => modelIdentity(model) === modelKey);
   const modelOptions = [
@@ -613,12 +615,14 @@ function PromptSkillPanelSession({
               value={skillId && !skillAvailable ? undefined : (skillId ?? '')}
               options={[
                 skillOptions[0]!,
-                ...Array.from(new Set(skills.map((entry) => entry.category))).map((category) => ({
-                  label: category,
-                  options: skillOptions.filter(
-                    (entry) => 'groupLabel' in entry && entry.groupLabel === category,
-                  ),
-                })),
+                ...Array.from(new Set(optimizationSkills.map((entry) => entry.category))).map(
+                  (category) => ({
+                    label: category,
+                    options: skillOptions.filter(
+                      (entry) => 'groupLabel' in entry && entry.groupLabel === category,
+                    ),
+                  }),
+                ),
               ]}
               optionRender={(option) => (
                 <Tooltip

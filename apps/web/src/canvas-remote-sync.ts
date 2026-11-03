@@ -55,15 +55,19 @@ export function mergeRemoteCanvasRuntime(
         runProgress: run?.progress ?? data?.runProgress,
         runError: run ? run.error : data?.runError,
         upstreamTaskId: data?.upstreamTaskId,
-        nodeTiming: run?.nodeTimings?.[node.id] ?? data?.nodeTiming,
-        resultAsset:
-          run?.status === 'succeeded'
-            ? (run.result?.asset ?? data?.resultAsset)
-            : data?.resultAsset,
-        resultTiming:
-          run?.status === 'succeeded'
-            ? (run.nodeTimings?.[node.id] ?? data?.resultTiming)
-            : data?.resultTiming,
+        nodeTiming: run ? run.nodeTimings?.[node.id] : data?.nodeTiming,
+        // 有运行记录时以最新运行为准：只有成功的运行绑定展示结果；
+        // 失败、取消、进行中都表示旧结果已解绑，不能被当前会话的旧字段重新挂回。
+        resultAsset: run
+          ? run.status === 'succeeded'
+            ? run.result?.asset
+            : undefined
+          : data?.resultAsset,
+        resultTiming: run
+          ? run.status === 'succeeded'
+            ? run.nodeTimings?.[node.id]
+            : undefined
+          : data?.resultTiming,
       },
     };
   });

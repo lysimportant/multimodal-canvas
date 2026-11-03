@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  AUTO_FOCUS_NEW_NODES_KEY,
   AUTO_REVERSE_PROMPT_KEY,
   CANVAS_BACKGROUND_KEY,
   CANVAS_EDGE_EFFECT_KEY,
@@ -102,6 +103,23 @@ describe('workspace preferences store', () => {
     expect(window.localStorage.getItem(DEFAULT_GENERATION_COUNT_KEY)).toBe('3');
     await useWorkspacePreferences.persist.rehydrate();
     expect(useWorkspacePreferences.getState().defaultGenerationCount).toBe(3);
+  });
+
+  it('新增节点自动聚焦默认开启，显式关闭后持久化恢复', async () => {
+    expect(useWorkspacePreferences.getState().autoFocusNewNodes).toBe(true);
+    useWorkspacePreferences.getState().setAutoFocusNewNodes(false);
+    expect(window.localStorage.getItem(AUTO_FOCUS_NEW_NODES_KEY)).toBe('false');
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().autoFocusNewNodes).toBe(false);
+    useWorkspacePreferences.getState().setAutoFocusNewNodes(true);
+    await useWorkspacePreferences.persist.rehydrate();
+    expect(useWorkspacePreferences.getState().autoFocusNewNodes).toBe(true);
+  });
+
+  it('清除偏好也删除新增节点自动聚焦键', async () => {
+    useWorkspacePreferences.getState().setAutoFocusNewNodes(false);
+    await useWorkspacePreferences.persist.clearStorage();
+    expect(window.localStorage.getItem(AUTO_FOCUS_NEW_NODES_KEY)).toBeNull();
   });
 
   it.each(['0', '-1', '1.5', '21', 'NaN', ''])('非法数量偏好 %s 恢复为一份', async (value) => {

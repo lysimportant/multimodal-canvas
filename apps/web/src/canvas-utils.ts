@@ -13,6 +13,7 @@ import {
   CANVAS_GROUP_NODE_LIMIT,
   canvasGroupSchema,
   promptDocumentSchema,
+  resolveCanvasNodeCardSize,
 } from '@multimodal-canvas/domain';
 
 const canvasGroupSchemaArray = canvasGroupSchema.array();
@@ -54,11 +55,12 @@ export type CanvasClipboard = {
 export const DEFAULT_FLOW_NODE_WIDTH = 230;
 /** 节点未被用户缩放时的默认高度，单位为像素。 */
 export const DEFAULT_FLOW_NODE_HEIGHT = 216;
-/** 仅供新建入口使用的媒体尺寸；旧画布恢复仍使用历史默认值，单位为画布像素。 */
+/**
+ * 仅供新建入口使用的媒体尺寸；旧画布恢复仍使用历史默认值，单位为画布像素。
+ * 与 Agent 经 MCP create_node 的兜底尺寸共用 domain 同一份规则，避免两处默认值漂移。
+ */
 export function getNewNodeDimensions(mediaType: MediaType): { width: number; height: number } {
-  return mediaType === 'image' || mediaType === 'video'
-    ? { width: 400, height: 266 }
-    : { width: 320, height: 200 };
+  return resolveCanvasNodeCardSize({ mediaType });
 }
 
 /** 回显内容适配时的最大宽度，单位为画布像素。 */

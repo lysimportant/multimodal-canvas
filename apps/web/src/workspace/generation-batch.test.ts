@@ -128,7 +128,7 @@ describe('批量生成画布', () => {
     expect(source.data.generationBatch).toBeUndefined();
   });
 
-  it('再次批量生成保留旧成员与结果，并解除旧堆叠归属', () => {
+  it('再次批量生成保留旧成员，旧结果只留在根节点；新成员不继承产物', () => {
     const source = sourceNode();
     const first = createGenerationBatch(source, [source], []);
     const next = createGenerationBatch(first.targets[0]!, first.nodes, first.edges);
@@ -136,7 +136,14 @@ describe('批量生成画布', () => {
     expect(
       next.nodes.find((node) => node.id === first.targets[1]!.id)?.data.generationBatch,
     ).toBeUndefined();
+    // 批量生成只是扩展画布，运行归属不变：根节点在服务端受理新运行前仍展示旧结果，
+    // 提交被拒绝时也保持不变；真正解绑发生在 updateNodeRunState 受理新运行之后。
     expect(next.targets[0]!.data.resultAsset?.assetId).toBe('old-result');
+    for (const sibling of next.targets.slice(1)) {
+      expect(sibling.data.resultAsset).toBeUndefined();
+      expect(sibling.data.assetId).toBeUndefined();
+      expect(sibling.data.manualOutput).toBeUndefined();
+    }
   });
 
   it('历史节点只运行一次，非法数量不建立额外节点', () => {

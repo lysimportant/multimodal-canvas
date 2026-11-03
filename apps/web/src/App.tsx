@@ -6,6 +6,7 @@ import { useCanvasDraft } from './use-canvas-draft';
 import { AgentConnectionPanel } from './workspace/AgentConnectionPanel';
 import { LocalAgentChatPanel } from './workspace/LocalAgentChatPanel';
 import { useAppNotice } from './use-app-notice';
+import { useNodeFocusOffer } from './use-node-focus-offer';
 import { mergeRemoteCanvasRuntime, remoteCanvasMatches } from './canvas-remote-sync';
 import { CanvasHistory } from './canvas-history';
 import { arrangeCanvasNodes } from './canvas-auto-arrange';
@@ -76,6 +77,7 @@ import {
   type NodeMode,
   type PromptDocument,
   type PromptMention,
+  type PromptSkill,
   type RunRecord,
   type VideoCompletionAction,
   type VideoMode,
@@ -592,6 +594,8 @@ function buildEmptyNodeRuntimeState(input: {
     return {
       busy: input.contentLocks.has(node.id),
       hasActiveRun: isActiveRunStatus(run?.status) || input.runLocks.has(node.id),
+      // 展示解绑不等于内容删除：节点当前展示的结果、或最新运行归档出的结果，都说明这里
+      // 有用户内容，清空空节点时必须保留；解绑只影响节点回显，资产仍可从资产库查看。
       hasRetainedOutput: Boolean(node.data.resultAsset?.assetId) || hasRetainedResult(run?.result),
       hasUpstreamInput: upstreamTargets.has(node.id),
       pendingLookup: input.pendingUpdateNodeIds.has(node.id),
@@ -856,6 +860,8 @@ function WorkspaceApp({
   const setCanvasEdgePathStyle = useWorkspacePreferences((state) => state.setCanvasEdgePathStyle);
   const canvasEdgeEffect = useWorkspacePreferences((state) => state.canvasEdgeEffect);
   const setCanvasEdgeEffect = useWorkspacePreferences((state) => state.setCanvasEdgeEffect);
+  /** 是否在画布外同步新增节点后自动把视口聚焦到新节点。 */
+  const autoFocusNewNodes = useWorkspacePreferences((state) => state.autoFocusNewNodes);
   const isMobileWorkspace = useMobileWorkspace();
   /** 手机浮层独立于持久化桌面偏好，每次进入手机断点均默认关闭。 */
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -935,6 +941,25 @@ function WorkspaceApp({
   const resizingNodeIdsRef = useRef(new Set<string>());
   const clipboardRef = useRef<CanvasClipboard | null>(null);
   const [nodes, setNodes, applyNodesChange] = useNodesState<AssetFlowNode>([]);
+  /** 画布外同步新增节点后下发给画布的聚焦请求；requestId 递增触发一次聚焦。 */
+  const [revealNodesRequest, setRevealNodesRequest] = useState<{
+    nodeIds: readonly string[];
+    requestId: number;
+  } | null>(null);
+  /** 完成提示里的「聚焦」复用同一套聚焦请求，只移动视口，不改节点数据。 */
+  const focusNodeInViewport = useCallback((nodeId: string) => {
+    setRevealNodesRequest((previous) => ({
+      nodeIds: [nodeId],
+      requestId: (previous?.requestId ?? 0) + 1,
+    }));
+  }, []);
+  const offerFocusToCompletedNode = useNodeFocusOffer(focusNodeInViewport);
+  /** 本次实时完成的节点；画布判断它不在视口内才回调弹提示，requestId 递增触发一次判断。 */
+  const [focusOfferRequest, setFocusOfferRequest] = useState<{
+    nodeId: string;
+    label: string;
+    requestId: number;
+  } | null>(null);
   const [edges, setEdges, applyEdgesChange] = useEdgesState<FlowEdge>([]);
   /** 画布布局区域；不进入运行 DAG，也不出现在模型与生成请求中。 */
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
@@ -1911,7 +1936,8 @@ function WorkspaceApp({
 
   /** 接纳远端文档时同步 refs，避免同一轮保存或事件读取旧图。 */
   const applyRemoteCanvas = useCallback(
-    (document: CanvasApiDocument) => {
+    (document: CanvasApiDocument, options?: { revealNewNodes?: boolean }) => {
+      const previousNodeIds = new Set(nodesRef.current.map((node) => node.id));
       // 先持久化接纳的版本，立即刷新页面也不会再次恢复旧草稿。
       if (projectId) {
         const draftKey = canvasDraftKey(projectId, authUser?.id);
@@ -1943,10 +1969,23 @@ function WorkspaceApp({
       awaitingRemoteCanvasRef.current = false;
       historyRef.current = new CanvasHistory();
       resizingNodeIdsRef.current.clear();
+      /** 新节点来自画布外同步（如 Agent 生成）时，按偏好把视口聚焦过去。 */
+      if (options?.revealNewNodes && autoFocusNewNodes) {
+        const addedNodeIds = next.nodes
+          .filter((node) => !previousNodeIds.has(node.id))
+          .map((node) => node.id);
+        if (addedNodeIds.length > 0) {
+          setRevealNodesRequest((previous) => ({
+            nodeIds: addedNodeIds,
+            requestId: (previous?.requestId ?? 0) + 1,
+          }));
+        }
+      }
       setSaveState('已同步外部更新');
     },
     [
       authUser?.id,
+      autoFocusNewNodes,
       backupCanvasDraft,
       currentCanvasSnapshot,
       projectId,
@@ -2021,7 +2060,7 @@ function WorkspaceApp({
           return;
         }
         if (canvasConflictRef.current) return;
-        applyRemoteCanvas(remote);
+        applyRemoteCanvas(remote, { revealNewNodes: true });
       } catch {
         if (
           !lifecycle.active ||
@@ -3087,6 +3126,44 @@ function WorkspaceApp({
           ? { kind: 'error', message: `节点已添加；${nodePreferenceNoticeRef.current}` }
           : { kind: 'success', message: `${mediaLabels[mediaType]}生成节点已添加` },
       );
+    },
+    [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
+  );
+
+  /**
+   * 创作型技能只提供只读指令；用它新建文本节点，用户补充创作需求后按普通文本生成运行。
+   * @param skill 工作台选中的 kind=text 技能。
+   */
+  const handleUseTextSkill = useCallback(
+    (skill: PromptSkill) => {
+      const column = nodes.length % 3;
+      const row = Math.floor(nodes.length / 3);
+      const position =
+        canvasCenterPositionRef.current ?? ({ x: 100 + column * 250, y: 100 + row * 220 } as const);
+      let node: AssetFlowNode;
+      try {
+        node = createGenerateNode('text', position, {
+          label: skill.name,
+          promptDocument: {
+            version: 1,
+            blocks: [{ type: 'text', text: skill.instruction }],
+          },
+        });
+      } catch (error) {
+        setNotice({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '节点输出参数无效',
+        });
+        return;
+      }
+      rememberHistory();
+      appendNodesAndSelect([node]);
+      canvasDirtyRef.current = true;
+      setShowSkillWorkbench(false);
+      setNotice({
+        kind: 'success',
+        message: `已用「${skill.name}」新建文本节点，填写创作需求后点生成`,
+      });
     },
     [appendNodesAndSelect, createGenerateNode, nodes.length, rememberHistory],
   );
@@ -4207,6 +4284,21 @@ function WorkspaceApp({
       runRecordsRef.current = { ...runRecordsRef.current, [nodeId]: run };
       pendingRunUpdateRef.current.delete(nodeId);
       setRunRecords(runRecordsRef.current);
+      // 只有本次实时收到的完成事件才交给画布判断是否需要提示；恢复历史运行时不打扰用户。
+      if (
+        origin === 'live' &&
+        run.status === 'succeeded' &&
+        currentRun !== undefined &&
+        isActiveRunStatus(currentRun.status)
+      ) {
+        const label =
+          nodesRef.current.find((node) => node.id === nodeId)?.data.label.trim() || '节点';
+        setFocusOfferRequest((previous) => ({
+          nodeId,
+          label,
+          requestId: (previous?.requestId ?? 0) + 1,
+        }));
+      }
       if (
         run.status === 'failed' &&
         run.error &&
@@ -4228,7 +4320,11 @@ function WorkspaceApp({
       } else if (!nodeRunOperationByNodeRef.current.has(nodeId)) {
         nodeRunControlStore.clear(nodeId);
       }
+      // 服务端受理新运行即解绑旧结果的展示关联：节点当前输出只跟随最新运行，失败、取消、进行中
+      // 都表示旧结果不再作为当前输出展示。资产版本与历史运行结果仍保留在资产库和运行记录中。
       const resultAsset = run.status === 'succeeded' ? run.result?.asset : undefined;
+      const resultTiming = run.status === 'succeeded' ? run.nodeTimings?.[nodeId] : undefined;
+      const isNewRun = currentRun?.id !== run.id;
       const resultAssetKey = resultAsset
         ? `${resultAsset.assetId}:${resultAsset.version ?? 0}:${resultAsset.contentUrl ?? ''}`
         : undefined;
@@ -4251,8 +4347,8 @@ function WorkspaceApp({
                   runError: run.error,
                   upstreamTaskId,
                   nodeTiming: run.nodeTimings?.[nodeId],
-                  resultAsset: resultAsset ?? node.data.resultAsset,
-                  resultTiming: resultAsset ? run.nodeTimings?.[nodeId] : node.data.resultTiming,
+                  resultAsset,
+                  resultTiming,
                   ...(node.data.manualOutput && run.status === 'succeeded' && hasResultAsset
                     ? { manualOutput: undefined, manualOutputRunId: undefined }
                     : {}),
@@ -4272,13 +4368,18 @@ function WorkspaceApp({
           hasResultAsset
         )
           canvasDirtyRef.current = true;
-        return run.status === 'succeeded' &&
+        // 受理新运行或运行产出成功结果，都意味着下游可获取的上游输出已经改变；旧结果即使解绑，
+        // 下游也不能继续把旧输出当作有效输入，需要重新获取/生成。手动输出节点被其它运行标记
+        // （manualOutputRunId 不匹配）时保持原行为，不扩散 stale。
+        const markDownstreamStale =
+          (isNewRun || run.status === 'succeeded') &&
           !current.some(
             (node) =>
               node.id === nodeId &&
               node.data.manualOutput &&
               node.data.manualOutputRunId !== run.id,
-          )
+          );
+        return markDownstreamStale
           ? markDownstreamNodesStale(updated, edgesRef.current, [nodeId]).map((node) =>
               node.id === nodeId && clearStale
                 ? { ...node, data: { ...node.data, stale: false } }
@@ -4500,7 +4601,8 @@ function WorkspaceApp({
   /**
    * 打开节点的只读「生成提示词」Dialog。
    *
-   * 只查询当前展示的资产版本；新任务尚未成功时仍读取旧结果，不回退到最新运行。
+   * 优先查询当前展示的资产版本；节点没有当前输出（从未生成，或最新运行未产出/已解绑旧结果）时
+   * 回退到最新运行的输入快照，并标记 latestRun，避免把旧结果的请求当成当前输出的请求展示。
    *
    * @param nodeId 目标节点 ID。
    */
@@ -4520,13 +4622,22 @@ function WorkspaceApp({
     };
     show({ status: 'loading' });
     if (!assetId) {
-      const historical = runRecordsRef.current[nodeId]?.snapshot.nodes?.find(
+      // 节点没有当前输出：回退到最新运行的输入快照，并标记 latestRun，界面据此说明这是
+      // 最新运行的请求，而不是当前展示产物的请求（旧结果已解绑时尤其重要）。
+      const latestRunNode = runRecordsRef.current[nodeId]?.snapshot.nodes?.find(
         (candidate) => candidate.id === nodeId,
       );
-      const data = historical?.data ?? node?.data;
+      const data = latestRunNode?.data ?? node?.data;
       const text = data?.promptDocument ? renderPromptDocument(data.promptDocument) : data?.prompt;
       show(
-        text ? { status: 'input', text, historical: Boolean(historical) } : { status: 'missing' },
+        text
+          ? {
+              status: 'input',
+              text,
+              historical: Boolean(latestRunNode),
+              latestRun: Boolean(latestRunNode),
+            }
+          : { status: 'missing' },
       );
       return;
     }
@@ -6280,6 +6391,7 @@ function WorkspaceApp({
             models={reversePromptModels}
             open={showSkillWorkbench}
             onOpenChange={setShowSkillWorkbench}
+            onUseTextSkill={handleUseTextSkill}
             onChanged={() => {
               void queryClient.invalidateQueries({ queryKey: ['prompt-skills', authUser?.id] });
             }}
@@ -6295,12 +6407,16 @@ function WorkspaceApp({
             }
             onOpenSkillWorkbench={handleOpenSkillWorkbench}
             nodes={nodes}
+            revealNodesRequest={revealNodesRequest}
+            focusOfferRequest={focusOfferRequest}
+            onCompletedNodeOffscreen={offerFocusToCompletedNode}
             edges={edges}
             selectedNode={selectedNode}
             assets={assets}
             models={reversePromptModels}
             busyNodeIds={busyNodeIds}
             nodeRunControlStore={nodeRunControlStore}
+            runRecords={runRecords}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}

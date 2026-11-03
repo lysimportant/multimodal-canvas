@@ -3,12 +3,21 @@ import type { RunRecord } from '@multimodal-canvas/domain';
 /** Public run DTO adds the safe upstream identity without exposing Provider payloads. */
 export type ClientRunRecord = RunRecord & { platformJobId?: string };
 
-/** Lifecycle updates from SSE intentionally omit the immutable input snapshot. */
+/**
+ * Live SSE events carry the same public record as REST, including the summarized
+ * snapshot. The snapshot stays optional so older servers (and snapshotless
+ * lifecycle events) can still merge onto a record this page already knows.
+ */
 export type RunUpdate = Omit<ClientRunRecord, 'snapshot'> & {
   snapshot?: RunRecord['snapshot'];
 };
 
-/** Preserve the last complete snapshot when a public lifecycle event omits it. */
+/**
+ * Merge a lifecycle update into the known record. A snapshot is required only
+ * when there is no known record yet (e.g. the first event for a run started by
+ * the Agent/MCP); without one the run cannot be rendered and the update is
+ * dropped until the REST snapshot arrives.
+ */
 export function mergeRunUpdate(
   current: ClientRunRecord | undefined,
   incoming: RunUpdate,

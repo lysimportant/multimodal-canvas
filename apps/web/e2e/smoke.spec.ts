@@ -3497,8 +3497,9 @@ test('普通输入节点放大编辑器将滚动限制在窗口内部', async ({
   expect(geometry.wrapOverflow).toBe('hidden');
   expect(geometry.wrapScrollHeight).toBeLessThanOrEqual(geometry.wrapHeight);
   expect(geometry.dialogScrollHeight).toBeLessThanOrEqual(geometry.dialogHeight);
+  // 窗口高度跟随内容，提示词自身是唯一滚动层，整窗不应再出现第二条滚动条。
   expect(geometry.bodyOverflow).toBe('auto');
-  expect(geometry.bodyScrollHeight).toBeGreaterThan(geometry.bodyHeight);
+  expect(geometry.bodyScrollHeight - geometry.bodyHeight).toBeLessThanOrEqual(1);
 });
 
 test('设置展示 New API 分组和四类默认模型，节点按显式所选模型运行', async ({ page }) => {

@@ -1526,13 +1526,13 @@ test('工作台 AI 升级：失败终态保留原草稿且不自动重发 POST',
 });
 
 /** 核对工具包扩充后的真实工作台目录；只验证界面与合同，不代表模型输出质量。 */
-test('应用内 Skill 目录保留三十三项及原有顺序并提供匹配版本的中文说明', async ({
+test('应用内 Skill 目录保留三十四项及原有顺序并提供匹配版本的中文说明', async ({
   page,
 }, testInfo) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const fixture = await installFixture(page);
-  expect(fixture.skills()).toHaveLength(33);
+  expect(fixture.skills()).toHaveLength(34);
   expect(fixture.skills().map((skill) => skill.id)).toEqual([
     'novel-premise',
     'novel-outline',
@@ -1566,6 +1566,7 @@ test('应用内 Skill 目录保留三十三项及原有顺序并提供匹配版�
     'storyboard-10s',
     'storyboard-15s',
     'visual-effects',
+    'manju-director',
     'soft-anime-atmosphere',
   ]);
   expect(fixture.skills().at(-1)).toMatchObject({

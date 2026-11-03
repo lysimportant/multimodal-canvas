@@ -34,7 +34,7 @@ export type EmptyNodeRuntimeState = {
   busy?: boolean;
   /** 该节点是否有排队、准备、生成、归档、取消请求中或上传中的操作。 */
   hasActiveRun?: boolean;
-  /** 该节点当前展示的结果版本是否仍被保留。 */
+  /** 该节点是否有保留的结果：当前展示的结果，或最新运行归档出的结果。 */
   hasRetainedOutput?: boolean;
   /** 资源或运行状态尚未读取完成。 */
   pendingLookup?: boolean;
@@ -164,8 +164,9 @@ export function isActiveRunStatus(status: RunStatus | undefined): boolean {
 /**
  * 判断一次运行结果是否构成“保留的输出”。
  *
- * 只要归档出了资产版本就算保留；生成失败但旧结果仍在的节点也保留，因为
- * 旧结果属于用户内容。
+ * 只要归档出了资产版本就算保留：资产与历史运行结果属于用户内容，不会因为节点
+ * 展示解绑（受理新运行后旧结果不再回显）而删除，清空空节点时仍须保留该节点。
+ * 展示解绑只影响节点当前回显，与这里的保留判定是两件事。
  *
  * @param result 运行结果；缺省表示没有结果。
  * @returns 是否存在保留输出。

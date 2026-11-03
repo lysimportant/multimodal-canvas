@@ -37,8 +37,8 @@
   min-width: 112px;
 }
 
-/* 节点缩窄后优先收起按钮文字；Skill、数量和生成仍在同一行，不横向溢出。 */
-@container (max-width: 300px) {
+/* 面板窄于设计宽度时（节点缩窄或移动端）先收起按钮文字；Skill、数量和生成仍在同一行，不横向溢出。 */
+@container (max-width: 500px) {
   .node-quick-editor-run-group {
     flex: 0 1 auto;
     gap: 4px;
@@ -65,7 +65,7 @@
   }
 }
 
-@container (max-width: 220px) {
+@container (max-width: 360px) {
   .node-quick-editor-run-group {
     gap: 2px;
   }

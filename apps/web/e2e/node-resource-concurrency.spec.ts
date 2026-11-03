@@ -33,6 +33,8 @@ const project = {
 const originalPrompt = '让白色小猫坐在窗边。';
 /** 两个节点具有不同提示词，可发现并发请求错误复用选中节点数据。 */
 const nodeLabels = { 'node-a': 'A 节点', 'node-b': 'B 节点' } as const;
+/** 与 WorkflowCanvas 的 QUICK_EDITOR_FALLBACK_WIDTH 一致：节点过窄时面板按设计宽度保底。 */
+const QUICK_EDITOR_DESIGN_WIDTH = 570;
 /** 只允许两个明确的生成目标。 */
 type GenerationNodeId = keyof typeof nodeLabels;
 /** 保存真实 HTTP 请求和响应的顺序，不通过墙钟时间判断并发。 */
@@ -923,12 +925,18 @@ test('输入长文不撑大节点，只有拖拽手柄后节点与输入面板�
   await page.mouse.move(x - 70, y, { steps: 12 });
   await page.mouse.up();
   await expect.poll(async () => (await node.boundingBox())?.width).toBeLessThan(before.width - 20);
+  // 面板宽度取「节点两倍」与设计宽度（570 画布像素）的较大者；节点缩得很窄时仍按设计宽度保底。
   await expect
     .poll(async () => {
       const geometry = await editorGeometry(editor);
       const bounds = await node.boundingBox();
-      return bounds && geometry.width > bounds.width
-        ? Math.min(geometry.width - bounds.width, bounds.width * 2 + 1 - geometry.width)
+      if (!bounds) return Infinity;
+      const expectedWidth = Math.max(
+        bounds.width * 2,
+        QUICK_EDITOR_DESIGN_WIDTH * geometry.zoom,
+      );
+      return geometry.width > bounds.width
+        ? Math.min(geometry.width - bounds.width, expectedWidth + 1 - geometry.width)
         : Infinity;
     })
     .toBeGreaterThan(0);

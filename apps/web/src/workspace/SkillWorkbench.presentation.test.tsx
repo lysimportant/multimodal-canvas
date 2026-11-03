@@ -297,10 +297,10 @@ describe('Skill 指令中文说明', () => {
     );
   });
 
-  it('当前目录包含十七项 1.1.0 和十六项 1.0.0，新版本保留末尾 ID 与既有顺序', () => {
-    expect(PROMPT_SKILLS).toHaveLength(33);
+  it('当前目录包含十七项 1.1.0 和十七项 1.0.0，新版本保留末尾 ID 与既有顺序', () => {
+    expect(PROMPT_SKILLS).toHaveLength(34);
     expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.1.0')).toHaveLength(17);
-    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(16);
+    expect(PROMPT_SKILLS.filter((skill) => skill.version === '1.0.0')).toHaveLength(17);
     for (const id of ['xianxia-dress-character', 'skill-authoring'])
       expect(PROMPT_SKILLS.find((skill) => skill.id === id)?.version).toBe('1.0.0');
     expect(PROMPT_SKILLS.at(-1)).toMatchObject({

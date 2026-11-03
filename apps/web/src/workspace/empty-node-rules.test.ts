@@ -85,7 +85,7 @@ describe('classifyEmptyPromptNode', () => {
     ).toBe(false);
   });
 
-  it('有当前或历史保留结果或手动输出时保留，包含本次失败但旧结果仍在', () => {
+  it('有当前展示或历史归档结果、手动输出时保留，展示解绑不等于删除内容', () => {
     expect(classifyEmptyPromptNode(node('a', { manualOutput: true }))).toEqual({
       isEmpty: false,
       category: 'has-retained-output',

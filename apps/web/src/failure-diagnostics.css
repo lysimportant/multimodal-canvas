@@ -99,6 +99,121 @@
   min-height: 32px;
 }
 
+.failure-diagnostics-send-status,
+.failure-diagnostics-failure-stage,
+.failure-diagnostics-archive-stage,
+.failure-diagnostics-archive-attempt-count {
+  font-weight: 600;
+}
+
+.failure-diagnostics-archive-error {
+  color: #9b4035;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.failure-diagnostics-references {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.failure-diagnostics-section-title {
+  color: var(--mc-text-muted, #687386);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+
+.failure-diagnostics-reference-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.failure-diagnostics-reference {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.failure-diagnostics-reference-label {
+  color: var(--mc-text, #18212f);
+  font-size: 11px;
+  line-height: 1.4;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.failure-diagnostics-reference-meta {
+  align-items: baseline;
+  color: var(--mc-text-muted, #687386);
+  display: inline-flex;
+  flex: none;
+  font-size: 10px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.failure-diagnostics-reference-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+/* 归档重试记录：与参考素材区块同样简洁的分组列表，逐条展示每次尝试。 */
+.failure-diagnostics-archive-attempts {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.failure-diagnostics-archive-attempt-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.failure-diagnostics-archive-attempt {
+  align-items: baseline;
+  color: var(--mc-text, #18212f);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.failure-diagnostics-archive-attempt-sequence {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.failure-diagnostics-archive-attempt-message {
+  flex: 1 1 auto;
+  font-size: 11px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.failure-diagnostics-archive-attempt-time {
+  color: var(--mc-text-muted, #687386);
+  flex: none;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.failure-diagnostics-archive-attempt-time::before {
+  content: '· ';
+}
+
 /* Alert / Descriptions 都是这个 grid 的直接子项：默认 `min-width: auto` 会被
    超长的错误串（无空格）撑破面板，必须显式允许收缩并允许任意处换行。 */
 .failure-diagnostics > .ant-alert,

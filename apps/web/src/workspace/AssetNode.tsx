@@ -49,7 +49,7 @@ import {
   type RefObject,
 } from 'react';
 
-import type { Asset, PortRole, RunStatus, VideoMode } from '@multimodal-canvas/domain';
+import type { Asset, PortRole, RunRecord, RunStatus, VideoMode } from '@multimodal-canvas/domain';
 import {
   displayVideoMode,
   ImageOutputParameterError,
@@ -80,6 +80,8 @@ import { mediaIcons, mediaLabels, modeLabels } from './contracts';
 import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import { GenerationBatchViewContext } from './generation-batch-view';
 import { getNodeInfoTimes } from './node-info';
+import { NodeRunContext } from './node-run-context';
+import { FailureDiagnostics, getArchiveFailureDetails } from '../FailureDiagnostics';
 import { formatAssetFileSize, resolveAssetFileSize } from './asset-file-size';
 import { AssetRetentionContext, getAssetRetention, useAssetExpiryClock } from './asset-retention';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
@@ -361,6 +363,7 @@ export function AssetNode({
   const changeLabel = useContext(NodeLabelChangeContext);
   const retryNode = useContext(NodeRetryContext);
   const recoverNode = useContext(NodeRecoverContext);
+  const nodeRuns = useContext(NodeRunContext);
   const setNodeEnabled = useContext(NodeEnabledContext);
   const deleteNode = useContext(NodeDeleteContext);
   const contentHandlers = useContext(NodeContentContext);
@@ -522,13 +525,33 @@ export function AssetNode({
   const enabled = data.enabled !== false;
   /** 全部节点共用悬浮操作栏，保持内容区域固定尺寸。 */
   const floatingControls = true;
+  /**
+   * 服务端受理新运行后旧结果即解绑：只有成功运行或尚未记录运行状态时，resultAsset/resultTiming
+   * 才能当作节点当前输出。失败、取消、进行中都不再回显旧成功结果；旧资产版本仍可在资产库与
+   * 运行记录中查看，不会被删除。
+   */
+  const resultBoundToCurrentRun = data.runStatus === undefined || data.runStatus === 'succeeded';
+  const displayedResultAsset =
+    resultBoundToCurrentRun && !data.manualOutput ? data.resultAsset : undefined;
+  const displayedResultTiming = resultBoundToCurrentRun ? data.resultTiming : undefined;
+  /**
+   * 归档失败诊断来自服务端运行记录的 providerJob.payload；只在最近一次运行已
+   * 终结失败/取消且确实带归档诊断字段时展示，避免节点信息被普通错误塞满。
+   */
+  const latestRun = nodeRuns?.[id];
+  const archiveFailure =
+    latestRun && (latestRun.status === 'failed' || latestRun.status === 'cancelled')
+      ? getArchiveFailureDetails(latestRun)
+      : undefined;
   const knownAssets = useContext(AssetRetentionContext);
-  const resultRecord = data.resultAsset ? knownAssets.get(data.resultAsset.assetId) : undefined;
+  const resultRecord = displayedResultAsset
+    ? knownAssets.get(displayedResultAsset.assetId)
+    : undefined;
   const sourceRecord = data.assetId ? knownAssets.get(data.assetId) : undefined;
   const retentionMetadata =
-    !data.manualOutput && data.resultAsset
-      ? (data.resultAsset.metadata ??
-        (resultRecord && resultRecord.latestVersion === data.resultAsset.version
+    !data.manualOutput && displayedResultAsset
+      ? (displayedResultAsset.metadata ??
+        (resultRecord && resultRecord.latestVersion === displayedResultAsset.version
           ? resultRecord.metadata
           : undefined))
       : sourceRecord?.metadata;
@@ -537,24 +560,23 @@ export function AssetNode({
   const resourceExpired = Boolean(
     retention && (retention.expiredAt || retention.expiresAt.timestamp <= retentionNow),
   );
-  const resultPreviewAsset =
-    !data.manualOutput && data.resultAsset
-      ? ({
-          id: data.resultAsset.assetId,
-          name: `${data.label}结果`,
-          mediaType: data.mediaType,
-          mimeType: data.resultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
-          sizeBytes: data.resultAsset.sizeBytes ?? 0,
-          latestVersion: data.resultAsset.version,
-          status: 'ready',
-          // 公共运行记录会省略 contentUrl，但生成资产仍可通过受保护的资产边界访问。
-          contentUrl:
-            data.resultAsset.contentUrl ??
-            getResultAssetContentUrl(data.resultAsset.assetId, data.resultAsset.version),
-          tags: [],
-          metadata: retentionMetadata,
-        } satisfies Asset)
-      : undefined;
+  const resultPreviewAsset = displayedResultAsset
+    ? ({
+        id: displayedResultAsset.assetId,
+        name: `${data.label}结果`,
+        mediaType: data.mediaType,
+        mimeType: displayedResultAsset.mimeType ?? data.mimeType ?? 'application/octet-stream',
+        sizeBytes: displayedResultAsset.sizeBytes ?? 0,
+        latestVersion: displayedResultAsset.version,
+        status: 'ready',
+        // 公共运行记录会省略 contentUrl，但生成资产仍可通过受保护的资产边界访问。
+        contentUrl:
+          displayedResultAsset.contentUrl ??
+          getResultAssetContentUrl(displayedResultAsset.assetId, displayedResultAsset.version),
+        tags: [],
+        metadata: retentionMetadata,
+      } satisfies Asset)
+    : undefined;
   const recreationSource = data.videoRecreation?.source;
   const recreationSourcePreviewAsset =
     isVideoRecreation && recreationSource && !resultPreviewAsset
@@ -598,11 +620,15 @@ export function AssetNode({
     !resourceExpired && originalPreviewAsset
       ? { ...originalPreviewAsset, sizeBytes: fileSize ?? 0 }
       : undefined;
-  const infoTimes = getNodeInfoTimes(id, data);
+  const infoTimes = getNodeInfoTimes(id, {
+    ...data,
+    resultAsset: displayedResultAsset,
+    resultTiming: displayedResultTiming,
+  });
   const displayedTiming = data.manualOutput
     ? undefined
     : previewAsset
-      ? data.resultTiming
+      ? displayedResultTiming
       : data.nodeTiming;
   const previewIdentity = previewAsset
     ? `${previewAsset.id}:${previewAsset.contentUrl}:${previewAsset.mimeType}`
@@ -621,8 +647,7 @@ export function AssetNode({
   }, [data.mediaType, data.parameters, data.modelAlias]);
   const requestedSize = selectedImageSize?.output;
   const imageSizeWarning =
-    data.resultAsset &&
-    !data.manualOutput &&
+    displayedResultAsset &&
     !data.stale &&
     !isNodeRunning(effectiveRunStatus) &&
     actualImageSize &&
@@ -651,7 +676,11 @@ export function AssetNode({
     },
     [previewIdentity],
   );
-  const presentationState = getNodePresentationState(data, previewAsset, effectiveRunStatus);
+  const presentationState = getNodePresentationState(
+    { ...data, resultAsset: displayedResultAsset, resultTiming: displayedResultTiming },
+    previewAsset,
+    effectiveRunStatus,
+  );
   const writingDisabled = isNodeRunning(effectiveRunStatus) || uploadProgress !== null;
   /** 仅图片和视频提供下载，下载内容始终与当前回显产物一致。 */
   const downloadableMedia = data.mediaType === 'image' || data.mediaType === 'video';
@@ -827,7 +856,8 @@ export function AssetNode({
       )}
     </div>
   );
-  // 保留旧结果时，预览加载状态不能遮住当前任务的运行或失败状态。
+  // 预览若是手动版本或复刻来源，其加载状态不能遮住当前任务的运行或失败状态；生成结果在受理
+  // 新运行后已解绑，不再存在「保留旧结果」的展示场景。
   const statusArtifactState =
     isNodeRunning(effectiveRunStatus) ||
     effectiveRunStatus === 'failed' ||
@@ -1129,7 +1159,7 @@ export function AssetNode({
                 </span>
               </NodeFloatingHint>
               {previewAsset && isNodeRunning(effectiveRunStatus) ? (
-                <NodeFloatingHint description="当前任务已用时间，不包含旧结果的耗时">
+                <NodeFloatingHint description="当前任务已用时间">
                   <span
                     className="flow-node-action-button flow-node-floating-duration nodrag nopan nowheel"
                     aria-label="当前执行耗时"
@@ -1611,6 +1641,11 @@ export function AssetNode({
                 </div>
               ) : null}
             </dl>
+            {latestRun && archiveFailure ? (
+              <div className="flow-node-dialog-diagnostics">
+                <FailureDiagnostics run={latestRun} />
+              </div>
+            ) : null}
           </DialogContent>
         )}
       </Dialog>

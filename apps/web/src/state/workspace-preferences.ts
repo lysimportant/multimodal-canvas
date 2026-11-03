@@ -23,6 +23,8 @@ export const IMAGE_EDIT_SOURCE_CARD_KEY = 'multimodal-canvas:image-edit-source-c
 export const AUTO_REVERSE_PROMPT_KEY = 'multimodal-canvas:auto-reverse-prompt';
 /** 新建节点的默认生成数量，仅保存在当前浏览器，不追溯修改已有节点。 */
 export const DEFAULT_GENERATION_COUNT_KEY = 'multimodal-canvas:default-generation-count';
+/** 画布外同步新增节点后是否自动把视口聚焦到新节点，默认开启。 */
+export const AUTO_FOCUS_NEW_NODES_KEY = 'multimodal-canvas:auto-focus-new-nodes';
 
 const PERSISTENCE_KEY = 'multimodal-canvas:workspace-preferences';
 
@@ -41,6 +43,8 @@ type PreferenceValues = {
   showImageEditSourceCard: boolean;
   /** 新建生成节点的数量，范围为 1 至 20；历史节点缺省仍按 1 份执行。 */
   defaultGenerationCount: number;
+  /** 画布外同步新增节点后是否自动把视口聚焦到新节点，避免用户手动翻找。 */
+  autoFocusNewNodes: boolean;
 };
 
 type ValueUpdater<T> = T | ((current: T) => T);
@@ -54,6 +58,7 @@ export type WorkspacePreferencesState = PreferenceValues & {
   setShowImageEditSourceCard: (visible: ValueUpdater<boolean>) => void;
   /** 保存有效的默认数量；非法值抛出 RangeError，不修改当前偏好。 */
   setDefaultGenerationCount: (count: number) => void;
+  setAutoFocusNewNodes: (enabled: ValueUpdater<boolean>) => void;
 };
 
 export const workspacePreferenceDefaults: PreferenceValues = {
@@ -64,6 +69,7 @@ export const workspacePreferenceDefaults: PreferenceValues = {
   isResourcePanelCollapsed: true,
   showImageEditSourceCard: true,
   defaultGenerationCount: DEFAULT_GENERATION_COUNT,
+  autoFocusNewNodes: true,
 };
 
 const canvasBackgrounds: CanvasBackground[] = ['dots', 'lines', 'cross', 'blank'];
@@ -107,6 +113,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
   const rawSourceCard = storage.getItem(IMAGE_EDIT_SOURCE_CARD_KEY);
   storage.removeItem(AUTO_REVERSE_PROMPT_KEY);
   const rawGenerationCount = storage.getItem(DEFAULT_GENERATION_COUNT_KEY);
+  const rawAutoFocus = storage.getItem(AUTO_FOCUS_NEW_NODES_KEY);
   if (
     rawBackground === null &&
     rawTheme === null &&
@@ -115,7 +122,8 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
     rawLegacyEdgeStyle === null &&
     rawCollapsed === null &&
     rawSourceCard === null &&
-    rawGenerationCount === null
+    rawGenerationCount === null &&
+    rawAutoFocus === null
   )
     return null;
 
@@ -141,6 +149,7 @@ function parsePreferences(storage: Storage): PreferenceValues | null {
     defaultGenerationCount: isValidGenerationCount(Number(rawGenerationCount))
       ? Number(rawGenerationCount)
       : workspacePreferenceDefaults.defaultGenerationCount,
+    autoFocusNewNodes: rawAutoFocus !== 'false',
   };
 }
 
@@ -167,6 +176,7 @@ const preferenceStorage: StateStorage = {
       storage.setItem(IMAGE_EDIT_SOURCE_CARD_KEY, String(state.showImageEditSourceCard));
       storage.removeItem(AUTO_REVERSE_PROMPT_KEY);
       storage.setItem(DEFAULT_GENERATION_COUNT_KEY, String(state.defaultGenerationCount));
+      storage.setItem(AUTO_FOCUS_NEW_NODES_KEY, String(state.autoFocusNewNodes));
     } catch {
       // Ignore malformed persistence writes; the in-memory preferences remain usable.
     }
@@ -183,6 +193,7 @@ const preferenceStorage: StateStorage = {
     storage?.removeItem(IMAGE_EDIT_SOURCE_CARD_KEY);
     storage?.removeItem(AUTO_REVERSE_PROMPT_KEY);
     storage?.removeItem(DEFAULT_GENERATION_COUNT_KEY);
+    storage?.removeItem(AUTO_FOCUS_NEW_NODES_KEY);
   },
 };
 
@@ -291,6 +302,11 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         }
         set({ defaultGenerationCount });
       },
+      setAutoFocusNewNodes: (enabled) =>
+        set((state) => ({
+          autoFocusNewNodes:
+            typeof enabled === 'function' ? enabled(state.autoFocusNewNodes) : enabled,
+        })),
     }),
     {
       name: PERSISTENCE_KEY,
@@ -303,6 +319,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         isResourcePanelCollapsed,
         showImageEditSourceCard,
         defaultGenerationCount,
+        autoFocusNewNodes,
       }) => ({
         canvasBackground,
         canvasTheme,
@@ -311,6 +328,7 @@ export const useWorkspacePreferences = create<WorkspacePreferencesState>()(
         isResourcePanelCollapsed,
         showImageEditSourceCard,
         defaultGenerationCount,
+        autoFocusNewNodes,
       }),
     },
   ),

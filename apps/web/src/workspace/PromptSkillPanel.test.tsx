@@ -819,8 +819,9 @@ describe('PromptSkillPanel', () => {
       expect(screen.getByRole('button', { name: '优化提示词' })).toBeDisabled();
       await user.click(screen.getByRole('combobox', { name: '提示词 Skill' }));
       const list = screen.getByRole('listbox', {});
-      expect(within(list).getAllByRole('option')).toHaveLength(PROMPT_SKILLS.length + 1);
-      for (const category of new Set(PROMPT_SKILLS.map((skill) => skill.category)))
+      const optimizationSkills = PROMPT_SKILLS.filter((skill) => skill.kind !== 'text');
+      expect(within(list).getAllByRole('option')).toHaveLength(optimizationSkills.length + 1);
+      for (const category of new Set(optimizationSkills.map((skill) => skill.category)))
         await waitFor(() => expect(within(list).getByText(category)).toBeVisible());
       const skill = PROMPT_SKILLS[0]!;
       expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();

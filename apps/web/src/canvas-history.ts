@@ -49,6 +49,11 @@ function restoreSnapshot(
             data.manualOutput = undefined;
             data.manualOutputRunId = undefined;
           }
+        } else {
+          // 最新运行没有可展示的产物：撤销/重做不得把旧结果的展示关联挂回来；
+          // 资产版本、历史运行结果仍可从资产库与运行记录查看。
+          data.resultAsset = undefined;
+          data.resultTiming = undefined;
         }
       }
       const unchanged = (Object.keys(data) as Array<keyof typeof data>).every((key) =>

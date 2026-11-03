@@ -192,6 +192,36 @@ describe('结构共享画布历史', () => {
     expect(restored.nodes[0].data.resultAsset?.assetId).toBe('result-a');
   });
 
+  it('最新运行失败时撤销不重新挂回旧结果的展示关联', () => {
+    const original = canvas();
+    original.nodes[0] = {
+      ...original.nodes[0],
+      data: {
+        ...original.nodes[0].data,
+        runStatus: 'succeeded',
+        runId: 'run-old',
+        nodeTiming: { nodeId: 'a', finishedAt: '2026-10-01T00:00:12Z' },
+        resultAsset: { assetId: 'old-result', version: 1 },
+        resultTiming: { nodeId: 'a', finishedAt: '2026-10-01T00:00:12Z' },
+      },
+    };
+    const failed: RunRecord = {
+      ...completedRun(),
+      id: 'run-new',
+      status: 'failed',
+      error: '上游任务失败',
+      createdAt: '2026-10-03T00:00:00Z',
+      updatedAt: '2026-10-03T00:00:05Z',
+    };
+    delete failed.result;
+    const history = new CanvasHistory();
+    history.remember(original);
+    const restored = history.undo({ nodes: [], edges: [], groups: [] }, { a: failed })!;
+    expect(restored.nodes[0].data).toMatchObject({ runStatus: 'failed', runId: 'run-new' });
+    expect(restored.nodes[0].data.resultAsset).toBeUndefined();
+    expect(restored.nodes[0].data.resultTiming).toBeUndefined();
+  });
+
   it('保留 50 步上限、跳过空拖拽，撤销后的新编辑丢弃 redo 分支', () => {
     const history = new CanvasHistory();
     let current = canvas();

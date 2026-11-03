@@ -56,6 +56,18 @@ describe('run update ordering', () => {
     expect(mergeRunUpdate(undefined, incoming satisfies RunUpdate)).toBeUndefined();
   });
 
+  it('adopts the first complete record for a run started outside this page', () => {
+    const incoming = run({ status: 'running', progress: 42 });
+
+    // Agent/MCP 提交的运行不在本页 runRecords 里，SSE 事件必须自带快照才能直接渲染。
+    expect(mergeRunUpdate(undefined, incoming)).toMatchObject({
+      id: incoming.id,
+      status: 'running',
+      progress: 42,
+      snapshot: incoming.snapshot,
+    });
+  });
+
   it.each(['text', 'image', 'audio', 'video'] as const)(
     'keeps the snapshot available for a %s success event',
     (mediaType) => {

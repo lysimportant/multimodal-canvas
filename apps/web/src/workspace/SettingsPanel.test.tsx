@@ -236,6 +236,20 @@ describe('SettingsPanel Ant Design 迁移', () => {
     expect(useWorkspacePreferences.getState().showImageEditSourceCard).toBe(false);
   });
 
+  it('画布外观可切换新增节点自动聚焦，默认开启', async () => {
+    const user = userEvent.setup();
+    expect(useWorkspacePreferences.getState().autoFocusNewNodes).toBe(true);
+    await renderSettings();
+    await user.click(screen.getByRole('tab', { name: '画布外观' }));
+    await user.click(screen.getByRole('combobox', { name: '新增节点自动聚焦' }));
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    await user.click(screen.getByRole('option', { name: '保持视口' }));
+    expect(useWorkspacePreferences.getState().autoFocusNewNodes).toBe(false);
+    await user.click(screen.getByRole('combobox', { name: '新增节点自动聚焦' }));
+    await user.click(screen.getByRole('option', { name: '自动聚焦' }));
+    expect(useWorkspacePreferences.getState().autoFocusNewNodes).toBe(true);
+  });
+
   it('生成数量保留原生数字输入语义，非法草稿不会覆盖已保存数量', async () => {
     const user = userEvent.setup();
     await renderSettings();

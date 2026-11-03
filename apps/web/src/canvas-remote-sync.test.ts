@@ -1,7 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CanvasDocument } from '@multimodal-canvas/domain';
+import type { CanvasDocument, RunRecord } from '@multimodal-canvas/domain';
 import { fromCanvasDocument } from './canvas-utils';
 import { mergeRemoteCanvasRuntime, remoteCanvasMatches } from './canvas-remote-sync';
+
+/** 最新一次运行失败：用于确认远端同步不复活旧结果的展示关联。 */
+function failedRun(): RunRecord {
+  return {
+    id: 'run-new',
+    projectId: 'synthetic',
+    targetNodeId: 'a',
+    status: 'failed',
+    progress: 100,
+    attempt: 1,
+    provider: 'fixture',
+    modelAlias: 'fixture',
+    error: '上游任务失败',
+    createdAt: '2026-10-03T00:00:00Z',
+    updatedAt: '2026-10-03T00:00:05Z',
+    snapshot: {
+      projectId: 'synthetic',
+      canvasRevision: 1,
+      targetNodeId: 'a',
+      modelAlias: 'fixture',
+      parameters: {},
+      submittedAt: '2026-10-03T00:00:00Z',
+      nodes: [],
+      edges: [],
+      inputs: [],
+    },
+  };
+}
 
 function document(): CanvasDocument {
   return {
@@ -79,5 +107,25 @@ describe('远端画布内容与运行态', () => {
     remote.nodes[0].data.manualOutput = true;
     remote.nodes[0].data.assetId = 'manual-new';
     expect(mergeRemoteCanvasRuntime(remote, local, {}).nodes[0].data.resultAsset).toBeUndefined();
+  });
+
+  it('最新运行失败时远端同步不重新挂回旧结果，也不复用旧耗时', () => {
+    const remote = document();
+    const local = fromCanvasDocument(remote);
+    local.nodes[0].data = {
+      ...local.nodes[0].data,
+      runStatus: 'succeeded',
+      runId: 'run-old',
+      nodeTiming: { nodeId: 'a', finishedAt: '2026-10-01T00:00:12Z' },
+      resultAsset: { assetId: 'old-result', version: 1 },
+      resultTiming: { nodeId: 'a', finishedAt: '2026-10-01T00:00:12Z' },
+    };
+    remote.nodes[0].position = { x: 200, y: 80 };
+    const next = mergeRemoteCanvasRuntime(remote, local, { a: failedRun() });
+    expect(next.nodes[0].position).toEqual({ x: 200, y: 80 });
+    expect(next.nodes[0].data).toMatchObject({ runStatus: 'failed', runId: 'run-new' });
+    expect(next.nodes[0].data.resultAsset).toBeUndefined();
+    expect(next.nodes[0].data.resultTiming).toBeUndefined();
+    expect(next.nodes[0].data.nodeTiming).toBeUndefined();
   });
 });

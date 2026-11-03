@@ -742,9 +742,10 @@
   color: var(--mc-text-strong);
 }
 
+/* 高度跟随内容，提示词本身保持固定高度并独自滚动；窗口本体不再二次滚动。 */
 .node-quick-editor-dialog.node-quick-editor-dialog {
   width: min(860px, calc(100vw - 32px));
-  height: min(720px, calc(100dvh - 40px));
+  height: auto;
   max-height: calc(100dvh - 40px);
 }
 

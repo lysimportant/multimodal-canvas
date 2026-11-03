@@ -1867,11 +1867,29 @@ h2 {
 }
 
 .flow-node-preview-content.asset-preview-image,
-.flow-node-preview-content.asset-preview-video,
 .flow-node-preview-content.asset-preview-audio {
   height: 100%;
   object-fit: cover;
   width: 100%;
+}
+
+/*
+ * 节点内的视频按真实画幅完整显示：卡片尺寸与视频比例不一致时留白，
+ * 而不是像图片那样裁成一条，竖屏成片才不会只剩横向中段。
+ */
+.flow-node-preview-content.asset-preview-video {
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+/*
+ * 失败恢复面板从卡片底部覆盖（最高 60%），加载提示若垂直居中会被它整块盖住；
+ * 在节点预览里把「正在加载…」固定到顶部，加载中至少能看到文案。
+ */
+.flow-node-preview .artifact-preview-loading {
+  align-items: flex-start;
+  padding-top: 10px;
 }
 
 .flow-node-label {

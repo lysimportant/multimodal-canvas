@@ -681,6 +681,11 @@
   z-index: 2;
 }
 
+/* 失败浮层已经占满节点底部，输入摘要让位，避免被错误正文盖住半截。 */
+.flow-asset-node:has(.flow-node-preview-recovery) > .flow-node-input-summary {
+  display: none;
+}
+
 .flow-node-input-chip {
   background: color-mix(in srgb, var(--mc-surface) 82%, transparent);
   border: 1px solid color-mix(in srgb, var(--mc-border) 80%, transparent);
@@ -717,4 +722,16 @@
 
 .flow-node-summary-status {
   font-size: 12px;
+}
+
+/* �ڵ���Ϣ�е�������ϣ��鵵�׶Ρ����Լ�¼��������󣬳��������Ƹ߶ȱ�����ƿ�Ƭ�� */
+.flow-node-dialog-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--mc-border-subtle, rgba(148, 163, 184, 0.24));
 }

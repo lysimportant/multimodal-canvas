@@ -570,6 +570,16 @@
   flex: 0 0 auto;
 }
 
+/* 预览上的失败浮层本身就是滚动层；错误正文不再二次滚动，避免同屏出现两条滚动条。 */
+.flow-node-preview-recovery .flow-node-runtime-state.ant-alert > .ant-alert-section {
+  overflow: hidden;
+}
+
+.flow-node-preview-recovery .flow-node-state-message {
+  max-height: none;
+  overflow: visible;
+}
+
 .flow-node-runtime-state.is-error,
 .flow-node-status.is-error {
   color: #a33a32;

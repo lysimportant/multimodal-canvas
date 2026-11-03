@@ -244,6 +244,36 @@ describe('RequestPromptDialog', () => {
     expect(screen.getByRole('status')).toHaveTextContent('未记录生成提示词');
   });
 
+  it('输入快照区分最新运行请求、历史输入快照与当前提示词', () => {
+    const { rerender } = render(
+      <RequestPromptDialog
+        state={{ status: 'input', text: '发送前的提示词', historical: false }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('当前提示词，尚未生成')).toBeInTheDocument();
+    expect(screen.getByText('发送前的提示词')).toBeInTheDocument();
+
+    rerender(
+      <RequestPromptDialog
+        state={{ status: 'input', text: '最新运行的输入快照', historical: true, latestRun: true }}
+        onClose={vi.fn()}
+      />,
+    );
+    // 优先说明来源：这是最新运行的请求快照，但节点当前没有可用输出。
+    expect(screen.getByText('最新运行请求（当前没有可用输出）')).toBeInTheDocument();
+    expect(screen.queryByText('历史输入快照，未记录最终请求')).not.toBeInTheDocument();
+
+    rerender(
+      <RequestPromptDialog
+        state={{ status: 'input', text: '旧结果发送的请求', historical: true }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('历史输入快照，未记录最终请求')).toBeInTheDocument();
+    expect(screen.queryByText('最新运行请求（当前没有可用输出）')).not.toBeInTheDocument();
+  });
+
   it('Esc 关闭并把焦点还给触发按钮，Tab 焦点圈定在 Dialog 内', async () => {
     const onClose = vi.fn();
     const { rerender } = render(

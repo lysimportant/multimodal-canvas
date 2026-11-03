@@ -1504,12 +1504,20 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     expect(within(missingNode).queryByLabelText('运行成功')).not.toBeInTheDocument();
   });
 
-  it('恢复倒序运行记录时保留旧成功结果及其提示词和耗时，同时显示新失败', async () => {
+  it('恢复倒序运行记录时以最新运行为准：新失败解绑旧成功结果，旧结果仍保留在运行历史中', async () => {
     const { user } = await renderCanvas();
     await user.click(screen.getByRole('button', { name: '新建文字生成节点' }));
     await waitFor(() => expect(canvas.nodes).toHaveLength(1));
+    // 持久化文档会保存提交前的提示词；最新一次提交使用的就是这份输入。
+    canvas = {
+      ...canvas,
+      nodes: canvas.nodes.map((candidate) => ({
+        ...candidate,
+        data: { ...candidate.data, prompt: '最新失败运行实际发送的提示词' },
+      })),
+    };
     const node = persistedNode('text');
-    const failed = createRestoredRun(node, { status: 'failed', error: '新请求失败，旧结果保留' });
+    const failed = createRestoredRun(node, { status: 'failed', error: '新请求失败，旧结果已解绑' });
     failed.id = 'run-new-failed';
     failed.createdAt = '2026-08-28T08:01:00.000Z';
     failed.updatedAt = '2026-08-28T08:01:03.000Z';
@@ -1558,26 +1566,33 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const restored = await renderCanvas();
     const restoredNode = await waitFor(() => {
       const current = findNodeByLabel('文字生成节点')!;
-      expect(within(current).getByText('旧版本的成功正文')).toBeVisible();
       expect(within(current).getByLabelText('运行失败')).toBeInTheDocument();
+      // 服务端已受理更新的运行：旧成功结果不再作为当前输出回显。
+      expect(within(current).queryByText('旧版本的成功正文')).not.toBeInTheDocument();
+      expect(current.querySelector('.flow-node-preview')).toBeNull();
       return current;
     });
     await restored.user.click(within(restoredNode).getByRole('button', { name: '查看节点信息' }));
     const info = await screen.findByRole('dialog', { name: '节点信息' });
-    expect(within(info).getByRole('alert')).toHaveTextContent('新请求失败，旧结果保留');
-    await waitFor(() => expect(within(info).getByText('12秒')).toBeVisible());
-    expect(within(info).queryByText('3秒')).not.toBeInTheDocument();
+    expect(within(info).getByRole('alert')).toHaveTextContent('新请求失败，旧结果已解绑');
+    // 只显示本次失败运行的耗时；旧成功结果的耗时随展示关联一起解绑。
+    await waitFor(() => expect(within(info).getByText('3秒')).toBeVisible());
+    expect(within(info).queryByText('12秒')).not.toBeInTheDocument();
     await restored.user.click(within(info).getByRole('button', { name: /查看生成提示词/ }));
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
-    expect(await within(dialog).findByText('旧结果的生成摘要')).toBeVisible();
-    expect(within(dialog).getByText('[user] 旧版本实际发送的请求')).toBeVisible();
-    expect(
-      fetchMock.mock.calls.some(([input]) =>
-        String(input).includes(
-          `/assets/${succeeded.result!.asset!.assetId}/versions/1/request-prompts`,
-        ),
-      ),
-    ).toBe(true);
+    // 节点当前没有可用输出：提示词来自最新运行的输入快照，并明确标注来源。
+    await waitFor(() =>
+      expect(within(dialog).getByText('最新运行请求（当前没有可用输出）')).toBeVisible(),
+    );
+    expect(within(dialog).getByText('最新失败运行实际发送的提示词')).toBeVisible();
+    expect(within(dialog).queryByText('旧结果的生成摘要')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/request-prompts'))).toBe(
+      false,
+    );
+    // 旧成功运行的记录与资产版本仍保留在运行历史中，只是不再绑定到节点展示。
+    expect(projectRuns.find((run) => run.id === succeeded.id)?.result?.asset?.assetId).toBe(
+      succeeded.result!.asset!.assetId,
+    );
   });
 
   it('画布背景菜单可打开、切换并持久化选择', async () => {

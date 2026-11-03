@@ -496,6 +496,8 @@ export function SettingsPanel({
   const setDefaultGenerationCount = useWorkspacePreferences(
     (state) => state.setDefaultGenerationCount,
   );
+  const autoFocusNewNodes = useWorkspacePreferences((state) => state.autoFocusNewNodes);
+  const setAutoFocusNewNodes = useWorkspacePreferences((state) => state.setAutoFocusNewNodes);
   const [generationCountDraft, setGenerationCountDraft] = useState(String(defaultGenerationCount));
 
   useEffect(() => {
@@ -950,6 +952,23 @@ export function SettingsPanel({
                 value={canvasEdgeEffect}
                 onChange={(value) => setCanvasEdgeEffect(value)}
                 options={appearanceEdgeEffectOptions}
+                virtual={false}
+                styles={{ popup: { root: { pointerEvents: 'auto' } } }}
+                getPopupContainer={(trigger: HTMLElement) =>
+                  trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>新增节点自动聚焦</span>
+              <Select
+                aria-label={'新增节点自动聚焦'}
+                value={autoFocusNewNodes ? 'focus' : 'keep'}
+                onChange={(value) => setAutoFocusNewNodes(value === 'focus')}
+                options={[
+                  { value: 'focus', label: '自动聚焦' },
+                  { value: 'keep', label: '保持视口' },
+                ]}
                 virtual={false}
                 styles={{ popup: { root: { pointerEvents: 'auto' } } }}
                 getPopupContainer={(trigger: HTMLElement) =>

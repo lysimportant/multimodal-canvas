@@ -35,6 +35,8 @@ const skillSchema = z.object({
   description: z.string(),
   instruction: z.string().min(1),
   version: z.string().min(1),
+  /** 技能用途；旧服务端响应可能省略，缺省按提示词优化技能处理。 */
+  kind: z.enum(['prompt-optimization', 'text']).optional(),
   builtin: z.boolean().optional(),
   enabled: z.boolean().optional(),
   revision: z.number().int().min(1).max(2_147_483_647).optional(),
