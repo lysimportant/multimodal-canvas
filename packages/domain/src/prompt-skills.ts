@@ -4,6 +4,7 @@ import {
   type MediaType,
   type PromptDocument,
 } from './index.js';
+import { MANJU_DIRECTOR_INSTRUCTION } from './prompt-skills-manju.js';
 
 /** 应用内提示词技能；说明供选择器展示，英文指令仅在显式优化时交给文字模型。 */
 export type PromptSkill = {
@@ -13,6 +14,11 @@ export type PromptSkill = {
   description: string;
   version: string;
   instruction: string;
+  /**
+   * 技能用途：prompt-optimization 用于改写节点提示词（缺省行为）；
+   * text 是创作型技能，把 instruction 作为创作规则直接用于文本创作。
+   */
+  kind?: 'prompt-optimization' | 'text';
   /** 内置定义不能覆盖；复制为自定义技能后可编辑。 */
   builtin?: boolean;
   /** 当前用户是否启用；省略兼容内置目录的默认启用。 */
@@ -447,6 +453,18 @@ export const PROMPT_SKILLS: readonly PromptSkill[] = [
     ].join(' '),
   },
   {
+    id: 'manju-director',
+    name: '漫剧导演',
+    category: '漫剧创作',
+    description:
+      '漫剧导演总控：把题材创作成剧本，再按同一份剧本逐场拆分镜，并在交付前自查；一次交付剧本正文、分镜正文与待定项。',
+    version: '1.0.0',
+    kind: 'text',
+    builtin: true,
+    enabled: true,
+    instruction: MANJU_DIRECTOR_INSTRUCTION,
+  },
+  {
     id: 'soft-anime-atmosphere',
     name: '柔光日系氛围插画',
     category: '人物与场景',
@@ -521,7 +539,7 @@ export function createPromptOptimizationCanvas(input: {
   guidance?: string;
 }): CanvasDocument {
   const skill = input.skill ?? getPromptSkill(input.skillId);
-  if (!skill || skill.id !== input.skillId || skill.enabled === false)
+  if (!skill || skill.id !== input.skillId || skill.enabled === false || skill.kind === 'text')
     throw new Error('所选 Skill 不可用');
   const document = promptDocumentSchema.parse(input.input);
   const refs = optimizationReferences(document);

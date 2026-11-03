@@ -2638,6 +2638,7 @@ export function videoFinalFrameActionId(input: {
     input.targetNodeId ?? 'none',
   ].join(':');
 }
+export * from './canvas-node-size.js';
 export * from './canvas-operations.js';
 export * from './video-prompt-references.js';
 export * from './video-reference-capability.js';

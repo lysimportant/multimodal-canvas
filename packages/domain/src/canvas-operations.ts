@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { resolveCanvasNodeCardSize } from './canvas-node-size.js';
 import {
   canvasDocumentSchema,
   canvasEdgeSchema,
@@ -178,13 +179,24 @@ export function applyCanvasOperations(
       if (nodeIds.has(operation.node.id))
         throw new CanvasOperationError('invalid_operation', 'node id already exists');
       const { node } = operation;
+      // 新建节点没有显式尺寸时按创作参数补齐，避免继续落成 230×216 的近方形默认卡；
+      // 显式给出的宽/高保持原值，旧画布恢复不受影响。
+      const sizedNode = {
+        ...node,
+        ...resolveCanvasNodeCardSize({
+          mediaType: node.data.mediaType,
+          parameters: node.data.parameters,
+          width: node.width,
+          height: node.height,
+        }),
+      };
       next.nodes.push(
         node.data.assetId === undefined
-          ? node
+          ? sizedNode
           : {
-              ...node,
+              ...sizedNode,
               data: {
-                ...node.data,
+                ...sizedNode.data,
                 contentUrl: `/v1/assets/${encodeURIComponent(node.data.assetId)}/versions/${operation.assetVersion}/content`,
               },
             },

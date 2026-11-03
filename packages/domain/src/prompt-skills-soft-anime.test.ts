@@ -51,7 +51,7 @@ const source: PromptDocument = {
 
 describe('柔光日系氛围插画', () => {
   it('保持末尾稳定 ID 与目录数量，只升级当前定义到 1.1.0', () => {
-    expect(PROMPT_SKILLS).toHaveLength(33);
+    expect(PROMPT_SKILLS).toHaveLength(34);
     expect(PROMPT_SKILLS.at(-1)).toMatchObject({
       id: skillId,
       name: '柔光日系氛围插画',

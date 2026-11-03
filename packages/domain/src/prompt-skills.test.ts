@@ -44,7 +44,7 @@ describe('提示词 Skill 契约', () => {
     expect(result.promptDocument).toEqual(input);
   });
   it('每个技能可为所有媒体构造独立文字任务，输入引用不被发送', () => {
-    for (const skill of PROMPT_SKILLS) {
+    for (const skill of PROMPT_SKILLS.filter((entry) => entry.kind !== 'text')) {
       for (const mediaType of ['text', 'image', 'audio', 'video'] as const) {
         const canvas = createPromptOptimizationCanvas({ skillId: skill.id, input, mediaType });
         expect(canvasDocumentSchema.safeParse(canvas).success).toBe(true);
@@ -60,6 +60,14 @@ describe('提示词 Skill 契约', () => {
         expect(JSON.stringify(canvas)).toContain('[[SKILL_REF_1]]');
       }
     }
+  });
+
+  it('创作型技能拒绝用于提示词优化', () => {
+    const textSkill = PROMPT_SKILLS.find((skill) => skill.kind === 'text');
+    if (!textSkill) throw new Error('缺少创作型技能');
+    expect(() =>
+      createPromptOptimizationCanvas({ skillId: textSkill.id, input, mediaType: 'text' }),
+    ).toThrow('所选 Skill 不可用');
   });
 
   it('把本次优化方向加入任务上下文，但不改变 Skill 定义', () => {

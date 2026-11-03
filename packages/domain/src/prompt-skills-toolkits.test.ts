@@ -116,7 +116,7 @@ describe('三套工具包的应用预设目录', () => {
   it('保留旧十八项及工具包十四项顺序，后续独立预设追加且无重复', () => {
     const ids = PROMPT_SKILLS.map((skill) => skill.id);
     expect(ids.slice(0, 32)).toEqual([...originalIds, ...additions.map(([id]) => id)]);
-    expect(ids.slice(32)).toEqual(['soft-anime-atmosphere']);
+    expect(ids.slice(32)).toEqual(['manju-director', 'soft-anime-atmosphere']);
     expect(new Set(ids).size).toBe(PROMPT_SKILLS.length);
     expect(new Set(PROMPT_SKILLS.map((skill) => skill.name)).size).toBe(PROMPT_SKILLS.length);
     expect(new Set(PROMPT_SKILLS.map((skill) => skill.instruction.trim())).size).toBe(

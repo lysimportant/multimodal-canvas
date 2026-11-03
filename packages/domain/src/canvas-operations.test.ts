@@ -117,6 +117,9 @@ describe('原子画布操作合同', () => {
       ...sourceNode,
       id: 'new-source',
       position: { x: -25, y: 52.5 },
+      // 新建节点未给尺寸时按媒体默认值补齐卡片尺寸（图片 400×266），不再落成 230×216。
+      width: 400,
+      height: 266,
       data: {
         ...sourceNode.data,
         contentUrl: '/v1/assets/asset-reference/versions/2/content',
@@ -188,8 +191,43 @@ describe('原子画布操作合同', () => {
       revision: 4,
       operations: [{ type: 'create_node', node }],
     });
-    expect(next.nodes.at(-1)).toEqual(node);
+    expect(next.nodes.at(-1)).toEqual({ ...node, width: 400, height: 266 });
     expect(next.nodes.at(-1)!.data).not.toHaveProperty('contentUrl');
+  });
+
+  it('新建节点按创作参数比例推导长方形卡片，显式尺寸优先', () => {
+    const videoNode = {
+      id: 'portrait-video',
+      type: 'video' as const,
+      position: { x: 0, y: 0 },
+      data: {
+        label: '竖屏视频',
+        mediaType: 'video' as const,
+        mode: 'generate' as const,
+        parameters: { aspectRatio: '9:16', duration: 30 },
+      },
+    };
+    const next = applyCanvasOperations(document(), {
+      revision: 4,
+      operations: [
+        { type: 'create_node', node: videoNode },
+        {
+          type: 'create_node',
+          node: { ...videoNode, id: 'fixed-size-video', width: 300, height: 400 },
+        },
+      ],
+    });
+    expect(next.nodes.find((node) => node.id === 'portrait-video')).toEqual({
+      ...videoNode,
+      width: 236,
+      height: 420,
+    });
+    expect(next.nodes.find((node) => node.id === 'fixed-size-video')).toEqual({
+      ...videoNode,
+      id: 'fixed-size-video',
+      width: 300,
+      height: 400,
+    });
   });
 
   it('不可编码的素材身份返回合同错误，不能在生成版本 URL 时抛出 URI 异常', () => {
