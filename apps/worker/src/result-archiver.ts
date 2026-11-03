@@ -350,6 +350,7 @@ export class WorkerS3BlobStore implements ResultBlobStore {
     } catch (error) {
       if (signal.aborted) throw storageTimeoutError('上传', this.timeoutMs);
       if (error instanceof Error && error.name === 'AbortError') throw storageAbortError('上传');
+      if (isStorageTransportError(error)) throw storageTransportError('上传', error);
       throw error;
     }
   }
@@ -363,6 +364,7 @@ export class WorkerS3BlobStore implements ResultBlobStore {
     } catch (error) {
       if (signal.aborted) throw storageTimeoutError('删除', this.deleteTimeoutMs);
       if (error instanceof Error && error.name === 'AbortError') throw storageAbortError('删除');
+      if (isStorageTransportError(error)) throw storageTransportError('删除', error);
       throw error;
     }
   }
@@ -389,6 +391,7 @@ export class WorkerS3BlobStore implements ResultBlobStore {
     } catch (error) {
       if (signal.aborted) throw storageTimeoutError('上传', this.timeoutMs);
       if (error instanceof Error && error.name === 'AbortError') throw storageAbortError('上传');
+      if (isStorageTransportError(error)) throw storageTransportError('上传', error);
       throw error;
     }
   }
@@ -404,6 +407,69 @@ function storageAbortError(action: string): Error {
   const error = new Error(`对象存储${action}请求被中断`);
   error.name = 'ResultStorageAbortError';
   return error;
+}
+
+/** 对象存储传输层错误码：连接被重置、超时、管道断开、目标不可达等。 */
+const STORAGE_TRANSPORT_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENOTFOUND',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+]);
+
+/** 传输中断统一包装：保留底层 message 与 code，并把名称标记为存储层错误。 */
+function storageTransportError(action: string, error: unknown): Error {
+  const detail = describeTransportDetail(error) ?? '传输中断';
+  const wrapped = new Error(`对象存储${action}连接中断（${detail}）`);
+  wrapped.name = 'ResultStorageTransportError';
+  return wrapped;
+}
+
+/** 只有连接级异常才算传输中断；HTTP 状态码等业务错误保持原样。 */
+function isStorageTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = transportErrorCode(error);
+  if (code && STORAGE_TRANSPORT_ERROR_CODES.has(code)) return true;
+  if (error.message === 'aborted') return true;
+  return /socket hang up/i.test(error.message);
+}
+
+/** 递归读取错误及其 cause 上的 code（AWS SDK 常把底层网络错误包在 cause 里）。 */
+function transportErrorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && current && typeof current === 'object'; depth += 1) {
+    const record = current as Record<string, unknown>;
+    const code = record.code;
+    if (typeof code === 'string' && code.trim()) return code.trim();
+    if (typeof code === 'number') return String(code);
+    current = record.cause;
+  }
+  return undefined;
+}
+
+/** 提取脱敏后的传输诊断细节：message（无则“传输中断”）+ 可选 code。 */
+function describeTransportDetail(error: unknown): string | undefined {
+  const message = error instanceof Error && error.message.trim() ? error.message.trim() : '';
+  const code = transportErrorCode(error);
+  if (!message && !code) return undefined;
+  const safeMessage = message ? sanitizeArchiveDetail(message) : '传输中断';
+  return code ? `${safeMessage}，code ${code}` : safeMessage;
+}
+
+const ARCHIVE_SECRET_URL_PATTERN = /(?:https?:|data:|blob:)[^\s"'<>]+/gi;
+const ARCHIVE_INLINE_CONTENT_PATTERN = /[A-Za-z0-9+/_=-]{128,}/g;
+
+/** 隐藏错误文本里的地址与内联内容，并限制长度。 */
+function sanitizeArchiveDetail(value: string, limit = 200): string {
+  return value
+    .replace(ARCHIVE_SECRET_URL_PATTERN, '[资源内容已隐藏]')
+    .replace(ARCHIVE_INLINE_CONTENT_PATTERN, '[资源内容已隐藏]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
 }
 
 export type PrismaResultAssetArchiverOptions = {
@@ -878,7 +944,7 @@ export class PrismaResultAssetArchiver {
         if (mediaType === 'video' && [401, 403, 404, 410].includes(response.status)) {
           throw new ResultUrlUnavailableError(response.status);
         }
-        throw new Error(`provider result download failed (${response.status})`);
+        throw await describeDownloadHttpError(response, controller.signal);
       }
       const receivedMime = response.headers
         .get('content-type')
@@ -899,9 +965,14 @@ export class PrismaResultAssetArchiver {
         this.assertWithinLimit(contentLength);
       }
       if (!response.body || typeof response.body.getReader !== 'function') {
-        const bytes = Buffer.from(
-          await waitForDownloadStage(response.arrayBuffer(), controller.signal),
-        );
+        let payload: ArrayBuffer;
+        try {
+          payload = await waitForDownloadStage(response.arrayBuffer(), controller.signal);
+        } catch (error) {
+          if (isDownloadCancellation(error, cancellationSignal)) throw error;
+          throw downloadStreamInterruptedError(0, error);
+        }
+        const bytes = Buffer.from(payload);
         if (requiresHttpsCandidate && bytes.byteLength === 0) {
           throw new Error('provider returned an empty result payload');
         }
@@ -912,8 +983,16 @@ export class PrismaResultAssetArchiver {
       const chunks: Uint8Array[] = [];
       let total = 0;
       for (;;) {
-        const { done, value } = await waitForDownloadStage(reader.read(), controller.signal);
-        if (done) break;
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await waitForDownloadStage(reader.read(), controller.signal);
+        } catch (error) {
+          // 取消/空闲超时保持原有错误语义；真正的传输中断补上已接收字节数。
+          if (isDownloadCancellation(error, cancellationSignal)) throw error;
+          throw downloadStreamInterruptedError(total, error);
+        }
+        if (chunk.done) break;
+        const value = chunk.value;
         if (!value) continue;
         watchdog.touch();
         this.assertWithinLimit(total + value.byteLength);
@@ -1007,7 +1086,7 @@ export class PrismaResultAssetArchiver {
         if (mediaType === 'video' && [401, 403, 404, 410].includes(response.status)) {
           throw new ResultUrlUnavailableError(response.status);
         }
-        throw new Error(`provider result download failed (${response.status})`);
+        throw await describeDownloadHttpError(response, controller.signal);
       }
       const receivedMime = response.headers
         .get('content-type')
@@ -1030,9 +1109,14 @@ export class PrismaResultAssetArchiver {
       directory = await mkdtemp(join(tmpdir(), 'multimodal-canvas-worker-archive-'));
       const filePath = join(directory, 'content.bin');
       if (!response.body || typeof response.body.getReader !== 'function') {
-        const bytes = Buffer.from(
-          await waitForDownloadStage(response.arrayBuffer(), controller.signal),
-        );
+        let payload: ArrayBuffer;
+        try {
+          payload = await waitForDownloadStage(response.arrayBuffer(), controller.signal);
+        } catch (error) {
+          if (isDownloadCancellation(error, cancellationSignal)) throw error;
+          throw downloadStreamInterruptedError(0, error);
+        }
+        const bytes = Buffer.from(payload);
         if (requiresHttpsCandidate && bytes.byteLength === 0) {
           throw new Error('provider returned an empty result payload');
         }
@@ -1052,13 +1136,21 @@ export class PrismaResultAssetArchiver {
       let position = 0;
       try {
         for (;;) {
-          const { done, value } = await waitForDownloadStage(reader.read(), controller.signal);
-          if (done) break;
+          let chunk: ReadableStreamReadResult<Uint8Array>;
+          try {
+            chunk = await waitForDownloadStage(reader.read(), controller.signal);
+          } catch (error) {
+            // 取消/空闲超时保持原有错误语义；真正的传输中断补上已接收字节数。
+            if (isDownloadCancellation(error, cancellationSignal)) throw error;
+            throw downloadStreamInterruptedError(position, error);
+          }
+          if (chunk.done) break;
+          const value = chunk.value;
           if (!value) continue;
           watchdog.touch();
-          const chunk = Buffer.from(value);
+          const buffer = Buffer.from(value);
           const { bytesWritten } = await waitForDownloadStage(
-            fileHandle.write(chunk, 0, chunk.byteLength, position),
+            fileHandle.write(buffer, 0, buffer.byteLength, position),
             controller.signal,
           );
           position += bytesWritten;
@@ -1181,12 +1273,15 @@ function createIdleWatchdog(
   };
 }
 
+/** 下载阶段被取消/空闲超时时的固定文案；必须与真实传输故障区分开。 */
+const DOWNLOAD_STAGE_CANCELLED_MESSAGE = 'provider result download cancelled or timed out';
+
 /** 让 DNS、响应头及流读取共享下载截止时间，取消发生后不再等待不响应的适配器。 */
 function waitForDownloadStage<Value>(pending: Promise<Value>, signal: AbortSignal): Promise<Value> {
   return new Promise<Value>((resolve, reject) => {
     const abort = () =>
       reject(
-        Object.assign(new Error('provider result download cancelled or timed out'), {
+        Object.assign(new Error(DOWNLOAD_STAGE_CANCELLED_MESSAGE), {
           name: 'AbortError',
         }),
       );
@@ -1194,6 +1289,175 @@ function waitForDownloadStage<Value>(pending: Promise<Value>, signal: AbortSigna
     pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
     if (signal.aborted) abort();
   });
+}
+
+/** 失败响应体最多读取这么多字节，避免把上游错误页整体带入内存。 */
+const DOWNLOAD_ERROR_BODY_LIMIT = 4096;
+/** 单次读取失败响应体的预算；上游错误页停滞时不能拖住归档重试。 */
+const DOWNLOAD_ERROR_BODY_READ_TIMEOUT_MS = 250;
+/** 读取失败响应体的总预算，防止慢速滴流耗尽重试时间。 */
+const DOWNLOAD_ERROR_BODY_TOTAL_TIMEOUT_MS = 1_000;
+
+/**
+ * 把失败响应诊断为可读错误：尽力读取一小段响应体，
+ * 从上游 JSON 错误里提取 code/message；读取失败、超时或取消时只回退状态码文案。
+ */
+async function describeDownloadHttpError(response: Response, signal: AbortSignal): Promise<Error> {
+  const detail = await readDownloadHttpErrorDetail(response, signal);
+  const prefix = `上游结果下载失败（HTTP ${response.status}`;
+  const error = new Error(detail ? `${prefix}，${detail}）` : `${prefix}）`);
+  error.name = 'ResultDownloadHttpError';
+  return error;
+}
+
+/** 从上游错误响应的 JSON body 提取 `error.code` / `error.message`，并做脱敏与长度限制。 */
+async function readDownloadHttpErrorDetail(
+  response: Response,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  const snippet = await readResponseSnippet(response, DOWNLOAD_ERROR_BODY_LIMIT, signal);
+  if (!snippet?.trim()) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(snippet);
+  } catch {
+    return undefined;
+  }
+  if (!isJsonObject(parsed) || !isJsonObject(parsed.error)) return undefined;
+  const rawCode = parsed.error.code;
+  const code =
+    typeof rawCode === 'string'
+      ? sanitizeArchiveDetail(rawCode, 100)
+      : typeof rawCode === 'number'
+        ? String(rawCode)
+        : undefined;
+  const rawMessage = parsed.error.message;
+  const message =
+    typeof rawMessage === 'string' && rawMessage.trim()
+      ? sanitizeArchiveDetail(rawMessage.trim())
+      : undefined;
+  if (message && code) return `${code}：${message}`;
+  return message ?? code;
+}
+
+/**
+ * 读取失败响应体时最多等待指定时间；上游错误页不响应或持续停顿都不能拖住归档失败路径。
+ * 超时、取消或读取异常都按“无 body 诊断”处理，由调用方静默回退。
+ */
+function waitForErrorBodyResponse<Value>(
+  pending: Promise<Value>,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<Value | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: Value | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onAbort = () => finish(undefined);
+    const timer = setTimeout(() => finish(undefined), timeoutMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(finish, () => finish(undefined));
+  });
+}
+
+/** 有界读取失败响应体（最多 limit 字节），任何异常/超时都回退为 undefined。 */
+async function readResponseSnippet(
+  response: Response,
+  limit: number,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  const body = response.body;
+  if (!body || typeof body.getReader !== 'function') {
+    const text = await waitForErrorBodyResponse(
+      response.text(),
+      signal,
+      DOWNLOAD_ERROR_BODY_READ_TIMEOUT_MS,
+    );
+    return text?.slice(0, limit);
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let receivedBytes = 0;
+  const deadline = Date.now() + DOWNLOAD_ERROR_BODY_TOTAL_TIMEOUT_MS;
+  try {
+    while (receivedBytes < limit) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const chunk = await waitForErrorBodyResponse(
+        reader.read(),
+        signal,
+        Math.min(DOWNLOAD_ERROR_BODY_READ_TIMEOUT_MS, remaining),
+      );
+      if (!chunk) break;
+      if (chunk.done) break;
+      if (!chunk.value || chunk.value.byteLength === 0) continue;
+      receivedBytes += chunk.value.byteLength;
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return text.slice(0, limit);
+  } catch {
+    return undefined;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+/** 上游结果流在传输中途被重置/断开：保留已接收字节数与底层错误码。 */
+function downloadStreamInterruptedError(receivedBytes: number, error: unknown): Error {
+  const name = error instanceof Error && error.name ? error.name : 'Error';
+  const rawMessage =
+    error instanceof Error && error.message.trim() ? error.message.trim() : '传输中断';
+  const code = transportErrorCode(error);
+  const wrapped = new Error(
+    `上游结果传输中断（已接收 ${receivedBytes} 字节，${name}：${sanitizeArchiveDetail(rawMessage)}${code ? `，code ${code}` : ''}）`,
+  );
+  wrapped.name = 'ResultDownloadTransportError';
+  return wrapped;
+}
+
+/** 取消/空闲超时不是传输故障，必须保持原错误语义（名称与固定文案）。 */
+function isDownloadCancellation(error: unknown, cancellationSignal?: AbortSignal): boolean {
+  if (cancellationSignal?.aborted) return true;
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'WorkerCancellationError') return true;
+  return error.name === 'AbortError' && error.message === DOWNLOAD_STAGE_CANCELLED_MESSAGE;
+}
+
+export type ArchiveFailureStage = 'download' | 'storage' | 'archive';
+
+/**
+ * 把归档失败归因到下载、对象存储或归档处理阶段。
+ * 先看错误类型名，其次看中文诊断文案，最后回退到一般归档失败。
+ */
+export function describeArchiveFailureStage(error: unknown): ArchiveFailureStage {
+  const name = error instanceof Error ? error.name : '';
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : isJsonObject(error) && typeof error.message === 'string'
+          ? error.message
+          : '';
+  if (
+    name === 'ResultUrlUnavailableError' ||
+    name === 'ResultDownloadHttpError' ||
+    name === 'ResultDownloadTransportError'
+  ) {
+    return 'download';
+  }
+  if (name.startsWith('ResultStorage')) return 'storage';
+  if (/上游结果下载失败|上游结果传输中断|上游返回HTTP/.test(message)) return 'download';
+  if (/provider result URL|provider result host/.test(message)) return 'download';
+  if (/provider result download|provider result exceeds/.test(message)) return 'download';
+  if (/对象存储/.test(message)) return 'storage';
+  return 'archive';
 }
 
 function sha256Hex(value: Buffer | string): string {

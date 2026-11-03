@@ -4,10 +4,12 @@ import type { PrismaClient } from '@prisma/client';
 import type { ProviderJob, RunResult, RunSnapshot } from '@multimodal-canvas/domain';
 
 import {
+  describeArchiveFailureStage,
   PrismaResultAssetArchiver,
   ResultUrlUnavailableError,
   WorkerFfprobeMediaMetadataExtractor,
   WorkerS3BlobStore,
+  type ArchiveFailureStage,
   type ResultBlobStore,
 } from './result-archiver';
 
@@ -233,7 +235,7 @@ describe('PrismaResultAssetArchiver', () => {
             contentUrl: 'https://cdn.example/image',
           },
         }),
-      ).rejects.toThrow(/download|limit/);
+      ).rejects.toThrow(/download|下载|limit/);
       await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
       expect(blob.puts).toHaveLength(0);
     }
@@ -1114,9 +1116,7 @@ describe('PrismaResultAssetArchiver', () => {
             });
           } else {
             await expect(pending).rejects.not.toBeInstanceOf(ResultUrlUnavailableError);
-            await expect(pending).rejects.toThrow(
-              new Error(`provider result download failed (${status})`),
-            );
+            await expect(pending).rejects.toThrow(`上游结果下载失败（HTTP ${status}）`);
           }
           await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
           expect(lookupHost).toHaveBeenCalledOnce();
@@ -1338,6 +1338,140 @@ describe('PrismaResultAssetArchiver', () => {
       }),
     ).rejects.toThrow('resolves to a private host');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('归档失败诊断', () => {
+  it('extracts the upstream JSON error body without leaking signed URLs', async () => {
+    const blob = createBlobStore();
+    const record = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'bad_gateway',
+            message: 'upstream https://cdn.example/private?token=synthetic-secret failed',
+          },
+        }),
+        { status: 502, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const archiver = new PrismaResultAssetArchiver(fakePrisma(record), {
+      blobStore: blob,
+      fetchImpl,
+    });
+    const pending = archiver.archive({
+      runId: 'http-error-body',
+      snapshot,
+      result: { ...result, mediaType: 'image' },
+      providerJob,
+      archiveInput: {
+        mediaType: 'image',
+        mimeType: 'image/png',
+        contentUrl: 'https://cdn.example/image?signature=synthetic-secret',
+      },
+    });
+    await expect(pending).rejects.toThrow(
+      '上游结果下载失败（HTTP 502，bad_gateway：upstream [资源内容已隐藏] failed）',
+    );
+    await expect(pending).rejects.not.toThrow('synthetic-secret');
+    expect(blob.puts).toHaveLength(0);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('reports received bytes when the result stream is reset mid-transfer', async () => {
+    const blob = createBlobStore();
+    const record = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3, 4]));
+            setTimeout(
+              () => controller.error(Object.assign(new Error('aborted'), { code: 'ECONNRESET' })),
+              0,
+            );
+          },
+        }),
+        { headers: { 'content-type': 'audio/wav' } },
+      ),
+    );
+    const archiver = new PrismaResultAssetArchiver(fakePrisma(record), {
+      blobStore: blob,
+      fetchImpl,
+    });
+    const pending = archiver.archive({
+      runId: 'stream-reset',
+      snapshot,
+      result: { ...result, mediaType: 'audio' },
+      providerJob,
+      archiveInput: {
+        mediaType: 'audio',
+        mimeType: 'audio/wav',
+        contentUrl: 'https://cdn.example/audio.wav',
+      },
+    });
+    await expect(pending).rejects.toMatchObject({
+      name: 'ResultDownloadTransportError',
+      message: '上游结果传输中断（已接收 4 字节，Error：aborted，code ECONNRESET）',
+    });
+    expect(blob.puts).toHaveLength(0);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it.each(['put', 'delete'] as const)('diagnoses a real S3 %s connection reset', async (method) => {
+    const server = createServer((request) => {
+      request.socket.destroy();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const storage = new WorkerS3BlobStore('media-test', {
+      endpoint: `http://127.0.0.1:${address.port}`,
+      forcePathStyle: true,
+      accessKeyId: 'synthetic-test-user',
+      secretAccessKey: 'synthetic-test-secret',
+      timeoutMs: 10_000,
+      deleteTimeoutMs: 10_000,
+    });
+    try {
+      await expect(
+        method === 'put'
+          ? storage.put('media-test/object', Buffer.from('media'))
+          : storage.delete('media-test/object'),
+      ).rejects.toMatchObject({
+        name: 'ResultStorageTransportError',
+        message: expect.stringContaining(`对象存储${method === 'put' ? '上传' : '删除'}连接中断（`),
+      });
+    } finally {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    }
+  });
+});
+
+describe('describeArchiveFailureStage', () => {
+  it.each<[unknown, ArchiveFailureStage]>([
+    [new ResultUrlUnavailableError(410), 'download'],
+    [new Error('上游结果下载失败（HTTP 502）'), 'download'],
+    [new Error('上游结果传输中断（已接收 4 字节，Error：aborted，code ECONNRESET）'), 'download'],
+    [
+      new Error('上游返回HTTP图片地址且HTTPS安全读取失败：上游结果下载失败（HTTP 502）'),
+      'download',
+    ],
+    [
+      Object.assign(new Error('对象存储上传连接中断（socket hang up，code ECONNRESET）'), {
+        name: 'ResultStorageTransportError',
+      }),
+      'storage',
+    ],
+    [new Error('对象存储删除超时（30000 毫秒）'), 'storage'],
+    [new Error('provider result exceeds the 10-byte limit'), 'download'],
+    [new Error('transaction failed'), 'archive'],
+    ['对象存储上传连接中断', 'storage'],
+  ])('classifies %s as %s', (error, stage) => {
+    expect(describeArchiveFailureStage(error)).toBe(stage);
   });
 });
 

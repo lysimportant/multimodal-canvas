@@ -32,6 +32,7 @@ import { ResultUrlUnavailableError } from './result-archiver';
 type StubJob = {
   id: string;
   data: Record<string, unknown>;
+  attemptsMade?: number;
   updateData(data: Record<string, unknown>): Promise<void>;
   updateProgress(progress: unknown): Promise<void>;
 };
@@ -243,6 +244,7 @@ function createJob(data: RunJobData): StubJob {
   const job: StubJob = {
     id: normalized.runId,
     data: normalized as unknown as Record<string, unknown>,
+    attemptsMade: 0,
     async updateData(next) {
       this.data = next;
     },
@@ -568,14 +570,23 @@ describe('worker workflow DAG execution', () => {
       providerJob: createProviderJobRecord(runId, 'newapi'),
       cancelRequested: false,
     });
-    for (let i = 0; i < 2; i++) {
-      createRunWorker({ ...options, resultStagingStore: staging.createStore() });
-      await expect(bullmqState.processor?.(job)).rejects.toThrow(
-        'download failed [资源内容已隐藏]',
-      );
-    }
+    createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+    await expect(bullmqState.processor?.(job)).rejects.toThrow('download failed [资源内容已隐藏]');
+    // 第 2 次队列尝试展示本次真实错误，同时仍保留首次错误。
+    job.attemptsMade = 1;
+    createRunWorker({ ...options, resultStagingStore: staging.createStore() });
+    await expect(bullmqState.processor?.(job)).rejects.toThrow(
+      '生成已完成，归档失败（第 2 次尝试）：second archive error（首次失败：download failed [资源内容已隐藏]）',
+    );
+    const providerJob = (job.data as RunJobData).providerJob!;
+    expect(providerJob.payload?.firstArchiveError).toBe('download failed [资源内容已隐藏]');
+    expect(providerJob.payload?.lastArchiveError).toBe('second archive error');
+    expect(providerJob.payload?.archiveAttempt).toBe(2);
+    expect(providerJob.payload?.archiveFailures).toMatchObject([
+      { attempt: 1, message: 'download failed [资源内容已隐藏]' },
+      { attempt: 2, message: 'second archive error' },
+    ]);
     expect(JSON.stringify(job.data)).not.toContain('private-value');
-    expect(JSON.stringify(job.data)).not.toContain('second archive error');
     expect(execute).toHaveBeenCalledOnce();
   });
 

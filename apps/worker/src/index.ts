@@ -72,6 +72,7 @@ import {
 import { createWorkerPersistenceFromEnvironment, databaseRunId } from './prisma-persistence';
 import {
   createResultAssetArchiverFromEnvironment,
+  describeArchiveFailureStage,
   ResultUrlUnavailableError,
 } from './result-archiver';
 import { mergeNodeTimings } from './node-timings';
@@ -2724,14 +2725,37 @@ export function createRunWorker(options: {
           activeArchivePhase &&
           activeProviderJob?.payload?.deliveryState === 'received'
         ) {
-          const previous = activeProviderJob.payload.firstArchiveError;
+          // BullMQ 的 attemptsMade 是已完成次数：首次执行为 0，展示时换算成 1-based 次数。
+          const archiveAttempt = Math.max(1, (job.attemptsMade ?? 0) + 1);
+          const lastArchiveError = safeArchiveError(error);
+          const previousFirstError = activeProviderJob.payload.firstArchiveError;
           const firstArchiveError =
-            typeof previous === 'string' ? previous : safeArchiveError(error);
+            typeof previousFirstError === 'string' && previousFirstError.length > 0
+              ? previousFirstError
+              : lastArchiveError;
+          const archiveStage = describeArchiveFailureStage(error);
           activeProviderJob = {
             ...activeProviderJob,
-            payload: { ...activeProviderJob.payload, firstArchiveError },
+            payload: {
+              ...activeProviderJob.payload,
+              firstArchiveError,
+              lastArchiveError,
+              archiveAttempt,
+              archiveStage,
+              archiveFailures: appendArchiveFailure(activeProviderJob.payload.archiveFailures, {
+                attempt: archiveAttempt,
+                message: lastArchiveError,
+                at: new Date().toISOString(),
+              }),
+            },
           };
-          error = new Error(`生成已完成，归档失败：${firstArchiveError}。仅重试归档，不会重新生成`);
+          const retryLabel = archiveAttempt > 1 ? `（第 ${archiveAttempt} 次尝试）` : '';
+          // 最近一次失败在前，便于直接定位本次原因；首次失败不同时附在后面，保留根因线索。
+          const firstErrorSuffix =
+            firstArchiveError !== lastArchiveError ? `（首次失败：${firstArchiveError}）` : '';
+          error = new Error(
+            `生成已完成，归档失败${retryLabel}：${lastArchiveError}${firstErrorSuffix}。仅重试归档，不会重新生成`,
+          );
         }
         if (activeSendIntent && activeNodeId) {
           const sendStatus =
@@ -3027,6 +3051,10 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
     'resultStagingRunId',
     'resultStagingAttempt',
     'firstArchiveError',
+    'lastArchiveError',
+    'archiveAttempt',
+    'archiveStage',
+    'archiveFailures',
     'result',
   ]);
   for (const [key, raw] of Object.entries(value)) {
@@ -3051,6 +3079,23 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
       if (usage) output.usage = usage;
       continue;
     }
+    if (key === 'archiveAttempt') {
+      if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) {
+        output.archiveAttempt = raw;
+      }
+      continue;
+    }
+    if (key === 'archiveStage') {
+      if (raw === 'download' || raw === 'storage' || raw === 'archive') {
+        output.archiveStage = raw;
+      }
+      continue;
+    }
+    if (key === 'archiveFailures') {
+      const failures = sanitizeArchiveFailures(raw);
+      if (failures) output.archiveFailures = failures;
+      continue;
+    }
 
     const scalar = sanitizeProviderScalar(key, raw);
     if (scalar !== undefined) output[key] = scalar;
@@ -3058,12 +3103,52 @@ export function sanitizeProviderJobPayload(value: unknown): Record<string, unkno
   return Object.keys(output).length > 0 ? output : undefined;
 }
 
-/** 保留首个归档原因，但不把短期地址、内联内容或凭据写入可见错误。 */
-function safeArchiveError(error: unknown): string {
-  return serializeWorkerError(error)
-    .errorMessage.replace(/(?:https?:|data:|blob:)[^\s"'<>]+/gi, '[资源内容已隐藏]')
+/** 归档失败历史只接受 ISO-8601 UTC 毫秒时间戳（与 `Date#toISOString` 输出一致）。 */
+const ARCHIVE_FAILURE_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+type ArchiveFailureRecord = { attempt: number; message: string; at: string };
+
+/** 隐藏归档错误里的短期地址、内联内容与凭据，并限制长度。 */
+function sanitizeArchiveErrorText(message: string): string {
+  return message
+    .replace(/(?:https?:|data:|blob:)[^\s"'<>]+/gi, '[资源内容已隐藏]')
     .replace(/[A-Za-z0-9+/_=-]{128,}/g, '[资源内容已隐藏]')
     .slice(0, 500);
+}
+
+/** 保留首个归档原因，但不把短期地址、内联内容或凭据写入可见错误。 */
+function safeArchiveError(error: unknown): string {
+  return sanitizeArchiveErrorText(serializeWorkerError(error).errorMessage);
+}
+
+/**
+ * 校验归档失败历史：只保留最近 5 条，逐条要求 attempt 为正整数、message 非空、
+ * at 为可解析的 ISO 时间；任何不符合形状的条目都静默丢弃。
+ */
+function sanitizeArchiveFailures(value: unknown): ArchiveFailureRecord[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const failures: ArchiveFailureRecord[] = [];
+  for (const raw of value.slice(-5)) {
+    if (!isRecord(raw)) continue;
+    const attempt = raw.attempt;
+    const message = raw.message;
+    const at = raw.at;
+    if (typeof attempt !== 'number' || !Number.isInteger(attempt) || attempt <= 0) continue;
+    if (typeof message !== 'string' || message.trim().length === 0) continue;
+    if (typeof at !== 'string' || !ARCHIVE_FAILURE_TIMESTAMP_PATTERN.test(at)) continue;
+    const parsed = new Date(at);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== at) continue;
+    failures.push({ attempt, message: sanitizeArchiveErrorText(message.trim()), at });
+  }
+  return failures.length > 0 ? failures : undefined;
+}
+
+/** 追加一条归档失败记录并只保留最近 5 条。 */
+function appendArchiveFailure(
+  previous: unknown,
+  failure: ArchiveFailureRecord,
+): ArchiveFailureRecord[] {
+  return [...(sanitizeArchiveFailures(previous) ?? []), failure].slice(-5);
 }
 
 /** 上游回显临时素材时，在写入任务错误或重新抛出前隐藏内联字节与签名地址。 */
