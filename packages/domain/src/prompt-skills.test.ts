@@ -298,18 +298,23 @@ describe('提示词 Skill 契约', () => {
       id: 'xianxia-dress-character',
       name: '仙妖同款裙装',
       category: '人物与场景',
-      version: '1.0.0',
+      version: '1.1.0',
     });
     expect(getPromptSkill('character')).toMatchObject({
       id: 'character',
       name: '生成人物',
       category: '人物与场景',
-      description: '补充人物外貌、发型、服装、气质和材质，生成单人物图的提示词。',
-      version: '1.1.0',
+      description: '补充人物外貌、发型、服装、气质和材质，生成三视图/四视图角色参考图的提示词。',
+      version: '1.2.0',
     });
     expect(getPromptSkill('character')!.instruction).toContain(
-      'Default to a single character image, not a multi-view board',
+      'Default to a character reference sheet',
     );
+    expect(getPromptSkill('character')!.instruction).toContain('pure white (#FFFFFF)');
+    for (const id of ['character', 'character-views', 'xianxia-dress-character']) {
+      expect(getPromptSkill(id)!.instruction, id).toContain('pure white (#FFFFFF)');
+      expect(getPromptSkill(id)!.instruction, id).toMatch(/three-view or four-view|four-view/);
+    }
   });
 });
 
@@ -339,11 +344,15 @@ describe('Skill 升级元技能', () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const skill of PROMPT_SKILLS) {
       expect(getPromptSkill(skill.id)).toBe(skill);
-      const changedBuiltin =
-        skill.id === 'soft-anime-atmosphere' ||
-        (ids.indexOf(skill.id) < 18 &&
-          !['xianxia-dress-character', SKILL_AUTHORING_SKILL_ID].includes(skill.id));
-      expect(skill.version).toBe(changedBuiltin ? '1.1.0' : '1.0.0');
+      const expectedVersion =
+        skill.id === 'character' || skill.id === 'character-views'
+          ? '1.2.0'
+          : skill.id === 'xianxia-dress-character' || skill.id === 'soft-anime-atmosphere'
+            ? '1.1.0'
+            : ids.indexOf(skill.id) < 18 && skill.id !== SKILL_AUTHORING_SKILL_ID
+              ? '1.1.0'
+              : '1.0.0';
+      expect(skill.version, skill.id).toBe(expectedVersion);
     }
     expect(getPromptSkill(SKILL_AUTHORING_SKILL_ID)).toMatchObject({
       id: SKILL_AUTHORING_SKILL_ID,

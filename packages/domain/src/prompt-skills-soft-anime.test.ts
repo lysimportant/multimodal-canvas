@@ -60,7 +60,7 @@ describe('柔光日系氛围插画', () => {
     });
     expect(getPromptSkill('xianxia-dress-character')).toMatchObject({
       name: '仙妖同款裙装',
-      version: '1.0.0',
+      version: '1.1.0',
     });
     expect(instruction().length).toBeLessThanOrEqual(12_000);
     expect(instruction()).not.toBe(getPromptSkill('xianxia-dress-character')?.instruction);

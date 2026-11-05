@@ -123,9 +123,15 @@ describe('三套工具包的应用预设目录', () => {
       PROMPT_SKILLS.length,
     );
     for (const id of originalIds) {
-      expect(getPromptSkill(id)?.version, id).toBe(
-        id === 'xianxia-dress-character' || id === 'skill-authoring' ? '1.0.0' : '1.1.0',
-      );
+      const expectedVersion =
+        id === 'character' || id === 'character-views'
+          ? '1.2.0'
+          : id === 'xianxia-dress-character'
+            ? '1.1.0'
+            : id === 'skill-authoring'
+              ? '1.0.0'
+              : '1.1.0';
+      expect(getPromptSkill(id)?.version, id).toBe(expectedVersion);
     }
     for (const [id, name] of additions) {
       expect(getPromptSkill(id)).toMatchObject({ id, name, version: '1.0.0' });

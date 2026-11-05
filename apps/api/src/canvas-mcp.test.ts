@@ -81,6 +81,11 @@ describe('画布无状态 Streamable HTTP MCP', () => {
     expect(client.getInstructions()).toContain('按 data.parameters.aspectRatio 推导长方形卡片');
     expect(client.getInstructions()).toContain('素材引用与连线必须双写');
     expect(client.getInstructions()).toContain('update_node');
+    expect(client.getInstructions()).toContain('2.5D/3D 真实画质');
+    expect(client.getInstructions()).toContain('禁止默认退回手绘平涂');
+    expect(client.getInstructions()).toContain('生成人物定妆图或人物参考图时');
+    expect(client.getInstructions()).toContain('三视图或四视图');
+    expect(client.getInstructions()).toContain('背景必须硬性统一为纯白纯色（#FFFFFF）');
     expect(transport.sessionId).toBeUndefined();
     expect((await client.listTools()).tools).toEqual(tools);
     const result = await client.callTool({ name: 'inspect_canvas', arguments: { label: '示例' } });
