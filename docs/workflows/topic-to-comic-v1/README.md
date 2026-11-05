@@ -24,12 +24,12 @@
 
 **验收规模：1 页 / 4 格 / 最多 2 个主要角色 / 1 个主要场景。**
 
-| 维度 | 首版验收值 | 契约上限（`contracts.ts`） |
-| --- | --- | --- |
-| 页数 | 1 | `productionLimitsSchema.maxPages` ≤ 200 |
-| 每页格数 | 4 | `productionLimitsSchema.maxPanelsPerPage` ≤ 24 |
-| 主要角色 | 2 | `productionLimitsSchema.maxCharacters` ≤ 200 |
-| 主要场景 | 1 | `productionLimitsSchema.maxScenes` ≤ 200 |
+| 维度     | 首版验收值 | 契约上限（`contracts.ts`）                     |
+| -------- | ---------- | ---------------------------------------------- |
+| 页数     | 1          | `productionLimitsSchema.maxPages` ≤ 200        |
+| 每页格数 | 4          | `productionLimitsSchema.maxPanelsPerPage` ≤ 24 |
+| 主要角色 | 2          | `productionLimitsSchema.maxCharacters` ≤ 200   |
+| 主要场景 | 1          | `productionLimitsSchema.maxScenes` ≤ 200       |
 
 **这是验证规模，不是永久产品限制。** 理由：首版要验证的是**链路正确性**，即
 「生成成功 ≠ 结构校验通过 ≠ 人工批准」这三件事是否被真实区分、失效是否只传播到该传播的地方、
@@ -69,32 +69,32 @@
 原则：能复用的**一律复用**，本方案只新增"漫画生产链路的产物契约"，
 即现有领域包里不存在的那一层。
 
-| 契约 / 机制 | 真实文件:行 | 本方案如何使用 |
-| --- | --- | --- |
-| `canvasDocumentSchema` | `packages/domain/src/index.ts:1074` | 画布文档的唯一合法形态。投影写回仍走它，**不新增第二套画布 schema**。（其 `superRefine` 在 `:1127` 调用连线判据。） |
-| `canvasNodeSchema` | `packages/domain/src/index.ts:1010` | 每个 `itemKey` / `panel:{panelId}` / `page:{pageId}` 对应一个**稳定**节点；身份由 key 承载，不靠 `position`。 |
-| `canvasEdgeSchema` | `packages/domain/src/index.ts:1038` | 投影只增加既有语义的边，不引入"漫画专用"的第二种边。 |
-| `canvasGroupSchema` | `packages/domain/src/index.ts:1062` | 一页的四格可作为分组折叠展示；分组是展示，**不进指纹**。 |
-| `isPortConnectionAllowed` | `packages/domain/src/index.ts:2009`（`:1127` 是它在 `canvasDocumentSchema` 内的调用点） | **连线兼容性的唯一判据**（`workflow-definition.v1.json` `canvasProjectionPolicy.portCompatibility.mustReuse`）。投影层不得自建端口白名单。 |
-| `promptDocumentSchema` 正文 20,000 字符上限 | `packages/domain/src/index.ts:300`，上限判定在 `:330` | 步骤产物落到文本节点正文时沿用同一条上限；`s5_render_specs.compilationRules.promptCharLimit = 20000` 与 `promptCharLimitRef` 指向同一处。 |
-| `runSnapshotSchema` | `packages/domain/src/index.ts:1304` | 每个 `WorkflowStepRun` 派发的 `Run` 仍使用现有快照；步骤层不另存一份快照格式。 |
-| `runSnapshotFingerprintMaterial` | `packages/domain/src/index.ts:1537` | **实现参照**：递归键排序 + 数组保序（`stableSnapshot` 在 `:1528`）。只借鉴算法，**不改变其授权身份语义**。 |
-| `workflowStateSchema` | `packages/domain/src/index.ts:1620` | Worker 拓扑执行的既有状态载体；`WorkflowRun` 是它**之上**的外层编排状态，不替换它。 |
-| `Run @@unique([projectId, idempotencyKey])` | `prisma/schema.prisma:382` | 提交幂等键的**最终防线**：同一 `(projectId, 幂等键)` 只可能有一个 `Run`。 |
-| `Run.retryOf` | `prisma/schema.prisma:370` | 技术重试沿用既有重试链；不新建"重试表"。 |
-| `Run.idempotencyKey` 上限 200 | `packages/domain/src/index.ts:1651` | `submitIdempotencyKey` 的长度预算上限（见 `runtime-semantics.md` §4）。 |
-| `AssetVersion` 与 `@@unique([assetId, version])` | `prisma/schema.prisma:317` / `:330`（`sha256` 可空见 `:322`） | 候选资产版本；`ApprovedAssetRef.version` 指向它。`sha256` 可空正是 `contentDigest` / `digestSource` 必须显式记录来源的原因（`contracts.ts` D5）。 |
-| `EXPORT_SCHEMA_VERSION` | `apps/api/src/export.ts:7` | 值同为 `1` 但**语义不同**：`comic_export_manifest` 刻意不复用它，避免两者回滚互相牵连。 |
-| `executableNodeIds` | `packages/execution/src/index.ts:75` | 只过滤禁用与来源节点并返回授权 ID —— **它不是执行器**（`notAnExecutor`），别当执行器用。 |
-| 发送防重 | `packages/execution/src/index.ts:737` | `if (record.status !== 'pending') throw new ExecutionError('send_requires_review', '原请求可能已经送达，禁止重复创建')`。发送状态不确定时**禁止自动新建**，见 `runtime-semantics.md` §12。 |
-| Worker 拓扑执行 | `apps/worker/src/workflow-dag.ts:30`（`workflowExecutionOrder`） | `Run` 已包含目标节点及其上游依赖闭包；**不重写底层执行器**。 |
-| 并发调度 | `apps/worker/src/generation-concurrency.ts:21`（`startWorkerConcurrencySync`，函数定义在 `:27`） | 复用既有全局并发上限；本方案只加**工作流级天花板与跨工作流公平性**，不新增第二个无界调度器。 |
-| `PromptSkill` 是优化器不是生成器 | `packages/domain/src/prompt-skills.ts:62` 与 `:532` | 产出的是"给下游模型的更好指令"，不是成品（`:532`：`Return an improved instruction for the downstream model, not the finished story, script, analysis, image or video`）。只能挂在 `optionalPromptSkill` 上，默认 `off`。 |
-| 资源提及能力检查当前直接放行 | `apps/api/src/resource-mention-capabilities.ts:74` | `checkResourceMentionCapabilities` 目前恒返回 `{ issues: [], simulated: ... }`。**不能依赖它**兜住"把未批准候选当参考图"。 |
-| 最近成功结果不等于已批准 | `apps/api/src/connected-image-results.ts:55` | 取 `status === 'succeeded'` 并按 `createdAt` 倒序的第一个 = "最近成功"，**不是**"人工批准"。`ApprovedAssetRef` 必须来自 `ApprovalDecision`。 |
-| 上游提示词可当正文 | `apps/api/src/connected-text-inputs.ts:63`（`:87` `data.prompt = text`） | 无结果时把上游节点正文直接当本节点正文。这正是契约必须显式区分 `literal_text` / `generated_artifact` / `approved_artifact` 的原因（`contracts.ts` D4）。 |
-| 409 后重发旧整图 | `apps/web/src/App.tsx:1877`（`saveCanvas`）与 `:1895`（`if (response.status === 409)`） | 冲突后刷新服务器 revision 并重发**同一份快照**，会覆盖后台新建节点。投影写回必须改成带 `expectedRevision` 的批量命令。 |
-| 画布覆盖式更新 | `apps/api/src/projects.ts:794` | `canvasEdge.deleteMany` + `:795 canvasNode.deleteMany` 后整体重建 = **覆盖式**写入。工作流投影**不得**走这条路径。 |
+| 契约 / 机制                                      | 真实文件:行                                                                                      | 本方案如何使用                                                                                                                                                                                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `canvasDocumentSchema`                           | `packages/domain/src/index.ts:1074`                                                              | 画布文档的唯一合法形态。投影写回仍走它，**不新增第二套画布 schema**。（其 `superRefine` 在 `:1127` 调用连线判据。）                                                                                                      |
+| `canvasNodeSchema`                               | `packages/domain/src/index.ts:1010`                                                              | 每个 `itemKey` / `panel:{panelId}` / `page:{pageId}` 对应一个**稳定**节点；身份由 key 承载，不靠 `position`。                                                                                                            |
+| `canvasEdgeSchema`                               | `packages/domain/src/index.ts:1038`                                                              | 投影只增加既有语义的边，不引入"漫画专用"的第二种边。                                                                                                                                                                     |
+| `canvasGroupSchema`                              | `packages/domain/src/index.ts:1062`                                                              | 一页的四格可作为分组折叠展示；分组是展示，**不进指纹**。                                                                                                                                                                 |
+| `isPortConnectionAllowed`                        | `packages/domain/src/index.ts:2009`（`:1127` 是它在 `canvasDocumentSchema` 内的调用点）          | **连线兼容性的唯一判据**（`workflow-definition.v1.json` `canvasProjectionPolicy.portCompatibility.mustReuse`）。投影层不得自建端口白名单。                                                                               |
+| `promptDocumentSchema` 正文 20,000 字符上限      | `packages/domain/src/index.ts:300`，上限判定在 `:330`                                            | 步骤产物落到文本节点正文时沿用同一条上限；`s5_render_specs.compilationRules.promptCharLimit = 20000` 与 `promptCharLimitRef` 指向同一处。                                                                                |
+| `runSnapshotSchema`                              | `packages/domain/src/index.ts:1304`                                                              | 每个 `WorkflowStepRun` 派发的 `Run` 仍使用现有快照；步骤层不另存一份快照格式。                                                                                                                                           |
+| `runSnapshotFingerprintMaterial`                 | `packages/domain/src/index.ts:1537`                                                              | **实现参照**：递归键排序 + 数组保序（`stableSnapshot` 在 `:1528`）。只借鉴算法，**不改变其授权身份语义**。                                                                                                               |
+| `workflowStateSchema`                            | `packages/domain/src/index.ts:1620`                                                              | Worker 拓扑执行的既有状态载体；`WorkflowRun` 是它**之上**的外层编排状态，不替换它。                                                                                                                                      |
+| `Run @@unique([projectId, idempotencyKey])`      | `prisma/schema.prisma:382`                                                                       | 提交幂等键的**最终防线**：同一 `(projectId, 幂等键)` 只可能有一个 `Run`。                                                                                                                                                |
+| `Run.retryOf`                                    | `prisma/schema.prisma:370`                                                                       | 技术重试沿用既有重试链；不新建"重试表"。                                                                                                                                                                                 |
+| `Run.idempotencyKey` 上限 200                    | `packages/domain/src/index.ts:1651`                                                              | `submitIdempotencyKey` 的长度预算上限（见 `runtime-semantics.md` §4）。                                                                                                                                                  |
+| `AssetVersion` 与 `@@unique([assetId, version])` | `prisma/schema.prisma:317` / `:330`（`sha256` 可空见 `:322`）                                    | 候选资产版本；`ApprovedAssetRef.version` 指向它。`sha256` 可空正是 `contentDigest` / `digestSource` 必须显式记录来源的原因（`contracts.ts` D5）。                                                                        |
+| `EXPORT_SCHEMA_VERSION`                          | `apps/api/src/export.ts:7`                                                                       | 值同为 `1` 但**语义不同**：`comic_export_manifest` 刻意不复用它，避免两者回滚互相牵连。                                                                                                                                  |
+| `executableNodeIds`                              | `packages/execution/src/index.ts:75`                                                             | 只过滤禁用与来源节点并返回授权 ID —— **它不是执行器**（`notAnExecutor`），别当执行器用。                                                                                                                                 |
+| 发送防重                                         | `packages/execution/src/index.ts:737`                                                            | `if (record.status !== 'pending') throw new ExecutionError('send_requires_review', '原请求可能已经送达，禁止重复创建')`。发送状态不确定时**禁止自动新建**，见 `runtime-semantics.md` §12。                               |
+| Worker 拓扑执行                                  | `apps/worker/src/workflow-dag.ts:30`（`workflowExecutionOrder`）                                 | `Run` 已包含目标节点及其上游依赖闭包；**不重写底层执行器**。                                                                                                                                                             |
+| 并发调度                                         | `apps/worker/src/generation-concurrency.ts:21`（`startWorkerConcurrencySync`，函数定义在 `:27`） | 复用既有全局并发上限；本方案只加**工作流级天花板与跨工作流公平性**，不新增第二个无界调度器。                                                                                                                             |
+| `PromptSkill` 是优化器不是生成器                 | `packages/domain/src/prompt-skills.ts:62` 与 `:532`                                              | 产出的是"给下游模型的更好指令"，不是成品（`:532`：`Return an improved instruction for the downstream model, not the finished story, script, analysis, image or video`）。只能挂在 `optionalPromptSkill` 上，默认 `off`。 |
+| 资源提及能力检查当前直接放行                     | `apps/api/src/resource-mention-capabilities.ts:74`                                               | `checkResourceMentionCapabilities` 目前恒返回 `{ issues: [], simulated: ... }`。**不能依赖它**兜住"把未批准候选当参考图"。                                                                                               |
+| 最近成功结果不等于已批准                         | `apps/api/src/connected-image-results.ts:55`                                                     | 取 `status === 'succeeded'` 并按 `createdAt` 倒序的第一个 = "最近成功"，**不是**"人工批准"。`ApprovedAssetRef` 必须来自 `ApprovalDecision`。                                                                             |
+| 上游提示词可当正文                               | `apps/api/src/connected-text-inputs.ts:63`（`:87` `data.prompt = text`）                         | 无结果时把上游节点正文直接当本节点正文。这正是契约必须显式区分 `literal_text` / `generated_artifact` / `approved_artifact` 的原因（`contracts.ts` D4）。                                                                 |
+| 409 后重发旧整图                                 | `apps/web/src/App.tsx:1877`（`saveCanvas`）与 `:1895`（`if (response.status === 409)`）          | 冲突后刷新服务器 revision 并重发**同一份快照**，会覆盖后台新建节点。投影写回必须改成带 `expectedRevision` 的批量命令。                                                                                                   |
+| 画布覆盖式更新                                   | `apps/api/src/projects.ts:794`                                                                   | `canvasEdge.deleteMany` + `:795 canvasNode.deleteMany` 后整体重建 = **覆盖式**写入。工作流投影**不得**走这条路径。                                                                                                       |
 
 ---
 
@@ -128,21 +128,21 @@
 
 ## 6. 本目录文件索引
 
-| # | 文件 | 用途 | 状态 |
-| --- | --- | --- | --- |
-| 1 | `README.md` | 本文：目标、范围、非目标、复用点、能力边界、验收入口、迁移计划 | ✅ 本阶段产出 |
-| 2 | `workflow-definition.v1.json` | **权威**：15 个步骤（`s0_brief` … `s9_export`）、3 个 gate、4 处 foreach、重试/预算/投影/导出策略、`definitionDigestInputs` | ✅ 已存在 |
-| 3 | `contracts.ts` | **权威**：Zod 契约（`comicBriefSchema` … `comicExportManifestSchema`）、稳定错误码 `WORKFLOW_ISSUE_CODES`、`validateComicArtifacts()`、指纹与幂等键函数 | ✅ 已存在 |
-| 4 | `task-templates.v1.json` | `generate` / `fanout` 步骤引用的任务模板正文；每个模板单独取 sha256 作为 `inputFingerprintMaterial.taskTemplateDigest` | ✅ 已存在 |
-| 5 | `runtime-semantics.md` | 三层模型、唯一键、两层指纹、幂等键、重画 vs 重试、审批状态机、等待/失效/迟到/取消/部分成功/事务边界 | ✅ 本阶段产出 |
-| 6 | `model-budget-matrix.md` | 每个步骤的 `budgetClass`（`text` / `image` / `vision`）与模型别名的对应矩阵；`vision` 缺失即跳过评审 | ✅ 已存在 |
-| 7 | `fixtures/huozhai-s01/source-map.json` | 样例「货斋 S01」的输入到步骤的映射（哪个字段进哪个 `inputBindings.to`） | ✅ 已存在 |
-| 8 | `fixtures/huozhai-s01/input.json` | 样例输入：合法的 `comicBrief`（主题/题材/画风/篇幅/预算/模型绑定） | ✅ 已存在 |
-| 9 | `fixtures/huozhai-s01/expected-artifacts.json` | 样例的期望产物链，供 `validateComicArtifacts()` 正向通过 | ✅ 已存在 |
-| 10 | `fixtures/theme-mini/input.json` | 最小输入样例（1 页 / 4 格 / 2 角色 / 1 场景，即第 2 节验收规模） | ✅ 已存在 |
-| 11 | `fixtures/theme-mini/expected-artifacts.json` | 最小样例的期望产物链 | ✅ 已存在 |
-| 12 | `fixtures/recovery-cases.json` | 负样例集：每条给出"输入 + **指定**错误码"，用于证明错误码可被 `workflowIssueCodesOf()` 提取 | ⏳ 待补 |
-| 13 | `acceptance-matrix.md` | 验收矩阵：`WORKFLOW_ISSUE_CODES` 中的每一个码 → 由哪个 fixture / 哪条转场覆盖 | ⏳ 待补 |
+| #   | 文件                                           | 用途                                                                                                                                                    | 状态          |
+| --- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 1   | `README.md`                                    | 本文：目标、范围、非目标、复用点、能力边界、验收入口、迁移计划                                                                                          | ✅ 本阶段产出 |
+| 2   | `workflow-definition.v1.json`                  | **权威**：15 个步骤（`s0_brief` … `s9_export`）、3 个 gate、4 处 foreach、重试/预算/投影/导出策略、`definitionDigestInputs`                             | ✅ 已存在     |
+| 3   | `contracts.ts`                                 | **权威**：Zod 契约（`comicBriefSchema` … `comicExportManifestSchema`）、稳定错误码 `WORKFLOW_ISSUE_CODES`、`validateComicArtifacts()`、指纹与幂等键函数 | ✅ 已存在     |
+| 4   | `task-templates.v1.json`                       | `generate` / `fanout` 步骤引用的任务模板正文；每个模板单独取 sha256 作为 `inputFingerprintMaterial.taskTemplateDigest`                                  | ✅ 已存在     |
+| 5   | `runtime-semantics.md`                         | 三层模型、唯一键、两层指纹、幂等键、重画 vs 重试、审批状态机、等待/失效/迟到/取消/部分成功/事务边界                                                     | ✅ 本阶段产出 |
+| 6   | `model-budget-matrix.md`                       | 每个步骤的 `budgetClass`（`text` / `image` / `vision`）与模型别名的对应矩阵；`vision` 缺失即跳过评审                                                    | ✅ 已存在     |
+| 7   | `fixtures/huozhai-s01/source-map.json`         | 样例「货斋 S01」的输入到步骤的映射（哪个字段进哪个 `inputBindings.to`）                                                                                 | ✅ 已存在     |
+| 8   | `fixtures/huozhai-s01/input.json`              | 样例输入：合法的 `comicBrief`（主题/题材/画风/篇幅/预算/模型绑定）                                                                                      | ✅ 已存在     |
+| 9   | `fixtures/huozhai-s01/expected-artifacts.json` | 样例的期望产物链，供 `validateComicArtifacts()` 正向通过                                                                                                | ✅ 已存在     |
+| 10  | `fixtures/theme-mini/input.json`               | 最小输入样例（1 页 / 4 格 / 2 角色 / 1 场景，即第 2 节验收规模）                                                                                        | ✅ 已存在     |
+| 11  | `fixtures/theme-mini/expected-artifacts.json`  | 最小样例的期望产物链                                                                                                                                    | ✅ 已存在     |
+| 12  | `fixtures/recovery-cases.json`                 | 负样例集：每条给出"输入 + **指定**错误码"，用于证明错误码可被 `workflowIssueCodesOf()` 提取                                                             | ⏳ 待补       |
+| 13  | `acceptance-matrix.md`                         | 验收矩阵：`WORKFLOW_ISSUE_CODES` 中的每一个码 → 由哪个 fixture / 哪条转场覆盖                                                                           | ⏳ 待补       |
 
 ---
 
@@ -200,8 +200,8 @@
      唯一键 `@@unique([workflowRunId, stepId, itemKey, generationRevision])`（见 `runtime-semantics.md` §2）。
    - `ApprovalDecision`：`approvalId` + `decisionIdempotencyKey` 唯一，
      记录 `expectedStepRevision` 与 `targetArtifactDigest`。
-   **`Run` / `AssetVersion` / `Project` 的既有列与既有唯一约束一律不改**，
-   `WorkflowStepRun` 通过外键指向 `Run.id`，不复制 `Run` 的字段。
+     **`Run` / `AssetVersion` / `Project` 的既有列与既有唯一约束一律不改**，
+     `WorkflowStepRun` 通过外键指向 `Run.id`，不复制 `Run` 的字段。
 3. **投影接入。** 画布写回从覆盖式（`apps/api/src/projects.ts:794`）切换到
    `canvasProjectionPolicy.writePath` 要求的"带 `expectedRevision` 的批量画布命令"，
    `stable_node_per_item` 生效（同一次重试不新建节点）。
@@ -220,14 +220,13 @@
 写作过程中发现下列锚点/规则不一致。**本阶段不修改** `contracts.ts` 与
 `workflow-definition.v1.json`，仅在此登记，供评审处理：
 
-| # | 位置 | 问题 | 建议 |
-| --- | --- | --- | --- |
-| 1 | `contracts.ts:24`、`workflow-definition.v1.json` `canvasProjectionPolicy.portCompatibility.ref` | 两处都把 `isPortConnectionAllowed` 标为 `packages/domain/src/index.ts:1127`，但 `:1127` 只是它在 `canvasDocumentSchema` 内的**调用点**，**定义在 `:2009`** | 改为 `:2009`（或写 `:2009`，定义 / `:1127`，调用点） |
-| 2 | `contracts.ts:25` | `promptDocumentSchema` 标为 `packages/domain/src/index.ts:305`，实际定义在 `:300`；`:305` 是 `.strip()`。`:330` 的 20,000 上限引用是**正确**的 | 改为 `:300`（上限仍指 `:330`） |
-| 3 | `workflow-definition.v1.json` `taskTemplates.requiredForStepTypes` | 只声明 `["generate"]`，但三个 `type: "fanout"` 且 `vendorCall: true` 的步骤（`s4_asset_candidates`、`s6_panel_render`、`s8_render_pages`）都声明了 `taskTemplate`。若运行期严格按该列表只对 `generate` 求 `taskTemplateDigest`，这三个步骤的模板正文会**不进指纹** | 改为 `["generate", "fanout"]`，或明确 fanout 复用所属 `generate` 语义 |
-| 4 | `contracts.ts:1070-1088` `submitIdempotencyKey` | （a）折叠触发条件是整串 `definitionId\|stepId\|itemKey` 超 80 字符，因此长 `stepId` 也会让**短** `itemKey` 被折叠，与注释"长 itemKey 走摘要折叠"不符；（b）折叠用 32 位非加密 `simpleHash`，两个不同 `itemKey` 可能折叠到同一值，随后在 `Run @@unique([projectId, idempotencyKey])`（`prisma/schema.prisma:382`）上被当成同一次提交，**静默去重一个不同的付费子项**；（c）超长时 `throw new Error('WF_REPLAY_KEY_TOO_LONG')` 抛的是裸 `Error` 而非 `workflowIssue(...)`，因此 `workflowIssueCodesOf()`（`contracts.ts:200`）无法提取该码，与 D1"所有校验错误都带 `params.workflowIssueCode`"相矛盾 | 折叠时保留 `itemKey` 摘要的独立段并对命中做"五项等值断言"（见 `runtime-semantics.md` §4）；超长改抛 `workflowIssue('WF_REPLAY_KEY_TOO_LONG', ...)` |
-| 5 | `contracts.ts:674-706` `qualityReportSchema` vs `workflow-definition.v1.json` `s7_quality.reworkPolicy` | `reworkPolicy` 要求 `increment_generation_revision_for_itemKey`、并按 `budget.maxRegenerationsPerItem` 计数，但 `qualityReportSchema` 只有 `structural.*` 与 `manual.verdict`（且 `manual` 可为 `null`），**没有**任何字段能表达"哪个 `itemKey` 要提升修订"或"这是第几轮返工"。`WF_REPLAY_GENERATION_REVISION_REQUIRED` 因此没有产生者 | 在产物契约或独立的返工决策记录里补 `reworkTargets: { itemKey, nextGenerationRevision, round }[]` |
-| 6 | `contracts.ts:572` `approvalDecisionSchema.targetKind` 与 `workflow-definition.v1.json` | `targetKind` 枚举含 `panel_candidate`，但 15 个步骤里的 3 个 gate（`g_story`=`story_scope`、`g_assets`=`asset_candidate`、`g_final`=`page_render`）**没有**任何 gate 使用它；`s6_panel_render` 产出 `panel_candidate_set` 却无对应 gate，`s8_layout` 直接依赖 `s7_quality` | 要么为格候选补 gate，要么从枚举移除，二者取一 |
-| 7 | `contracts.ts:853-995` `validateComicArtifacts` | 入参只覆盖 `renderSpecs` / `layouts`，**不含** `panelCandidateSet` / `renderedPageSet` / `qualityReport`，因此"格候选被换过版本"这类陈旧无法被这个校验器发现；`pageLayoutSchema.balloons[].readingIndex`（`contracts.ts:763`）也从未被校验，`WF_LAYOUT_READING_ORDER_INVALID` 只覆盖 `panelPlan` 的 `ordinal` | P1 内补入参与校验，或显式声明该函数的作用域不含这三者 |
-| 8 | `workflow-definition.v1.json` `definitionDigestInputs` | 清单**不含** `form`（`"paged-comic"`）与 `formNonGoals`。即把形态从分页漫画改成条漫、或删掉一条非目标，`definitionDigest` **不变**，已存在的 `WorkflowRun` 不会被判定为定义已变，会继续按新定义被解析。而 `form` 恰恰是"唯一事实来源"里定义"成品长什么样"的字段 | 若形态是产品决策而非契约，请写明；否则把 `form` 与 `formNonGoals` 加入 `definitionDigestInputs` |
-
+| #   | 位置                                                                                                    | 问题                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | 建议                                                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `contracts.ts:24`、`workflow-definition.v1.json` `canvasProjectionPolicy.portCompatibility.ref`         | 两处都把 `isPortConnectionAllowed` 标为 `packages/domain/src/index.ts:1127`，但 `:1127` 只是它在 `canvasDocumentSchema` 内的**调用点**，**定义在 `:2009`**                                                                                                                                                                                                                                                                                                                                                                                                                                         | 改为 `:2009`（或写 `:2009`，定义 / `:1127`，调用点）                                                                                               |
+| 2   | `contracts.ts:25`                                                                                       | `promptDocumentSchema` 标为 `packages/domain/src/index.ts:305`，实际定义在 `:300`；`:305` 是 `.strip()`。`:330` 的 20,000 上限引用是**正确**的                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 改为 `:300`（上限仍指 `:330`）                                                                                                                     |
+| 3   | `workflow-definition.v1.json` `taskTemplates.requiredForStepTypes`                                      | 只声明 `["generate"]`，但三个 `type: "fanout"` 且 `vendorCall: true` 的步骤（`s4_asset_candidates`、`s6_panel_render`、`s8_render_pages`）都声明了 `taskTemplate`。若运行期严格按该列表只对 `generate` 求 `taskTemplateDigest`，这三个步骤的模板正文会**不进指纹**                                                                                                                                                                                                                                                                                                                                 | 改为 `["generate", "fanout"]`，或明确 fanout 复用所属 `generate` 语义                                                                              |
+| 4   | `contracts.ts:1070-1088` `submitIdempotencyKey`                                                         | （a）折叠触发条件是整串 `definitionId\|stepId\|itemKey` 超 80 字符，因此长 `stepId` 也会让**短** `itemKey` 被折叠，与注释"长 itemKey 走摘要折叠"不符；（b）折叠用 32 位非加密 `simpleHash`，两个不同 `itemKey` 可能折叠到同一值，随后在 `Run @@unique([projectId, idempotencyKey])`（`prisma/schema.prisma:382`）上被当成同一次提交，**静默去重一个不同的付费子项**；（c）超长时 `throw new Error('WF_REPLAY_KEY_TOO_LONG')` 抛的是裸 `Error` 而非 `workflowIssue(...)`，因此 `workflowIssueCodesOf()`（`contracts.ts:200`）无法提取该码，与 D1"所有校验错误都带 `params.workflowIssueCode`"相矛盾 | 折叠时保留 `itemKey` 摘要的独立段并对命中做"五项等值断言"（见 `runtime-semantics.md` §4）；超长改抛 `workflowIssue('WF_REPLAY_KEY_TOO_LONG', ...)` |
+| 5   | `contracts.ts:674-706` `qualityReportSchema` vs `workflow-definition.v1.json` `s7_quality.reworkPolicy` | `reworkPolicy` 要求 `increment_generation_revision_for_itemKey`、并按 `budget.maxRegenerationsPerItem` 计数，但 `qualityReportSchema` 只有 `structural.*` 与 `manual.verdict`（且 `manual` 可为 `null`），**没有**任何字段能表达"哪个 `itemKey` 要提升修订"或"这是第几轮返工"。`WF_REPLAY_GENERATION_REVISION_REQUIRED` 因此没有产生者                                                                                                                                                                                                                                                             | 在产物契约或独立的返工决策记录里补 `reworkTargets: { itemKey, nextGenerationRevision, round }[]`                                                   |
+| 6   | `contracts.ts:572` `approvalDecisionSchema.targetKind` 与 `workflow-definition.v1.json`                 | `targetKind` 枚举含 `panel_candidate`，但 15 个步骤里的 3 个 gate（`g_story`=`story_scope`、`g_assets`=`asset_candidate`、`g_final`=`page_render`）**没有**任何 gate 使用它；`s6_panel_render` 产出 `panel_candidate_set` 却无对应 gate，`s8_layout` 直接依赖 `s7_quality`                                                                                                                                                                                                                                                                                                                         | 要么为格候选补 gate，要么从枚举移除，二者取一                                                                                                      |
+| 7   | `contracts.ts:853-995` `validateComicArtifacts`                                                         | 入参只覆盖 `renderSpecs` / `layouts`，**不含** `panelCandidateSet` / `renderedPageSet` / `qualityReport`，因此"格候选被换过版本"这类陈旧无法被这个校验器发现；`pageLayoutSchema.balloons[].readingIndex`（`contracts.ts:763`）也从未被校验，`WF_LAYOUT_READING_ORDER_INVALID` 只覆盖 `panelPlan` 的 `ordinal`                                                                                                                                                                                                                                                                                      | P1 内补入参与校验，或显式声明该函数的作用域不含这三者                                                                                              |
+| 8   | `workflow-definition.v1.json` `definitionDigestInputs`                                                  | 清单**不含** `form`（`"paged-comic"`）与 `formNonGoals`。即把形态从分页漫画改成条漫、或删掉一条非目标，`definitionDigest` **不变**，已存在的 `WorkflowRun` 不会被判定为定义已变，会继续按新定义被解析。而 `form` 恰恰是"唯一事实来源"里定义"成品长什么样"的字段                                                                                                                                                                                                                                                                                                                                    | 若形态是产品决策而非契约，请写明；否则把 `form` 与 `formNonGoals` 加入 `definitionDigestInputs`                                                    |

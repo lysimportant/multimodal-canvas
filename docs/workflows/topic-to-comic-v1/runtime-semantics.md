@@ -7,12 +7,12 @@
 
 涉及的 15 个步骤（`workflow-definition.v1.json` `steps[]`）：
 
-| 类别 | 步骤 id | `vendorCall` |
-| --- | --- | --- |
-| transform | `s0_brief`、`s5_render_specs`、`s9_export` | `false` |
-| generate | `s1_premise`、`s2_script`、`s3_panel_plan`、`s3_asset_manifest`、`s7_quality` | `true` |
-| gate | `g_story`、`g_assets`、`g_final` | `false` |
-| fanout | `s4_asset_candidates`、`s6_panel_render`、`s8_layout`、`s8_render_pages` | `s8_layout` 为 `false`，其余 `true` |
+| 类别      | 步骤 id                                                                       | `vendorCall`                        |
+| --------- | ----------------------------------------------------------------------------- | ----------------------------------- |
+| transform | `s0_brief`、`s5_render_specs`、`s9_export`                                    | `false`                             |
+| generate  | `s1_premise`、`s2_script`、`s3_panel_plan`、`s3_asset_manifest`、`s7_quality` | `true`                              |
+| gate      | `g_story`、`g_assets`、`g_final`                                              | `false`                             |
+| fanout    | `s4_asset_candidates`、`s6_panel_render`、`s8_layout`、`s8_render_pages`      | `s8_layout` 为 `false`，其余 `true` |
 
 ---
 
@@ -33,44 +33,44 @@ WorkflowRun                      一次业务编排（一句主题 → 一份分
 
 ### 1.1 `WorkflowRun`（新增）
 
-| 字段 | 职责 |
-| --- | --- |
-| `id` | 本编排的稳定身份（`stableIdSchema`） |
-| `projectId` | 归属项目；画布投影的落点 |
-| `definitionId` | 固定 `"topic-to-comic"`（与 `comicExportManifestSchema.definitionId` 的 `z.literal` 一致） |
-| `definitionVersion` | `"0.1.0"`；导出时写入 `manifest.definitionVersion`，比对失败即 `WF_EXPORT_VERSION_MISMATCH` |
-| `definitionDigest` | 见 §3；进入每一个步骤的 `inputFingerprintMaterial` |
-| `contractSchemaVersion` | `CONTRACT_SCHEMA_VERSION = 1`；不支持即 `WF_SCHEMA_VERSION_UNSUPPORTED` |
-| `brief` | 归一化后的 `comicBriefSchema` 实例（含 `budget`、`limits`、`modelBindings`） |
-| `briefDigest` | `brief` 的规范 JSON 摘要；写入 `comicExportManifestSchema.briefDigest` |
-| `status` | `running` / `awaiting_decision` / `succeeded` / `failed` / `needs_review` / `cancelled`。**`needs_review` 已列入本枚举**（P1 裁决，见 `FINDINGS-p1.md` F-22）：它是**可再入**状态，`succeeded` 的编排收到迟到结果时按 §9.3 转为 `needs_review` 而**不是**静默忽略，人工处置后再回到 `succeeded` 或 `failed`。`needs_review` **不属于** `RunStatus`（`prisma/schema.prisma:28-38`），只存在于工作流层 |
-| `revision` | 任一产物或审批变化即 `+1`；投影写回用它做 `expectedRevision` |
-| `budgetState` | 预留与结算计数：`textGenerations`、`imageGenerations`、`visionReviews`、`promptOptimizations`、`vendorRequests`、`regenerationsPerItem`、`candidatesPerItem` |
-| `createdAt` / `updatedAt` / `terminalAt` | 审计与成本归集 |
+| 字段                                     | 职责                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                     | 本编排的稳定身份（`stableIdSchema`）                                                                                                                                                                                                                                                                                                                                                                 |
+| `projectId`                              | 归属项目；画布投影的落点                                                                                                                                                                                                                                                                                                                                                                             |
+| `definitionId`                           | 固定 `"topic-to-comic"`（与 `comicExportManifestSchema.definitionId` 的 `z.literal` 一致）                                                                                                                                                                                                                                                                                                           |
+| `definitionVersion`                      | `"0.1.0"`；导出时写入 `manifest.definitionVersion`，比对失败即 `WF_EXPORT_VERSION_MISMATCH`                                                                                                                                                                                                                                                                                                          |
+| `definitionDigest`                       | 见 §3；进入每一个步骤的 `inputFingerprintMaterial`                                                                                                                                                                                                                                                                                                                                                   |
+| `contractSchemaVersion`                  | `CONTRACT_SCHEMA_VERSION = 1`；不支持即 `WF_SCHEMA_VERSION_UNSUPPORTED`                                                                                                                                                                                                                                                                                                                              |
+| `brief`                                  | 归一化后的 `comicBriefSchema` 实例（含 `budget`、`limits`、`modelBindings`）                                                                                                                                                                                                                                                                                                                         |
+| `briefDigest`                            | `brief` 的规范 JSON 摘要；写入 `comicExportManifestSchema.briefDigest`                                                                                                                                                                                                                                                                                                                               |
+| `status`                                 | `running` / `awaiting_decision` / `succeeded` / `failed` / `needs_review` / `cancelled`。**`needs_review` 已列入本枚举**（P1 裁决，见 `FINDINGS-p1.md` F-22）：它是**可再入**状态，`succeeded` 的编排收到迟到结果时按 §9.3 转为 `needs_review` 而**不是**静默忽略，人工处置后再回到 `succeeded` 或 `failed`。`needs_review` **不属于** `RunStatus`（`prisma/schema.prisma:28-38`），只存在于工作流层 |
+| `revision`                               | 任一产物或审批变化即 `+1`；投影写回用它做 `expectedRevision`                                                                                                                                                                                                                                                                                                                                         |
+| `budgetState`                            | 预留与结算计数：`textGenerations`、`imageGenerations`、`visionReviews`、`promptOptimizations`、`vendorRequests`、`regenerationsPerItem`、`candidatesPerItem`                                                                                                                                                                                                                                         |
+| `createdAt` / `updatedAt` / `terminalAt` | 审计与成本归集                                                                                                                                                                                                                                                                                                                                                                                       |
 
 **`WorkflowRun` 不持有任何 vendor 凭据，也不持有模型名**：模型只以别名出现在
 `comicBriefSchema.modelBindings`（`contracts.ts:336`），理由见 `contracts.ts:331-335`。
 
 ### 1.2 `WorkflowStepRun`（新增）
 
-| 字段 | 职责 |
-| --- | --- |
-| `id` | 步骤运行身份；下游以 `generatedArtifactRefSchema.stepRunId` 引用它 |
-| `workflowRunId` | 归属编排 |
-| `stepId` | `workflow-definition.v1.json` 的 `steps[].stepId` |
-| `itemKey` | foreach 子项身份；非 fanout 步骤用 `step:{stepId}`（对应 `canvasProjectionPolicy.keyedBy` 的 `step:{stepId}`） |
-| `generationRevision` | §5；用户"再画一张"提升它 |
-| `inputFingerprint` | §3；本步骤本次提交的内容指纹（sha256 hex） |
-| `status` | `pending` / `running` / `awaiting_decision` / `approved` / `rejected` / `stale` / `succeeded` / `failed` / `needs_review` / `cancelled` |
-| `revision` | 本步骤的修订计数；`approvalDecisionSchema.expectedStepRevision` 比对它 |
-| `outputSchema` | `STEP_OUTPUT_SCHEMAS`（`contracts.ts:1109`）的键；与步骤的 `outputSchema` 双向命中 |
-| `artifact` / `artifactDigest` | 结构化产物与其摘要；`approvalDecisionSchema.targetArtifactDigest` 绑定到**这个**摘要 |
-| `runIds` | 0..N 个实际 `Run`。**gate / 纯转换 / 排版 / 导出为 0**（见 1.4） |
-| `auditRunIds` | 迟到或指纹不符的 `Run`，只做审计，见 §9 |
-| `attempt` | 技术重试次数，与 `Run.attempt` 同源 |
-| `approvalId` | 有效审批（`ApprovalDecision.approvalId`），无则 `null` |
-| `issueCode` | 终止时的 `WorkflowIssueCode`，无则 `null` |
-| `startedAt` / `finishedAt` | 审计 |
+| 字段                          | 职责                                                                                                                                    |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                          | 步骤运行身份；下游以 `generatedArtifactRefSchema.stepRunId` 引用它                                                                      |
+| `workflowRunId`               | 归属编排                                                                                                                                |
+| `stepId`                      | `workflow-definition.v1.json` 的 `steps[].stepId`                                                                                       |
+| `itemKey`                     | foreach 子项身份；非 fanout 步骤用 `step:{stepId}`（对应 `canvasProjectionPolicy.keyedBy` 的 `step:{stepId}`）                          |
+| `generationRevision`          | §5；用户"再画一张"提升它                                                                                                                |
+| `inputFingerprint`            | §3；本步骤本次提交的内容指纹（sha256 hex）                                                                                              |
+| `status`                      | `pending` / `running` / `awaiting_decision` / `approved` / `rejected` / `stale` / `succeeded` / `failed` / `needs_review` / `cancelled` |
+| `revision`                    | 本步骤的修订计数；`approvalDecisionSchema.expectedStepRevision` 比对它                                                                  |
+| `outputSchema`                | `STEP_OUTPUT_SCHEMAS`（`contracts.ts:1109`）的键；与步骤的 `outputSchema` 双向命中                                                      |
+| `artifact` / `artifactDigest` | 结构化产物与其摘要；`approvalDecisionSchema.targetArtifactDigest` 绑定到**这个**摘要                                                    |
+| `runIds`                      | 0..N 个实际 `Run`。**gate / 纯转换 / 排版 / 导出为 0**（见 1.4）                                                                        |
+| `auditRunIds`                 | 迟到或指纹不符的 `Run`，只做审计，见 §9                                                                                                 |
+| `attempt`                     | 技术重试次数，与 `Run.attempt` 同源                                                                                                     |
+| `approvalId`                  | 有效审批（`ApprovalDecision.approvalId`），无则 `null`                                                                                  |
+| `issueCode`                   | 终止时的 `WorkflowIssueCode`，无则 `null`                                                                                               |
+| `startedAt` / `finishedAt`    | 审计                                                                                                                                    |
 
 ### 1.3 `Run`（既有，不改）
 
@@ -85,13 +85,13 @@ WorkflowRun                      一次业务编排（一句主题 → 一份分
 
 以下步骤 `vendorCall: false`，**必须不创建任何 `Run`**，`runIds` 恒为空数组：
 
-| 步骤 | 类别 | 产物 | 为什么不能有 `Run` |
-| --- | --- | --- | --- |
-| `s0_brief` | transform | `comic_brief` | 只是用户输入归一化 + 预检；`s0_brief.preflight.issueCodes` 已在 `contracts.ts` 表达 |
-| `g_story` / `g_assets` / `g_final` | gate | — | gate 是人工决定，不是生成；伪造 `Run` 会让"人工批准"伪装成"生成成功" |
-| `s5_render_specs` | transform | `panel_render_spec_set` | 纯编译（`compilationRules.contextTrimming` 裁剪），无 vendor 调用 |
-| `s8_layout` | fanout（`vendorCall: false`） | `page_layout` | 排版是**确定性纯函数**（`s8_layout.determinism.isDeterministic: true`） |
-| `s9_export` | transform | `comic_export_manifest` | 纯汇总；`exportPolicy` 只做完整性拒绝 |
+| 步骤                               | 类别                          | 产物                    | 为什么不能有 `Run`                                                                  |
+| ---------------------------------- | ----------------------------- | ----------------------- | ----------------------------------------------------------------------------------- |
+| `s0_brief`                         | transform                     | `comic_brief`           | 只是用户输入归一化 + 预检；`s0_brief.preflight.issueCodes` 已在 `contracts.ts` 表达 |
+| `g_story` / `g_assets` / `g_final` | gate                          | —                       | gate 是人工决定，不是生成；伪造 `Run` 会让"人工批准"伪装成"生成成功"                |
+| `s5_render_specs`                  | transform                     | `panel_render_spec_set` | 纯编译（`compilationRules.contextTrimming` 裁剪），无 vendor 调用                   |
+| `s8_layout`                        | fanout（`vendorCall: false`） | `page_layout`           | 排版是**确定性纯函数**（`s8_layout.determinism.isDeterministic: true`）             |
+| `s9_export`                        | transform                     | `comic_export_manifest` | 纯汇总；`exportPolicy` 只做完整性拒绝                                               |
 
 **理由（这条是硬的）**：`contracts.ts:469-473` 的 `s7_quality.threeDistinctFacts` 要求
 "生成成功 / 结构校验通过 / 人工批准"是三件**独立**的事实。若 gate 也建 `Run`，
@@ -163,14 +163,14 @@ WorkflowRun                      一次业务编排（一句主题 → 一份分
 
 两层解决两个不同的问题，**不可合并**。
 
-| | 定义摘要 `definitionDigest` | 步骤输入指纹 `inputFingerprint` |
-| --- | --- | --- |
-| 回答 | "这条流水线的**定义**变了吗" | "这一步这一次的**输入**变了吗" |
-| 作用域 | 整份 `workflow-definition.v1.json` | 一个 `(stepId, itemKey, generationRevision)` |
-| 变化频率 | 改定义才变（罕见） | 每次输入变化都变（常见） |
-| 作用 | 定义一变，**所有**步骤的历史指纹一起失效 | 只让本步骤与依赖它的下游失效 |
-| 材料 | `definitionDigestInputs` 列出的 11 个顶层键 | `inputFingerprintMaterialSchema` 的 12 个字段 |
-| 算法 | 规范 JSON（§3.3）→ sha256 | 同左 |
+|          | 定义摘要 `definitionDigest`                 | 步骤输入指纹 `inputFingerprint`               |
+| -------- | ------------------------------------------- | --------------------------------------------- |
+| 回答     | "这条流水线的**定义**变了吗"                | "这一步这一次的**输入**变了吗"                |
+| 作用域   | 整份 `workflow-definition.v1.json`          | 一个 `(stepId, itemKey, generationRevision)`  |
+| 变化频率 | 改定义才变（罕见）                          | 每次输入变化都变（常见）                      |
+| 作用     | 定义一变，**所有**步骤的历史指纹一起失效    | 只让本步骤与依赖它的下游失效                  |
+| 材料     | `definitionDigestInputs` 列出的 11 个顶层键 | `inputFingerprintMaterialSchema` 的 12 个字段 |
+| 算法     | 规范 JSON（§3.3）→ sha256                   | 同左                                          |
 
 ### 3.1 `definitionDigest` 材料
 
@@ -195,20 +195,20 @@ WorkflowRun                      一次业务编排（一句主题 → 一份分
 `inputFingerprintMaterialSchema`（`contracts.ts:1007-1025`）共 12 个字段，
 全部为必填（`frozenPromptText` 为 `string | null`，但**必须出现**）：
 
-| # | 字段 | 语义 |
-| --- | --- | --- |
-| 1 | `schemaVersion` | `CONTRACT_SCHEMA_VERSION = 1` |
-| 2 | `definitionDigest` | §3.1 的结果（sha256 hex） |
-| 3 | `stepId` | `workflow-definition.v1.json` 的 `steps[].stepId` |
-| 4 | `itemKey` | 子项身份；长度 1..160 |
-| 5 | `generationRevision` | 1..1000 |
-| 6 | `taskTemplateDigest` | `task-templates.v1.json` 里**该步骤引用模板正文**的 sha256 |
-| 7 | `outputSchemaVersion` | 该产物 schema 的版本；`taskTemplates.contractChangeRule` 要求模板改字段集合时必须提升它 |
-| 8 | `normalizedInputs` | 按 `inputBindings` 归一化后的输入值（不是原始用户输入） |
-| 9 | `upstreamArtifactDigests` | 上游产物摘要数组 |
-| 10 | `frozenModelBinding` | `{ alias, parameters }`；别名 + **显式参数**，不含凭据 |
-| 11 | `orderedAssetRefs` | `approvedAssetRefSchema[]`，**保序**（顺序即语义） |
-| 12 | `frozenPromptText` | 需要冻结提示词正文的步骤填写，否则 `null` |
+| #   | 字段                      | 语义                                                                                    |
+| --- | ------------------------- | --------------------------------------------------------------------------------------- |
+| 1   | `schemaVersion`           | `CONTRACT_SCHEMA_VERSION = 1`                                                           |
+| 2   | `definitionDigest`        | §3.1 的结果（sha256 hex）                                                               |
+| 3   | `stepId`                  | `workflow-definition.v1.json` 的 `steps[].stepId`                                       |
+| 4   | `itemKey`                 | 子项身份；长度 1..160                                                                   |
+| 5   | `generationRevision`      | 1..1000                                                                                 |
+| 6   | `taskTemplateDigest`      | `task-templates.v1.json` 里**该步骤引用模板正文**的 sha256                              |
+| 7   | `outputSchemaVersion`     | 该产物 schema 的版本；`taskTemplates.contractChangeRule` 要求模板改字段集合时必须提升它 |
+| 8   | `normalizedInputs`        | 按 `inputBindings` 归一化后的输入值（不是原始用户输入）                                 |
+| 9   | `upstreamArtifactDigests` | 上游产物摘要数组                                                                        |
+| 10  | `frozenModelBinding`      | `{ alias, parameters }`；别名 + **显式参数**，不含凭据                                  |
+| 11  | `orderedAssetRefs`        | `approvedAssetRefSchema[]`，**保序**（顺序即语义）                                      |
+| 12  | `frozenPromptText`        | 需要冻结提示词正文的步骤填写，否则 `null`                                               |
 
 **必须排除**（`contracts.ts:1004` 明确规定）：时间戳、进度、临时 URL、
 **画布节点坐标**、供应商 job id、`Run.id`、`attempt`、凭据。
@@ -318,21 +318,22 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 两个**正交**的维度（`contracts.ts` D6）。混用会导致换幂等键重发 = 重复付费。
 
-| 维度 | 生成修订 `generationRevision` | 技术重试 `attempt` / `retryOf` |
-| --- | --- | --- |
-| 触发者 | **人**（"这张不行，再画一张"；质检返工） | **系统**（网络错误、超时、5xx、限流） |
-| `itemKey` | **保留** | **保留** |
-| `generationRevision` | **提升 +1** | **保留不变** |
-| 幂等键 | **变化**（含 `r{revision}` 段） | **不变** |
-| `inputFingerprint` | 提示词未变时**可能不变** | **不变** |
-| 数据库痕迹 | **新建** `WorkflowStepRun` 行 | 同一行 `attempt += 1`；或 `Run.retryOf` 指向原 `Run` |
-| 旧产物 | **保留**（`mustPreserveOldArtifacts: true`） | 保留 |
-| 计费 | 计入 `regenerationsPerItem`，**消耗预算** | 计入 `vendorRequests`；不改 `regenerationsPerItem` |
-| 画布节点 | **不新建节点**（`stableAcrossRetries` / `mustNotCreateNodePerAttempt`） | **不新建节点** |
-| 上限 | `budget.maxRegenerationsPerItem`（≤ 10） | `retryPolicy.maxAttempts`（多为 2） |
-| 错误码 | `WF_REPLAY_GENERATION_REVISION_REQUIRED` | `WF_STATE_SEND_UNKNOWN`（发送状态不确定时） |
+| 维度                 | 生成修订 `generationRevision`                                           | 技术重试 `attempt` / `retryOf`                       |
+| -------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------- |
+| 触发者               | **人**（"这张不行，再画一张"；质检返工）                                | **系统**（网络错误、超时、5xx、限流）                |
+| `itemKey`            | **保留**                                                                | **保留**                                             |
+| `generationRevision` | **提升 +1**                                                             | **保留不变**                                         |
+| 幂等键               | **变化**（含 `r{revision}` 段）                                         | **不变**                                             |
+| `inputFingerprint`   | 提示词未变时**可能不变**                                                | **不变**                                             |
+| 数据库痕迹           | **新建** `WorkflowStepRun` 行                                           | 同一行 `attempt += 1`；或 `Run.retryOf` 指向原 `Run` |
+| 旧产物               | **保留**（`mustPreserveOldArtifacts: true`）                            | 保留                                                 |
+| 计费                 | 计入 `regenerationsPerItem`，**消耗预算**                               | 计入 `vendorRequests`；不改 `regenerationsPerItem`   |
+| 画布节点             | **不新建节点**（`stableAcrossRetries` / `mustNotCreateNodePerAttempt`） | **不新建节点**                                       |
+| 上限                 | `budget.maxRegenerationsPerItem`（≤ 10）                                | `retryPolicy.maxAttempts`（多为 2）                  |
+| 错误码               | `WF_REPLAY_GENERATION_REVISION_REQUIRED`                                | `WF_STATE_SEND_UNKNOWN`（发送状态不确定时）          |
 
 权威表述：
+
 - `workflow-definition.v1.json` `retryPolicy.dimensions`：
   `technicalRetry` = 保留原 `itemKey` 与 `generationRevision`，恢复原 `Run` 或走
   `Run.retryOf` 链（`prisma/schema.prisma:370`）；
@@ -358,36 +359,36 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 ### 6.1 状态
 
-| 状态 | 含义 |
-| --- | --- |
-| `pending` | 步骤已就绪但尚未产出待审产物 |
-| `awaiting_decision` | 产物已冻结、`artifactDigest` 已记录，等待人工决定 |
-| `approved` | 存在**有效** `approved` 决定，绑定到 `targetArtifactDigest` |
-| `rejected` | 存在有效 `rejected` 决定；步骤回到可重画 |
-| `stale` | 审批所依赖的输入已变更；该审批**不再可信** |
+| 状态                | 含义                                                        |
+| ------------------- | ----------------------------------------------------------- |
+| `pending`           | 步骤已就绪但尚未产出待审产物                                |
+| `awaiting_decision` | 产物已冻结、`artifactDigest` 已记录，等待人工决定           |
+| `approved`          | 存在**有效** `approved` 决定，绑定到 `targetArtifactDigest` |
+| `rejected`          | 存在有效 `rejected` 决定；步骤回到可重画                    |
+| `stale`             | 审批所依赖的输入已变更；该审批**不再可信**                  |
 
 ### 6.2 转换表
 
-| # | 转换 | 触发条件 | 幂等行为 | 错误码 |
-| --- | --- | --- | --- | --- |
-| T1 | `pending → awaiting_decision` | 该步骤全部 `dependsOn` 已 `completed`，且产物通过 `validateComicArtifacts()`（返回空数组） | 已在 `awaiting_decision` 再触发**不得**改写 `artifactDigest` | 结构校验失败则不进入：`WF_SCHEMA_VERSION_UNSUPPORTED` / `WF_DUPLICATE_STABLE_ID` / `WF_REF_DANGLING` … |
-| T2 | `awaiting_decision → approved` | 收到 `decision: 'approved'`，且 `expectedStepRevision === stepRun.revision`，且 `targetArtifactDigest === stepRun.artifactDigest`，且 `targetKind !== 'story_scope'` 时 `selectedCandidateKey` 存在 | 同一 `approvalId` 重复提交**无副作用**，返回首次结果（`duplicateApprovalIsNoop: true`） | revision 不符 → `WF_STATE_APPROVAL_STALE`；digest 不符或 `selectedCandidateKey` 缺失 → `WF_STATE_APPROVAL_TARGET_MISMATCH` |
-| T3 | `awaiting_decision → rejected` | 同上，`decision: 'rejected'` | 同上 | 同上 |
-| T4 | `approved → stale` | 该 gate 依赖的任一上游步骤产出新的 `generationRevision` 或 `artifactDigest` 变化 | 已 `stale` 再触发不改写 | 之后引用该审批 → `WF_STATE_APPROVAL_STALE` |
-| T5 | `rejected → pending` | 用户发起重画（提升 `generationRevision`） | 同 `(stepId, itemKey, generationRevision)` 只允许一次 | 未提升修订即提交 → `WF_REPLAY_GENERATION_REVISION_REQUIRED` |
-| T6 | `rejected → awaiting_decision` | 重画产物通过结构校验 | 同 T1 | 同 T1 |
-| T7 | `awaiting_decision → stale` | 等待期间上游变更（T4 的等待期版本） | 已 `stale` 再触发不改写 | 随后提交的审批 → `WF_STATE_APPROVAL_STALE` |
-| T8 | `approved → approved` | **不存在** | — | 上游一变必然经 T4 到 `stale`，不允许"静默换绑定" |
-| T9 | 任意 → `cancelled` | 用户取消整个 `WorkflowRun`（§10） | 已取消再触发无副作用 | — |
+| #   | 转换                           | 触发条件                                                                                                                                                                                            | 幂等行为                                                                                | 错误码                                                                                                                     |
+| --- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| T1  | `pending → awaiting_decision`  | 该步骤全部 `dependsOn` 已 `completed`，且产物通过 `validateComicArtifacts()`（返回空数组）                                                                                                          | 已在 `awaiting_decision` 再触发**不得**改写 `artifactDigest`                            | 结构校验失败则不进入：`WF_SCHEMA_VERSION_UNSUPPORTED` / `WF_DUPLICATE_STABLE_ID` / `WF_REF_DANGLING` …                     |
+| T2  | `awaiting_decision → approved` | 收到 `decision: 'approved'`，且 `expectedStepRevision === stepRun.revision`，且 `targetArtifactDigest === stepRun.artifactDigest`，且 `targetKind !== 'story_scope'` 时 `selectedCandidateKey` 存在 | 同一 `approvalId` 重复提交**无副作用**，返回首次结果（`duplicateApprovalIsNoop: true`） | revision 不符 → `WF_STATE_APPROVAL_STALE`；digest 不符或 `selectedCandidateKey` 缺失 → `WF_STATE_APPROVAL_TARGET_MISMATCH` |
+| T3  | `awaiting_decision → rejected` | 同上，`decision: 'rejected'`                                                                                                                                                                        | 同上                                                                                    | 同上                                                                                                                       |
+| T4  | `approved → stale`             | 该 gate 依赖的任一上游步骤产出新的 `generationRevision` 或 `artifactDigest` 变化                                                                                                                    | 已 `stale` 再触发不改写                                                                 | 之后引用该审批 → `WF_STATE_APPROVAL_STALE`                                                                                 |
+| T5  | `rejected → pending`           | 用户发起重画（提升 `generationRevision`）                                                                                                                                                           | 同 `(stepId, itemKey, generationRevision)` 只允许一次                                   | 未提升修订即提交 → `WF_REPLAY_GENERATION_REVISION_REQUIRED`                                                                |
+| T6  | `rejected → awaiting_decision` | 重画产物通过结构校验                                                                                                                                                                                | 同 T1                                                                                   | 同 T1                                                                                                                      |
+| T7  | `awaiting_decision → stale`    | 等待期间上游变更（T4 的等待期版本）                                                                                                                                                                 | 已 `stale` 再触发不改写                                                                 | 随后提交的审批 → `WF_STATE_APPROVAL_STALE`                                                                                 |
+| T8  | `approved → approved`          | **不存在**                                                                                                                                                                                          | —                                                                                       | 上游一变必然经 T4 到 `stale`，不允许"静默换绑定"                                                                           |
+| T9  | 任意 → `cancelled`             | 用户取消整个 `WorkflowRun`（§10）                                                                                                                                                                   | 已取消再触发无副作用                                                                    | —                                                                                                                          |
 
 ### 6.3 三个重复提交场景必须区分
 
-| 场景 | 判定 | 结果 | 错误码 |
-| --- | --- | --- | --- |
-| 同一 `approvalId` + 同一 `decisionIdempotencyKey` + 同样内容 | 真重放 | **无副作用**，返回首次结果 | — |
-| 同一 `approvalId` + 不同内容（换了 `decision` 或 `targetArtifactDigest`） | 同 ID 承载了两个决定 | **拒绝** | `WF_STATE_APPROVAL_DUPLICATE` |
-| 不同 `approvalId` + `expectedStepRevision` 已过期 | 旧客户端在旧修订上做决定 | **拒绝**，**绝不静默接受** | `WF_STATE_APPROVAL_STALE` |
-| `targetArtifactDigest` 指向的产物已不是当前产物 | 审批对象漂移 | **拒绝** | `WF_STATE_APPROVAL_TARGET_MISMATCH` |
+| 场景                                                                      | 判定                     | 结果                       | 错误码                              |
+| ------------------------------------------------------------------------- | ------------------------ | -------------------------- | ----------------------------------- |
+| 同一 `approvalId` + 同一 `decisionIdempotencyKey` + 同样内容              | 真重放                   | **无副作用**，返回首次结果 | —                                   |
+| 同一 `approvalId` + 不同内容（换了 `decision` 或 `targetArtifactDigest`） | 同 ID 承载了两个决定     | **拒绝**                   | `WF_STATE_APPROVAL_DUPLICATE`       |
+| 不同 `approvalId` + `expectedStepRevision` 已过期                         | 旧客户端在旧修订上做决定 | **拒绝**，**绝不静默接受** | `WF_STATE_APPROVAL_STALE`           |
+| `targetArtifactDigest` 指向的产物已不是当前产物                           | 审批对象漂移             | **拒绝**                   | `WF_STATE_APPROVAL_TARGET_MISMATCH` |
 
 `decisionIdempotencyKey` 由**客户端生成并持久化**，不是每次请求新生成
 （`contracts.ts:582-584`）。
@@ -453,11 +454,11 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 ### 7.2 三个 gate 的差异
 
-| gate | `targetKind` | 候选选择 | 失效范围（`stalePolicy`） |
-| --- | --- | --- | --- |
-| `g_story` | `story_scope` | `allowCandidateSelection: false`（唯一允许不填 `selectedCandidateKey` 的情形） | `invalidate_this_gate_and_dependents_only`；`invalidateScope: steps_depending_on_changed_step` |
-| `g_assets` | `asset_candidate` | `selectedCandidateKeyRequired: true`，`perItemApproval: true` | `invalidate_only_dependents_of_changed_itemKey`；`preserveOtherItemApprovals: true` |
-| `g_final` | `page_render` | `allowCandidateSelection: true`，`perPageApproval: true` | `invalidate_this_gate_and_export_only`；`preservePanelApprovals: true` |
+| gate       | `targetKind`      | 候选选择                                                                       | 失效范围（`stalePolicy`）                                                                      |
+| ---------- | ----------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `g_story`  | `story_scope`     | `allowCandidateSelection: false`（唯一允许不填 `selectedCandidateKey` 的情形） | `invalidate_this_gate_and_dependents_only`；`invalidateScope: steps_depending_on_changed_step` |
+| `g_assets` | `asset_candidate` | `selectedCandidateKeyRequired: true`，`perItemApproval: true`                  | `invalidate_only_dependents_of_changed_itemKey`；`preserveOtherItemApprovals: true`            |
+| `g_final`  | `page_render`     | `allowCandidateSelection: true`，`perPageApproval: true`                       | `invalidate_this_gate_and_export_only`；`preservePanelApprovals: true`                         |
 
 `g_story` 还有一个可选提前确认：`optionalEarlyConfirmation`
 （`afterStep: "s1_premise"`、`enabledWhen: "brief 标记主题复杂"`、`default: false`）。
@@ -482,7 +483,7 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
   - `from` 是 `"workflow.input"` 或 `"s0_brief.*"` → 变更 `brief` 属于**换一次编排**
     （`briefDigest` 变化），不是失效，应新建 `WorkflowRun`。
 - **R8.3 逐层传递但每层重新判定。** `s4_asset_candidates → g_assets → s5_render_specs
-  → s6_panel_render → s7_quality → s8_layout → s8_render_pages → g_final → s9_export`
+→ s6_panel_render → s7_quality → s8_layout → s8_render_pages → g_final → s9_export`
   是一条链，但第 2 层只应让"上游摘要真的变了"的那些子项失效，
   **不得**把所有下游无条件全量失效。
   例：`character:linwan@base` 重画 → `s5_render_specs` 里引用该 `itemKey` 的格失效，
@@ -505,12 +506,12 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 ### 8.2 几个具体判定
 
-| 事件 | 失效 | 保留 |
-| --- | --- | --- |
-| `s3_panel_plan` 增删一个格 | `s5_render_specs`、`s6_panel_render`、`s7_quality`、`s8_layout`、`s8_render_pages`、`g_final`、`s9_export`，以及 `g_story`（依赖 `s3_panel_plan`） | `s1_premise`、`s2_script` |
-| `character:linwan@base` 重画（`s4` 某子项 `generationRevision +1`） | `g_assets` 中该 `itemKey` 的审批；引用它的 `s5_render_specs` 出来的格；这些格的下游 | 其他 `itemKey` 的候选与审批 |
-| 仅 `s7_quality` 对某一格判 `rework` | `s6_panel_render` 的**该** `itemKey`；其下游 `s8_layout` / `s8_render_pages` / `g_final` / `s9_export` 中依赖该格的部分 | 其他格的候选；`g_assets` 的全部审批（`g_final.stalePolicy.preservePanelApprovals: true`） |
-| 用户改 `artStyle.notes` | 属于 `brief` 变化 → **新建 `WorkflowRun`** | 旧编排原样保留 |
+| 事件                                                                | 失效                                                                                                                                               | 保留                                                                                      |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `s3_panel_plan` 增删一个格                                          | `s5_render_specs`、`s6_panel_render`、`s7_quality`、`s8_layout`、`s8_render_pages`、`g_final`、`s9_export`，以及 `g_story`（依赖 `s3_panel_plan`） | `s1_premise`、`s2_script`                                                                 |
+| `character:linwan@base` 重画（`s4` 某子项 `generationRevision +1`） | `g_assets` 中该 `itemKey` 的审批；引用它的 `s5_render_specs` 出来的格；这些格的下游                                                                | 其他 `itemKey` 的候选与审批                                                               |
+| 仅 `s7_quality` 对某一格判 `rework`                                 | `s6_panel_render` 的**该** `itemKey`；其下游 `s8_layout` / `s8_render_pages` / `g_final` / `s9_export` 中依赖该格的部分                            | 其他格的候选；`g_assets` 的全部审批（`g_final.stalePolicy.preservePanelApprovals: true`） |
+| 用户改 `artStyle.notes`                                             | 属于 `brief` 变化 → **新建 `WorkflowRun`**                                                                                                         | 旧编排原样保留                                                                            |
 
 ---
 
@@ -522,13 +523,13 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 一个到达的 `Run` 结果属于"迟到/过期"，当且仅当下列任一项不成立：
 
-| 比对项 | 与什么比 |
-| --- | --- |
-| `stepId` | 当前有效 `WorkflowStepRun` |
-| `itemKey` | 同上 |
-| `generationRevision` | 同上 |
-| `inputFingerprint` | 同上 |
-| `definitionDigest` | 同上 |
+| 比对项               | 与什么比                   |
+| -------------------- | -------------------------- |
+| `stepId`             | 当前有效 `WorkflowStepRun` |
+| `itemKey`            | 同上                       |
+| `generationRevision` | 同上                       |
+| `inputFingerprint`   | 同上                       |
+| `definitionDigest`   | 同上                       |
 
 全部相等 → 正常验收（§6 T1）。
 任一不等 → 迟到/过期，按下节处置。
@@ -607,15 +608,15 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 `all_required` 是**全有或全无**的**交付**语义，**不是**"全有或全无的执行"语义。
 两者必须分开：
 
-| 层面 | 行为 |
-| --- | --- |
-| **执行** | 一个子项失败**不**取消其他子项。其他子项继续跑完并各自 checkpoint（`failFast: false`）。 |
-| **保留** | 成功的子项：`status = succeeded`，`artifact` 落库，**不重跑**。 |
-| **失败项** | 只有失败项进入重试/返工队列（`failureIsolation: "per_item"`）。 |
-| **步骤整体** | 只要任一 `all_required` 子项未成功，该步骤整体 `status = failed`（**不是** `partial`）。 |
-| **下游** | 下游步骤**不得开始**。`dependsOn` 未满足。 |
-| **交付** | **完整交付仍被阻断**：`s9_export` 不产出，`comicExportManifestSchema` 不生成。 |
-| **错误码** | 导出阶段的完整性拒绝用 `WF_EXPORT_INCOMPLETE`（`exportPolicy.rejectOnIncomplete: true`）。 |
+| 层面         | 行为                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| **执行**     | 一个子项失败**不**取消其他子项。其他子项继续跑完并各自 checkpoint（`failFast: false`）。   |
+| **保留**     | 成功的子项：`status = succeeded`，`artifact` 落库，**不重跑**。                            |
+| **失败项**   | 只有失败项进入重试/返工队列（`failureIsolation: "per_item"`）。                            |
+| **步骤整体** | 只要任一 `all_required` 子项未成功，该步骤整体 `status = failed`（**不是** `partial`）。   |
+| **下游**     | 下游步骤**不得开始**。`dependsOn` 未满足。                                                 |
+| **交付**     | **完整交付仍被阻断**：`s9_export` 不产出，`comicExportManifestSchema` 不生成。             |
+| **错误码**   | 导出阶段的完整性拒绝用 `WF_EXPORT_INCOMPLETE`（`exportPolicy.rejectOnIncomplete: true`）。 |
 
 ### 11.2 四条规则
 
@@ -649,14 +650,14 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 **同一个事务内**完成以下六项，任一项失败即整体回滚：
 
-| # | 操作 | 依据 |
-| --- | --- | --- |
-| 1 | `upsert` `WorkflowStepRun`（按 §2 唯一键；命中即**转恢复路径**，不新建） | §2.2 R2.1 |
-| 2 | **原子预留预算** | `budgetPolicy.reservation: "atomic_reserve_before_dispatch"`；"禁止并发子项读到同一笔剩余额度" |
-| 3 | 创建 `Run`，`idempotencyKey = submitIdempotencyKey(...)` | `contracts.ts:1070` |
-| 4 | 创建 `ExecutionAuthorization` | `packages/execution/src/index.ts:184` |
-| 5 | 创建 `RunSendIntent`（`status = 'pending'`） | `packages/execution/src/index.ts:297`；`prisma/schema.prisma:544` |
-| 6 | 创建 Outbox 记录 | `apps/api/src/runs.ts:182` 路径 |
+| #   | 操作                                                                     | 依据                                                                                           |
+| --- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| 1   | `upsert` `WorkflowStepRun`（按 §2 唯一键；命中即**转恢复路径**，不新建） | §2.2 R2.1                                                                                      |
+| 2   | **原子预留预算**                                                         | `budgetPolicy.reservation: "atomic_reserve_before_dispatch"`；"禁止并发子项读到同一笔剩余额度" |
+| 3   | 创建 `Run`，`idempotencyKey = submitIdempotencyKey(...)`                 | `contracts.ts:1070`                                                                            |
+| 4   | 创建 `ExecutionAuthorization`                                            | `packages/execution/src/index.ts:184`                                                          |
+| 5   | 创建 `RunSendIntent`（`status = 'pending'`）                             | `packages/execution/src/index.ts:297`；`prisma/schema.prisma:544`                              |
+| 6   | 创建 Outbox 记录                                                         | `apps/api/src/runs.ts:182` 路径                                                                |
 
 **为什么必须同事务**：任意一项单独成功都会留下不可自愈的中间态——
 "有预算预留但没有授权"（钱占了，活没派）、"有授权但没有预算"（活派了，钱没占，
@@ -689,13 +690,13 @@ key              = `${itemPart}|r${generationRevision}|${fingerprint.slice(0, 32
 
 分流：
 
-| 持久化状态 | 动作 | 错误码 |
-| --- | --- | --- |
-| `Run` 存在且 `idempotencyKey` 相同 | **复用**，绝不新建 | — |
-| `Run` 已 `succeeded` 但结果未归档 | `recover_existing_result`，**不得重新生成** | — |
-| `RunSendIntent.status !== 'pending'` | 置 `needs_review`，**不得自动重发、不得改幂等键** | `WF_STATE_SEND_UNKNOWN` |
-| 原 `Run` 已有后继（`Run.retryOf` 指向它） | 该节点只能恢复已有结果或轮询 | `WF_STATE_SEND_UNKNOWN` |
-| 确认无 `Run`、无 `RunSendIntent`、预留仍在 | **才**允许走 §12.1 提交事务 | — |
+| 持久化状态                                 | 动作                                              | 错误码                  |
+| ------------------------------------------ | ------------------------------------------------- | ----------------------- |
+| `Run` 存在且 `idempotencyKey` 相同         | **复用**，绝不新建                                | —                       |
+| `Run` 已 `succeeded` 但结果未归档          | `recover_existing_result`，**不得重新生成**       | —                       |
+| `RunSendIntent.status !== 'pending'`       | 置 `needs_review`，**不得自动重发、不得改幂等键** | `WF_STATE_SEND_UNKNOWN` |
+| 原 `Run` 已有后继（`Run.retryOf` 指向它）  | 该节点只能恢复已有结果或轮询                      | `WF_STATE_SEND_UNKNOWN` |
+| 确认无 `Run`、无 `RunSendIntent`、预留仍在 | **才**允许走 §12.1 提交事务                       | —                       |
 
 依据原文（`packages/execution/src/index.ts:737`）：
 
@@ -729,19 +730,18 @@ if (record.status !== 'pending') {
 
 ## 附：一页速查
 
-| 问题 | 答案 | 出处 |
-| --- | --- | --- |
-| 三层是什么 | `WorkflowRun` └ `WorkflowStepRun` └ 0..N `Run` | §1 |
-| 步骤身份键 | `(workflowRunId, stepId, itemKey, generationRevision)` | §2 |
-| 指纹怎么算 | 规范 JSON → 注入的 hasher；对象键排序、丢 `undefined`、数组保序、不规范化数值 | §3.3 |
-| 幂等键最长 | ≤ 178（上限 200） | §4.2 |
-| "再画一张" | 提升 `generationRevision`，即使提示词未变 | §5 |
-| 网络失败 | 保留 `generationRevision`，走 `attempt` / `Run.retryOf` | §5 |
-| 审批过期 | `WF_STATE_APPROVAL_STALE`，绝不静默接受 | §6.2 |
-| 等待人工 | 先持久化再释放 Worker，事件只做幂等唤醒 | §7 |
-| 上游改了 | 只失效依赖该版本的子项，保留其余 | §8 |
-| 迟到结果 | 保留 + `needs_review`，不采纳不删除 | §9 |
-| 取消 | 停止新派发、保留已产生、不承诺全取消不退款 | §10 |
-| 部分失败 | 保留成功项、只重跑失败项、交付仍阻断 | §11 |
-| 发送不确定 | 禁止自动新建，置 `WF_STATE_SEND_UNKNOWN` | §12.3 |
-
+| 问题       | 答案                                                                          | 出处  |
+| ---------- | ----------------------------------------------------------------------------- | ----- |
+| 三层是什么 | `WorkflowRun` └ `WorkflowStepRun` └ 0..N `Run`                                | §1    |
+| 步骤身份键 | `(workflowRunId, stepId, itemKey, generationRevision)`                        | §2    |
+| 指纹怎么算 | 规范 JSON → 注入的 hasher；对象键排序、丢 `undefined`、数组保序、不规范化数值 | §3.3  |
+| 幂等键最长 | ≤ 178（上限 200）                                                             | §4.2  |
+| "再画一张" | 提升 `generationRevision`，即使提示词未变                                     | §5    |
+| 网络失败   | 保留 `generationRevision`，走 `attempt` / `Run.retryOf`                       | §5    |
+| 审批过期   | `WF_STATE_APPROVAL_STALE`，绝不静默接受                                       | §6.2  |
+| 等待人工   | 先持久化再释放 Worker，事件只做幂等唤醒                                       | §7    |
+| 上游改了   | 只失效依赖该版本的子项，保留其余                                              | §8    |
+| 迟到结果   | 保留 + `needs_review`，不采纳不删除                                           | §9    |
+| 取消       | 停止新派发、保留已产生、不承诺全取消不退款                                    | §10   |
+| 部分失败   | 保留成功项、只重跑失败项、交付仍阻断                                          | §11   |
+| 发送不确定 | 禁止自动新建，置 `WF_STATE_SEND_UNKNOWN`                                      | §12.3 |

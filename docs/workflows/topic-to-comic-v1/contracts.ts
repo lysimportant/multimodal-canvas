@@ -82,11 +82,9 @@ export const CONTRACT_SCHEMA_VERSION = 1 as const;
  * 稳定 ID。刻意排除中文与空白：这些 ID 会进入幂等键并被 URL 携带。
  * 上限 64 与 Run.idempotencyKey 的 200 字符上限配合（见 §5 长度预算）。
  */
-export const stableIdSchema = z
-  .string()
-  .regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/, {
-    message: '稳定 ID 必须以字母开头，且只含 A-Za-z0-9_-（不超过 64 字符）',
-  });
+export const stableIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/, {
+  message: '稳定 ID 必须以字母开头，且只含 A-Za-z0-9_-（不超过 64 字符）',
+});
 
 /** sha256 十六进制摘要。 */
 export const sha256HexSchema = z
@@ -200,8 +198,7 @@ export function workflowIssue(
 export function workflowIssueCodesOf(error: z.ZodError): WorkflowIssueCode[] {
   const codes = new Set<WorkflowIssueCode>();
   for (const issue of error.issues) {
-    const code = (issue as { params?: { workflowIssueCode?: unknown } }).params
-      ?.workflowIssueCode;
+    const code = (issue as { params?: { workflowIssueCode?: unknown } }).params?.workflowIssueCode;
     if (typeof code === 'string' && (WORKFLOW_ISSUE_CODES as readonly string[]).includes(code)) {
       codes.add(code as WorkflowIssueCode);
     }
@@ -465,8 +462,7 @@ export type PanelPlan = z.infer<typeof panelPlanSchema>;
 export const assetItemKeySchema = z
   .string()
   .regex(/^(character|scene|prop|style):[A-Za-z][A-Za-z0-9_-]{0,63}@[A-Za-z][A-Za-z0-9_-]{0,63}$/, {
-    message:
-      'itemKey 必须形如 <kind>:<entityId>@<variantId>，且不得使用数组下标或可改展示名',
+    message: 'itemKey 必须形如 <kind>:<entityId>@<variantId>，且不得使用数组下标或可改展示名',
   });
 
 /**
@@ -602,11 +598,9 @@ export const approvalDecisionSchema = z
       decision.targetKind !== 'story_scope'
     ) {
       context.addIssue(
-        workflowIssue(
-          'WF_STATE_APPROVAL_TARGET_MISMATCH',
-          '只有 story_scope 允许不指定候选',
-          ['selectedCandidateKey'],
-        ),
+        workflowIssue('WF_STATE_APPROVAL_TARGET_MISMATCH', '只有 story_scope 允许不指定候选', [
+          'selectedCandidateKey',
+        ]),
       );
     }
   });
@@ -829,9 +823,7 @@ export const comicExportManifestSchema = z
       .min(1),
     /** 被排除的格必须留痕；不能悄悄少一页（Codex 风险 #8）。 */
     excludedPanels: z
-      .array(
-        z.object({ panelId: stableIdSchema, reason: z.string().min(1).max(300) }).strict(),
-      )
+      .array(z.object({ panelId: stableIdSchema, reason: z.string().min(1).max(300) }).strict())
       .default([]),
     generatedAt: isoDateTimeSchema,
     approvedAt: isoDateTimeSchema,
@@ -988,7 +980,8 @@ export function validateComicArtifacts(input: {
   const manifest = input.exportManifest;
   if (manifest) {
     const exportedPages = new Set(manifest.pages.map((p) => p.pageId));
-    for (const page of panelPlan.pages) if (!exportedPages.has(page.pageId)) add('WF_EXPORT_INCOMPLETE');
+    for (const page of panelPlan.pages)
+      if (!exportedPages.has(page.pageId)) add('WF_EXPORT_INCOMPLETE');
     if (manifest.pages.length !== panelPlan.pages.length) add('WF_EXPORT_INCOMPLETE');
     if (manifest.definitionVersion !== '0.1.0') add('WF_EXPORT_VERSION_MISMATCH');
   }

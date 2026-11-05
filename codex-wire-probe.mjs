@@ -5,7 +5,8 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-const CODEX = 'C:\\Users\\Sui\\.dsh\\profiles\\desktop\\node_modules\\@openai\\codex\\bin\\codex.js';
+const CODEX =
+  'C:\\Users\\Sui\\.dsh\\profiles\\desktop\\node_modules\\@openai\\codex\\bin\\codex.js';
 const CWD = 'G:\\multimodal-canvas';
 const PROMPT =
   'Do not use any tools, commands, or file reads. Reply with exactly two lines:\n' +
@@ -56,7 +57,8 @@ createInterface({ input: child.stdout }).on('line', (line) => {
   }
   if (msg.id !== undefined && msg.method) {
     console.log('[server-request]', msg.method, JSON.stringify(msg.params ?? {}).slice(0, 300));
-    if (/Approval/.test(msg.method)) send({ jsonrpc: '2.0', id: msg.id, result: { decision: 'decline' } });
+    if (/Approval/.test(msg.method))
+      send({ jsonrpc: '2.0', id: msg.id, result: { decision: 'decline' } });
     else send({ jsonrpc: '2.0', id: msg.id, result: {} });
     return;
   }
@@ -91,7 +93,14 @@ try {
     approvalPolicy: 'never',
   });
   threadId = thread?.thread?.id;
-  console.log('thread/start -> threadId =', threadId, '| ephemeral =', thread?.thread?.ephemeral, '| model =', thread?.model ?? '(none)');
+  console.log(
+    'thread/start -> threadId =',
+    threadId,
+    '| ephemeral =',
+    thread?.thread?.ephemeral,
+    '| model =',
+    thread?.model ?? '(none)',
+  );
 
   const turn = await request('turn/start', {
     threadId,
@@ -108,7 +117,10 @@ try {
   console.log('fallback answer (phase null)   =', JSON.stringify(unphased));
   const chosen = (finalAnswer ?? unphased ?? '').trim();
   console.log('ANSWER =', JSON.stringify(chosen));
-  console.log('RESULT:', chosen.includes('MARKER-QX7-4E91') && chosen.includes('323') ? 'PASS' : 'CHECK');
+  console.log(
+    'RESULT:',
+    chosen.includes('MARKER-QX7-4E91') && chosen.includes('323') ? 'PASS' : 'CHECK',
+  );
 } catch (e) {
   console.log('RESULT: FAILED ->', e.message);
 } finally {

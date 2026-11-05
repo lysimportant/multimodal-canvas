@@ -91,17 +91,41 @@
       "runCount": 11,
       "vendorCreateRequests": 11,
       "breakdown": {
-        "s0_brief": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0, "reason": "type=transform, vendorCall=false（workflow-definition.v1.json:46-47）" },
+        "s0_brief": {
+          "stepRuns": 1,
+          "runs": 0,
+          "vendorCreateRequests": 0,
+          "reason": "type=transform, vendorCall=false（workflow-definition.v1.json:46-47）"
+        },
         "s1_premise": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
         "s2_script": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
         "s3_panel_plan": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
         "s3_asset_manifest": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
         "g_story": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
-        "s4_asset_candidates": { "stepRuns": 3, "runs": 3, "vendorCreateRequests": 3, "reason": "foreach 展开 3 个 itemKey（2 角色 + 1 场景）" },
+        "s4_asset_candidates": {
+          "stepRuns": 3,
+          "runs": 3,
+          "vendorCreateRequests": 3,
+          "reason": "foreach 展开 3 个 itemKey（2 角色 + 1 场景）"
+        },
         "g_assets": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
-        "s5_render_specs": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0, "reason": "type=transform, vendorCall=false（:348-349）" },
-        "s6_panel_render": { "stepRuns": 4, "runs": 4, "vendorCreateRequests": 4, "reason": "foreach 展开 4 格" },
-        "s7_quality": { "stepRuns": 1, "runs": "1（仅当 brief.modelBindings.vision 存在）", "vendorCreateRequests": "1（同上；缺失即跳过评审，visionScore 为 null）" },
+        "s5_render_specs": {
+          "stepRuns": 1,
+          "runs": 0,
+          "vendorCreateRequests": 0,
+          "reason": "type=transform, vendorCall=false（:348-349）"
+        },
+        "s6_panel_render": {
+          "stepRuns": 4,
+          "runs": 4,
+          "vendorCreateRequests": 4,
+          "reason": "foreach 展开 4 格"
+        },
+        "s7_quality": {
+          "stepRuns": 1,
+          "runs": "1（仅当 brief.modelBindings.vision 存在）",
+          "vendorCreateRequests": "1（同上；缺失即跳过评审，visionScore 为 null）"
+        },
         "s8_layout": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
         "s8_render_pages": { "stepRuns": 1, "runs": 1, "vendorCreateRequests": 1 },
         "g_final": { "stepRuns": 1, "runs": 0, "vendorCreateRequests": 0 },
@@ -211,12 +235,51 @@
       ],
       "coverageArithmetic": "35 个码 = 19 个在 contracts.ts 内可产出 + 16 个在 contracts.ts 内无产出者（其中 1 个 WF_REPLAY_KEY_TOO_LONG 只以裸 Error 字符串抛出，workflowIssueCodesOf() 无法提取，见 README.md 第 9 节第 4 条）。全仓夹具合计覆盖 18 个：本夹具 7 个 + 两份 expected-artifacts.json 的负样例 13 个（其中 6 个仅本夹具覆盖、11 个仅负样例覆盖、2 个两者都覆盖）。仍未被任何夹具覆盖 17 个，逐条列在 uncoveredByAllFixtures 与 acceptance-matrix.md 的错误码覆盖表中 —— 这是 P1 的实质发现。",
       "coveredByArtifactFixtures": {
-        "theme-mini/expected-artifacts.json": ["WF_REF_UNKNOWN_SPEAKER", "WF_REF_ASSET_NOT_APPROVED", "WF_REF_ITEM_KEY_INVALID", "WF_REF_ASSET_VERSION_STALE", "WF_LIMIT_REFERENCES", "WF_LIMIT_PROMPT_CHARS", "WF_DUPLICATE_STABLE_ID", "WF_LIMIT_SCENES", "WF_LAYOUT_PANEL_MISSING", "WF_LAYOUT_BALLOON_OVERFLOW", "WF_LAYOUT_RECT_INVALID", "WF_EXPORT_INCOMPLETE"],
-        "huozhai-s01/expected-artifacts.json": ["WF_REF_UNKNOWN_SPEAKER", "WF_REF_ASSET_NOT_APPROVED", "WF_REF_ASSET_VERSION_STALE", "WF_LIMIT_REFERENCES", "WF_LAYOUT_RECT_INVALID", "WF_EXPORT_INCOMPLETE", "WF_EXPORT_VERSION_MISMATCH"],
+        "theme-mini/expected-artifacts.json": [
+          "WF_REF_UNKNOWN_SPEAKER",
+          "WF_REF_ASSET_NOT_APPROVED",
+          "WF_REF_ITEM_KEY_INVALID",
+          "WF_REF_ASSET_VERSION_STALE",
+          "WF_LIMIT_REFERENCES",
+          "WF_LIMIT_PROMPT_CHARS",
+          "WF_DUPLICATE_STABLE_ID",
+          "WF_LIMIT_SCENES",
+          "WF_LAYOUT_PANEL_MISSING",
+          "WF_LAYOUT_BALLOON_OVERFLOW",
+          "WF_LAYOUT_RECT_INVALID",
+          "WF_EXPORT_INCOMPLETE"
+        ],
+        "huozhai-s01/expected-artifacts.json": [
+          "WF_REF_UNKNOWN_SPEAKER",
+          "WF_REF_ASSET_NOT_APPROVED",
+          "WF_REF_ASSET_VERSION_STALE",
+          "WF_LIMIT_REFERENCES",
+          "WF_LAYOUT_RECT_INVALID",
+          "WF_EXPORT_INCOMPLETE",
+          "WF_EXPORT_VERSION_MISMATCH"
+        ],
         "_note": "huozhai-s01 的 WF_REF_ASSET_NOT_APPROVED 负样例自述实际返回两个码 WF_LIMIT_REFERENCES 与 WF_REF_ASSET_NOT_APPROVED（该文件 :697-698），因此 P2 断言必须用『包含』而不是『等于』。",
         "_regressionNote": "本夹具首版写这批负样例不存在，是当时的真实状态；第二次修订时两份 expected-artifacts.json 已由同批协作落盘，故此处改为实测清单。"
       },
-      "uncoveredByAllFixtures": ["WF_SCHEMA_VERSION_UNSUPPORTED", "WF_INPUT_INVALID", "WF_STABLE_ID_INVALID", "WF_TASK_TEMPLATE_MISSING", "WF_MODEL_BINDING_MISSING", "WF_REF_DANGLING", "WF_REF_ASSET_VARIANT_MISSING", "WF_LIMIT_CHARACTERS", "WF_LIMIT_PAGES", "WF_LIMIT_PANELS", "WF_LIMIT_FOREACH_ITEMS", "WF_LAYOUT_READING_ORDER_INVALID", "WF_STATE_APPROVAL_TARGET_MISMATCH", "WF_STATE_STEP_REVISION_MISMATCH", "WF_REPLAY_FINGERPRINT_MISMATCH", "WF_REPLAY_KEY_TOO_LONG", "WF_BUDGET_UNKNOWN_PRICE"]
+      "uncoveredByAllFixtures": [
+        "WF_SCHEMA_VERSION_UNSUPPORTED",
+        "WF_INPUT_INVALID",
+        "WF_STABLE_ID_INVALID",
+        "WF_TASK_TEMPLATE_MISSING",
+        "WF_MODEL_BINDING_MISSING",
+        "WF_REF_DANGLING",
+        "WF_REF_ASSET_VARIANT_MISSING",
+        "WF_LIMIT_CHARACTERS",
+        "WF_LIMIT_PAGES",
+        "WF_LIMIT_PANELS",
+        "WF_LIMIT_FOREACH_ITEMS",
+        "WF_LAYOUT_READING_ORDER_INVALID",
+        "WF_STATE_APPROVAL_TARGET_MISMATCH",
+        "WF_STATE_STEP_REVISION_MISMATCH",
+        "WF_REPLAY_FINGERPRINT_MISMATCH",
+        "WF_REPLAY_KEY_TOO_LONG",
+        "WF_BUDGET_UNKNOWN_PRICE"
+      ]
     },
     "assumptionsToConfirm": [
       "WorkflowStepRun 的唯一键为 (workflowRunId, stepId, itemKey, generationRevision)（README.md 第 8 节第 2 步）。本夹具的 stepRunCount 全部按此计算。",
@@ -243,37 +306,69 @@
         {
           "at": "t0",
           "action": "workflow.run.submit",
-          "detail": { "definitionId": "topic-to-comic", "definitionVersion": "0.1.0", "definitionDigest": "$digest:definition", "projectId": "P", "briefDigest": "$digest:briefA" },
+          "detail": {
+            "definitionId": "topic-to-comic",
+            "definitionVersion": "0.1.0",
+            "definitionDigest": "$digest:definition",
+            "projectId": "P",
+            "briefDigest": "$digest:briefA"
+          },
           "expectedReaction": "受理，创建 WorkflowRun WFR-1 并返回其 id"
         },
         {
           "at": "t1",
           "action": "workflow.run.submit",
-          "detail": { "definitionId": "topic-to-comic", "definitionVersion": "0.1.0", "definitionDigest": "$digest:definition", "projectId": "P", "briefDigest": "$digest:briefA" },
+          "detail": {
+            "definitionId": "topic-to-comic",
+            "definitionVersion": "0.1.0",
+            "definitionDigest": "$digest:definition",
+            "projectId": "P",
+            "briefDigest": "$digest:briefA"
+          },
           "expectedReaction": "返回同一个 WFR-1，不新建 WorkflowRun"
         },
         {
           "at": "t2",
           "action": "step.dispatch",
-          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "generationRevision": 1, "idempotencyKey": "$key:K1_linwan_base_r1" },
+          "detail": {
+            "stepId": "s4_asset_candidates",
+            "itemKey": "character:linwan@base",
+            "generationRevision": 1,
+            "idempotencyKey": "$key:K1_linwan_base_r1"
+          },
           "expectedReaction": "创建 WorkflowStepRun 与 Run R-1（status=pending）"
         },
         {
           "at": "t3",
           "action": "step.dispatch",
-          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "generationRevision": 1, "idempotencyKey": "$key:K1_linwan_base_r1" },
+          "detail": {
+            "stepId": "s4_asset_candidates",
+            "itemKey": "character:linwan@base",
+            "generationRevision": 1,
+            "idempotencyKey": "$key:K1_linwan_base_r1"
+          },
           "expectedReaction": "返回 t2 的同一个 WorkflowStepRun 与同一个 Run R-1"
         },
         {
           "at": "t4",
           "action": "vendor.create",
-          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "idempotencyKey": "$key:K1_linwan_base_r1", "paid": true, "budgetClass": "image" },
+          "detail": {
+            "stepId": "s4_asset_candidates",
+            "itemKey": "character:linwan@base",
+            "idempotencyKey": "$key:K1_linwan_base_r1",
+            "paid": true,
+            "budgetClass": "image"
+          },
           "expectedReaction": "付费请求恰好发出 1 次"
         },
         {
           "at": "t5",
           "action": "canvas.projection_write",
-          "detail": { "mode": "batch_canvas_command_with_expectedRevision", "expectedRevision": 0, "keys": ["character:linwan@base"] },
+          "detail": {
+            "mode": "batch_canvas_command_with_expectedRevision",
+            "expectedRevision": 0,
+            "keys": ["character:linwan@base"]
+          },
           "expectedReaction": "画布新增 1 个稳定节点，revision 变为 1"
         }
       ],
@@ -288,7 +383,12 @@
         "distinctWorkflowRunCount": 1,
         "returnedWorkflowRunIdAtT1": "WFR-1",
         "approvalStatus": "pending",
-        "canvasNodes": { "newNodes": 1, "nodeKeys": ["character:linwan@base"], "total": 1, "expectedRevisionUsed": 0 },
+        "canvasNodes": {
+          "newNodes": 1,
+          "nodeKeys": ["character:linwan@base"],
+          "total": 1,
+          "expectedRevisionUsed": 0
+        },
         "exportFiles": [],
         "issueCodes": []
       },
@@ -328,7 +428,13 @@
         {
           "at": "t0",
           "action": "step.dispatch",
-          "detail": { "stepId": "s6_panel_render", "itemKey": "panel:p1_3", "generationRevision": 1, "idempotencyKey": "$key:K2_panel_p1_3_r1", "snapshotFingerprint": "$digest:fingerprintS6Panel3" },
+          "detail": {
+            "stepId": "s6_panel_render",
+            "itemKey": "panel:p1_3",
+            "generationRevision": 1,
+            "idempotencyKey": "$key:K2_panel_p1_3_r1",
+            "snapshotFingerprint": "$digest:fingerprintS6Panel3"
+          },
           "expectedReaction": "创建 WorkflowStepRun 与 Run R-1"
         },
         {
@@ -340,13 +446,25 @@
         {
           "at": "t2",
           "action": "vendor.create",
-          "detail": { "runId": "R-1", "paid": true, "budgetClass": "image", "httpMethod": "POST", "endpoint": "images/generations" },
+          "detail": {
+            "runId": "R-1",
+            "paid": true,
+            "budgetClass": "image",
+            "httpMethod": "POST",
+            "endpoint": "images/generations"
+          },
           "expectedReaction": "第 1 次、也是唯一一次付费创建请求"
         },
         {
           "at": "t3",
           "action": "vendor.response_absent",
-          "detail": { "reason": "client_timeout_after_send", "elapsedMs": 60000, "httpStatus": null, "platformJobId": null, "errorBody": null },
+          "detail": {
+            "reason": "client_timeout_after_send",
+            "elapsedMs": 60000,
+            "httpStatus": null,
+            "platformJobId": null,
+            "errorBody": null
+          },
           "expectedReaction": "既不能判定成功，也不能判定失败；发送状态变为 unknown"
         },
         {
@@ -358,7 +476,10 @@
         {
           "at": "t5",
           "action": "retryPolicy.evaluate",
-          "detail": { "condition": "发送结果不确定", "source": "workflow-definition.v1.json:659-665" },
+          "detail": {
+            "condition": "发送结果不确定",
+            "source": "workflow-definition.v1.json:659-665"
+          },
           "expectedReaction": "action=needs_review；不派发、不重试、不新建 Run"
         }
       ],
@@ -412,13 +533,23 @@
         {
           "at": "t0",
           "action": "vendor.create",
-          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "paid": true, "budgetClass": "image" },
+          "detail": {
+            "stepId": "s4_asset_candidates",
+            "itemKey": "character:linwan@base",
+            "paid": true,
+            "budgetClass": "image"
+          },
           "expectedReaction": "唯一一次付费创建请求"
         },
         {
           "at": "t1",
           "action": "vendor.result_received",
-          "detail": { "runId": "R-1", "httpStatus": 200, "platformJobId": "J-1", "contentDigest": "$digest:linwanV1Content" },
+          "detail": {
+            "runId": "R-1",
+            "httpStatus": 200,
+            "platformJobId": "J-1",
+            "contentDigest": "$digest:linwanV1Content"
+          },
           "expectedReaction": "Run.status=SUCCEEDED，结果冻结进 Run.result"
         },
         {
@@ -436,19 +567,30 @@
         {
           "at": "t4",
           "action": "retryPolicy.evaluate",
-          "detail": { "condition": "已有结果但归档失败", "source": "workflow-definition.v1.json:654-658" },
+          "detail": {
+            "condition": "已有结果但归档失败",
+            "source": "workflow-definition.v1.json:654-658"
+          },
           "expectedReaction": "action=recover_existing_result，mustNotRegenerate=true"
         },
         {
           "at": "t5",
           "action": "artifact.archive_retry",
-          "detail": { "source": "Run.result（同一份已冻结字节）", "contentDigest": "$digest:linwanV1Content", "attempt": 2 },
+          "detail": {
+            "source": "Run.result（同一份已冻结字节）",
+            "contentDigest": "$digest:linwanV1Content",
+            "attempt": 2
+          },
           "expectedReaction": "归档成功，写入 AssetVersion v1（sha256/contentKey 之一，digestSource 显式记录）"
         },
         {
           "at": "t6",
           "action": "gate.enter",
-          "detail": { "stepId": "g_assets", "targetKind": "asset_candidate", "perItemApproval": true },
+          "detail": {
+            "stepId": "g_assets",
+            "targetKind": "asset_candidate",
+            "perItemApproval": true
+          },
           "expectedReaction": "g_assets 停在 awaiting_decision，等待人工逐项选定"
         }
       ],
@@ -505,7 +647,13 @@
         {
           "at": "t0",
           "action": "revision.advance",
-          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "fromGenerationRevision": 1, "toGenerationRevision": 2, "stepRevision": 4 },
+          "detail": {
+            "stepId": "s4_asset_candidates",
+            "itemKey": "character:linwan@base",
+            "fromGenerationRevision": 1,
+            "toGenerationRevision": 2,
+            "stepRevision": 4
+          },
           "expectedReaction": "步骤修订推进到 4，客户端未刷新"
         },
         {
@@ -641,7 +789,11 @@
         "unapprovedItemKeys": ["character:qiao@base", "scene:temple@night"],
         "approvalRows": 1,
         "approvedAssetRefs": 1,
-        "recordedDecision": { "approvalId": "ap_1", "selectedCandidateKey": "ck_a", "targetArtifactDigest": "$digest:candidateLinwanA" },
+        "recordedDecision": {
+          "approvalId": "ap_1",
+          "selectedCandidateKey": "ck_a",
+          "targetArtifactDigest": "$digest:candidateLinwanA"
+        },
         "canvasNodes": { "newNodes": 0, "nodeKeys": [], "total": 0 },
         "exportFiles": [],
         "issueCodes": ["WF_STATE_APPROVAL_DUPLICATE"],
@@ -682,43 +834,77 @@
         {
           "at": "t0",
           "action": "step.fanout_expand",
-          "detail": { "stepId": "s6_panel_render", "itemKeyTemplate": "panel:{panelId}", "expandedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "generationRevision": 1, "maxConcurrency": 4 },
+          "detail": {
+            "stepId": "s6_panel_render",
+            "itemKeyTemplate": "panel:{panelId}",
+            "expandedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"],
+            "generationRevision": 1,
+            "maxConcurrency": 4
+          },
           "expectedReaction": "创建 4 个 WorkflowStepRun（每格 1 个，唯一键含 generationRevision=1）"
         },
         {
           "at": "t1",
           "action": "vendor.create",
-          "detail": { "count": 4, "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "paid": true, "budgetClass": "image" },
+          "detail": {
+            "count": 4,
+            "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"],
+            "paid": true,
+            "budgetClass": "image"
+          },
           "expectedReaction": "首轮 4 次付费请求"
         },
         {
           "at": "t2",
           "action": "item.succeeded",
-          "detail": { "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_4"], "archivedAssetVersions": 3 },
+          "detail": {
+            "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_4"],
+            "archivedAssetVersions": 3
+          },
           "expectedReaction": "3 格产物落库并冻结；其稳定画布节点就位"
         },
         {
           "at": "t3",
           "action": "item.failed",
-          "detail": { "itemKey": "panel:p1_3", "attempt": 1, "reason": "vendor_5xx", "httpStatus": 502 },
+          "detail": {
+            "itemKey": "panel:p1_3",
+            "attempt": 1,
+            "reason": "vendor_5xx",
+            "httpStatus": 502
+          },
           "expectedReaction": "只有 panel:p1_3 进入重试判定"
         },
         {
           "at": "t4",
           "action": "item.technical_retry",
-          "detail": { "itemKey": "panel:p1_3", "attempt": 2, "generationRevision": 1, "keepsIdempotencyKey": true, "newRunViaRetryOf": true },
+          "detail": {
+            "itemKey": "panel:p1_3",
+            "attempt": 2,
+            "generationRevision": 1,
+            "keepsIdempotencyKey": true,
+            "newRunViaRetryOf": true
+          },
           "expectedReaction": "第 5 次 vendor.create；新建 Run 通过 Run.retryOf 指向原 Run；不新建 WorkflowStepRun"
         },
         {
           "at": "t5",
           "action": "item.failed",
-          "detail": { "itemKey": "panel:p1_3", "attempt": 2, "reason": "vendor_5xx", "httpStatus": 503 },
+          "detail": {
+            "itemKey": "panel:p1_3",
+            "attempt": 2,
+            "reason": "vendor_5xx",
+            "httpStatus": 503
+          },
           "expectedReaction": "panel:p1_3 终态 failed（maxAttempts=2 已用尽）"
         },
         {
           "at": "t6",
           "action": "step.join_evaluate",
-          "detail": { "joinPolicy": "all_required", "fullDeliveryStillBlocked": true, "source": "workflow-definition.v1.json:678-682" },
+          "detail": {
+            "joinPolicy": "all_required",
+            "fullDeliveryStillBlocked": true,
+            "source": "workflow-definition.v1.json:678-682"
+          },
           "expectedReaction": "s6_panel_render 不满足，s7_quality 不派发"
         },
         {
@@ -737,10 +923,19 @@
         "status": "failed",
         "stepStatus": "failed",
         "approvalStatus": "pending",
-        "itemStates": { "panel:p1_1": "succeeded", "panel:p1_2": "succeeded", "panel:p1_3": "failed", "panel:p1_4": "succeeded" },
+        "itemStates": {
+          "panel:p1_1": "succeeded",
+          "panel:p1_2": "succeeded",
+          "panel:p1_3": "failed",
+          "panel:p1_4": "succeeded"
+        },
         "retriedItemKeys": ["panel:p1_3"],
         "untouchedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_4"],
-        "canvasNodes": { "newNodes": 4, "nodeKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "total": 4 },
+        "canvasNodes": {
+          "newNodes": 4,
+          "nodeKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"],
+          "total": 4
+        },
         "exportFiles": [],
         "issueCodes": ["WF_EXPORT_INCOMPLETE"],
         "issueCodesByEvent": { "t7": ["WF_EXPORT_INCOMPLETE"] }
@@ -781,31 +976,55 @@
         {
           "at": "t0",
           "action": "asset.regenerate",
-          "detail": { "itemKey": "character:linwan@base", "fromGenerationRevision": 1, "toGenerationRevision": 2, "initiatedBy": "u_1", "reason": "用户换主角定稿图" },
+          "detail": {
+            "itemKey": "character:linwan@base",
+            "fromGenerationRevision": 1,
+            "toGenerationRevision": 2,
+            "initiatedBy": "u_1",
+            "reason": "用户换主角定稿图"
+          },
           "expectedReaction": "新建 generationRevision=2 的 WorkflowStepRun 与 Run；唯一键不含 r2 的旧行保留"
         },
         {
           "at": "t1",
           "action": "vendor.create",
-          "detail": { "stepId": "s4_asset_candidates", "itemKey": "character:linwan@base", "generationRevision": 2, "paid": true, "budgetClass": "image" },
+          "detail": {
+            "stepId": "s4_asset_candidates",
+            "itemKey": "character:linwan@base",
+            "generationRevision": 2,
+            "paid": true,
+            "budgetClass": "image"
+          },
           "expectedReaction": "第 1 次、也是唯一一次新增付费请求（计数相对 t0 前 +1）"
         },
         {
           "at": "t2",
           "action": "staleness.propagate",
-          "detail": { "changedItemKey": "character:linwan@base", "policy": "invalidate_only_dependents_of_changed_itemKey", "source": "workflow-definition.v1.json:326-329" },
+          "detail": {
+            "changedItemKey": "character:linwan@base",
+            "policy": "invalidate_only_dependents_of_changed_itemKey",
+            "source": "workflow-definition.v1.json:326-329"
+          },
           "expectedReaction": "g_assets 中该 itemKey 的批准失效；s5 中引用该 itemKey 的 spec 失效；依赖这些 spec 的 panel:p1_1 / panel:p1_3 及其 g_final / s9 失效"
         },
         {
           "at": "t3",
           "action": "approval.preserve_check",
-          "detail": { "preservedItemKeys": ["character:qiao@base", "scene:temple@night"], "preservedPanels": ["panel:p1_2", "panel:p1_4"] },
+          "detail": {
+            "preservedItemKeys": ["character:qiao@base", "scene:temple@night"],
+            "preservedPanels": ["panel:p1_2", "panel:p1_4"]
+          },
           "expectedReaction": "不受影响资产的批准原样保留，不需要重新审批"
         },
         {
           "at": "t4",
           "action": "asset.regenerate",
-          "detail": { "itemKey": "character:linwan@base", "generationRevision": 2, "initiatedBy": "u_1", "note": "客户端在修订未提升的情况下再次请求换图" },
+          "detail": {
+            "itemKey": "character:linwan@base",
+            "generationRevision": 2,
+            "initiatedBy": "u_1",
+            "note": "客户端在修订未提升的情况下再次请求换图"
+          },
           "expectedReaction": "拒绝并返回 WF_REPLAY_GENERATION_REVISION_REQUIRED，不发出任何付费请求"
         }
       ],
@@ -823,8 +1042,19 @@
         "invalidatedApprovedItemKeys": ["character:linwan@base"],
         "invalidatedPanels": ["panel:p1_1", "panel:p1_3"],
         "preservedPanels": ["panel:p1_2", "panel:p1_4"],
-        "preservedStepRuns": ["s1_premise", "s2_script", "s3_panel_plan", "s3_asset_manifest", "g_story"],
-        "canvasNodes": { "newNodes": 0, "nodeKeys": ["character:linwan@base"], "total": 4, "note": "重画复用同一稳定节点（mode=stable_node_per_item，:719-722）；历史进 run_and_artifact_list（:723）" },
+        "preservedStepRuns": [
+          "s1_premise",
+          "s2_script",
+          "s3_panel_plan",
+          "s3_asset_manifest",
+          "g_story"
+        ],
+        "canvasNodes": {
+          "newNodes": 0,
+          "nodeKeys": ["character:linwan@base"],
+          "total": 4,
+          "note": "重画复用同一稳定节点（mode=stable_node_per_item，:719-722）；历史进 run_and_artifact_list（:723）"
+        },
         "exportFiles": [],
         "issueCodes": ["WF_REPLAY_GENERATION_REVISION_REQUIRED"],
         "issueCodesByEvent": { "t0": [], "t4": ["WF_REPLAY_GENERATION_REVISION_REQUIRED"] }
@@ -866,37 +1096,62 @@
         {
           "at": "t0",
           "action": "budget.snapshot",
-          "detail": { "vendorRequests": { "used": 7, "limit": 10 }, "imageGenerations": { "used": 3, "limit": 4 }, "textGenerations": { "used": 4, "limit": 10 } },
+          "detail": {
+            "vendorRequests": { "used": 7, "limit": 10 },
+            "imageGenerations": { "used": 3, "limit": 4 },
+            "textGenerations": { "used": 4, "limit": 10 }
+          },
           "expectedReaction": "计数与已发生的付费请求一致"
         },
         {
           "at": "t1",
           "action": "step.fanout_expand",
-          "detail": { "stepId": "s6_panel_render", "expandedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "generationRevision": 1 },
+          "detail": {
+            "stepId": "s6_panel_render",
+            "expandedItemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"],
+            "generationRevision": 1
+          },
           "expectedReaction": "4 个子项尝试各自预留额度（不得并发读到同一笔剩余额度）"
         },
         {
           "at": "t2",
           "action": "budget.reserve",
-          "detail": { "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3"], "granted": 3, "vendorRequestsAfter": 10 },
+          "detail": {
+            "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3"],
+            "granted": 3,
+            "vendorRequestsAfter": 10
+          },
           "expectedReaction": "前 3 格预留成功，额度用满"
         },
         {
           "at": "t3",
           "action": "vendor.create",
-          "detail": { "count": 3, "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3"], "paid": true, "budgetClass": "image" },
+          "detail": {
+            "count": 3,
+            "itemKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3"],
+            "paid": true,
+            "budgetClass": "image"
+          },
           "expectedReaction": "恰好 3 次付费请求；不得出现第 4 次"
         },
         {
           "at": "t4",
           "action": "budget.reserve",
-          "detail": { "itemKey": "panel:p1_4", "granted": false, "reason": "insufficient_remaining" },
+          "detail": {
+            "itemKey": "panel:p1_4",
+            "granted": false,
+            "reason": "insufficient_remaining"
+          },
           "expectedReaction": "拒绝预留，返回 WF_BUDGET_EXCEEDED"
         },
         {
           "at": "t5",
           "action": "budget.exhaustion_behavior",
-          "detail": { "stopNewDispatch": true, "preserveInFlightAndCompleted": true, "source": "workflow-definition.v1.json:706-710" },
+          "detail": {
+            "stopNewDispatch": true,
+            "preserveInFlightAndCompleted": true,
+            "source": "workflow-definition.v1.json:706-710"
+          },
           "expectedReaction": "停止一切新派发；已完成产物原样保留；不再建节点、不再派发"
         },
         {
@@ -915,11 +1170,27 @@
         "status": "failed",
         "undispatchedItemKeys": ["panel:p1_4"],
         "preservedStepRunCount": 10,
-        "budgetCounters": { "vendorRequests": "10/10", "imageGenerations": "6/4 -> 超额前已停止派发", "textGenerations": "4/10" },
+        "budgetCounters": {
+          "vendorRequests": "10/10",
+          "imageGenerations": "6/4 -> 超额前已停止派发",
+          "textGenerations": "4/10"
+        },
         "approvalStatus": "approved",
         "canvasNodes": {
           "newNodes": 11,
-          "nodeKeys": ["brief", "step:s1_premise", "step:s2_script", "step:s3_panel_plan", "step:s3_asset_manifest", "character:linwan@base", "character:qiao@base", "scene:temple@night", "panel:p1_1", "panel:p1_2", "panel:p1_3"],
+          "nodeKeys": [
+            "brief",
+            "step:s1_premise",
+            "step:s2_script",
+            "step:s3_panel_plan",
+            "step:s3_asset_manifest",
+            "character:linwan@base",
+            "character:qiao@base",
+            "scene:temple@night",
+            "panel:p1_1",
+            "panel:p1_2",
+            "panel:p1_3"
+          ],
           "total": 11
         },
         "exportFiles": [],
@@ -968,25 +1239,42 @@
         {
           "at": "t1",
           "action": "step.dispatch_blocked",
-          "detail": { "blockedStepIds": ["s7_quality", "s8_layout", "s8_render_pages", "g_final", "s9_export"] },
+          "detail": {
+            "blockedStepIds": ["s7_quality", "s8_layout", "s8_render_pages", "g_final", "s9_export"]
+          },
           "expectedReaction": "全部拒绝，零新增付费请求"
         },
         {
           "at": "t2",
           "action": "result.preserve_check",
-          "detail": { "preservedItemKeys": ["panel:p1_1", "panel:p1_2"], "preservedAssetVersions": 2 },
+          "detail": {
+            "preservedItemKeys": ["panel:p1_1", "panel:p1_2"],
+            "preservedAssetVersions": 2
+          },
           "expectedReaction": "已产出结果原样保留（preserveProducedResults=true，:713）"
         },
         {
           "at": "t3",
           "action": "vendor.late_result",
-          "detail": { "itemKey": "panel:p1_3", "runId": "R-inflight-3", "externalRunId": "ext-77", "httpStatus": 200, "platformJobId": "J-9", "contentDigest": "$digest:candidateLinwanA", "arrivedAfterCancel": true },
+          "detail": {
+            "itemKey": "panel:p1_3",
+            "runId": "R-inflight-3",
+            "externalRunId": "ext-77",
+            "httpStatus": 200,
+            "platformJobId": "J-9",
+            "contentDigest": "$digest:candidateLinwanA",
+            "arrivedAfterCancel": true
+          },
           "expectedReaction": "必须按外部 Run ID → 数据库 UUID 的映射（packages/execution/src/index.ts:68）定位回原 stepRun，并记录为迟到产物"
         },
         {
           "at": "t4",
           "action": "late_result.dispose",
-          "detail": { "disposition": "recorded_not_approved", "recordedInto": "run_and_artifact_list", "approvedAssetRefsUnchanged": true },
+          "detail": {
+            "disposition": "recorded_not_approved",
+            "recordedInto": "run_and_artifact_list",
+            "approvedAssetRefsUnchanged": true
+          },
           "expectedReaction": "迟到产物进入运行/产物历史；不得进入 approvedAssetRefs、不得进入 g_final 的批准页集合、不得改变 WorkflowRun 状态"
         }
       ],
@@ -1002,7 +1290,11 @@
         "lateResultDisposition": "recorded_not_approved",
         "approvedAssetRefs": 0,
         "approvedPageRenderRefs": 0,
-        "canvasNodes": { "newNodes": 4, "nodeKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"], "total": 4 },
+        "canvasNodes": {
+          "newNodes": 4,
+          "nodeKeys": ["panel:p1_1", "panel:p1_2", "panel:p1_3", "panel:p1_4"],
+          "total": 4
+        },
         "exportFiles": [],
         "issueCodes": [],
         "openQuestion": "迟到结果的权威处置必须由 runtime-semantics.md 的\u201c迟到\u201d一节定死；本 case 断言的是三条底线：不丢弃、不批准、不改变已取消状态。"
@@ -1042,13 +1334,27 @@
         {
           "at": "t0",
           "action": "canvas.autosave_send",
-          "detail": { "client": "apps/web/src/App.tsx", "body": "整图快照 S", "baseRevision": 41, "basedOnNodes": ["N1", "N2", "N3", "N4", "N5"] },
+          "detail": {
+            "client": "apps/web/src/App.tsx",
+            "body": "整图快照 S",
+            "baseRevision": 41,
+            "basedOnNodes": ["N1", "N2", "N3", "N4", "N5"]
+          },
           "expectedReaction": "请求在途；此时后端 revision 仍为 41"
         },
         {
           "at": "t1",
           "action": "canvas.projection_write",
-          "detail": { "mode": "batch_canvas_command_with_expectedRevision", "expectedRevision": 41, "commands": ["create_node:step:s2_script", "create_node:N6", "create_node:N7", "create_node:N8"] },
+          "detail": {
+            "mode": "batch_canvas_command_with_expectedRevision",
+            "expectedRevision": 41,
+            "commands": [
+              "create_node:step:s2_script",
+              "create_node:N6",
+              "create_node:N7",
+              "create_node:N8"
+            ]
+          },
           "expectedReaction": "成功，revision 变为 42"
         },
         {
@@ -1060,13 +1366,19 @@
         {
           "at": "t3",
           "action": "canvas.conflict_resolve",
-          "detail": { "policy": "remerge_commands_or_require_user_resolution", "source": "workflow-definition.v1.json:727", "mustNotResendWholeStaleDocument": true },
+          "detail": {
+            "policy": "remerge_commands_or_require_user_resolution",
+            "source": "workflow-definition.v1.json:727",
+            "mustNotResendWholeStaleDocument": true
+          },
           "expectedReaction": "只重发前端自己的增量命令（带 expectedRevision=42），或要求用户解决；不得重发整图快照"
         },
         {
           "at": "t4",
           "action": "canvas.node_set_assert",
-          "detail": { "expectedKeys": ["N1", "N2", "N3", "N4", "N5", "step:s2_script", "N6", "N7", "N8"] },
+          "detail": {
+            "expectedKeys": ["N1", "N2", "N3", "N4", "N5", "step:s2_script", "N6", "N7", "N8"]
+          },
           "expectedReaction": "9 个节点全部存在，一个不丢"
         }
       ],
@@ -1081,7 +1393,11 @@
         "canvasRevisionAtT1": 42,
         "canvasRevisionFinal": 42,
         "canvasRevisionNote": "若前端走\u201c重发合并后的增量命令\u201d则终值可为 43；本 case 断言的是节点集合不丢，不是具体 revision 数值。",
-        "canvasNodes": { "newNodes": 4, "nodeKeys": ["step:s2_script", "N6", "N7", "N8"], "total": 9 },
+        "canvasNodes": {
+          "newNodes": 4,
+          "nodeKeys": ["step:s2_script", "N6", "N7", "N8"],
+          "total": 9
+        },
         "exportFiles": [],
         "issueCodes": []
       },
@@ -1122,7 +1438,12 @@
         {
           "at": "t0",
           "action": "process.crash",
-          "detail": { "component": "worker", "phase": "s6_panel_render", "inFlightRunId": "R-p12", "note": "Worker 进程被杀，未做任何清理" },
+          "detail": {
+            "component": "worker",
+            "phase": "s6_panel_render",
+            "inFlightRunId": "R-p12",
+            "note": "Worker 进程被杀，未做任何清理"
+          },
           "expectedReaction": "无新派发；数据库状态即唯一事实"
         },
         {
@@ -1134,7 +1455,19 @@
         {
           "at": "t2",
           "action": "recovery.skip_succeeded",
-          "detail": { "skippedCount": 8, "skippedStepRuns": ["s1_premise", "s2_script", "s3_panel_plan", "s3_asset_manifest", "character:linwan@base", "character:qiao@base", "scene:temple@night", "panel:p1_1"] },
+          "detail": {
+            "skippedCount": 8,
+            "skippedStepRuns": [
+              "s1_premise",
+              "s2_script",
+              "s3_panel_plan",
+              "s3_asset_manifest",
+              "character:linwan@base",
+              "character:qiao@base",
+              "scene:temple@night",
+              "panel:p1_1"
+            ]
+          },
           "expectedReaction": "8 个 succeeded 步骤零付费调用"
         },
         {
@@ -1146,7 +1479,11 @@
         {
           "at": "t4",
           "action": "step.dispatch",
-          "detail": { "stepId": "s6_panel_render", "itemKeys": ["panel:p1_3", "panel:p1_4"], "generationRevision": 1 },
+          "detail": {
+            "stepId": "s6_panel_render",
+            "itemKeys": ["panel:p1_3", "panel:p1_4"],
+            "generationRevision": 1
+          },
           "expectedReaction": "只有这两个未开始子项派发，新增 2 次付费请求"
         }
       ],
@@ -1163,8 +1500,18 @@
         "approvalStatus": "approved",
         "approvalRows": 4,
         "resumedRunIds": ["R-p12"],
-        "skippedSucceededItemKeys": ["character:linwan@base", "character:qiao@base", "scene:temple@night", "panel:p1_1", "panel:p1_2"],
-        "canvasNodes": { "newNodes": 0, "total": 12, "note": "重启只复用既有稳定节点；恢复过程不得新建任何画布节点" },
+        "skippedSucceededItemKeys": [
+          "character:linwan@base",
+          "character:qiao@base",
+          "scene:temple@night",
+          "panel:p1_1",
+          "panel:p1_2"
+        ],
+        "canvasNodes": {
+          "newNodes": 0,
+          "total": 12,
+          "note": "重启只复用既有稳定节点；恢复过程不得新建任何画布节点"
+        },
         "exportFiles": [],
         "issueCodes": []
       },
@@ -1206,13 +1553,23 @@
         {
           "at": "t0",
           "action": "render_spec.compile",
-          "detail": { "stepId": "s5_render_specs", "panelId": "p1_2", "inputs": ["panelPlan", "approvedAssetRefs", "script"], "contextTrimming": false },
+          "detail": {
+            "stepId": "s5_render_specs",
+            "panelId": "p1_2",
+            "inputs": ["panelPlan", "approvedAssetRefs", "script"],
+            "contextTrimming": false
+          },
           "expectedReaction": "开始编译"
         },
         {
           "at": "t1",
           "action": "render_spec.compiled",
-          "detail": { "panelId": "p1_2", "promptTextLength": 20841, "limit": 20000, "digest": "$digest:promptTooLong" },
+          "detail": {
+            "panelId": "p1_2",
+            "promptTextLength": 20841,
+            "limit": 20000,
+            "digest": "$digest:promptTooLong"
+          },
           "expectedReaction": "超限被检出"
         },
         {
@@ -1224,7 +1581,18 @@
         {
           "at": "t3",
           "action": "step.fail",
-          "detail": { "stepId": "s5_render_specs", "retry": "none", "downstreamBlocked": ["s6_panel_render", "s7_quality", "s8_layout", "s8_render_pages", "g_final", "s9_export"] },
+          "detail": {
+            "stepId": "s5_render_specs",
+            "retry": "none",
+            "downstreamBlocked": [
+              "s6_panel_render",
+              "s7_quality",
+              "s8_layout",
+              "s8_render_pages",
+              "g_final",
+              "s9_export"
+            ]
+          },
           "expectedReaction": "步骤失败且不重试；下游全部阻断"
         }
       ],
@@ -1239,7 +1607,12 @@
         "approvalStatus": "approved",
         "compiledPromptLength": 20841,
         "promptCharLimit": 20000,
-        "canvasNodes": { "newNodes": 0, "nodeKeys": [], "total": 0, "note": "s5_render_specs.canvasProjection.creates = none（:379）" },
+        "canvasNodes": {
+          "newNodes": 0,
+          "nodeKeys": [],
+          "total": 0,
+          "note": "s5_render_specs.canvasProjection.creates = none（:379）"
+        },
         "exportFiles": [],
         "issueCodes": ["WF_LIMIT_PROMPT_CHARS"]
       },

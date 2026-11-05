@@ -13,21 +13,21 @@
 
 ## 二、已核实的事实（代码级 / 实测，非猜测）
 
-| 项 | 值 | 依据 |
-|---|---|---|
-| 桌面端 App 版本 | `0.2.0-rc.2`（FileVersion） | `DeepSeek Harness.exe` 版本资源 |
-| 当前会话所在 profile | `desktop` | 进程命令行 `...dsh-desktop-host\lib\index.js ... C:\Users\Sui\.dsh\profiles\desktop` |
-| 组合包 | 已装 `@deepseek-ai/dsh-subagent-codex@0.2.0-rc.2`（2026-10-15 23:05:01） | `profiles\desktop\package.json`（dependencies + `dsh.profile.bundles` 末位）；插件管理器日志 `operation-IkWNKp` |
-| 自带 Codex 载荷 | `@openai/codex@0.153.4`（含 `codex-win32-x64` 原生 `codex.exe` 281.7 MB） | `profiles\desktop\node_modules\@openai\codex*`；`node bin/codex.js --version` → `codex-cli 0.153.4` |
-| 公共 CLI 能否代装 | **不能**，`desktop` 被硬拒绝 | `error: profile "desktop" is managed exclusively by the Electron application`（连 `--dump-config` 也一样） |
-| 社区市场能否装 | 不能，307 条目录里官方包数量为 0 | `.dsh-market\discovery-compatibility-v1.json` |
-| 不需要官方登录 | 中转站已在 Codex 原生配置里，`requires_openai_auth = false` + 原生 bearer token；`codex login status` 显示 `Not logged in` 与本链路无关 | `C:\Users\Sui\.codex\config.toml`（`model_provider = "custom"`、`model = "gpt-6-astra"`） |
-| 中转站链路（Codex exec 层） | **实测通过**：`codex exec` 在 `G:\multimodal-canvas` 返回 `PONG-7421` / `17*19=323`，exit 0 | 头部显示 `provider custom`、`approval never`、`sandbox danger-full-access`、`reasoning effort ultra` |
-| 中转站链路（DSH 提供方协议层） | **实测通过**：自写 app-server 探针跑通 `initialize → thread/start(ephemeral) → turn/start → turn/completed`，拿到 `phase:"final_answer"` = `MARKER-QX7-4E91` + `17*19=323` | `G:\multimodal-canvas\codex-wire-probe.mjs`（协议照抄 `packages\subagent\subagent-codex\src\wire.ts`） |
-| 实际生效的 Codex 权限 | `approval: never` + `sandbox: danger-full-access`（**默认 `permissionMode: never` 并不等于只读**，实际由 Codex 原生 `sandbox_mode` 决定） | 上述两次实测头部输出 |
-| 工具行为何一直不生效 | **根因**：该行嵌在 `preset-standard.config.plugins` 的 `delegation` 组里，而 profile patch 只能按 id 命中「被 `applyEntryPatches` 索引的条目」——它只递归 `group: true && Array.isArray(config)` 的兄弟行，不进入 `config.plugins` 这个对象字段 | `G:\deepseek-harness\apps\cli\node_modules\@deepseek-ai\cordis-plugin-include\src\index.ts` 的 `buildMap`；实测日志 `patch: entry %C not found tool-subagent-codex` |
-| 正确解法 | **profile 级 `preset-standard` 全量快照覆盖**（整段 config 替换，删掉 codex 行的 `disabled: true`） | 与 `billion-context` 的 `dsh.bundle.patch.yml` 注释一致：「this bundle layer cannot address by id … needs a profile-level full-snapshot override of preset-standard」 |
-| 覆盖是否已落盘 | **是**（2026-10-16，`cordis.patch.yml` 现 251 行 / 28 条目，末项 = `preset-standard`） | 生成器 `G:\multimodal-canvas\codex-preset-enable.mjs`；落盘前干跑 + 落盘后复算均 0 warning |
+| 项                             | 值                                                                                                                                                                                                                                             | 依据                                                                                                                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 桌面端 App 版本                | `0.2.0-rc.2`（FileVersion）                                                                                                                                                                                                                    | `DeepSeek Harness.exe` 版本资源                                                                                                                                       |
+| 当前会话所在 profile           | `desktop`                                                                                                                                                                                                                                      | 进程命令行 `...dsh-desktop-host\lib\index.js ... C:\Users\Sui\.dsh\profiles\desktop`                                                                                  |
+| 组合包                         | 已装 `@deepseek-ai/dsh-subagent-codex@0.2.0-rc.2`（2026-10-15 23:05:01）                                                                                                                                                                       | `profiles\desktop\package.json`（dependencies + `dsh.profile.bundles` 末位）；插件管理器日志 `operation-IkWNKp`                                                       |
+| 自带 Codex 载荷                | `@openai/codex@0.153.4`（含 `codex-win32-x64` 原生 `codex.exe` 281.7 MB）                                                                                                                                                                      | `profiles\desktop\node_modules\@openai\codex*`；`node bin/codex.js --version` → `codex-cli 0.153.4`                                                                   |
+| 公共 CLI 能否代装              | **不能**，`desktop` 被硬拒绝                                                                                                                                                                                                                   | `error: profile "desktop" is managed exclusively by the Electron application`（连 `--dump-config` 也一样）                                                            |
+| 社区市场能否装                 | 不能，307 条目录里官方包数量为 0                                                                                                                                                                                                               | `.dsh-market\discovery-compatibility-v1.json`                                                                                                                         |
+| 不需要官方登录                 | 中转站已在 Codex 原生配置里，`requires_openai_auth = false` + 原生 bearer token；`codex login status` 显示 `Not logged in` 与本链路无关                                                                                                        | `C:\Users\Sui\.codex\config.toml`（`model_provider = "custom"`、`model = "gpt-6-astra"`）                                                                             |
+| 中转站链路（Codex exec 层）    | **实测通过**：`codex exec` 在 `G:\multimodal-canvas` 返回 `PONG-7421` / `17*19=323`，exit 0                                                                                                                                                    | 头部显示 `provider custom`、`approval never`、`sandbox danger-full-access`、`reasoning effort ultra`                                                                  |
+| 中转站链路（DSH 提供方协议层） | **实测通过**：自写 app-server 探针跑通 `initialize → thread/start(ephemeral) → turn/start → turn/completed`，拿到 `phase:"final_answer"` = `MARKER-QX7-4E91` + `17*19=323`                                                                     | `G:\multimodal-canvas\codex-wire-probe.mjs`（协议照抄 `packages\subagent\subagent-codex\src\wire.ts`）                                                                |
+| 实际生效的 Codex 权限          | `approval: never` + `sandbox: danger-full-access`（**默认 `permissionMode: never` 并不等于只读**，实际由 Codex 原生 `sandbox_mode` 决定）                                                                                                      | 上述两次实测头部输出                                                                                                                                                  |
+| 工具行为何一直不生效           | **根因**：该行嵌在 `preset-standard.config.plugins` 的 `delegation` 组里，而 profile patch 只能按 id 命中「被 `applyEntryPatches` 索引的条目」——它只递归 `group: true && Array.isArray(config)` 的兄弟行，不进入 `config.plugins` 这个对象字段 | `G:\deepseek-harness\apps\cli\node_modules\@deepseek-ai\cordis-plugin-include\src\index.ts` 的 `buildMap`；实测日志 `patch: entry %C not found tool-subagent-codex`   |
+| 正确解法                       | **profile 级 `preset-standard` 全量快照覆盖**（整段 config 替换，删掉 codex 行的 `disabled: true`）                                                                                                                                            | 与 `billion-context` 的 `dsh.bundle.patch.yml` 注释一致：「this bundle layer cannot address by id … needs a profile-level full-snapshot override of preset-standard」 |
+| 覆盖是否已落盘                 | **是**（2026-10-16，`cordis.patch.yml` 现 251 行 / 28 条目，末项 = `preset-standard`）                                                                                                                                                         | 生成器 `G:\multimodal-canvas\codex-preset-enable.mjs`；落盘前干跑 + 落盘后复算均 0 warning                                                                            |
 
 ## 三、本轮实际做了什么
 
@@ -42,8 +42,7 @@
 
 ## 四、下一步（未完成的部分）
 
-- [ ] **在桌面端新开一个会话**，确认工具列表里出现 `subagent_codex`（预设声明的改动只影响之后创建的会话）。
-      - 若新会话仍没有：**重启桌面端**（App 重启才会重新读 profile 组合），再新开会话确认。
+- [ ] **在桌面端新开一个会话**，确认工具列表里出现 `subagent_codex`（预设声明的改动只影响之后创建的会话）。- 若新会话仍没有：**重启桌面端**（App 重启才会重新读 profile 组合），再新开会话确认。
 - [ ] 出现后跑验收清单（第五节）。注意：§7 的「随机标记 + `17*19=323`」目前只在 **Codex 层**通过（exec + app-server 探针），
       还没经过 DSH 工具层，必须在会话里让 `subagent_codex` 真跑一次才算通过。
 - [ ] 认证相关：**无需** OpenAI 登录；但若将来要换回官方订阅，才需要 `codex login`。

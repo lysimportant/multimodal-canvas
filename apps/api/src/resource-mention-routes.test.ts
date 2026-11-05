@@ -919,5 +919,4 @@ describe('资源提及 HTTP 边界', () => {
     expect(readMetadata).toHaveBeenCalled();
     expect(readContent).not.toHaveBeenCalled();
   });
-
 });

@@ -90,7 +90,11 @@
         { "name": "script", "from": "s2_script", "required": true },
         { "name": "pageCount", "from": "s0_brief.pageShape.pageCount", "required": true },
         { "name": "panelsPerPage", "from": "s0_brief.pageShape.panelsPerPage", "required": true },
-        { "name": "readingDirection", "from": "s0_brief.pageShape.readingDirection", "required": true }
+        {
+          "name": "readingDirection",
+          "from": "s0_brief.pageShape.readingDirection",
+          "required": true
+        }
       ],
       "outputContract": {
         "format": "json",

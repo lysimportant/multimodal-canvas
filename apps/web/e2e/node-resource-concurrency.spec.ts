@@ -931,10 +931,7 @@ test('输入长文不撑大节点，只有拖拽手柄后节点与输入面板�
       const geometry = await editorGeometry(editor);
       const bounds = await node.boundingBox();
       if (!bounds) return Infinity;
-      const expectedWidth = Math.max(
-        bounds.width * 2,
-        QUICK_EDITOR_DESIGN_WIDTH * geometry.zoom,
-      );
+      const expectedWidth = Math.max(bounds.width * 2, QUICK_EDITOR_DESIGN_WIDTH * geometry.zoom);
       return geometry.width > bounds.width
         ? Math.min(geometry.width - bounds.width, expectedWidth + 1 - geometry.width)
         : Infinity;

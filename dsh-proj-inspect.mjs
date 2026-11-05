@@ -45,7 +45,8 @@ if (Array.isArray(msgs)) {
   console.log('== message count:', msgs.length);
   for (const [i, m] of msgs.entries()) {
     const role = m?.role ?? m?.type ?? m?.kind ?? '?';
-    const textLen = typeof m?.content === 'string' ? m.content.length : JSON.stringify(m?.content ?? '').length;
+    const textLen =
+      typeof m?.content === 'string' ? m.content.length : JSON.stringify(m?.content ?? '').length;
     console.log(`  [${i}] role=${role} textLen=${textLen} keys=${Object.keys(m ?? {}).join(',')}`);
   }
 }

@@ -4,6 +4,7 @@
 这些不是"以后再说"的备注，而是**必须在 P2 写测试前定下来的决定**。
 
 约定：
+
 - `[缺口]` 表示契约无法表达某个已被证明需要的语义 → 需要改 `contracts.ts` 或 `workflow-definition.v1.json`
 - `[空档]` 表示契约允许某状态但没人校验 → 需要补校验或明确宣布不管
 - `[待决]` 表示需要产品/技术决策，不是补字段就能解决
@@ -219,11 +220,13 @@ WF_BUDGET_EXCEEDED                 WF_BUDGET_UNKNOWN_PRICE
 ## F-21～F-28 写手 `edde0a0b` 上报、需上层裁决
 
 ### F-21 `WF_STATE_APPROVAL_TARGET_MISMATCH` 被写成 P3 完成标志却无任何覆盖（硬伤）
+
 - `[缺口]`。`README.md:166` 的 P3 完成标志**明确要求证明**该码，但无任何夹具/场景覆盖；`contracts.ts:592` / `:606` 有产出者。
 - 影响：P3 的完成标志不可验证 —— 这正是本方案最痛恨的"无人推动的步骤"（S8）在**验收标准自身**上的复现。
 - 处置：`待决`。要么补一个针对它的负样例，要么把它从 P3 完成标志里删除。**二者必居其一，不能继续挂着。**
 
 ### F-22 `WorkflowRun.status` 缺 `needs_review` —— **已裁决并修复**
+
 - `[冲突]` → **已修**。`runtime-semantics.md:46` 的枚举原为 `running / awaiting_decision / succeeded / failed / cancelled`，而 `:544-545` 要求"已 `succeeded` 的 Run 收到迟到结果 → `needs_review`"；`rc_send_unknown` 正需要该值。
 - 影响：迟到结果无状态可落 —— 直接关系到 Codex 点名的"最致命两个坑"之一（把 `unknown` 误当可重建失败）。
 - **裁决（用户 2026-10-16 拍板）**：扩充枚举。`runtime-semantics.md:46` 现为 `running / awaiting_decision / succeeded / failed / needs_review / cancelled`，并注明 `needs_review` 是**可再入**状态、不属于 `RunStatus`。
@@ -231,29 +234,35 @@ WF_BUDGET_EXCEEDED                 WF_BUDGET_UNKNOWN_PRICE
 - 联动改动：`fixtures/recovery-cases.json` 的 `_note`（原写"二者不一致、未私自取舍"）已同步更新；`acceptance-matrix.md` 第 3 条发现已标记为已裁决并写明理由。**未改动 `contracts.ts`**（它本就没有 status 枚举，无产出面）。
 
 ### F-23 归档失败没有错误码，恢复路径不可断言
+
 - `[缺口]`。`workflow-definition.v1.json:654-658` 的 `recover_existing_result` 分类项没有 `issueCodes` 字段，`WF_ARCHIVE_*` 码不存在；故 `rc_archive_failure` 的期望码只能是 `[]` —— 正确但**不可断言**。
 - 影响：归档失败是真实故障路径，却无法用错误码锁定，只能靠"状态数字"间接验证。
 - 处置：`待决`。建议新增 `WF_ARCHIVE_*` 并在该分类项补 `issueCodes`。
 
 ### F-24 `WF_REPLAY_KEY_TOO_LONG` 抛裸 `Error`，违反设计决策 D1
+
 - `[缺陷]`。`contracts.ts:1087` 抛裸 `Error`，`workflowIssueCodesOf()`（`:200`）提取不到。
 - 处置：`待修（P2）`。改为经 `workflowIssue(...)` 产出，或在 D1 里显式登记该例外。**注意**：改动会使 theme-mini 的对应负样例失效，必须与夹具同批修改。
 
 ### F-25 `README.md` §6 把 `recovery-cases.json` 的语义写错
+
 - `[不一致]`。`README.md:129` 第 12 行把它定义为"负样例集（输入 + 指定错误码）"，实际语义是"事件序列 → 期望状态"。
 - 处置：`待修（文档）`。夹具已加 `coverage` 块兼容两种读法，但 README 该行应改写。
 
 ### F-26 并行编辑导致行号漂移（已由写手校正，教训需固化）
+
 - `[不一致]`。编写期间 `contracts.ts` 的 `validateComicArtifacts()` 及其后整体后移 2 行（`:853→:855`、`:957→:959`、`:1070→:1072`），`fixtures/huozhai-s01/expected-artifacts.json` 后移 34 行；写手已按现测值校正。
 - 根因：**我**在并行编写期间修了 `contracts.ts` 的注释语法错误（`fixtures/*/…` 里的 `*/` 提前闭合 JSDoc），导致后续整体位移。
 - 教训（固化）：**行号不是稳定锚点，符号名与错误码才是。** 交付物之间应引用 `类名.方法名` / 错误码常量，行号仅作辅助。本文件与 P2 的引用一律以符号为准。
 
 ### F-27 负样例断言必须用"包含"而非"等于"
+
 - `[缺陷]`。`fixtures/huozhai-s01/expected-artifacts.json:730-732` 的 `WF_REF_ASSET_NOT_APPROVED` 负样例实测**同时**返回 `["WF_LIMIT_REFERENCES","WF_REF_ASSET_NOT_APPROVED"]`。
 - 影响：若 P2 断言写成"恰好等于一个码"，会误判为失败。
 - 处置：`待修（P2）`。**P2 全部断言统一采用"包含指定码"语义**；同时复核其它负样例是否也存在多码返回。
 
 ### F-28 `readingIndex` 无校验点，阅读顺序只覆盖了一半
+
 - `[缺口]`。`WF_LAYOUT_READING_ORDER_INVALID` 有产出者（`:919` / `:922`），但只校验 `panelPlan` 的 `ordinal`；`pageLayoutSchema.balloons[].readingIndex`（`:763`）**至今没有任何校验点**。
 - 影响：气泡阅读顺序可乱而校验放行 —— 漫画可读性在契约层无保障。
 - 处置：`待修（P2）`。
@@ -262,11 +271,11 @@ WF_BUDGET_EXCEEDED                 WF_BUDGET_UNKNOWN_PRICE
 
 ## 跨文件不一致（由写手报告，需在汇总校验时消解）
 
-| # | 不一致 | 涉及文件 | 处置 |
-|---|---|---|---|
-| X-1 | `task-templates.v1.json` 的 `inputPlaceholders[].from` 引用被 `workflow-definition.v1.json` 重命名过的步骤 id | 两者 | 汇总校验时逐条比对 |
-| X-2 | `panelCandidateSetSchema.candidates[].runId` 存在但 S4 侧无对应字段 | `contracts.ts` | 同 F-01 |
-| X-3 | README 的文件索引为 13 个，本文件是新增的第 14 个 | `README.md` | 汇总时更新索引 |
+| #   | 不一致                                                                                                        | 涉及文件       | 处置               |
+| --- | ------------------------------------------------------------------------------------------------------------- | -------------- | ------------------ |
+| X-1 | `task-templates.v1.json` 的 `inputPlaceholders[].from` 引用被 `workflow-definition.v1.json` 重命名过的步骤 id | 两者           | 汇总校验时逐条比对 |
+| X-2 | `panelCandidateSetSchema.candidates[].runId` 存在但 S4 侧无对应字段                                           | `contracts.ts` | 同 F-01            |
+| X-3 | README 的文件索引为 13 个，本文件是新增的第 14 个                                                             | `README.md`    | 汇总时更新索引     |
 
 ---
 
@@ -293,11 +302,11 @@ WF_BUDGET_EXCEEDED                 WF_BUDGET_UNKNOWN_PRICE
 
 ## 本轮实际改动（仅 3 处，均为 F-22 的联动）
 
-| 文件 | 改动 |
-| --- | --- |
-| `runtime-semantics.md:46` | `WorkflowRun.status` 增加 `needs_review`，并注明可再入、不属于 `RunStatus` |
-| `fixtures/recovery-cases.json` `_note` | 由"枚举不一致、未私自取舍"改为"已裁决、缺口消除" |
-| `acceptance-matrix.md` 第 3 条发现 | 标记为已裁决，写明选择"扩充枚举"而非"仅限 step 级"的理由 |
+| 文件                                   | 改动                                                                       |
+| -------------------------------------- | -------------------------------------------------------------------------- |
+| `runtime-semantics.md:46`              | `WorkflowRun.status` 增加 `needs_review`，并注明可再入、不属于 `RunStatus` |
+| `fixtures/recovery-cases.json` `_note` | 由"枚举不一致、未私自取舍"改为"已裁决、缺口消除"                           |
+| `acceptance-matrix.md` 第 3 条发现     | 标记为已裁决，写明选择"扩充枚举"而非"仅限 step 级"的理由                   |
 
 **`contracts.ts` 未做任何行为改动** —— 它不含 status 枚举，F-22 无产出面。这是刻意的：两个夹具（51 项 + 8 项负样例）是针对当前 `contracts.ts` 逐字节验证过的，任何行为改动都会让"已验证"与"新契约"错位。F-24 / F-27 / F-28 的契约改动必须与夹具同批进行，**统一推到 P2**。
 

@@ -20,12 +20,12 @@
 
 四类任务所需能力，以及首版（v1 / P1）对每一项的要求。
 
-| 任务类别 | 执行步骤 | 所需能力 | 首版要求 | 缺省时的行为 |
-| --- | --- | --- | --- | --- |
-| **文字生成** | `s1_premise`、`s2_script`、`s3_panel_plan`、`s3_asset_manifest` | 长上下文改写；严格 JSON 输出（`outputContract.format = "json"`）；稳定 ID 生成（`^[A-Za-z][A-Za-z0-9_-]{0,63}$`）；中文创作；能遵守「禁止字段」清单 | **必需**，缺即阻断 | 报 `WF_MODEL_BINDING_MISSING`（`contracts.ts:128`），不派发任何 `generate` 步骤 |
-| **图片生成** | `s4_asset_candidates`、`s6_panel_render` | 文生图；参考图条件（identity / reference conditioning）；固定画幅（`aspectRatio`）；单次可并发出 1..8 张候选 | **必需**，缺即阻断 | 同上，`WF_MODEL_BINDING_MISSING` |
-| **视觉评审** | `s7_quality`（视觉部分） | 图像输入；结构化打分与可定位问题输出；能按 `panelId` 一一对应 | **可选，且必须计入预算** | 跳过视觉评审；`visionScore = null`（不是 `false`、不是 `0`），`visionFindings = []`；不消耗 `maxVisionReviews` |
-| **页图合成** | `s8_render_pages` | 图像输入；按给定矩形裁切与合成；按给定锚点落版气泡；确定性重现（同输入必同输出） | **必需**，缺即阻断 | 报 `WF_MODEL_BINDING_MISSING`；不允许用「生成式补画」代替合成 |
+| 任务类别     | 执行步骤                                                        | 所需能力                                                                                                                                            | 首版要求                 | 缺省时的行为                                                                                                   |
+| ------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| **文字生成** | `s1_premise`、`s2_script`、`s3_panel_plan`、`s3_asset_manifest` | 长上下文改写；严格 JSON 输出（`outputContract.format = "json"`）；稳定 ID 生成（`^[A-Za-z][A-Za-z0-9_-]{0,63}$`）；中文创作；能遵守「禁止字段」清单 | **必需**，缺即阻断       | 报 `WF_MODEL_BINDING_MISSING`（`contracts.ts:128`），不派发任何 `generate` 步骤                                |
+| **图片生成** | `s4_asset_candidates`、`s6_panel_render`                        | 文生图；参考图条件（identity / reference conditioning）；固定画幅（`aspectRatio`）；单次可并发出 1..8 张候选                                        | **必需**，缺即阻断       | 同上，`WF_MODEL_BINDING_MISSING`                                                                               |
+| **视觉评审** | `s7_quality`（视觉部分）                                        | 图像输入；结构化打分与可定位问题输出；能按 `panelId` 一一对应                                                                                       | **可选，且必须计入预算** | 跳过视觉评审；`visionScore = null`（不是 `false`、不是 `0`），`visionFindings = []`；不消耗 `maxVisionReviews` |
+| **页图合成** | `s8_render_pages`                                               | 图像输入；按给定矩形裁切与合成；按给定锚点落版气泡；确定性重现（同输入必同输出）                                                                    | **必需**，缺即阻断       | 报 `WF_MODEL_BINDING_MISSING`；不允许用「生成式补画」代替合成                                                  |
 
 补充约束：
 
@@ -43,10 +43,10 @@
 
 ```ts
 modelBindings: z.object({
-  text:   z.string().min(1),
-  image:  z.string().min(1),
-  vision: z.string().min(1).optional(),   // 可选；缺失即表示不做自动评审
-}).strict()
+  text: z.string().min(1),
+  image: z.string().min(1),
+  vision: z.string().min(1).optional(), // 可选；缺失即表示不做自动评审
+}).strict();
 ```
 
 **理由**（与 `contracts.ts:331-335` 的注释一致并展开）：
@@ -59,10 +59,10 @@ modelBindings: z.object({
 
 ### 2.2 槽位缺失处理规则
 
-| 缺失槽位 | 是否阻断 | 错误码 / 行为 |
-| --- | --- | --- |
-| `text` | **阻断** | `WF_MODEL_BINDING_MISSING`（`contracts.ts:128`）。`s1_premise`、`s2_script`、`s3_panel_plan`、`s3_asset_manifest` 全部无法执行，直接停在解析期，不产生任何供应商请求。 |
-| `image` | **阻断** | `WF_MODEL_BINDING_MISSING`。`s4_asset_candidates` 与 `s6_panel_render` 无法执行。特别地：**不得**退化成「只出文字、跳过图」。 |
+| 缺失槽位 | 是否阻断   | 错误码 / 行为                                                                                                                                                                                                                                                                                                        |
+| -------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text`   | **阻断**   | `WF_MODEL_BINDING_MISSING`（`contracts.ts:128`）。`s1_premise`、`s2_script`、`s3_panel_plan`、`s3_asset_manifest` 全部无法执行，直接停在解析期，不产生任何供应商请求。                                                                                                                                               |
+| `image`  | **阻断**   | `WF_MODEL_BINDING_MISSING`。`s4_asset_candidates` 与 `s6_panel_render` 无法执行。特别地：**不得**退化成「只出文字、跳过图」。                                                                                                                                                                                        |
 | `vision` | **不阻断** | 跳过 `s7_quality` 的视觉评审分支。`s7_quality` 照常执行结构检查；输出中 `panels[].visionScore = null`、`panels[].visionFindings = []`。**必须是 `null`，不得写 `false`、不得写 `0`**——`false` 表示「评审了且判定不合格」，`null` 才表示「没有评审」。同时不占用 `maxVisionReviews`，`budget.counters` 中该项保持 0。 |
 
 附加规则：
@@ -123,16 +123,16 @@ modelBindings: z.object({
 
 ### 4.1 计数器全集（`budgetPolicySchema`，`contracts.ts:270-289`）
 
-| 字段 | 类型 / 取值范围 | 语义 |
-| --- | --- | --- |
-| `maxTextGenerations` | int `0..10000` | 文字生成次数上限（`s1`/`s2`/`s3_panel_plan`/`s3_asset_manifest`/`s7` 文本部分） |
-| `maxImageGenerations` | int `0..10000` | 图片生成次数上限（`s4`/`s6`/`s8_render_pages`） |
-| `maxVisionReviews` | int `0..10000` | 视觉评审次数上限；缺 `vision` 槽位时恒为 0 |
-| `maxVendorRequests` | int `1..50000` | 供应商**创建请求**总上限（所有槽位、所有重试、所有候选之和）；不可为 0，是唯一硬兜底 |
-| `maxRegenerationsPerItem` | int `0..10` | 单个 `itemKey` / `panelId` 的重生成次数上限 |
-| `maxCandidatesPerItem` | int `1..8` | 单个 `itemKey` / `panelId` 的单次候选数上限（文档示例取 2） |
-| `maxPromptOptimizations` | int `0..1000` | 提示词优化次数上限；受 `allowPromptOptimization`（默认 `false`，`contracts.ts:345`）总开关约束 |
-| `amountBudget` | `{ amount: number≥0, currency: string(长度 3) } \| null`，`.strict().nullable()` | 金额预算。**刻意不允许省略**：`null` 表示「本环境没有价格信息」，见第 6 节 |
+| 字段                      | 类型 / 取值范围                                                                  | 语义                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `maxTextGenerations`      | int `0..10000`                                                                   | 文字生成次数上限（`s1`/`s2`/`s3_panel_plan`/`s3_asset_manifest`/`s7` 文本部分）                |
+| `maxImageGenerations`     | int `0..10000`                                                                   | 图片生成次数上限（`s4`/`s6`/`s8_render_pages`）                                                |
+| `maxVisionReviews`        | int `0..10000`                                                                   | 视觉评审次数上限；缺 `vision` 槽位时恒为 0                                                     |
+| `maxVendorRequests`       | int `1..50000`                                                                   | 供应商**创建请求**总上限（所有槽位、所有重试、所有候选之和）；不可为 0，是唯一硬兜底           |
+| `maxRegenerationsPerItem` | int `0..10`                                                                      | 单个 `itemKey` / `panelId` 的重生成次数上限                                                    |
+| `maxCandidatesPerItem`    | int `1..8`                                                                       | 单个 `itemKey` / `panelId` 的单次候选数上限（文档示例取 2）                                    |
+| `maxPromptOptimizations`  | int `0..1000`                                                                    | 提示词优化次数上限；受 `allowPromptOptimization`（默认 `false`，`contracts.ts:345`）总开关约束 |
+| `amountBudget`            | `{ amount: number≥0, currency: string(长度 3) } \| null`，`.strict().nullable()` | 金额预算。**刻意不允许省略**：`null` 表示「本环境没有价格信息」，见第 6 节                     |
 
 注意：`workflow-definition.v1.json` 的 `budget.counters` 是 **7 项**，而 `budgetPolicySchema` 是 **8 个字段**——差额是 `amountBudget`，它是金额而不是计数器（见第 9 节差异清单第 4 条）。
 
@@ -143,20 +143,20 @@ modelBindings: z.object({
 资产单元：`character:linwan@base`、`character:chenxi@base`、`scene:temple@night` → 共 **3 个 `itemKey`**。
 分格单元：`page_01` 的 4 个 `panelId` → 共 **4 个**。页单元：1 个 `pageId`。
 
-| 步骤 | 槽位 | 逻辑单元数 | 每单元候选上限 | 首次生成请求 | +1 次重生成 | 小计 | 含 `maxAttempts=2` 的重试上限 |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `s1_premise` | text | 1 | 1 | 1 | 0 | 1 | 2 |
-| `s2_script` | text | 1 | 1 | 1 | 0 | 1 | 2 |
-| `s3_panel_plan` | text | 1 | 1 | 1 | 0 | 1 | 2 |
-| `s3_asset_manifest` | text | 1 | 1 | 1 | 0 | 1 | 2 |
-| `s4_asset_candidates` | image | 3（2 角色 + 1 场景） | 2 | 6 | 3 | 9 | **18** |
-| `s6_panel_render` | image | 4 | 2 | 8 | 4 | 12 | **24** |
-| `s7_quality`（文本） | text | 1 | 1 | 1 | 0 | 1 | 2 |
-| `s7_quality`（视觉） | vision | 4（每格 1 次） | 1 | 4 | 0 | 4 | 8 |
-| `s8_layout` | —（transform，无供应商请求） | 1 | — | 0 | 0 | 0 | 0 |
-| `s8_render_pages` | image | 1（每页 1 次合成） | 1 | 1 | 1 | 2 | **4** |
-| 提示词优化（若 `allowPromptOptimization = true`） | text | ≤ 9 | 1 | ≤ 9 | 0 | ≤ 9 | ≤ 9 |
-| **合计（默认不开提示词优化）** | | | | **24** | **9** | **33** | **≤ 62** |
+| 步骤                                              | 槽位                         |           逻辑单元数 | 每单元候选上限 | 首次生成请求 | +1 次重生成 |   小计 | 含 `maxAttempts=2` 的重试上限 |
+| ------------------------------------------------- | ---------------------------- | -------------------: | -------------: | -----------: | ----------: | -----: | ----------------------------: |
+| `s1_premise`                                      | text                         |                    1 |              1 |            1 |           0 |      1 |                             2 |
+| `s2_script`                                       | text                         |                    1 |              1 |            1 |           0 |      1 |                             2 |
+| `s3_panel_plan`                                   | text                         |                    1 |              1 |            1 |           0 |      1 |                             2 |
+| `s3_asset_manifest`                               | text                         |                    1 |              1 |            1 |           0 |      1 |                             2 |
+| `s4_asset_candidates`                             | image                        | 3（2 角色 + 1 场景） |              2 |            6 |           3 |      9 |                        **18** |
+| `s6_panel_render`                                 | image                        |                    4 |              2 |            8 |           4 |     12 |                        **24** |
+| `s7_quality`（文本）                              | text                         |                    1 |              1 |            1 |           0 |      1 |                             2 |
+| `s7_quality`（视觉）                              | vision                       |       4（每格 1 次） |              1 |            4 |           0 |      4 |                             8 |
+| `s8_layout`                                       | —（transform，无供应商请求） |                    1 |              — |            0 |           0 |      0 |                             0 |
+| `s8_render_pages`                                 | image                        |   1（每页 1 次合成） |              1 |            1 |           1 |      2 |                         **4** |
+| 提示词优化（若 `allowPromptOptimization = true`） | text                         |                  ≤ 9 |              1 |          ≤ 9 |           0 |    ≤ 9 |                           ≤ 9 |
+| **合计（默认不开提示词优化）**                    |                              |                      |                |       **24** |       **9** | **33** |                      **≤ 62** |
 
 结论与配额建议（示例工作流）：
 
@@ -182,11 +182,11 @@ modelBindings: z.object({
 
 ### 5.2 终态结算
 
-| 终态 | 计数器 | 金额 | 说明 |
-| --- | --- | --- | --- |
-| **成功**（`Run.status === succeeded`） | 保留扣减，写 `state = settled` | 供应商回报了金额 → 写实付金额；未回报 → 写 `null` 并保留 `priceUnknown` 标记 | 预估值与实际值的差异计入用量归集；**绝不允许把未知金额落成 0** |
-| **失败**（`failed`） | **保守不退回**：请求可能已到达供应商并已计费 | 明确未发出（本地校验失败、连接未建立）→ 标记 `not_billed`；其余标记 `unknown` | 重试会重新走一次预留；`maxRegenerationsPerItem` / `maxAttempts` 是唯一的重试闸门 |
-| **取消**（`cancelled`） | 已发出部分按失败处理；**尚未派发**的 fanout 子项必须显式**释放预留**，写 `state = released` | 未发出部分标记 `not_billed` | 禁止静默丢弃预留记录——否则这部分额度永久泄漏 |
+| 终态                                   | 计数器                                                                                      | 金额                                                                          | 说明                                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **成功**（`Run.status === succeeded`） | 保留扣减，写 `state = settled`                                                              | 供应商回报了金额 → 写实付金额；未回报 → 写 `null` 并保留 `priceUnknown` 标记  | 预估值与实际值的差异计入用量归集；**绝不允许把未知金额落成 0**                   |
+| **失败**（`failed`）                   | **保守不退回**：请求可能已到达供应商并已计费                                                | 明确未发出（本地校验失败、连接未建立）→ 标记 `not_billed`；其余标记 `unknown` | 重试会重新走一次预留；`maxRegenerationsPerItem` / `maxAttempts` 是唯一的重试闸门 |
+| **取消**（`cancelled`）                | 已发出部分按失败处理；**尚未派发**的 fanout 子项必须显式**释放预留**，写 `state = released` | 未发出部分标记 `not_billed`                                                   | 禁止静默丢弃预留记录——否则这部分额度永久泄漏                                     |
 
 > 「成功」只说明供应商返回成功，**不等于**结构校验通过，更**不等于**人工批准。三者是三件不同的事，结算只关心「这次请求花掉了多少」。
 
@@ -232,12 +232,12 @@ effectiveConcurrency(step) = min(全局剩余名额, step.maxConcurrency)
 
 ### 7.2 步骤级上限（来自 `workflow-definition.v1.json`）
 
-| 步骤 | `maxConcurrency` | 位置 | 是否产生供应商请求 |
-| --- | ---: | --- | --- |
-| `s4_asset_candidates` | **4** | `workflow-definition.v1.json:265` | 是（image） |
-| `s6_panel_render` | **4** | `workflow-definition.v1.json:400` | 是（image） |
-| `s8_layout` | **2** | `workflow-definition.v1.json:508` | 否（`transform`，仅本地排版计算） |
-| `s8_render_pages` | **2** | `workflow-definition.v1.json:560` | 是（image） |
+| 步骤                  | `maxConcurrency` | 位置                              | 是否产生供应商请求                |
+| --------------------- | ---------------: | --------------------------------- | --------------------------------- |
+| `s4_asset_candidates` |            **4** | `workflow-definition.v1.json:265` | 是（image）                       |
+| `s6_panel_render`     |            **4** | `workflow-definition.v1.json:400` | 是（image）                       |
+| `s8_layout`           |            **2** | `workflow-definition.v1.json:508` | 否（`transform`，仅本地排版计算） |
+| `s8_render_pages`     |            **2** | `workflow-definition.v1.json:560` | 是（image）                       |
 
 `foreach` 的展开规模另受 `WF_LIMIT_FOREACH_ITEMS`（`contracts.ts:145`）约束。
 

@@ -4,12 +4,7 @@
   "version": "0.1.0",
   "title": "一句主题 → 分页漫画",
   "form": "paged-comic",
-  "formNonGoals": [
-    "条漫 / 竖屏滚动漫画",
-    "动画或视频输出",
-    "跨作品连续剧集",
-    "多语言本地化排版"
-  ],
+  "formNonGoals": ["条漫 / 竖屏滚动漫画", "动画或视频输出", "跨作品连续剧集", "多语言本地化排版"],
   "inputSchema": "comic_brief",
   "outputSchema": "comic_export_manifest",
   "inputSchemaRef": "contracts.ts#comicBriefSchema",
@@ -106,7 +101,7 @@
       "optionalPromptSkill": "screenplay",
       "optionalPromptSkillDefault": "off",
       "inputBindings": [
-      {
+        {
           "to": "premise",
           "from": "s1_premise",
           "semantics": "generated_artifact",
@@ -312,7 +307,9 @@
       "dependsOn": ["s4_asset_candidates"],
       "vendorCall": false,
       "gate": {
-        "artifactBindings": [{ "artifactSchema": "asset_candidate_set", "from": "s4_asset_candidates" }],
+        "artifactBindings": [
+          { "artifactSchema": "asset_candidate_set", "from": "s4_asset_candidates" }
+        ],
         "approvalPolicy": {
           "targetKind": "asset_candidate",
           "allowCandidateSelection": true,
@@ -609,7 +606,10 @@
           "preservePanelApprovals": true
         },
         "replaySemantics": { "duplicateApprovalIsNoop": true },
-        "waitingBehavior": { "persistThenReleaseWorker": true, "noNewVendorCallsWhileWaiting": true }
+        "waitingBehavior": {
+          "persistThenReleaseWorker": true,
+          "noNewVendorCallsWhileWaiting": true
+        }
       }
     },
 
@@ -756,12 +756,7 @@
       "reason": "那是工作流搬运格式版本，语义不同，混用会让回滚互相牵连"
     },
     "mustExpressWhichPagesWereApproved": true,
-    "notSufficientForDelivery": [
-      "工作流 JSON",
-      "结果文件列表",
-      "manifest.json",
-      "资产 ZIP"
-    ],
+    "notSufficientForDelivery": ["工作流 JSON", "结果文件列表", "manifest.json", "资产 ZIP"],
     "requiredForDelivery": [
       "稳定 pageId / panelId",
       "阅读顺序",
