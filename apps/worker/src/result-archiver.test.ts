@@ -449,12 +449,12 @@ describe('PrismaResultAssetArchiver', () => {
       modelAlias: 'gpt-test',
       format: 'txt',
       parameters: { temperature: 0.2 },
-      retentionHours: 72,
     });
     const metadata = rows[0].metadata as Record<string, unknown>;
-    expect(Date.parse(String(metadata.expiresAt)) - Date.parse(String(metadata.generatedAt))).toBe(
-      72 * 60 * 60 * 1000,
-    );
+    // 生成时不再写死 72 小时保留期，只保留生成标记供存储水位淘汰使用。
+    expect(metadata.retentionHours).toBeUndefined();
+    expect(metadata.expiresAt).toBeUndefined();
+    expect(Number.isFinite(Date.parse(String(metadata.generatedAt)))).toBe(true);
     expect(rows[1].metadata).toEqual(metadata);
     expect(archived?.metadata).toEqual(metadata);
   });

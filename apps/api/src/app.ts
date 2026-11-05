@@ -5212,9 +5212,9 @@ function createAssetResultArchiver(assetStore: AssetStore): RunResultArchiver {
       content: output.content,
       metadata: {
         source: 'run',
+        // 生成时只打「生成资源」标记；72 小时倒计时改由用户存储水位触发。
+        generated: true,
         generatedAt: generatedAt.toISOString(),
-        expiresAt: new Date(generatedAt.getTime() + 72 * 60 * 60 * 1000).toISOString(),
-        retentionHours: 72,
         runId: run.id,
         targetNodeId: result.targetNodeId,
         provider: result.provider,

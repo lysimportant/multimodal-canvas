@@ -701,10 +701,10 @@ export class PrismaResultAssetArchiver {
       await this.prisma.$transaction(async (transaction) => {
         throwIfCancelled(input.signal);
         const generatedAt = new Date();
+        // 生成时不再写死保留期：只记录「这是生成资源」，是否淘汰由用户存储水位决定。
         Object.assign(metadata, {
+          generated: true,
           generatedAt: generatedAt.toISOString(),
-          expiresAt: new Date(generatedAt.getTime() + 72 * 60 * 60 * 1000).toISOString(),
-          retentionHours: 72,
         });
         await transaction.asset.create({
           data: {

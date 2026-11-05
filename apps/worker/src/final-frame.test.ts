@@ -100,14 +100,13 @@ describe('applyVideoFinalFrame', () => {
     const first = await applyVideoFinalFrame(input);
     expect(first.status).toBe('ready');
     const metadata = rows[0].metadata as Record<string, unknown>;
-    expect(metadata).toMatchObject({ generated: true, retentionHours: 72 });
-    expect(Date.parse(String(metadata.expiresAt)) - Date.parse(String(metadata.generatedAt))).toBe(
-      72 * 60 * 60 * 1000,
-    );
-    expect(rows[1].metadata).toMatchObject({
-      generatedAt: metadata.generatedAt,
-      expiresAt: metadata.expiresAt,
-    });
+    // 生成时只打「生成资源」标记，保留期改由用户存储水位触发。
+    expect(metadata).toMatchObject({ generated: true });
+    expect(metadata.retentionHours).toBeUndefined();
+    expect(metadata.expiresAt).toBeUndefined();
+    expect(Number.isFinite(Date.parse(String(metadata.generatedAt)))).toBe(true);
+    expect(rows[1].metadata).toMatchObject({ generated: true, generatedAt: metadata.generatedAt });
+    expect((rows[1].metadata as Record<string, unknown>).expiresAt).toBeUndefined();
     expect(await applyVideoFinalFrame(input)).toEqual(first);
     expect(rows).toHaveLength(2);
   });

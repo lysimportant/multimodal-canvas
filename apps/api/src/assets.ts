@@ -6,6 +6,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -14,7 +15,15 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PrismaClient, Prisma } from '@prisma/client';
 import type { Asset, AssetStatus, MediaType } from '@multimodal-canvas/domain';
 import type { AssetByteRange } from './asset-shares';
-import { isGeneratedAssetExpired, type AssetExpirationResult } from './asset-retention-policy';
+import {
+  hasActiveCountdown,
+  isGeneratedAsset,
+  isGeneratedAssetExpired,
+  STORAGE_EVICTION_THRESHOLD_BYTES,
+  withStorageEvictionMarker,
+  type AssetEvictionResult,
+  type AssetExpirationResult,
+} from './asset-retention-policy';
 
 /** 授权后的内容源；长度为实际对象字节数，open 只在 GET 时调用。 */
 export type AssetContentSource = {
@@ -40,7 +49,18 @@ export interface BlobStore {
     key: string,
     options?: { expiresIn?: number; contentType?: string },
   ): Promise<string>;
+  /** 可选的对象列举能力，供孤儿回收使用；不支持时回收器直接跳过。 */
+  list?(prefix: string): AsyncIterable<BlobObjectInfo>;
 }
+
+/** 列举结果中的一条对象；lastModifiedMs 缺失时回收器按新对象处理，不会删除。 */
+export type BlobObjectInfo = { key: string; sizeBytes: number; lastModifiedMs?: number };
+
+/** 孤儿回收宽限期：新建资源先写对象再提交事务，短窗口内的对象必须跳过。 */
+const ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/** 存储水位与孤儿回收的分页大小，避免一次把整库资源读进内存。 */
+const EVICTION_PAGE_SIZE = 200;
 
 /** S3-compatible object storage adapter (works with R2 in development). */
 export class S3BlobStore implements BlobStore {
@@ -158,6 +178,29 @@ export class S3BlobStore implements BlobStore {
       if (isS3NotFound(error)) return false;
       throw error;
     }
+  }
+
+  /** 按前缀分页列举对象，供孤儿回收核对索引；只读，不修改任何对象。 */
+  async *list(prefix: string): AsyncIterable<BlobObjectInfo> {
+    let token: string | undefined;
+    do {
+      const page = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ...(token ? { ContinuationToken: token } : {}),
+        }),
+      );
+      for (const item of page.Contents ?? []) {
+        if (!item.Key) continue;
+        yield {
+          key: item.Key,
+          sizeBytes: item.Size ?? 0,
+          ...(item.LastModified ? { lastModifiedMs: item.LastModified.getTime() } : {}),
+        };
+      }
+      token = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (token);
   }
 
   async createPresignedPutUrl(
@@ -493,6 +536,16 @@ export type StoredAssetDerivative = {
 export interface AssetStore {
   /** 删除到期生成资源的全部字节，保留元数据墓碑供用户识别；失败留待下次重试。 */
   expireGeneratedAssets?(now?: number): Promise<AssetExpirationResult>;
+  /**
+   * 按用户存储水位给最早的生成资源打 72 小时淘汰倒计时；占用回落到阈值以下即停手，
+   * 已存在的倒计时不会被撤销。上传与历史资源不参与淘汰。
+   */
+  evictUnderStoragePressure?(now?: number): Promise<AssetEvictionResult>;
+  /**
+   * 清理对象存储中没有资源行指向的孤儿对象（宽限期内新建的对象不处理）。
+   * @returns 实际删除的对象数与字节数。
+   */
+  pruneOrphanAssets?(now?: number): Promise<AssetEvictionResult>;
   create(input: CreateAssetInput): Promise<StoredAsset>;
   list(scope?: AssetScope, options?: AssetListOptions): Promise<Asset[]>;
   /** 按授权范围的先后顺序去重分页；旧仓库未实现时，API 可继续使用 list/count。 */
@@ -602,6 +655,46 @@ export class MemoryAssetStore implements AssetStore {
       deleted++;
     }
     return { deleted, failed: 0 };
+  }
+
+  /** 按所有者统计未到期字节；越线时从最早的生成资源开始打 72 小时倒计时。 */
+  async evictUnderStoragePressure(now = Date.now()): Promise<AssetEvictionResult> {
+    const result: AssetEvictionResult = { evicted: 0, bytes: 0 };
+    const ownerIds = new Set(
+      Array.from(this.owners.values()).filter((ownerId): ownerId is string => Boolean(ownerId)),
+    );
+    for (const ownerId of ownerIds) {
+      const owned = Array.from(this.assets.values()).filter(
+        (asset) => this.owners.get(asset.id) === ownerId && !asset.metadata?.expiredAt,
+      );
+      let used = 0;
+      for (const asset of owned) {
+        if (!hasActiveCountdown(asset.metadata, now)) used += asset.sizeBytes;
+      }
+      if (used < STORAGE_EVICTION_THRESHOLD_BYTES) continue;
+      const candidates = owned
+        .filter(
+          (asset) => !hasActiveCountdown(asset.metadata, now) && isGeneratedAsset(asset.metadata),
+        )
+        .sort((left, right) => {
+          const leftAt = this.assetTimes.get(left.id)?.createdAt ?? '';
+          const rightAt = this.assetTimes.get(right.id)?.createdAt ?? '';
+          return leftAt === rightAt
+            ? left.id.localeCompare(right.id)
+            : leftAt.localeCompare(rightAt);
+        });
+      for (const candidate of candidates) {
+        if (used < STORAGE_EVICTION_THRESHOLD_BYTES) break;
+        this.assets.set(candidate.id, {
+          ...candidate,
+          metadata: withStorageEvictionMarker(candidate.metadata, now),
+        });
+        used -= candidate.sizeBytes;
+        result.evicted++;
+        result.bytes += candidate.sizeBytes;
+      }
+    }
+    return result;
   }
 
   async create(input: CreateAssetInput): Promise<StoredAsset> {
@@ -1104,6 +1197,174 @@ export class PrismaAssetStore implements AssetStore {
     return result;
   }
 
+  /** 按所有者统计未到期字节；越线时从最早的生成资源开始打 72 小时倒计时，回落即停手。 */
+  async evictUnderStoragePressure(now = Date.now()): Promise<AssetEvictionResult> {
+    const result: AssetEvictionResult = { evicted: 0, bytes: 0 };
+    const owners = await this.prisma.asset.groupBy({
+      by: ['ownerId'],
+      where: {
+        ownerId: { not: null },
+        metadata: { path: ['expiredAt'], equals: Prisma.AnyNull },
+      },
+      _sum: { sizeBytes: true },
+    });
+    for (const group of owners) {
+      const ownerId = group.ownerId;
+      if (!ownerId) continue;
+      // 已带倒计时的字节算作「正在释放」，不计入水位，否则每轮都会继续追问更旧的资源。
+      const used = await this.unmarkedBytesForOwner(ownerId, now);
+      if (used < STORAGE_EVICTION_THRESHOLD_BYTES) continue;
+      const marked = result.evicted;
+      await this.markOldestGeneratedForOwner(ownerId, used, now, result);
+      // 上传原件与历史资源不参与淘汰，只靠它们撑过阈值时只能告警等人工处理。
+      if (result.evicted === marked)
+        console.warn('[asset] 存储水位已超过阈值，但没有可淘汰的生成资源（上传原件永不自动删除）', {
+          ownerId,
+          used,
+          threshold: STORAGE_EVICTION_THRESHOLD_BYTES,
+        });
+    }
+    return result;
+  }
+
+  /** 分页统计某所有者当前未到期、且没有倒计时的字节总量。 */
+  private async unmarkedBytesForOwner(ownerId: string, now: number): Promise<number> {
+    let used = 0;
+    let cursor: string | undefined;
+    while (true) {
+      const rows = await this.prisma.asset.findMany({
+        where: {
+          ownerId,
+          metadata: { path: ['expiredAt'], equals: Prisma.AnyNull },
+          ...(cursor ? { id: { gt: cursor } } : {}),
+        },
+        orderBy: { id: 'asc' },
+        take: EVICTION_PAGE_SIZE,
+        select: { id: true, sizeBytes: true, metadata: true },
+      });
+      for (const row of rows)
+        if (!hasActiveCountdown(row.metadata, now)) used += Number(row.sizeBytes);
+      if (rows.length < EVICTION_PAGE_SIZE) return used;
+      cursor = rows[rows.length - 1]!.id;
+    }
+  }
+
+  /** 从最早的生成资源开始打标，直到水位回落到阈值以下；上传与历史资源不参与淘汰。 */
+  private async markOldestGeneratedForOwner(
+    ownerId: string,
+    initialUsed: number,
+    now: number,
+    result: AssetEvictionResult,
+  ): Promise<void> {
+    let used = initialUsed;
+    // 已扫描到的位置用 (createdAt, id) 键集推进，打标不会让游标错位。
+    let last: { createdAt: Date; id: string } | undefined;
+    while (used >= STORAGE_EVICTION_THRESHOLD_BYTES) {
+      const rows = await this.prisma.asset.findMany({
+        where: {
+          ownerId,
+          metadata: { path: ['expiredAt'], equals: Prisma.AnyNull },
+          ...(last
+            ? {
+                OR: [
+                  { createdAt: { gt: last.createdAt } },
+                  { createdAt: last.createdAt, id: { gt: last.id } },
+                ],
+              }
+            : {}),
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: EVICTION_PAGE_SIZE,
+        select: { id: true, sizeBytes: true, metadata: true, createdAt: true },
+      });
+      if (rows.length === 0) return;
+      last = rows[rows.length - 1]!;
+      for (const row of rows) {
+        if (used < STORAGE_EVICTION_THRESHOLD_BYTES) return;
+        if (hasActiveCountdown(row.metadata, now)) continue;
+        if (!isGeneratedAsset(row.metadata)) continue;
+        try {
+          await this.prisma.asset.update({
+            where: { id: row.id },
+            data: {
+              metadata: withStorageEvictionMarker(row.metadata, now) as Prisma.InputJsonValue,
+            },
+          });
+          used -= Number(row.sizeBytes);
+          result.evicted++;
+          result.bytes += Number(row.sizeBytes);
+        } catch (error) {
+          // 单个资源打标失败不影响其它资源，下一轮水位检查会重试。
+          console.warn('[asset] 淘汰标记写入失败，将在下次水位检查时重试', row.id, error);
+        }
+      }
+      if (rows.length < EVICTION_PAGE_SIZE) return;
+    }
+  }
+
+  /**
+   * 删除对象存储中没有资源行指向的孤儿对象。
+   * 只处理超过宽限期的对象，避免误删「刚写完字节、事务尚未提交」的资源。
+   * @param now 判定时刻，宽限期与测试都以此为准。
+   * @returns 实际删除的对象数与字节数；不支持列举的存储直接返回 0。
+   */
+  async pruneOrphanAssets(now = Date.now()): Promise<AssetEvictionResult> {
+    const result: AssetEvictionResult = { evicted: 0, bytes: 0 };
+    if (typeof this.blobStore.list !== 'function') return result;
+    const keep = new Set<string>();
+    let cursor: string | undefined;
+    while (true) {
+      const rows = await this.prisma.asset.findMany({
+        ...(cursor ? { where: { id: { gt: cursor } } } : {}),
+        orderBy: { id: 'asc' },
+        take: EVICTION_PAGE_SIZE,
+        select: { id: true, contentKey: true, metadata: true },
+      });
+      for (const row of rows) {
+        // 已过期的资源行保留元数据但字节已删，残留对象按孤儿处理。
+        if (asRecord(row.metadata)?.expiredAt) continue;
+        for (const key of this.managedKeys(row.contentKey)) keep.add(key);
+      }
+      if (rows.length < EVICTION_PAGE_SIZE) break;
+      cursor = rows[rows.length - 1]!.id;
+    }
+    let versionCursor: string | undefined;
+    while (true) {
+      const versions = await this.prisma.assetVersion.findMany({
+        ...(versionCursor ? { where: { id: { gt: versionCursor } } } : {}),
+        orderBy: { id: 'asc' },
+        take: EVICTION_PAGE_SIZE,
+        select: { id: true, contentKey: true },
+      });
+      for (const row of versions) for (const key of this.managedKeys(row.contentKey)) keep.add(key);
+      if (versions.length < EVICTION_PAGE_SIZE) break;
+      versionCursor = versions[versions.length - 1]!.id;
+    }
+    // 带尾部斜杠，避免把前缀相同但不同目录的对象（如 assets-old/）当成受管对象。
+    for await (const object of this.blobStore.list(`${this.keyPrefix}/`)) {
+      if (keep.has(object.key)) continue;
+      if (object.lastModifiedMs === undefined) continue;
+      if (now - object.lastModifiedMs < ORPHAN_GRACE_MS) continue;
+      try {
+        await this.blobStore.delete(object.key);
+        result.evicted++;
+        result.bytes += object.sizeBytes;
+      } catch (error) {
+        console.warn('[asset] 孤儿对象删除失败，将在下次回收时重试', object.key, error);
+      }
+    }
+    return result;
+  }
+
+  /** 把内容键展开为受管键集合：主键、两种派生键布局与版本后缀。 */
+  private managedKeys(contentKey: string): string[] {
+    const keys = new Set<string>([contentKey]);
+    for (const kind of ['thumbnail', 'poster', 'waveform', 'final_frame']) {
+      for (const key of this.derivativeReadKeys(contentKey, kind)) keys.add(key);
+    }
+    return [...keys];
+  }
+
   /** 创建源资源、版本和旁路预览；失败时只清理本次新键，不触碰旧布局对象。 */
   async create(input: CreateAssetInput): Promise<StoredAsset> {
     const id = randomUUID();
@@ -1155,13 +1416,14 @@ export class PrismaAssetStore implements AssetStore {
         content: Buffer.from(input.content),
       };
     } catch (error) {
-      await this.blobStore.delete(contentKey).catch(() => undefined);
+      // 回滚失败只留下孤儿对象，交给孤儿回收器兜底，但必须留下可诊断的日志。
+      const rollback = (key: string) =>
+        this.blobStore.delete(key).catch((cleanupError: unknown) => {
+          console.warn('[asset] 回滚对象失败，已留下孤立对象', { assetId: id, key }, cleanupError);
+        });
+      await rollback(contentKey);
       await Promise.all(
-        derivatives.map((derivative) =>
-          this.blobStore
-            .delete(this.derivativeKey(contentKey, derivative.kind))
-            .catch(() => undefined),
-        ),
+        derivatives.map((derivative) => rollback(this.derivativeKey(contentKey, derivative.kind))),
       );
       throw error;
     }
@@ -1344,7 +1606,10 @@ export class PrismaAssetStore implements AssetStore {
     await this.prisma.asset.delete({ where: { id } });
     await Promise.all(
       [row.contentKey, ...versions.map((v) => v.contentKey)].map((key) =>
-        this.blobStore.delete(key).catch(() => undefined),
+        this.blobStore.delete(key).catch((error: unknown) => {
+          // 元数据已删除，此处失败只会留下无引用对象；记录下来交给孤儿回收器处理。
+          console.warn('[asset] 对象删除失败，已留下孤立对象', { assetId: id, key }, error);
+        }),
       ),
     );
     return true;
@@ -1511,7 +1776,14 @@ export class PrismaAssetStore implements AssetStore {
       });
       return mapVersion(row);
     } catch (error) {
-      await this.blobStore.delete(contentKey).catch(() => undefined);
+      // 版本行没写成时这个键无人引用，回滚失败就交给孤儿回收器，但日志必须留下。
+      await this.blobStore.delete(contentKey).catch((cleanupError: unknown) => {
+        console.warn(
+          '[asset] 回滚版本对象失败，已留下孤立对象',
+          { assetId, version, key: contentKey },
+          cleanupError,
+        );
+      });
       throw error;
     }
   }

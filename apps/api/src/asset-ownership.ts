@@ -63,6 +63,16 @@ export function withAssetOwnershipPolicy(store: AssetStore, projects: ProjectSto
         }
       : {}),
     create: (input) => store.create(input),
+    // 存储水位与孤儿回收是全库维护动作，不经过单资源授权检查，直接透传给底层仓库。
+    ...(store.evictUnderStoragePressure
+      ? { evictUnderStoragePressure: (now?: number) => store.evictUnderStoragePressure!(now) }
+      : {}),
+    ...(store.pruneOrphanAssets
+      ? { pruneOrphanAssets: (now?: number) => store.pruneOrphanAssets!(now) }
+      : {}),
+    ...(store.expireGeneratedAssets
+      ? { expireGeneratedAssets: (now?: number) => store.expireGeneratedAssets!(now) }
+      : {}),
     async list(scope, options = {}) {
       const entries = await filtered(scope, options);
       return options.page && options.pageSize

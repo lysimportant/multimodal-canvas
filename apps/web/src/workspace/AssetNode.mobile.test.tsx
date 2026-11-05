@@ -99,7 +99,7 @@ describe('手机节点操作面板', () => {
     await userEvent.click(screen.getByRole('button', { name: '节点操作：手机图片' }));
     await userEvent.click(screen.getByRole('button', { name: '查看销毁时间：手机图片' }));
     const expiry = await screen.findByRole('group', { name: '资源销毁时间' });
-    await waitFor(() => expect(within(expiry).getByText(/生成资源仅保留 72 小时/)).toBeVisible());
+    await waitFor(() => expect(within(expiry).getByText(/72 小时倒计时/)).toBeVisible());
     expect(screen.getByRole('dialog', { name: '节点操作：手机图片' })).toBeVisible();
   });
   it('默认只保留一个 Antd 入口，悬停和选中不展开按钮条', async () => {

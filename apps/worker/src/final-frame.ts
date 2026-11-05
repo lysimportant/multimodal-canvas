@@ -208,11 +208,10 @@ async function createFinalFrameImageAsset(
   const label = (node?.data.label ?? '视频') + '末帧';
   await input.prisma.$transaction(async (transaction) => {
     const generatedAt = new Date();
+    // 与结果归档一致：生成时只打「生成资源」标记，淘汰倒计时改由存储水位触发。
     const retention = {
       generated: true,
       generatedAt: generatedAt.toISOString(),
-      expiresAt: new Date(generatedAt.getTime() + 72 * 60 * 60 * 1000).toISOString(),
-      retentionHours: 72,
     };
     await transaction.asset.create({
       data: {

@@ -258,7 +258,7 @@ describe('生成资源保留期', () => {
     const trigger = screen.getByRole('button', { name: '查看销毁时间：文案生成' });
     act(() => trigger.focus());
     const expiry = await screen.findByRole('group', { name: '资源销毁时间' });
-    await waitFor(() => expect(within(expiry).getByText(/保留 72 小时/)).toBeVisible());
+    await waitFor(() => expect(within(expiry).getByText(/72 小时倒计时/)).toBeVisible());
     expect(expiry.querySelector('time')).toHaveAttribute('datetime', '2099-10-26T00:00:00.000Z');
     await user.keyboard('{Escape}');
     await user.click(screen.getByRole('button', { name: '查看节点信息' }));

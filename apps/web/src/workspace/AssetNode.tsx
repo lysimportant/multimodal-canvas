@@ -1089,8 +1089,8 @@ export function AssetNode({
                     >
                       <p>
                         {resourceExpired
-                          ? '生成资源已超过 72 小时保留期。'
-                          : '生成资源仅保留 72 小时，到期后自动删除，请及时下载保存。'}
+                          ? '生成资源已超过 72 小时保留期，并已自动删除。'
+                          : '存储占用超过阈值后，最早的生成资源会进入 72 小时倒计时，到期自动删除，请及时下载保存。'}
                       </p>
                       <time dateTime={retention.expiresAt.dateTime}>
                         {retention.expiresAt.label}
@@ -1541,7 +1541,7 @@ export function AssetNode({
                       <time dateTime={retention.expiresAt.dateTime}>
                         {retention.expiresAt.label}
                       </time>
-                      （生成后保留 72 小时）
+                      （由存储占用触发，倒计时 72 小时）
                     </dd>
                   </div>
                 </>
@@ -1653,7 +1653,7 @@ export function AssetNode({
         <div className="flow-node-state flow-node-expired" role="status">
           <Clock3 size={24} aria-hidden="true" />
           <strong>生成资源已到期</strong>
-          <span>资源保留 72 小时后自动删除，请重新生成。</span>
+          <span>资源保留期结束后已自动删除，如需再次使用请重新生成。</span>
         </div>
       ) : renderDetail !== 'full' ? (
         <div className="flow-node-preview flow-node-summary" aria-label={`节点摘要：${data.label}`}>
