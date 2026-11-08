@@ -1813,17 +1813,50 @@ describe('AssetNode result presentation', () => {
     expect(await screen.findByRole('dialog', { name: '重命名节点' })).toBeInTheDocument();
   });
 
-  it('节点右侧图标栏转发到原操作按钮，点击信息仍打开同一信息面板', async () => {
+  it('节点顶部右侧只显示指定的五个图标，并转发到原信息按钮', async () => {
     const user = userEvent.setup();
-    const { container } = renderNode(makeNode(), undefined, undefined, undefined, true);
+    const content = {
+      upload: vi.fn().mockResolvedValue(undefined),
+      saveText: vi.fn().mockResolvedValue(undefined),
+    };
+    const node = makeNode({
+      mediaType: 'video',
+      runStatus: 'succeeded',
+      resultAsset: {
+        assetId: 'side-actions-video',
+        version: 1,
+        mimeType: 'video/mp4',
+        contentUrl: 'https://assets.example/versions/1/content',
+      },
+    });
+    const { container } = renderNode(
+      node,
+      undefined,
+      vi.fn(),
+      undefined,
+      true,
+      undefined,
+      vi.fn(),
+      { content },
+    );
 
     const sideControls = container.querySelector<HTMLDivElement>('.flow-node-side-controls')!;
     expect(sideControls).toHaveClass('is-visible');
     expect(sideControls).toHaveAccessibleName('节点快捷操作：文案生成');
-    expect(within(sideControls).getByRole('button', { name: '右侧快捷操作：信息' })).toBeVisible();
+    expect(
+      within(sideControls)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label')),
+    ).toEqual([
+      '右上快捷操作：信息',
+      '右上快捷操作：禁用',
+      '右上快捷操作：上传',
+      '右上快捷操作：分享',
+      '右上快捷操作：删除',
+    ]);
     expect(sideControls.querySelector('.flow-node-action-label')).toBeInTheDocument();
 
-    await user.click(within(sideControls).getByRole('button', { name: '右侧快捷操作：信息' }));
+    await user.click(within(sideControls).getByRole('button', { name: '右上快捷操作：信息' }));
     expect(await screen.findByRole('dialog', { name: '节点信息' })).toBeInTheDocument();
   });
 

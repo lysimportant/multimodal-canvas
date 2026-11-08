@@ -312,7 +312,7 @@ function NodeFloatingActionButton({ title, ...props }: ButtonProps & { title: st
   );
 }
 
-/** 右侧图标栏只转发到顶部工具栏的真实控件，避免重复创建分享或弹窗状态。 */
+/** 顶部右侧图标栏只转发到真实工具栏控件，避免重复创建分享或弹窗状态。 */
 function NodeSideActionButton({
   action,
   label,
@@ -332,7 +332,7 @@ function NodeSideActionButton({
     <NodeFloatingActionButton
       type="button"
       className="flow-node-action-button nodrag nopan nowheel"
-      aria-label={`右侧快捷操作：${label}`}
+      aria-label={`右上快捷操作：${label}`}
       title={title}
       disabled={disabled}
       onPointerDown={(event) => event.stopPropagation()}
@@ -1447,24 +1447,6 @@ export function AssetNode({
           role="group"
           aria-label={`节点快捷操作：${data.label}`}
         >
-          {changeLabel ? (
-            <NodeSideActionButton
-              action="rename"
-              label="重命名"
-              title="修改节点名称，不影响已有内容"
-              icon={<Pencil size={18} aria-hidden="true" />}
-              onActivate={activateFloatingAction}
-            />
-          ) : null}
-          <NodeFloatingActionButton
-            type="button"
-            className="flow-node-action-button flow-node-drag-handle"
-            aria-label="右侧快捷操作：拖动移动节点"
-            title="按住拖动，调整节点在画布中的位置"
-          >
-            <GripVertical size={18} aria-hidden="true" />
-            <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
-          </NodeFloatingActionButton>
           <NodeSideActionButton
             action="info"
             label="信息"
@@ -1476,29 +1458,11 @@ export function AssetNode({
             icon={<Info size={18} aria-hidden="true" />}
             onActivate={activateFloatingAction}
           />
-          {retention ? (
-            <NodeSideActionButton
-              action="retention"
-              label="销毁时间"
-              title="查看资源销毁时间"
-              icon={<Clock3 size={18} aria-hidden="true" />}
-              onActivate={activateFloatingAction}
-            />
-          ) : null}
-          {openPrompt ? (
-            <NodeSideActionButton
-              action="prompt"
-              label="提示词"
-              title="查看本次生成实际发送的提示词"
-              icon={<FileText size={18} aria-hidden="true" />}
-              onActivate={activateFloatingAction}
-            />
-          ) : null}
           {setNodeEnabled ? (
             <NodeSideActionButton
               action="enabled"
-              label={enabled ? '停用' : '启用'}
-              title={enabled ? '停用后不参与生成，保留已有内容' : '重新启用此节点参与生成'}
+              label={enabled ? '禁用' : '启用'}
+              title={enabled ? '禁用后不参与生成，保留已有内容' : '重新启用此节点参与生成'}
               icon={<Power size={18} strokeWidth={2.2} aria-hidden="true" />}
               onActivate={activateFloatingAction}
             />
@@ -1520,52 +1484,6 @@ export function AssetNode({
                 )
               }
               disabled={writingDisabled}
-              onActivate={activateFloatingAction}
-            />
-          ) : null}
-          {editImage && !resourceExpired && isImageEditSourceNode({ data }) ? (
-            <NodeSideActionButton
-              action="edit-image"
-              label="修改图片"
-              title={
-                writingDisabled
-                  ? '节点正在运行或保存，请稍后再修改图片'
-                  : '引用当前图片创建编辑节点，不覆盖原图'
-              }
-              icon={<WandSparkles size={18} aria-hidden="true" />}
-              disabled={writingDisabled}
-              onActivate={activateFloatingAction}
-            />
-          ) : null}
-          {recreateVideo && data.mediaType === 'video' && previewAsset?.contentUrl ? (
-            <NodeSideActionButton
-              action="recreate-video"
-              label="复刻短视频"
-              title="创建短视频复刻节点，原视频保留不变"
-              icon={<Clapperboard size={18} aria-hidden="true" />}
-              disabled={writingDisabled}
-              onActivate={activateFloatingAction}
-            />
-          ) : null}
-          {downloadableMedia ? (
-            <NodeSideActionButton
-              action="download"
-              label={isDownloading ? '下载中' : '下载'}
-              title={
-                isDownloading
-                  ? '正在准备下载'
-                  : previewAsset?.contentUrl
-                    ? `下载当前回显的${mediaLabels[data.mediaType]}文件`
-                    : '暂无可下载内容'
-              }
-              icon={
-                isDownloading ? (
-                  <LoaderCircle className="spin" size={18} aria-hidden="true" />
-                ) : (
-                  <Download size={18} aria-hidden="true" />
-                )
-              }
-              disabled={!previewAsset?.contentUrl || isDownloading}
               onActivate={activateFloatingAction}
             />
           ) : null}

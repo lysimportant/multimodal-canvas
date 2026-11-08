@@ -98,7 +98,7 @@
   font-weight: 650;
   gap: 2px;
   left: 0;
-  max-width: min(320px, calc(100vw - 24px));
+  max-width: min(320px, calc(100% - 154px), calc(100vw - 24px));
   cursor: copy;
   pointer-events: auto;
   position: absolute;
@@ -111,6 +111,7 @@
 
 .flow-node-external-label-text {
   cursor: copy;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -266,15 +267,17 @@
 .flow-node-side-controls {
   align-items: center;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  left: calc(100% + 8px);
+  flex-direction: row;
+  gap: 2px;
+  left: auto;
+  max-width: 100%;
   opacity: 0;
   pointer-events: none;
   position: absolute;
-  top: 0;
+  right: 0;
+  top: calc(-28px * var(--flow-node-inverse-zoom, 1));
   transform: scale(var(--flow-node-inverse-zoom, 1));
-  transform-origin: top left;
+  transform-origin: top right;
   transition: opacity 120ms ease;
   visibility: hidden;
   z-index: 7;
@@ -290,14 +293,6 @@
   display: none;
 }
 
-.flow-node-side-controls .flow-node-drag-handle {
-  cursor: grab;
-}
-
-.flow-node-side-controls .flow-node-drag-handle:active {
-  cursor: grabbing;
-}
-
 .flow-node-side-controls .flow-node-action-button,
 .flow-node-side-controls .flow-node-action-button.ant-btn {
   align-items: center;
@@ -306,13 +301,13 @@
   border-radius: 6px;
   color: var(--mc-text-muted);
   display: inline-flex;
-  flex: 0 0 34px;
-  height: 34px;
+  flex: 0 0 28px;
+  height: 28px;
   justify-content: center;
   margin: 0;
-  min-width: 34px;
+  min-width: 28px;
   padding: 0;
-  width: 34px;
+  width: 28px;
 }
 
 .flow-node-side-controls

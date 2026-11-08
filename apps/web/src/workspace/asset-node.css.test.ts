@@ -87,14 +87,18 @@ describe('asset node floating controls CSS contracts', () => {
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*display: inline;/);
   });
 
-  it('节点右侧操作栏绝对定位、仅显示图标并按悬停状态显隐', () => {
+  it('节点顶部右侧操作栏不超出卡片、横向显示图标并按悬停状态显隐', () => {
     const sideRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-side-controls {'))
       .split('}')[0];
     expect(sideRule).toContain('position: absolute;');
-    expect(sideRule).toContain('left: calc(100% + 8px);');
-    expect(sideRule).toContain('flex-direction: column;');
+    expect(sideRule).toContain('right: 0;');
+    expect(sideRule).toContain('top: calc(-28px * var(--flow-node-inverse-zoom, 1));');
+    expect(sideRule).toContain('max-width: 100%;');
+    expect(sideRule).toContain('flex-direction: row;');
+    expect(sideRule).not.toContain('left: calc(100% +');
     expect(sideRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
+    expect(sideRule).toContain('transform-origin: top right;');
     expect(sideRule).toContain('pointer-events: none;');
     expect(normalizedCss).toContain('.flow-node-side-controls.is-visible');
     expect(normalizedCss).toContain('.is-generation-batch-hidden .flow-node-side-controls');
@@ -105,10 +109,13 @@ describe('asset node floating controls CSS contracts', () => {
     const actionRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-side-controls .flow-node-action-button,'))
       .split('}')[0];
-    expect(actionRule).toContain('flex: 0 0 34px;');
-    expect(actionRule).toContain('height: 34px;');
-    expect(actionRule).toContain('min-width: 34px;');
-    expect(actionRule).toContain('width: 34px;');
+    expect(actionRule).toContain('flex: 0 0 28px;');
+    expect(actionRule).toContain('height: 28px;');
+    expect(actionRule).toContain('min-width: 28px;');
+    expect(actionRule).toContain('width: 28px;');
+    expect(normalizedCss).toContain(
+      'max-width: min(320px, calc(100% - 154px), calc(100vw - 24px));',
+    );
   });
 });
 
