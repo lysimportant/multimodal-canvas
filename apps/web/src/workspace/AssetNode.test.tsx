@@ -1813,7 +1813,7 @@ describe('AssetNode result presentation', () => {
     expect(await screen.findByRole('dialog', { name: '重命名节点' })).toBeInTheDocument();
   });
 
-  it('节点顶部右侧只显示指定的五个图标，并转发到原信息按钮', async () => {
+  it('节点顶部右侧常显六个图标，并复用信息和放大预览操作', async () => {
     const user = userEvent.setup();
     const content = {
       upload: vi.fn().mockResolvedValue(undefined),
@@ -1834,14 +1834,14 @@ describe('AssetNode result presentation', () => {
       undefined,
       vi.fn(),
       undefined,
-      true,
+      false,
       undefined,
       vi.fn(),
       { content },
     );
 
     const sideControls = container.querySelector<HTMLDivElement>('.flow-node-side-controls')!;
-    expect(sideControls).toHaveClass('is-visible');
+    expect(sideControls).not.toHaveClass('is-visible');
     expect(sideControls).toHaveAccessibleName('节点快捷操作：文案生成');
     expect(
       within(sideControls)
@@ -1853,11 +1853,14 @@ describe('AssetNode result presentation', () => {
       '右上快捷操作：上传',
       '右上快捷操作：分享',
       '右上快捷操作：删除',
+      '右上快捷操作：放大预览',
     ]);
     expect(sideControls.querySelector('.flow-node-action-label')).toBeInTheDocument();
 
     await user.click(within(sideControls).getByRole('button', { name: '右上快捷操作：信息' }));
     expect(await screen.findByRole('dialog', { name: '节点信息' })).toBeInTheDocument();
+    await user.click(within(sideControls).getByRole('button', { name: '右上快捷操作：放大预览' }));
+    expect(await screen.findByRole('dialog', { name: '文案生成结果' })).toBeInTheDocument();
   });
 
   it('原生 K 档显示当前设置，不把档位当作固定像素比较', async () => {

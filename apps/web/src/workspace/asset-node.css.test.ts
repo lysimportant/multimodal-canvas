@@ -12,7 +12,7 @@ describe('asset node floating controls CSS contracts', () => {
       .split('}')[0];
     expect(labelRule).toContain('position: absolute;');
     expect(labelRule).toContain('left: 0;');
-    expect(labelRule).toContain('top: calc(-28px * var(--flow-node-inverse-zoom, 1));');
+    expect(labelRule).toContain('top: calc(-23px * var(--flow-node-inverse-zoom, 1));');
     expect(labelRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
     expect(labelRule).toContain('pointer-events: auto;');
 
@@ -87,20 +87,28 @@ describe('asset node floating controls CSS contracts', () => {
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*display: inline;/);
   });
 
-  it('节点顶部右侧操作栏不超出卡片、横向显示图标并按悬停状态显隐', () => {
+  it('节点顶部左右控件垂直居中，右侧图标栏常显且不超出卡片', () => {
+    const labelRule = normalizedCss
+      .slice(normalizedCss.indexOf('.flow-node-external-label {'))
+      .split('}')[0];
     const sideRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-side-controls {'))
       .split('}')[0];
     expect(sideRule).toContain('position: absolute;');
     expect(sideRule).toContain('right: 0;');
-    expect(sideRule).toContain('top: calc(-28px * var(--flow-node-inverse-zoom, 1));');
+    expect(sideRule).toContain('top: calc(-26px * var(--flow-node-inverse-zoom, 1));');
     expect(sideRule).toContain('max-width: 100%;');
     expect(sideRule).toContain('flex-direction: row;');
+    expect(sideRule).toContain('gap: 0;');
+    expect(sideRule).toContain('opacity: 1;');
+    expect(sideRule).toContain('pointer-events: auto;');
+    expect(sideRule).toContain('visibility: visible;');
+    expect(labelRule).toContain('top: calc(-23px * var(--flow-node-inverse-zoom, 1));');
+    expect(sideRule).toContain('top: calc(-26px * var(--flow-node-inverse-zoom, 1));');
     expect(sideRule).not.toContain('left: calc(100% +');
+    expect(normalizedCss).not.toContain('.flow-node-side-controls.is-visible');
     expect(sideRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
     expect(sideRule).toContain('transform-origin: top right;');
-    expect(sideRule).toContain('pointer-events: none;');
-    expect(normalizedCss).toContain('.flow-node-side-controls.is-visible');
     expect(normalizedCss).toContain('.is-generation-batch-hidden .flow-node-side-controls');
     expect(normalizedCss).toMatch(
       /\.flow-node-side-controls \.flow-node-action-label \{[^}]*display: none;/,
@@ -109,12 +117,12 @@ describe('asset node floating controls CSS contracts', () => {
     const actionRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-side-controls .flow-node-action-button,'))
       .split('}')[0];
-    expect(actionRule).toContain('flex: 0 0 28px;');
-    expect(actionRule).toContain('height: 28px;');
-    expect(actionRule).toContain('min-width: 28px;');
-    expect(actionRule).toContain('width: 28px;');
+    expect(actionRule).toContain('flex: 0 0 26px;');
+    expect(actionRule).toContain('height: 26px;');
+    expect(actionRule).toContain('min-width: 26px;');
+    expect(actionRule).toContain('width: 26px;');
     expect(normalizedCss).toContain(
-      'max-width: min(320px, calc(100% - 154px), calc(100vw - 24px));',
+      'max-width: min(320px, calc(100% - 162px), calc(100vw - 24px));',
     );
   });
 });

@@ -6,6 +6,7 @@ import {
   Clapperboard,
   Clock3,
   Download,
+  Expand,
   FileText,
   GripVertical,
   Info,
@@ -329,8 +330,9 @@ function NodeSideActionButton({
   onActivate: (action: string) => void;
 }) {
   return (
-    <NodeFloatingActionButton
+    <Button
       type="button"
+      variant="ghost"
       className="flow-node-action-button nodrag nopan nowheel"
       aria-label={`右上快捷操作：${label}`}
       title={title}
@@ -343,7 +345,7 @@ function NodeSideActionButton({
     >
       {icon}
       <NodeFloatingActionLabel>{label}</NodeFloatingActionLabel>
-    </NodeFloatingActionButton>
+    </Button>
   );
 }
 
@@ -564,8 +566,16 @@ export function AssetNode({
   const floatingControls = true;
   const activateFloatingAction = (action: string) => {
     const selector =
-      action === 'share' ? '.flow-node-share-button' : `[data-node-action="${action}"]`;
-    const trigger = floatingControlsRef.current?.querySelector<HTMLButtonElement>(selector);
+      action === 'share'
+        ? '.flow-node-share-button'
+        : action === 'preview'
+          ? '.artifact-preview-open-button'
+          : `[data-node-action="${action}"]`;
+    const scope =
+      action === 'preview'
+        ? floatingControlsRef.current?.closest('.flow-asset-node')
+        : floatingControlsRef.current;
+    const trigger = scope?.querySelector<HTMLButtonElement>(selector);
     if (trigger && !trigger.disabled) trigger.click();
   };
   /**
@@ -1441,9 +1451,9 @@ export function AssetNode({
           )}
         </NodeActionsContainer>
       )}
-      {!mobile && !selectionMode && (!largeCanvas || controlsVisible) ? (
+      {!mobile && !selectionMode && !batchView?.hidden ? (
         <div
-          className={`flow-node-side-controls${controlsVisible ? ' is-visible' : ''}`}
+          className="flow-node-side-controls"
           role="group"
           aria-label={`节点快捷操作：${data.label}`}
         >
@@ -1502,6 +1512,17 @@ export function AssetNode({
               label="删除"
               title="删除当前节点及关联连线；项目资源仍保留在右侧资源库"
               icon={<Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {previewAsset &&
+          presentationState === 'preview' &&
+          (data.mediaType === 'image' || data.mediaType === 'video') ? (
+            <NodeSideActionButton
+              action="preview"
+              label="放大预览"
+              title={`预览${mediaLabels[data.mediaType]}`}
+              icon={<Expand size={18} aria-hidden="true" />}
               onActivate={activateFloatingAction}
             />
           ) : null}
