@@ -91,7 +91,11 @@ vi.mock('@xyflow/react', async (importOriginal) => {
   const storeApi = {
     setState: reactFlowMock.setState,
     getState: () => ({
-      transform: [reactFlowMock.viewportX, reactFlowMock.viewportY, reactFlowMock.viewportZoom],
+      transform: [reactFlowMock.viewportX, reactFlowMock.viewportY, reactFlowMock.viewportZoom] as [
+        number,
+        number,
+        number,
+      ],
       domNode: reactFlowMock.domNode,
       snapToGrid: reactFlowMock.snapToGrid,
       snapGrid: reactFlowMock.snapGrid,
@@ -269,8 +273,8 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     Position: actual.Position,
     ReactFlow,
     useViewport: () => ({ x: 0, y: 0, zoom: reactFlowMock.viewportZoom }),
-    useStore: (selector: (state: { transform: [number, number, number] }) => unknown) =>
-      selector({ transform: [0, 0, reactFlowMock.viewportZoom] }),
+    useStore: (selector: (state: ReturnType<typeof storeApi.getState>) => unknown) =>
+      selector(storeApi.getState()),
     useStoreApi: () => storeApi,
     useEdges: () => [],
     useNodeConnections: () => [],
@@ -885,7 +889,9 @@ describe('WorkflowCanvas context menu', () => {
       );
       view.rerender(<WorkflowCanvas {...props} nodes={[active]} selectedNode={active} />);
       const stopName = status === 'cancel_requested' ? '停止中' : '停止生成';
-      const stopButton = screen.getByRole('button', { name: stopName });
+      const stopButton = within(
+        screen.getByRole('region', { name: `${node.data.label}生成设置` }),
+      ).getByRole('button', { name: stopName });
       const stopMenu = screen.getByRole('menuitem', { name: stopName });
       if (status === 'cancel_requested') {
         expect(stopButton).toBeDisabled();

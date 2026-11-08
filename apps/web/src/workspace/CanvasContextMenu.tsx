@@ -398,7 +398,7 @@ function nodeMenuItems(
       'delete',
       Trash2,
       '删除节点',
-      '删除当前节点及其连线',
+      '仅移除节点及连线；项目资源仍保留在右侧资源库',
       () => run(() => props.onDeleteNode(node.id)),
       !props.canDeleteNode,
       true,

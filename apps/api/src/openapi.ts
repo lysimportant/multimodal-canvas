@@ -1254,14 +1254,35 @@ export const openApiDocument = {
     '/v1/projects/{projectId}/runs': {
       get: {
         tags: ['runs'],
-        parameters: [{ $ref: '#/components/parameters/ProjectId' }],
+        description:
+          '不带查询参数时保留全量历史响应。提供 limit、nodeId 或 cursor 时按创建时间和 ID 降序分页；续页必须保持同一 nodeId。',
+        parameters: [
+          { $ref: '#/components/parameters/ProjectId' },
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+          },
+          { name: 'nodeId', in: 'query', schema: { type: 'string', minLength: 1, maxLength: 512 } },
+          {
+            name: 'cursor',
+            in: 'query',
+            description: '上页返回的 nextCursor，仅可用于同一项目和节点筛选。',
+            schema: { type: 'string' },
+          },
+        ],
         responses: {
           '200': response('Project run history', {
             type: 'object',
             required: ['runs'],
-            properties: { runs: { type: 'array', items: runSchema } },
+            properties: {
+              runs: { type: 'array', items: runSchema },
+              hasMore: { type: 'boolean' },
+              nextCursor: { type: ['string', 'null'] },
+            },
             additionalProperties: false,
           }),
+          '400': response('Invalid query or cursor', errorSchema),
           '404': response('Project not found', errorSchema),
         },
       },

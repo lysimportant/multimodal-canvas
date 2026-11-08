@@ -325,7 +325,7 @@ describe('原子画布操作合同', () => {
     });
   });
 
-  it('拒绝同批次重复节点或连线 ID', () => {
+  it('拒绝同批次重复节点 ID 和被其它连线占用的 ID', () => {
     expectInvalid({
       revision: 4,
       operations: [
@@ -337,9 +337,127 @@ describe('原子画布操作合同', () => {
       revision: 4,
       operations: [
         { type: 'connect_nodes', edge },
-        { type: 'connect_nodes', edge },
+        { type: 'connect_nodes', edge: { ...edge, order: 1 } },
       ],
     });
+  });
+
+  it('重复连接同一输入幂等，重试生成不同 ID 也保留最初边的身份', () => {
+    const canvas = document();
+    const connected = applyCanvasOperations(canvas, {
+      revision: 4,
+      operations: [
+        { type: 'connect_nodes', edge },
+        { type: 'connect_nodes', edge },
+        { type: 'connect_nodes', edge: { ...edge, id: 'retry-edge' } },
+      ],
+    });
+    expect(connected.edges).toEqual([edge]);
+    expect(canvas.edges).toEqual([]);
+    expect(
+      applyCanvasOperations(connected, {
+        revision: 4,
+        operations: [{ type: 'connect_nodes', edge: { ...edge, id: 'another-retry' } }],
+      }).edges,
+    ).toEqual([edge]);
+  });
+
+  it('不同顺序或输入用途不合并；已占用 ID 不能借语义重复绕过检查', () => {
+    const alternateOrder = { ...edge, id: 'alternate-order', order: 1 };
+    const alternateRole = { ...edge, id: 'alternate-role', targetHandle: 'input:content' };
+    const connected = applyCanvasOperations(document(), {
+      revision: 4,
+      operations: [edge, alternateOrder, alternateRole].map((edge) => ({
+        type: 'connect_nodes',
+        edge,
+      })),
+    });
+    expect(connected.edges).toEqual([edge, alternateOrder, alternateRole]);
+    expectInvalid(
+      {
+        revision: 4,
+        operations: [{ type: 'connect_nodes', edge: { ...edge, id: alternateOrder.id } }],
+      },
+      connected,
+    );
+  });
+
+  it('精确断开一条边，保留其它用途、节点和原画布；缺失 ID 不静默忽略', () => {
+    const canvas = document();
+    const otherEdge = { ...edge, id: 'other-edge', order: 1 };
+    canvas.edges = [edge, otherEdge];
+    const next = applyCanvasOperations(canvas, {
+      revision: 4,
+      operations: [{ type: 'disconnect_edge', edgeId: edge.id }],
+    });
+    expect(next.edges).toEqual([otherEdge]);
+    expect(next.nodes).toEqual(canvas.nodes);
+    expect(canvas.edges).toEqual([edge, otherEdge]);
+    expectInvalid(
+      { revision: 4, operations: [{ type: 'disconnect_edge', edgeId: edge.id }] },
+      next,
+    );
+  });
+
+  it('原位替换来源并可保留或更换边 ID，断开的 ID 可在同批次复用', () => {
+    const canvas = document();
+    canvas.nodes.push({ ...sourceNode, id: 'new-source' });
+    const otherEdge = { ...edge, id: 'other-edge', order: 1 };
+    canvas.edges = [edge, otherEdge];
+    const replacement = { ...edge, sourceNodeId: 'new-source' };
+    const next = applyCanvasOperations(canvas, {
+      revision: 4,
+      operations: [{ type: 'replace_edge', edgeId: edge.id, edge: replacement }],
+    });
+    expect(next.edges).toEqual([replacement, otherEdge]);
+    expect(canvas.edges).toEqual([edge, otherEdge]);
+    expect(
+      applyCanvasOperations(next, {
+        revision: 4,
+        operations: [
+          { type: 'disconnect_edge', edgeId: otherEdge.id },
+          { type: 'replace_edge', edgeId: edge.id, edge: { ...replacement, id: otherEdge.id } },
+        ],
+      }).edges,
+    ).toEqual([{ ...replacement, id: otherEdge.id }]);
+  });
+
+  it.each([
+    { type: 'disconnect_edge', edgeId: 'missing' },
+    { type: 'replace_edge', edgeId: 'missing', edge },
+    { type: 'replace_edge', edgeId: edge.id, edge: { ...edge, sourceNodeId: 'missing' } },
+    { type: 'replace_edge', edgeId: edge.id, edge: { ...edge, targetHandle: 'input:missing' } },
+    { type: 'replace_edge', edgeId: edge.id, edge: { ...edge, targetNodeId: 'source' } },
+    { type: 'replace_edge', edgeId: edge.id, edge: { ...edge, id: 'other-edge' } },
+    { type: 'replace_edge', edgeId: edge.id, edge: { ...edge, order: 1 } },
+  ])('断开或替换无效时整批回滚：%j', (operation) => {
+    const canvas = document();
+    canvas.edges = [edge, { ...edge, id: 'other-edge', order: 1 }];
+    expectInvalid(
+      {
+        revision: 4,
+        operations: [
+          { type: 'update_node', nodeId: 'target', data: { label: '不可部分生效' } },
+          operation,
+        ],
+      },
+      canvas,
+    );
+  });
+
+  it('新连线操作仍拒绝过期 revision，不修改画布', () => {
+    const canvas = document();
+    canvas.edges = [edge];
+    const original = structuredClone(canvas);
+    for (const operation of [
+      { type: 'disconnect_edge' as const, edgeId: edge.id },
+      { type: 'replace_edge' as const, edgeId: edge.id, edge: { ...edge, order: 1 } },
+    ]) {
+      expect(() =>
+        applyCanvasOperations(canvas, { revision: 3, operations: [operation] }),
+      ).toThrowError(expect.objectContaining({ code: 'revision_conflict', revision: 4 }));
+    }
+    expect(canvas).toEqual(original);
   });
 
   it('复用 DAG 校验拒绝环，并保留既有视频模式端口兼容策略', () => {
@@ -381,6 +499,25 @@ describe('原子画布操作合同', () => {
     });
     expect(updated.edges).toEqual([connection]);
     expect(updated.nodes[1]!.data.videoMode).toBe('text_to_video');
+
+    const chain = {
+      revision: 4,
+      nodes: [video('a'), video('b'), video('c')],
+      edges: [connection, { ...connection, id: 'bc', sourceNodeId: 'b', targetNodeId: 'c' }],
+    };
+    expectInvalid(
+      {
+        revision: 4,
+        operations: [
+          {
+            type: 'replace_edge',
+            edgeId: 'bc',
+            edge: { ...connection, id: 'bc', sourceNodeId: 'b', targetNodeId: 'a' },
+          },
+        ],
+      },
+      chain,
+    );
   });
 
   it.each([

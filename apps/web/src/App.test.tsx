@@ -9,6 +9,7 @@ import type {
   Asset,
   CanvasDocument,
   PromptDocument,
+  RequestPromptRecord,
   RunRecord,
   RunSnapshot,
 } from '@multimodal-canvas/domain';
@@ -255,6 +256,7 @@ let renameFailure: string | null;
 let createFailure: string | null;
 let saveFailure: string | null;
 let projectRuns: RunRecord[];
+let runPromptRecords: Array<RequestPromptRecord & { id: string }>;
 let currentRun: RunRecord | null;
 /** 能力开放合同测试使用的动态运行响应，按节点身份回显已提交参数。 */
 let dynamicRuns: Map<string, RunRecord>;
@@ -298,6 +300,22 @@ function installApi() {
       return json({ canvas });
     }
     if (name.endsWith('/runs') && method === 'GET') return json({ runs: projectRuns });
+    const promptList = /^\/v1\/runs\/([^/]+)\/request-prompts$/.exec(name);
+    if (promptList)
+      return json({
+        records: runPromptRecords.filter(
+          (record) => record.runId === decodeURIComponent(promptList[1]!),
+        ),
+      });
+    const promptDetail = /^\/v1\/runs\/([^/]+)\/request-prompts\/([^/]+)$/.exec(name);
+    if (promptDetail)
+      return json({
+        record: runPromptRecords.find(
+          (record) =>
+            record.runId === decodeURIComponent(promptDetail[1]!) &&
+            record.id === decodeURIComponent(promptDetail[2]!),
+        ),
+      });
     if (name === '/v1/nodes/image-node/runs' && method === 'POST') {
       if (currentRun) return json({ run: currentRun }, 202);
     }
@@ -411,6 +429,7 @@ beforeEach(() => {
   createFailure = null;
   saveFailure = null;
   projectRuns = [];
+  runPromptRecords = [];
   currentRun = null;
   dynamicRuns = new Map();
   dynamicRunSequence = 0;
@@ -422,6 +441,122 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   useWorkspacePreferences.setState(workspacePreferenceDefaults);
+});
+
+describe('App 失败节点的真实请求说明', () => {
+  function prepareFailedRun() {
+    canvas.nodes.push(videoNode('video-node', 'video-old'));
+    const failed = videoRunRecord();
+    const { nodes: _privateNodes, ...publicSnapshot } = failed.snapshot;
+    failed.snapshot = publicSnapshot as RunSnapshot;
+    projectRuns = [failed];
+    return failed;
+  }
+
+  function addRequest(run: RunRecord) {
+    runPromptRecords.push({
+      id: 'failed-request',
+      schemaVersion: 1,
+      runId: run.id,
+      nodeId: run.targetNodeId,
+      attempt: run.attempt,
+      requestIdentity: 'POST /videos#1',
+      provider: 'newapi',
+      modelAlias: run.modelAlias,
+      mediaType: 'video',
+      format: 'plain',
+      parts: [{ order: 0, text: '本次失败实际发送的提示词' }],
+      resources: [
+        {
+          assetId: 'actual-reference',
+          assetVersion: 1,
+          mediaType: 'image',
+          role: 'referenceImage',
+          sortOrder: 0,
+        },
+      ],
+      sendStatus: 'sent',
+      createdAt: run.createdAt,
+    });
+  }
+
+  async function openFailedPrompt() {
+    await renderCanvas();
+    await waitFor(() =>
+      expect(view.canvas!.nodes.find((node) => node.id === 'video-node')?.data.runStatus).toBe(
+        'failed',
+      ),
+    );
+    act(() => view.canvas!.onOpenRequestPrompt!('video-node'));
+    const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
+    await waitFor(() => expect(dialog).toBeVisible());
+    return dialog;
+  }
+
+  it('公开运行不含快照节点时仍读取同次失败请求及素材清单', async () => {
+    const failed = prepareFailedRun();
+    addRequest(failed);
+    const dialog = await openFailedPrompt();
+    expect(await within(dialog).findByText('本次失败实际发送的提示词')).toBeVisible();
+    expect(within(dialog).getByText('图片 1 · 视频 0 · 音频 0')).toBeVisible();
+    expect(within(dialog).queryByText(/尚未生成/)).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: /添加摘要|编辑摘要/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('失败记录缺失时仅展示明确标记的当前内容，不称尚未生成', async () => {
+    prepareFailedRun();
+    const dialog = await openFailedPrompt();
+    expect(await within(dialog).findByText(/请求记录缺失/)).toBeVisible();
+    expect(within(dialog).getByText('当前编辑内容，非历史请求')).toBeVisible();
+    expect(within(dialog).getByText('生成视频')).toBeVisible();
+    expect(within(dialog).queryByText(/尚未生成/)).not.toBeInTheDocument();
+  });
+
+  it('请求列表网络错误保留重试，成功后显示真实记录', async () => {
+    const failed = prepareFailedRun();
+    addRequest(failed);
+    const api = fetchMock.getMockImplementation()!;
+    let fail = true;
+    fetchMock.mockImplementation((input, init) => {
+      if (fail && String(input).endsWith('/request-prompts')) {
+        fail = false;
+        return Promise.resolve(json({ error: '请求记录暂时不可读' }, 503));
+      }
+      return api(input, init);
+    });
+    const dialog = await openFailedPrompt();
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('请求记录暂时不可读');
+    await userEvent.click(within(dialog).getByRole('button', { name: /重试/ }));
+    expect(await within(dialog).findByText('本次失败实际发送的提示词')).toBeVisible();
+  });
+
+  it('关闭后迟到的运行请求记录不会重新打开弹窗', async () => {
+    const failed = prepareFailedRun();
+    addRequest(failed);
+    const delayed = pendingResponse();
+    const api = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) =>
+      String(input).endsWith('/request-prompts') ? delayed.promise : api(input, init),
+    );
+    const dialog = await openFailedPrompt();
+    await userEvent.click(within(dialog).getByRole('button', { name: '关闭生成提示词' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument(),
+    );
+    await act(async () => {
+      delayed.resolve(json({ records: runPromptRecords }));
+    });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith('/request-prompts/failed-request'),
+        ),
+      ).toBe(true),
+    );
+    expect(screen.queryByRole('dialog', { name: '生成提示词' })).not.toBeInTheDocument();
+  });
 });
 
 describe('App 外部画布同步与草稿保护', () => {
@@ -1385,6 +1520,33 @@ describe('App 组件库迁移', () => {
       expect(view.canvas!.nodes.map((node) => node.id)).toEqual(['ordinary']);
     },
   );
+
+  it('删除已生成图片节点时说明资源仍保留在项目资源库', async () => {
+    const retainedAsset = { ...asset, id: 'retained-image', name: '保留的角色参考图' };
+    const baseNode = imageNode('finished-image', 'image-model');
+    const generatedNode = {
+      ...baseNode,
+      data: {
+        ...baseNode.data,
+        resultAsset: {
+          assetId: retainedAsset.id,
+          version: 1,
+          contentUrl: retainedAsset.contentUrl,
+          mimeType: retainedAsset.mimeType,
+        },
+      },
+    };
+    canvas = { revision: 1, nodes: [generatedNode], edges: [] };
+    resourceAssets = [retainedAsset];
+    await renderCanvas(0);
+
+    act(() => view.canvas!.onDeleteNode?.(generatedNode.id));
+
+    expect(view.canvas!.nodes).toHaveLength(0);
+    expect(view.resource!.assets.map((entry) => entry.id)).toContain(retainedAsset.id);
+    expect(await screen.findByText(/项目资源库中的素材与生成结果仍保留/)).toBeVisible();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
 
   it('提交请求未返回运行记录时也禁止删除与清空，完成后可删除', async () => {
     canvas.nodes = [imageNode('pending', 'image-model')];

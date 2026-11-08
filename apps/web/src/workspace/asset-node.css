@@ -16,6 +16,7 @@
 .is-generation-batch-hidden .flow-node-mobile-controls,
 .is-generation-batch-hidden .react-flow__handle,
 .is-generation-batch-hidden .react-flow__resize-control,
+.is-generation-batch-hidden .flow-node-external-label,
 .is-generation-batch-hidden .flow-node-recreation-badge,
 .is-generation-batch-hidden .flow-node-input-summary {
   visibility: hidden;
@@ -86,6 +87,56 @@
     0 0 18px color-mix(in srgb, var(--mc-accent-strong) 34%, transparent),
     0 1px 2px color-mix(in srgb, var(--mc-shadow) 35%, transparent);
   z-index: 2;
+}
+
+.flow-node-external-label {
+  align-items: center;
+  color: var(--mc-text);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 2px;
+  left: 0;
+  max-width: min(320px, calc(100vw - 24px));
+  pointer-events: none;
+  position: absolute;
+  top: calc(-28px * var(--flow-node-inverse-zoom, 1));
+  transform: scale(var(--flow-node-inverse-zoom, 1));
+  transform-origin: bottom left;
+  white-space: nowrap;
+  z-index: 7;
+}
+
+.flow-node-external-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-node-external-label-edit {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--mc-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 20px;
+  height: 20px;
+  justify-content: center;
+  padding: 0;
+  pointer-events: auto;
+  width: 20px;
+}
+
+.flow-node-external-label-edit:hover,
+.flow-node-external-label-edit:focus-visible {
+  background: var(--mc-accent-soft);
+  color: var(--mc-accent-strong);
+}
+
+.flow-node-external-label-edit:focus-visible {
+  outline: 2px solid var(--mc-accent);
+  outline-offset: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {

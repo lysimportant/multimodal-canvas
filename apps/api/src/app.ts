@@ -35,6 +35,11 @@ import {
   type UpdateProjectModelDefaultsInput,
 } from './projects';
 import { withLocalResourceReferences } from './local-resource-references';
+import {
+  InvalidProjectRunCursorError,
+  listProjectRunsPage,
+  projectRunListQuerySchema,
+} from './project-run-pagination';
 import { withConnectedImageResults } from './connected-image-results';
 import { withConnectedTextInputs } from './connected-text-inputs';
 import { withConnectedVideoResults } from './connected-video-results';
@@ -777,7 +782,7 @@ async function resolveRunAssetRefs(input: {
   };
   const assetCache = new Map<string, Promise<{ ref: FrozenRunAssetRef; mediaType: MediaType }>>();
   /**
-   * 冻结运行输入只依赖资源元数据，优先走不下载对象字节的读取路径；对象内容
+   * 冻结运行输入优先读取元数据，并检查所选版本可读；对象内容
    * 由真正发送请求的执行器按需读取。旧实现用 `get` 会在每次提交运行时从对象
    * 存储完整下载所有输入素材。
    * @param assetId 资源 ID。
@@ -840,6 +845,15 @@ async function resolveRunAssetRefs(input: {
           `资产 ${assetId} 的版本 ${pinnedVersion} 已不可用，无法恢复这次图片编辑`,
         );
       }
+      if (
+        selected.sizeBytes <= 0 ||
+        !(await assetContentExists(input.assetStore, assetId, { version: selected.version }, scope))
+      ) {
+        throw new RunAssetFreezeError(
+          'asset_unavailable',
+          `资产 ${assetId} 的版本 ${selected.version} 文件为空或不可读，请重新绑定素材`,
+        );
+      }
       const durationSeconds = selected.metadata?.durationSeconds;
       return {
         ref: {
@@ -889,7 +903,14 @@ async function resolveRunAssetRefs(input: {
       input.sourceVersions?.[node.id] ??
       (pinnedSource?.sourceNodeId === node.id ? pinnedSource.version : undefined) ??
       boundVersion;
-    const resolved = await loadAsset(assetId, pinnedVersion);
+    const resolved = await loadAsset(assetId, pinnedVersion).catch((error: unknown) => {
+      if (error instanceof RunAssetFreezeError)
+        throw new RunAssetFreezeError(
+          error.code,
+          `节点 ${node.data.label}（${node.id}）：${error.message}`,
+        );
+      throw error;
+    });
     if (resolved.mediaType !== node.data.mediaType) {
       throw new RunAssetFreezeError(
         'asset_unavailable',
@@ -1050,6 +1071,7 @@ async function resolvePromptMentionRefs(
 
   const frozen: FrozenPromptMention[] = [];
   const diagnostics: ResourceMentionDiagnostic[] = [];
+  const readableVersions = new Map<string, Promise<boolean>>();
   for (const node of input.canvas.nodes) {
     if (includedNodeIds && !includedNodeIds.has(node.id)) continue;
     // 来源和手动输出的旧提示词仅是配置，明确重跑该节点时才重新校验提及。
@@ -1140,6 +1162,29 @@ async function resolvePromptMentionRefs(
           message: `资源提及 ${block.mentionId} 的资产 ${block.assetId} 超出 ${maxBytes} 字节限制`,
         });
         continue;
+      }
+      // 保存画布只校验元数据；真正提交时再做版本级可读性检查，避免每次自动保存读对象。
+      if (input.targetNodeId) {
+        const key = JSON.stringify([block.assetId, selectedVersion.version]);
+        let readable = readableVersions.get(key);
+        if (!readable) {
+          readable = assetContentExists(
+            input.assetStore,
+            block.assetId,
+            { version: selectedVersion.version },
+            loaded.scope,
+          );
+          readableVersions.set(key, readable);
+        }
+        if (!(await readable)) {
+          diagnostics.push({
+            ...base,
+            reason: 'version_missing',
+            code: 'RESOURCE_MENTION_VERSION_MISSING',
+            message: `节点 ${node.data.label}（${node.id}）的资源提及 ${block.mentionId} 版本 ${selectedVersion.version} 文件不可读，请重新绑定素材`,
+          });
+          continue;
+        }
       }
       frozen.push({
         nodeId: node.id,
@@ -2708,11 +2753,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const project = await projectStore.get(projectId, projectScope(requestPrincipals, request));
       if (!project) return reply.code(404).send({ error: 'project not found' });
 
-      return {
-        runs: (await runService.listByProject(projectId))
-          .filter((run) => !run.snapshot.reversePrompt && !run.snapshot.promptOptimization)
-          .map(toPublicRunRecord),
-      };
+      const query = projectRunListQuerySchema.safeParse(request.query);
+      if (!query.success)
+        return reply.code(400).send({ code: 'invalid_run_query', error: 'invalid run query' });
+      try {
+        const page = listProjectRunsPage(
+          await runService.listByProject(projectId),
+          projectId,
+          query.data,
+        );
+        return { ...page, runs: page.runs.map(toPublicRunRecord) };
+      } catch (error) {
+        if (error instanceof InvalidProjectRunCursorError)
+          return reply.code(400).send({ code: 'invalid_run_cursor', error: error.message });
+        throw error;
+      }
     },
   );
 

@@ -307,6 +307,14 @@ describe('CanvasContextMenu', () => {
       for (const name of ['修改图片', '删除节点']) {
         const item = screen.getByRole('menuitem', { name });
         expect(item).toHaveAttribute('aria-disabled', 'true');
+        if (name === '删除节点') {
+          await user.hover(item);
+          await waitFor(() =>
+            expect(item).toHaveAccessibleDescription(
+              /仅移除节点及连线；项目资源仍保留在右侧资源库/,
+            ),
+          );
+        }
         await user.click(item);
         fireEvent.keyDown(item, { key: 'Enter', keyCode: 13, which: 13 });
       }

@@ -49,7 +49,7 @@ import {
   type RefObject,
 } from 'react';
 
-import type { Asset, PortRole, RunRecord, RunStatus, VideoMode } from '@multimodal-canvas/domain';
+import type { Asset, RunRecord, RunStatus, VideoMode } from '@multimodal-canvas/domain';
 import {
   displayVideoMode,
   ImageOutputParameterError,
@@ -74,6 +74,7 @@ import { NodeHandles, videoInputRoleLabel } from '../NodeHandles';
 import { AssetPreview, type AssetPreviewLoadState } from './AssetPreview';
 import { AssetShareButton, resolveAssetShareVersion } from './AssetShareButton';
 import { resolveOriginalImageAsset } from './image-thumbnail-cache';
+import { summarizeConnectedVideoInputs } from './video-input-summary';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import { mediaIcons, mediaLabels, modeLabels } from './contracts';
@@ -611,7 +612,7 @@ export function AssetNode({
         } satisfies Asset)
       : undefined);
   const originalPreviewAsset = rawPreviewAsset
-    ? resolveOriginalImageAsset(rawPreviewAsset)
+    ? resolveOriginalImageAsset(rawPreviewAsset, knownAssets.get(rawPreviewAsset.id))
     : undefined;
   const fileSize = originalPreviewAsset
     ? resolveAssetFileSize(originalPreviewAsset, knownAssets.get(originalPreviewAsset.id))
@@ -976,6 +977,24 @@ export function AssetNode({
           )}
         </Button>
       ) : null}
+      <div className="flow-node-external-label" title={data.label}>
+        <span className="flow-node-external-label-text">{data.label}</span>
+        {changeLabel ? (
+          <Button
+            type="button"
+            className="flow-node-external-label-edit nodrag nopan nowheel"
+            aria-label={`编辑节点名称：${data.label}`}
+            title="重命名节点"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              openRename();
+            }}
+          >
+            <Pencil size={13} aria-hidden="true" />
+          </Button>
+        ) : null}
+      </div>
       <NodeHandles
         mediaType={data.mediaType}
         mode={data.mode}
@@ -1309,7 +1328,7 @@ export function AssetNode({
                   type="button"
                   className="flow-node-action-button flow-node-delete-button nodrag nopan nowheel"
                   aria-label={`删除节点：${data.label}`}
-                  title="删除当前节点及关联连线"
+                  title="删除当前节点及关联连线；项目资源仍保留在右侧资源库"
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -2029,16 +2048,18 @@ function nodeRunStatusLabel(status: RunStatus): string {
  */
 function VideoInputSummary({ nodeId, videoMode }: { nodeId: string; videoMode?: VideoMode }) {
   const edges = useNodeConnections({ id: nodeId, handleType: 'target' });
-  const roles: PortRole[] = [];
-  const counts = new Map<PortRole, number>();
-  for (const edge of edges) {
-    if (edge.target !== nodeId) continue;
-    const handle = edge.targetHandle ?? '';
-    if (!handle.startsWith('input:')) continue;
-    const role = handle.slice('input:'.length) as PortRole;
-    roles.push(role);
-    counts.set(role, (counts.get(role) ?? 0) + 1);
-  }
+  const knownAssets = useContext(AssetRetentionContext);
+  const sources = useStore(
+    (state) =>
+      state.nodes.filter((node) =>
+        edges.some((edge) => edge.source === node.id),
+      ) as AssetFlowNode[],
+    (previous, next) =>
+      previous.length === next.length && previous.every((node, index) => node === next[index]),
+  );
+  const { roles, counts, pending } = summarizeConnectedVideoInputs(nodeId, sources, edges, [
+    ...knownAssets.values(),
+  ]);
   const resolvedMode = displayVideoMode({ videoMode }, roles);
   const chips = [...counts.entries()].map(([role, count]) => ({
     role,
@@ -2047,7 +2068,10 @@ function VideoInputSummary({ nodeId, videoMode }: { nodeId: string; videoMode?: 
   }));
   const total = chips.reduce((sum, chip) => sum + chip.count, 0);
   return (
-    <div className="flow-node-input-summary" aria-label={`视频输入 ${total} 项`}>
+    <div
+      className="flow-node-input-summary"
+      aria-label={`视频输入 ${total} 项${pending.length ? `，${pending.length} 项待补齐` : ''}`}
+    >
       <span className="flow-node-input-chip">{videoModeLabels[resolvedMode]}</span>
       {chips.map((chip) => (
         <span key={chip.role} className="flow-node-input-chip">
@@ -2055,6 +2079,14 @@ function VideoInputSummary({ nodeId, videoMode }: { nodeId: string; videoMode?: 
           {chip.count > 1 ? ` ×${chip.count}` : ''}
         </span>
       ))}
+      {pending.length > 0 && (
+        <span
+          className="flow-node-input-chip"
+          title={pending.map((item) => `${item.label}：${item.reason}`).join('；')}
+        >
+          待补齐 ×{pending.length}
+        </span>
+      )}
     </div>
   );
 }

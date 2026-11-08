@@ -240,6 +240,7 @@ const videoResolutionOptions: MediaOption[] = [
   '360p',
   '480p',
   '720p',
+  '768p',
   '1080p',
   '1440p',
   '2160p',
@@ -715,7 +716,7 @@ export function NodeQuickEditor({
     onParametersChange(canonicalImageParameters(next));
   };
 
-  /** 推理强度对文字节点直接显示，对媒体节点收进参数页。 */
+  /** 推理强度仅供文字节点配置；媒体节点保留历史字段但不提供编辑入口。 */
   const inferenceEditor = (
     <NodeParameterSelect
       label="推理强度"
@@ -1070,7 +1071,6 @@ export function NodeQuickEditor({
           </label>
         </div>
       )}
-      {inferenceEditor}
       {mediaParameterIssue && (
         <p className="node-quick-editor-parameter-issue" role="status">
           {mediaParameterIssue}

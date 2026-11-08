@@ -6,6 +6,7 @@ import { Check, Copy, Loader2, Pencil, Plus, RefreshCw, Save, X } from 'lucide-r
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
+import { inputRoleLabels } from '../NodeHandles';
 import './request-prompt-editor.css';
 
 /** 复制动作的短暂反馈状态。 */
@@ -15,13 +16,15 @@ type CopyState = 'idle' | 'copied' | 'failed';
 export type RequestPromptDialogState =
   | { status: 'loading' }
   | { status: 'ready'; record: RequestPromptRecord; recordId?: string; timing?: NodeTiming }
-  | { status: 'missing' }
+  | { status: 'missing'; hasRun?: boolean }
   | {
       status: 'input';
       text: string;
       historical: boolean;
-      /** 节点没有当前输出时回退展示的是最新运行的输入快照，需要与当前提示词/历史快照区分。 */
+      /** 没有最终请求记录时可展示运行冻结输入，但不能称为实际请求。 */
       latestRun?: boolean;
+      /** 有运行但缺最终请求记录；当前编辑内容不能冒充历史发送文本。 */
+      requestMissing?: boolean;
     }
   | { status: 'failed'; message?: string };
 
@@ -172,17 +175,24 @@ export function RequestPromptDialog({
           ) : null}
           {state.status === 'missing' ? (
             <p className="request-prompt-status" role="status">
-              未记录生成提示词。
+              {state.hasRun ? '请求记录缺失，无法确认本次实际发送的内容。' : '未记录生成提示词。'}
             </p>
           ) : null}
           {state.status === 'input' ? (
             <section className="request-prompt-block">
+              {state.requestMissing ? (
+                <p className="request-prompt-status" role="status">
+                  请求记录缺失，以下内容不能作为实际发送请求的依据。
+                </p>
+              ) : null}
               <h3>
                 {state.latestRun
-                  ? '最新运行请求（当前没有可用输出）'
+                  ? '最新运行输入快照，未记录最终请求'
                   : state.historical
                     ? '历史输入快照，未记录最终请求'
-                    : '当前提示词，尚未生成'}
+                    : state.requestMissing
+                      ? '当前编辑内容，非历史请求'
+                      : '当前提示词，尚未生成'}
               </h3>
               <pre className="request-prompt-text">{state.text}</pre>
             </section>
@@ -322,6 +332,7 @@ export function RequestPromptDialog({
                 </div>
                 <pre className="request-prompt-text">{fullPrompt}</pre>
               </section>
+              <RequestResourceManifest record={record} />
               <dl className="request-prompt-meta">
                 <div>
                   <dt>模型</dt>
@@ -351,24 +362,61 @@ export function RequestPromptDialog({
                     <dd>{record.negativeText}</dd>
                   </div>
                 ) : null}
-                {record.resources.length > 0 ? (
-                  <div>
-                    <dt>参考资源</dt>
-                    <dd>
-                      {record.resources
-                        .map(
-                          (resource) =>
-                            `${resource.assetId ?? '未知资产'}${resource.assetVersion ? `@v${resource.assetVersion}` : ''}`,
-                        )
-                        .join('、')}
-                    </dd>
-                  </div>
-                ) : null}
               </dl>
             </>
           ) : null}
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const sendStatusLabels = {
+  pending: '待发送',
+  sent: '已发送',
+  failed: '发送失败',
+  unknown: '发送状态未知',
+} as const;
+const resourceTypeLabels = { image: '图片', video: '视频', audio: '音频', text: '文字' } as const;
+
+/** 仅展示冻结身份、用途和计数；不显示媒体 URL、签名或请求中的二进制。 */
+function RequestResourceManifest({ record }: { record: RequestPromptRecord }) {
+  const resources = [...record.resources].sort((a, b) => a.sortOrder - b.sortOrder);
+  const unknown = resources.filter((item) => !item.mediaType).length;
+  const counts = { image: 0, video: 0, audio: 0 };
+  for (const resource of resources) {
+    if (resource.mediaType && resource.mediaType !== 'text') counts[resource.mediaType]++;
+  }
+  return (
+    <section className="request-prompt-block" aria-label="请求素材清单">
+      <div className="request-prompt-block-head">
+        <h3>请求素材清单</h3>
+        <span>{sendStatusLabels[record.sendStatus]}</span>
+      </div>
+      <p className="request-prompt-resource-counts">
+        {unknown > 0
+          ? `图片/视频/音频数量未知（${unknown} 项未记录媒体类型）`
+          : `图片 ${counts.image} · 视频 ${counts.video} · 音频 ${counts.audio}`}
+      </p>
+      {resources.length ? (
+        <ol className="request-prompt-resources">
+          {resources.map((resource, index) => (
+            <li key={index}>
+              <strong>{resource.name ?? resource.assetId ?? '未记录素材名称'}</strong>
+              <span>
+                {resource.mediaType ? resourceTypeLabels[resource.mediaType] : '类型未知'} · 用途：
+                {inputRoleLabels[resource.role]}
+              </span>
+              <span>
+                {resource.assetId ?? '未记录素材 ID'} ·{' '}
+                {resource.assetVersion ? `v${resource.assetVersion}` : '版本未记录'}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="request-prompt-hint">本条请求记录未列出参考素材。</p>
+      )}
+    </section>
   );
 }

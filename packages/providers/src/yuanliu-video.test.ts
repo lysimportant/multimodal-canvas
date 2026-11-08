@@ -213,7 +213,7 @@ describe('源流视频插件创建与普通参考合同', () => {
     },
   );
 
-  it('资源条顺序、显式重复素材和不同角色进入相同脱敏记录', async () => {
+  it('纯连线按固定身份去重，资源条顺序和不同角色进入相同脱敏记录', async () => {
     const snapshot = snapshotFor();
     snapshot.nodes[0]!.data.videoMode = 'omni_reference';
     snapshot.inputs = [
@@ -250,7 +250,6 @@ describe('源流视频插件创建与普通参考合同', () => {
       snapshot.inputs[1]!,
       snapshot.inputs[0]!,
       snapshot.inputs[3]!,
-      snapshot.inputs[4]!,
     ];
     const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
     expect(body.metadata.content.slice(1)).toEqual(
@@ -301,9 +300,11 @@ describe('源流视频插件创建与普通参考合同', () => {
     ]);
     snapshot.nodes[0]!.data.videoMode = 'omni_reference';
     snapshot.inputs = [
-      ...Array.from({ length: 30 }, (_, index) => inputFor('same', 'referenceImage', index)),
+      ...Array.from({ length: 30 }, (_, index) =>
+        inputFor(`image-${index}`, 'referenceImage', index),
+      ),
       ...Array.from({ length: 10 }, (_, index) =>
-        inputFor('audio', 'audioTrack', 30 + index, 'audio'),
+        inputFor(`audio-${index}`, 'audioTrack', 30 + index, 'audio'),
       ),
     ];
     const maximum = completedFetch();

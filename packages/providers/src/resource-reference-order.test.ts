@@ -288,7 +288,7 @@ describe('视频内联引用模型编号', () => {
     },
   );
 
-  it('渠道默认接受 30/10/10 个素材', async () => {
+  it('完整发送目录声明的 30/10/10 个素材', async () => {
     const snapshot = channelSnapshot();
     for (const [mediaType, count, role] of [
       ['image', 30, 'referenceImage'],
@@ -311,18 +311,296 @@ describe('视频内联引用模型编号', () => {
     expect(body.metadata.content).toHaveLength(51);
   });
 
-  it.each(['image', 'video', 'audio'] as const)('%s 超过目录上限仍照常发送', async (mediaType) => {
+  it.each(['image', 'video', 'audio'] as const)(
+    '%s 超过冻结目录数量时完整发送并记录实际清单',
+    async (mediaType) => {
+      const snapshot = channelSnapshot();
+      const role =
+        mediaType === 'image' ? 'referenceImage' : mediaType === 'video' ? 'content' : 'audioTrack';
+      const count = mediaType === 'image' ? 31 : 11;
+      for (let index = 0; index < count; index++) {
+        const input = linkedInput(`${mediaType}-${index}`, 1, index, role, mediaType);
+        input.snapshot.data.contentUrl = `https://assets.invalid/${mediaType}-${index}`;
+        snapshot.inputs.push(input);
+      }
+      const { body, record } = await captureVideo(snapshot);
+      expect(body.metadata.content.slice(1)).toEqual(
+        snapshot.inputs.map((input) => ({
+          type: `${mediaType}_url`,
+          role: `reference_${mediaType}`,
+          [`${mediaType}_url`]: { url: input.snapshot.data.contentUrl },
+        })),
+      );
+      expect(record.resources).toHaveLength(count);
+      expect(
+        record.resources.map(({ assetId, assetVersion, role: sentRole, sortOrder }) => [
+          assetId,
+          assetVersion,
+          sentRole,
+          sortOrder,
+        ]),
+      ).toEqual(snapshot.inputs.map((input, index) => [input.sourceAssetId, 1, role, index]));
+    },
+  );
+
+  it.each([
+    ['image', 'referenceImage', 'maxImages', 0],
+    ['image', 'referenceImage', 'maxImages', 1],
+    ['video', 'content', 'maxVideos', 0],
+    ['video', 'content', 'maxVideos', 1],
+    ['audio', 'audioTrack', 'maxAudios', 0],
+    ['audio', 'audioTrack', 'maxAudios', 1],
+  ] as const)(
+    '%s / %s 的目录 %s=%s 不拦截两个独立素材',
+    async (mediaType, role, limit, maximum) => {
+      const snapshot = channelSnapshot();
+      snapshot.executionBindings!.target!.videoReferences = {
+        ...channelCapability,
+        [limit]: maximum,
+      };
+      snapshot.inputs = ['one', 'two'].map((assetId, index) => {
+        const input = linkedInput(assetId, 1, index, role, mediaType);
+        input.snapshot.data.contentUrl = `https://assets.invalid/${assetId}`;
+        return input;
+      });
+      const { body, record } = await captureVideo(snapshot);
+      expect(body.metadata.content.slice(1)).toEqual(
+        snapshot.inputs.map((input) => ({
+          type: `${mediaType}_url`,
+          role: `reference_${mediaType}`,
+          [`${mediaType}_url`]: { url: input.snapshot.data.contentUrl },
+        })),
+      );
+      expect(
+        record.resources.map(({ assetId, mediaType: sentType }) => [assetId, sentType]),
+      ).toEqual([
+        ['one', mediaType],
+        ['two', mediaType],
+      ]);
+    },
+  );
+
+  it('目录低上限不改变固定身份去重，也不合并不同用途', async () => {
     const snapshot = channelSnapshot();
-    const role =
-      mediaType === 'image' ? 'referenceImage' : mediaType === 'video' ? 'content' : 'audioTrack';
-    const count = mediaType === 'image' ? 31 : 11;
-    for (let index = 0; index < count; index++) {
-      const input = linkedInput(`${mediaType}-${index}`, 1, index, role, mediaType);
-      input.snapshot.data.contentUrl = `https://assets.invalid/${mediaType}-${index}`;
-      snapshot.inputs.push(input);
-    }
+    snapshot.executionBindings!.target!.videoReferences = { ...channelCapability, maxImages: 1 };
+    const input = linkedInput('one', 1, 0);
+    input.snapshot.data.contentUrl = 'https://assets.invalid/one';
+    snapshot.inputs = [input, { ...input, nodeId: 'duplicate', sortOrder: 1 }];
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.metadata.content).toHaveLength(2);
+    expect(record.resources).toHaveLength(1);
+    snapshot.inputs.push({ ...input, role: 'character', nodeId: 'character', sortOrder: 2 });
+    const expanded = await captureVideo(snapshot);
+    expect(expanded.body.metadata.content).toHaveLength(3);
+    expect(
+      expanded.record.resources.map(({ assetId, assetVersion, role }) => [
+        assetId,
+        assetVersion,
+        role,
+      ]),
+    ).toEqual([
+      ['one', 1, 'referenceImage'],
+      ['one', 1, 'character'],
+    ]);
+  });
+
+  it.each([
+    {
+      label: '图片数组',
+      parameters: { reference_images: ['https://assets.invalid/one'] },
+      kind: 'maxImages',
+    },
+    { label: '首帧', parameters: { first_frame: 'https://assets.invalid/one' }, kind: 'maxImages' },
+    {
+      label: '图片别名',
+      parameters: { imageUrl: 'https://assets.invalid/one' },
+      kind: 'maxImages',
+    },
+    {
+      label: '视频内容块',
+      parameters: {
+        metadata: {
+          content: [{ type: 'video_url', video_url: { url: 'https://assets.invalid/one' } }],
+        },
+      },
+      kind: 'maxVideos',
+    },
+    {
+      label: '音频媒体块',
+      parameters: {
+        metadata: { input: { media: [{ type: 'audio', url: 'https://assets.invalid/one' }] } },
+      },
+      kind: 'maxAudios',
+    },
+  ] as const)('目录零上限下完整发送最终参数中的$label', async ({ parameters, kind }) => {
+    const snapshot = channelSnapshot();
+    snapshot.executionBindings!.target!.videoReferences = { ...channelCapability, [kind]: 0 };
+    snapshot.parameters = structuredClone(parameters);
+    const { body, record } = await captureVideo(snapshot, 'legacy-v1');
+    expect(body).toMatchObject(parameters);
+    expect(record.resources).toHaveLength(1);
+    expect(record.resources[0]).toMatchObject({
+      mediaType: kind === 'maxImages' ? 'image' : kind === 'maxVideos' ? 'video' : 'audio',
+      sortOrder: 0,
+    });
+    expect(record.resources[0]).not.toHaveProperty('assetId');
+  });
+
+  it('用户参数中的能力值不形成画布数量门槛，仍记录实际发送媒体', async () => {
+    const snapshot = channelSnapshot();
+    snapshot.executionBindings!.target!.videoReferences = { ...channelCapability, maxImages: 0 };
+    snapshot.parameters = {
+      model: 'unlimited-model',
+      videoReferences: { ...channelCapability, maxImages: 999 },
+      executionBindings: { target: { videoReferences: { ...channelCapability, maxImages: 999 } } },
+      image_url: 'https://assets.invalid/one',
+    };
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.image_url).toBe('https://assets.invalid/one');
+    expect(record.resources).toEqual([
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 0 },
+    ]);
+    expect(snapshot.executionBindings!.target!.videoReferences).toEqual({
+      ...channelCapability,
+      maxImages: 0,
+    });
+  });
+
+  it('低目录上限下完整发送连线和额外参数合并后的最终媒体', async () => {
+    const snapshot = channelSnapshot();
+    snapshot.executionBindings!.target!.videoReferences = { ...channelCapability, maxImages: 1 };
+    snapshot.inputs = [linkedInput('linked', 1, 0)];
+    snapshot.parameters = {
+      metadata: {
+        content: [{ type: 'image_url', image_url: { url: 'https://assets.invalid/extra' } }],
+      },
+    };
+    const { body, record } = await captureVideo(snapshot, 'legacy-v1');
+    expect(body.reference_images).toEqual([{ url: contentUrl('linked', 1, 'image') }]);
+    expect(body.metadata.content).toEqual([
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/extra' },
+      },
+    ]);
+    expect(record.resources).toEqual([
+      {
+        assetId: 'linked',
+        assetVersion: 1,
+        name: 'linked',
+        mediaType: 'image',
+        role: 'referenceImage',
+        sortOrder: 0,
+      },
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 1 },
+    ]);
+  });
+
+  it('上游拒绝参考数量时保留原错误，已发送内容与请求清单不截断', async () => {
+    const snapshot = channelSnapshot();
+    snapshot.executionBindings!.target!.videoReferences = { ...channelCapability, maxImages: 0 };
+    snapshot.inputs = ['one', 'two'].map((assetId, index) => {
+      const input = linkedInput(assetId, 1, index);
+      input.snapshot.data.contentUrl = `https://assets.invalid/${assetId}`;
+      return input;
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: { code: 'upstream_reference_limit', message: '上游仅允许 1 张参考图，收到 2 张' },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const records: RequestPromptRecord[] = [];
+    const onProviderJob = vi.fn();
+    await expect(
+      new NewApiVideoProvider({
+        baseUrl: 'https://provider.invalid/v1',
+        apiKey: 'synthetic',
+        videoContract: 'newapi-video-v1',
+        fetchImpl,
+      }).execute({
+        snapshot,
+        runId: 'upstream-reference-policy',
+        onProviderJob,
+        onRequestPrompt: (record) => {
+          records.push(record);
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'upstream_reference_limit',
+      message: expect.stringContaining('上游仅允许 1 张参考图，收到 2 张'),
+      status: 400,
+      retryable: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![1]!.method).toBe('POST');
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+    expect(body.metadata.content.slice(1)).toEqual([
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/one' },
+      },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/two' },
+      },
+    ]);
+    expect(onProviderJob).toHaveBeenCalledTimes(1);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.sendStatus).toBe('pending');
+    expect(
+      records[0]!.resources.map(({ assetId, assetVersion, sortOrder }) => [
+        assetId,
+        assetVersion,
+        sortOrder,
+      ]),
+    ).toEqual([
+      ['one', 1, 0],
+      ['two', 1, 1],
+    ]);
+  });
+
+  it.each(['missing', 'invalid', 'mismatched-model'] as const)(
+    '未声明或不匹配的旧目录保持兼容：%s',
+    async (capability) => {
+      const snapshot = channelSnapshot();
+      if (capability === 'missing') delete snapshot.executionBindings;
+      else if (capability === 'invalid')
+        snapshot.executionBindings!.target!.videoReferences = {
+          ...channelCapability,
+          version: 2,
+        } as never;
+      else snapshot.executionBindings!.target!.modelAlias = 'different-model';
+      snapshot.parameters = { reference_images: ['https://assets.invalid/one'] };
+      const { body } = await captureVideo(snapshot, 'legacy-v1');
+      expect(body.reference_images).toEqual(['https://assets.invalid/one']);
+    },
+  );
+
+  it('零上限下纯文字和生成音频开关不会误计为参考媒体', async () => {
+    const snapshot = channelSnapshot();
+    snapshot.executionBindings!.target!.videoReferences = {
+      ...channelCapability,
+      maxImages: 0,
+      maxVideos: 0,
+      maxAudios: 0,
+    };
+    snapshot.parameters = {
+      audio: true,
+      metadata: {
+        output: { image_url: 'https://assets.invalid/output-only', image: { size: '1024x1024' } },
+        config: { audio_url: 'https://assets.invalid/config-only' },
+        audio: { enabled: true },
+      },
+    };
     const { body } = await captureVideo(snapshot);
-    expect(body.metadata.content).toHaveLength(count + 1);
+    expect(body.metadata.content).toEqual([{ type: 'text', text: 'Keep the scene.' }]);
+    expect(body.audio).toBe(true);
   });
 
   it('渠道拒绝 data URL 和未追踪媒体参数', async () => {
@@ -886,6 +1164,112 @@ describe('图片参考资源显式顺序', () => {
 
 describe('视频参考资源显式顺序', () => {
   it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
+    '%s 纯连线按固定版本与角色去重，保留不同版本、角色及资源条顺序',
+    async (contract) => {
+      const snapshot = snapshotFor('video');
+      snapshot.inputs = [
+        linkedInput('alpha', 1, 0),
+        { ...linkedInput('alpha', 1, 1), nodeId: 'duplicate-alpha' },
+        linkedInput('alpha', 2, 2),
+        linkedInput('alpha', 1, 3, 'character'),
+      ];
+      snapshot.nodes[0]!.data.resourceRefs = [reference('alpha', 2), reference('alpha', 1)];
+      const before = structuredClone(snapshot);
+      const { body, record } = await captureVideo(snapshot, contract);
+      expect(body.reference_images).toEqual([
+        { url: contentUrl('alpha', 2, 'image') },
+        { url: contentUrl('alpha', 1, 'image') },
+        { url: contentUrl('alpha', 1, 'image') },
+      ]);
+      expect(
+        record.resources.map(({ assetId, assetVersion, role }) => [assetId, assetVersion, role]),
+      ).toEqual([
+        ['alpha', 2, 'referenceImage'],
+        ['alpha', 1, 'referenceImage'],
+        ['alpha', 1, 'character'],
+      ]);
+      expect(body.prompt).toBe('Keep the scene.');
+      expect(snapshot).toEqual(before);
+    },
+  );
+
+  it('H3 纯连线重复媒体只发送一次，图片、视频、音频与请求记录逐项对应', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'MiniMax-H3';
+    snapshot.parameters = { duration: 5, resolution: '768P' };
+    const originals = [
+      linkedInput('image', 1, 0),
+      linkedInput('clip', 1, 1, 'content', 'video'),
+      linkedInput('sound', 1, 2, 'audioTrack', 'audio'),
+    ];
+    snapshot.inputs = [
+      ...originals,
+      ...originals.map((input, index) => ({
+        ...input,
+        nodeId: `duplicate-${input.nodeId}`,
+        sortOrder: index + originals.length,
+      })),
+    ];
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.metadata.content.slice(1)).toEqual(
+      originals.map((input) => ({
+        type: `${input.snapshot.data.mediaType}_url`,
+        role: `reference_${input.snapshot.data.mediaType}`,
+        [`${input.snapshot.data.mediaType}_url`]: { url: input.snapshot.data.contentUrl },
+      })),
+    );
+    expect(
+      record.resources.map(({ assetId, assetVersion, role }) => [assetId, assetVersion, role]),
+    ).toEqual(
+      originals.map((input) => [input.sourceAssetId, input.sourceAssetVersion, input.role]),
+    );
+  });
+
+  it('未知版本的纯连线不会被推定为同一素材而合并', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.inputs = [
+      linkedInput('alpha', undefined, 0),
+      { ...linkedInput('alpha', undefined, 1), nodeId: 'unfrozen-second' },
+      linkedInput('alpha', 1, 2),
+    ];
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.reference_images).toHaveLength(3);
+    expect(record.resources.map(({ assetVersion }) => assetVersion)).toEqual([
+      undefined,
+      undefined,
+      1,
+    ]);
+  });
+
+  it.each(['missing-url', 'invalid-data', 'mime-mismatch'] as const)(
+    '重复连线的坏内容不被去重掩盖，%s 在上游提交前失败',
+    async (failure) => {
+      const snapshot = snapshotFor('video');
+      const first = linkedInput('alpha', 1, 0);
+      const duplicate = linkedInput('alpha', 1, 1);
+      duplicate.nodeId = 'invalid-duplicate';
+      if (failure === 'missing-url') delete duplicate.snapshot.data.contentUrl;
+      else if (failure === 'invalid-data')
+        duplicate.snapshot.data.contentUrl = 'data:image/png;base64,%%%';
+      else duplicate.snapshot.data.mimeType = 'video/mp4';
+      snapshot.inputs = [first, duplicate];
+      const fetchImpl = vi.fn<typeof fetch>();
+      const onProviderJob = vi.fn();
+      const onRequestPrompt = vi.fn();
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://provider.invalid/v1',
+          apiKey: 'test-placeholder',
+          fetchImpl,
+        }).execute({ snapshot, onProviderJob, onRequestPrompt }),
+      ).rejects.toMatchObject({ code: 'INPUT_ROLE_VALUE_MISSING' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(onProviderJob).not.toHaveBeenCalled();
+      expect(onRequestPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['legacy-v1', 'newapi-video-v1', 'newapi-unified-v1'] as const)(
     '%s 的 reference_images 按资源条排序，混合提及按冻结版本与角色去重',
     async (contract) => {
       const snapshot = snapshotFor('video');
@@ -1149,6 +1533,225 @@ describe('视频参考资源显式顺序', () => {
         ['last', 'lastFrame'],
       ]);
       expect(snapshot).toEqual(before);
+    },
+  );
+});
+
+describe('最终视频请求素材清单', () => {
+  it('参数覆盖首帧时不记录已被覆盖的节点身份', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.nodes[0]!.data.videoMode = 'first_frame';
+    snapshot.inputs = [linkedInput('original', 3, 0, 'firstFrame')];
+    snapshot.parameters = { image: 'https://assets.invalid/replacement?signature=private' };
+    const { body, record } = await captureVideo(snapshot, 'legacy-v1');
+    expect(body.image).toBe(snapshot.parameters.image);
+    expect(record.resources).toEqual([{ mediaType: 'image', role: 'firstFrame', sortOrder: 0 }]);
+    expect(record.sendStatus).toBe('pending');
+    expect(JSON.stringify(record)).not.toContain('original');
+    expect(JSON.stringify(record)).not.toContain('signature');
+  });
+
+  it('追加参数媒体保持实际顺序，同URL重复项不能复用已消费的素材身份', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.inputs = [linkedInput('alpha', 1, 0, 'style'), linkedInput('alpha', 2, 1)];
+    snapshot.nodes[0]!.data.resourceRefs = [reference('alpha', 2), reference('alpha', 1)];
+    snapshot.parameters = {
+      reference_images: [
+        { url: 'https://assets.invalid/extra', asset_id: 'alpha', name: 'fake-name' },
+        { url: contentUrl('alpha', 2, 'image') },
+      ],
+    };
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.reference_images).toHaveLength(4);
+    expect(record.resources).toEqual([
+      {
+        assetId: 'alpha',
+        assetVersion: 2,
+        name: 'alpha',
+        mediaType: 'image',
+        role: 'referenceImage',
+        sortOrder: 0,
+      },
+      {
+        assetId: 'alpha',
+        assetVersion: 1,
+        name: 'alpha',
+        mediaType: 'image',
+        role: 'style',
+        sortOrder: 1,
+      },
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 2 },
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 3 },
+    ]);
+    expect(JSON.stringify(record)).not.toContain('fake-name');
+    expect(JSON.stringify(record)).not.toContain('data:');
+    expect(JSON.stringify(record)).not.toContain('https://');
+  });
+
+  it('普通帧字段与metadata混合媒体按最终请求体顺序记录', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.inputs = [
+      linkedInput('first', 1, 0, 'firstFrame'),
+      linkedInput('ref', 1, 1),
+      linkedInput('clip', 2, 2, 'content', 'video'),
+      linkedInput('sound', 3, 3, 'audioTrack', 'audio'),
+    ];
+    snapshot.parameters = {
+      metadata: {
+        content: [
+          { type: 'image_url', image_url: { url: 'https://assets.invalid/extra-image' } },
+          { type: 'video_url', video_url: { url: 'https://assets.invalid/extra-video' } },
+        ],
+      },
+    };
+    const { record } = await captureVideo(snapshot, 'legacy-v1');
+    expect(
+      record.resources.map(({ assetId, mediaType, role, sortOrder }) => [
+        assetId,
+        mediaType,
+        role,
+        sortOrder,
+      ]),
+    ).toEqual([
+      ['first', 'image', 'firstFrame', 0],
+      ['ref', 'image', 'referenceImage', 1],
+      [undefined, 'image', 'referenceImage', 2],
+      [undefined, 'video', 'content', 3],
+      ['clip', 'video', 'content', 4],
+      ['sound', 'audio', 'audioTrack', 5],
+    ]);
+  });
+
+  it('参数覆盖Wan媒体数组后仅记录实际数组，不补造快照引用', async () => {
+    const snapshot = snapshotFor('video');
+    snapshot.modelAlias = 'wan3.0-video';
+    snapshot.inputs = [
+      linkedInput('original', 1, 0),
+      linkedInput('clip', 1, 1, 'content', 'video'),
+    ];
+    snapshot.parameters = {
+      metadata: {
+        input: { media: [{ type: 'reference_image', url: 'https://assets.invalid/replacement' }] },
+      },
+    };
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.metadata.input.media).toHaveLength(1);
+    expect(record.resources).toEqual([
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 0 },
+    ]);
+    expect(JSON.stringify(record)).not.toContain('original');
+    expect(JSON.stringify(record)).not.toContain('clip');
+  });
+
+  it.each(['asset', 'version'] as const)('同URL对应不同%s时不猜素材身份', async (difference) => {
+    const snapshot = snapshotFor('video');
+    snapshot.inputs = [
+      linkedInput('alpha', 1, 0),
+      linkedInput(difference === 'asset' ? 'beta' : 'alpha', difference === 'version' ? 2 : 1, 1),
+    ];
+    for (const input of snapshot.inputs)
+      input.snapshot.data.contentUrl = 'https://assets.invalid/shared';
+    const { record } = await captureVideo(snapshot);
+    expect(record.resources).toEqual([
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 0 },
+      { mediaType: 'image', role: 'referenceImage', sortOrder: 1 },
+    ]);
+  });
+
+  it.each(['url', 'data-url', 'base64', 'credential', 'signature'] as const)(
+    '素材清单不保存%s显示名或参数名称',
+    async (kind) => {
+      const snapshot = snapshotFor('video');
+      const input = linkedInput('safe-asset', 2, 0);
+      if (kind === 'signature')
+        input.snapshot.data.contentUrl =
+          'https://assets.invalid/image?X-Amz-Signature=private-signature';
+      const value =
+        kind === 'url'
+          ? 'https://assets.invalid/private?signature=private-value'
+          : kind === 'data-url'
+            ? input.snapshot.data.contentUrl!
+            : kind === 'base64'
+              ? input.snapshot.data.contentUrl!.split(',')[1]!
+              : kind === 'signature'
+                ? 'private-signature'
+                : 'test-placeholder';
+      input.snapshot.data.label = value;
+      snapshot.inputs = [input];
+      snapshot.parameters = {
+        reference_images: [{ url: 'https://assets.invalid/extra', name: value, asset_id: value }],
+      };
+      const { record } = await captureVideo(snapshot);
+      expect(record.resources).toEqual([
+        {
+          assetId: 'safe-asset',
+          assetVersion: 2,
+          mediaType: 'image',
+          role: 'referenceImage',
+          sortOrder: 0,
+        },
+        { mediaType: 'image', role: 'referenceImage', sortOrder: 1 },
+      ]);
+      expect(JSON.stringify(record)).not.toContain(value);
+    },
+  );
+
+  it('匹配输入中的不安全资产标识也不能进入记录', async () => {
+    const snapshot = snapshotFor('video');
+    const input = linkedInput('safe', 1, 0);
+    input.sourceAssetId = 'https://assets.invalid/private?token=do-not-store';
+    snapshot.inputs = [input];
+    const { record } = await captureVideo(snapshot);
+    expect(record.resources).toEqual([
+      { name: 'safe', mediaType: 'image', role: 'referenceImage', sortOrder: 0 },
+    ]);
+    expect(JSON.stringify(record)).not.toContain('do-not-store');
+  });
+
+  it.each([400, 503, 'network'] as const)(
+    '提交失败%s仍保留准备清单，Provider不伪称已发送',
+    async (failure) => {
+      const snapshot = snapshotFor('video');
+      snapshot.inputs = [linkedInput('alpha', 4, 0)];
+      const records: RequestPromptRecord[] = [];
+      const events: string[] = [];
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+        events.push('fetch');
+        if (failure === 'network') throw new Error('network unavailable');
+        return new Response(JSON.stringify({ error: { message: 'rejected' } }), {
+          status: failure,
+        });
+      });
+      await expect(
+        new NewApiVideoProvider({
+          baseUrl: 'https://provider.invalid/v1',
+          apiKey: 'synthetic',
+          fetchImpl,
+        }).execute({
+          snapshot,
+          runId: 'failed-request-record',
+          onRequestPrompt: (record) => {
+            records.push(record);
+            events.push('record');
+          },
+          onProviderJob: () => {
+            events.push('job');
+          },
+        }),
+      ).rejects.toThrow();
+      expect(events).toEqual(['record', 'job', 'fetch']);
+      expect(records).toHaveLength(1);
+      expect(records[0]!.sendStatus).toBe('pending');
+      expect(records[0]!.resources).toEqual([
+        {
+          assetId: 'alpha',
+          assetVersion: 4,
+          name: 'alpha',
+          mediaType: 'image',
+          role: 'referenceImage',
+          sortOrder: 0,
+        },
+      ]);
     },
   );
 });

@@ -8,6 +8,7 @@ import {
   getExecutionPromptDocument,
   nodeDataSchema,
   type CanvasDocument,
+  type CanvasEdge,
 } from './index.js';
 
 /** 延迟读取入口中的基础合同，支持从 index 重导出而不触发循环初始化。 */
@@ -95,6 +96,14 @@ function createOperationSchema() {
         })
         .strict(),
       z.object({ type: z.literal('connect_nodes'), edge: canvasEdgeSchema.strict() }).strict(),
+      z.object({ type: z.literal('disconnect_edge'), edgeId: canvasEdgeSchema.shape.id }).strict(),
+      z
+        .object({
+          type: z.literal('replace_edge'),
+          edgeId: canvasEdgeSchema.shape.id,
+          edge: canvasEdgeSchema.strict(),
+        })
+        .strict(),
       z
         .object({
           type: z.literal('move_node'),
@@ -142,6 +151,17 @@ export class CanvasOperationError extends Error {
     super(message);
     this.name = 'CanvasOperationError';
   }
+}
+
+/** 仅相同端点、用途和顺序才是重试；不同顺序不能隐式合并。 */
+function isSameConnection(left: CanvasEdge, right: CanvasEdge): boolean {
+  return (
+    left.sourceNodeId === right.sourceNodeId &&
+    left.sourceHandle === right.sourceHandle &&
+    left.targetNodeId === right.targetNodeId &&
+    left.targetHandle === right.targetHandle &&
+    left.order === right.order
+  );
 }
 
 /**
@@ -203,12 +223,42 @@ export function applyCanvasOperations(
       );
       nodeIds.add(operation.node.id);
     } else if (operation.type === 'connect_nodes') {
-      if (edgeIds.has(operation.edge.id))
+      const sameId = next.edges.find((edge) => edge.id === operation.edge.id);
+      if (sameId && !isSameConnection(sameId, operation.edge))
         throw new CanvasOperationError('invalid_operation', 'edge id already exists');
       if (!nodeIds.has(operation.edge.sourceNodeId) || !nodeIds.has(operation.edge.targetNodeId))
         throw new CanvasOperationError('invalid_operation', 'edge references a missing node');
+      // 重试可能生成新 ID；保留已存边的身份，不再累加一条相同的引用。
+      if (next.edges.some((edge) => isSameConnection(edge, operation.edge))) continue;
       next.edges.push(operation.edge);
       edgeIds.add(operation.edge.id);
+    } else if (operation.type === 'disconnect_edge' || operation.type === 'replace_edge') {
+      const index = next.edges.findIndex((edge) => edge.id === operation.edgeId);
+      if (index === -1)
+        throw new CanvasOperationError('invalid_operation', 'operation references a missing edge');
+      if (operation.type === 'disconnect_edge') {
+        next.edges.splice(index, 1);
+        edgeIds.delete(operation.edgeId);
+      } else {
+        const replacement = operation.edge;
+        if (replacement.id !== operation.edgeId && edgeIds.has(replacement.id))
+          throw new CanvasOperationError('invalid_operation', 'edge id already exists');
+        if (!nodeIds.has(replacement.sourceNodeId) || !nodeIds.has(replacement.targetNodeId))
+          throw new CanvasOperationError('invalid_operation', 'edge references a missing node');
+        // 替换只改变精确指定的边；不能顺带吞掉另一条既有边。
+        if (
+          next.edges.some(
+            (edge, edgeIndex) => edgeIndex !== index && isSameConnection(edge, replacement),
+          )
+        )
+          throw new CanvasOperationError(
+            'invalid_operation',
+            'replacement connection already exists',
+          );
+        next.edges[index] = replacement;
+        edgeIds.delete(operation.edgeId);
+        edgeIds.add(replacement.id);
+      }
     } else {
       const index = next.nodes.findIndex((node) => node.id === operation.nodeId);
       if (index === -1)

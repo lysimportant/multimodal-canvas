@@ -434,6 +434,8 @@ export function registerCanvasAgentRoutes(app: FastifyInstance, options: Options
           const asset = projectAsset ?? (await read(node.data.assetId, assetScope));
           if (asset?.mediaType !== node.data.mediaType)
             throw new ProjectStoreError('invalid_asset', '素材类型与节点不一致');
+          // MIME 是可信素材元数据，不接受 Agent 猜测；缺省值会把图片误渲染成文件。
+          node.data = { ...node.data, mimeType: asset.mimeType };
         }
         await options.validateMentions(next, projectId, scope.ownerId, request.id);
         return { canvas: await projectStore.updateCanvas(projectId, next, scope) };

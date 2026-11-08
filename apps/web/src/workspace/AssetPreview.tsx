@@ -1845,7 +1845,8 @@ function resolveArtifactKind(asset: Asset): ArtifactKind {
     return 'text';
   }
   if (!mimeType) return asset.mediaType;
-  if (mimeType === 'application/octet-stream') return 'file';
+  // 旧来源节点可能只保存图片类型而没有真实 MIME，不能将已取得的图片缩略图当作文件。
+  if (mimeType === 'application/octet-stream' && asset.mediaType === 'image') return 'image';
   return 'file';
 }
 

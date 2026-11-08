@@ -5,6 +5,7 @@ import {
   acquireImageThumbnail,
   clearImageThumbnailCache,
   getImageThumbnailSource,
+  resolveOriginalImageAsset,
 } from './image-thumbnail-cache';
 
 /** 合成版本资源；不访问真实用户文件或供应商。 */
@@ -51,6 +52,28 @@ afterEach(() => {
 });
 
 describe('image thumbnail cache', () => {
+  it('仅从同一素材版本补全图片 MIME，保留历史地址和输入对象', () => {
+    const source = {
+      ...asset,
+      mimeType: 'application/octet-stream',
+      latestVersion: undefined,
+      contentUrl: '/v1/assets/thumbnail-test/versions/2/content',
+    };
+    expect(resolveOriginalImageAsset(source, asset)).toMatchObject({
+      mimeType: 'image/png',
+      contentUrl: source.contentUrl,
+    });
+    expect(source.mimeType).toBe('application/octet-stream');
+    expect(resolveOriginalImageAsset(source, { ...asset, latestVersion: 3 })).toBe(source);
+    expect(resolveOriginalImageAsset(source, { ...asset, id: 'another-asset' })).toBe(source);
+    expect(
+      resolveOriginalImageAsset(source, {
+        ...asset,
+        latestVersion: 3,
+        contentUrl: source.contentUrl,
+      }).mimeType,
+    ).toBe('image/png');
+  });
   it('资源栏最新版与节点冻结版本归一到同一个缩略图源', () => {
     const latest = getImageThumbnailSource(asset);
     expect(latest).toEqual({

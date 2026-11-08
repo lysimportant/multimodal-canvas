@@ -5,6 +5,30 @@
   gap: 6px;
 }
 
+.request-prompt-resource-counts {
+  font-size: 12px;
+  margin: 0;
+}
+
+.request-prompt-resources {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  padding-left: 22px;
+}
+
+.request-prompt-resources li {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.request-prompt-resources li > span {
+  display: block;
+  color: var(--mc-text-muted, #667085);
+}
+
 .request-prompt-copy.request-prompt-icon-action {
   height: 26px;
   justify-content: center;

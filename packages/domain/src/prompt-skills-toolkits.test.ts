@@ -127,7 +127,7 @@ describe('三套工具包的应用预设目录', () => {
         id === 'character' || id === 'character-views'
           ? '1.2.0'
           : id === 'xianxia-dress-character'
-            ? '1.1.0'
+            ? '1.2.0'
             : id === 'skill-authoring'
               ? '1.0.0'
               : '1.1.0';
@@ -136,6 +136,71 @@ describe('三套工具包的应用预设目录', () => {
     for (const [id, name] of additions) {
       expect(getPromptSkill(id)).toMatchObject({ id, name, version: '1.0.0' });
     }
+  });
+
+  it('漫剧导演使用图片在前的画布引用合同，并隔离外部裸文本协议', () => {
+    const instruction = instructionFor('manju-director');
+    for (const rule of [
+      '图片 mention＋一个空格＋姓名',
+      '先放图片 mention 块，再接以一个空格开头的文本姓名',
+      '图片 mention 必须设 inline:true',
+      '不设 executionOnly',
+      '兼容既有“姓名＋一个空格＋图片 mention”的相邻结构',
+      '不为调换顺序重复插入姓名',
+      '姓名已由相邻文本块写出时不再设置 entityName',
+      '动作、可见表情、持物、起始状态和末态',
+      '实际渠道冻结契约和真实发送顺序',
+      'H3 适配渠道也可能按引用字段输出通用 Image N',
+      '不能仅凭 H3 名称保证 <Picture N>',
+      '属于预览、提交或外部裸文本的输出语法',
+      '画布编辑态不手写',
+      '显式 <Subject N> 定义属于外部裸文本协议',
+      '当前画布不会自动把图片或人物外观编译成 <Subject N> 定义',
+      '逐段、逐节点打开“查看真实提示词”',
+      '历史写法和缺失素材逐项单列',
+    ]) {
+      expect(instruction, rule).toContain(rule);
+    }
+    expect(instruction).not.toContain('H3 把角色外观写进 <Subject N> 定义并引用 <Picture 1>');
+    expect(instruction).not.toContain('text 块末尾只留「名字＋一个空格」，紧接着放 mention 块');
+    expect(instruction).not.toContain(
+      '编号由提交层按模型族渲染（Seedance 图 1、Wan3 图1、H3 <Picture 1>、通用 Image 1）',
+    );
+  });
+
+  it('漫剧导演跨引擎使用 CG 画风与复用参考图，并拦截照片化提示词', () => {
+    const instruction = instructionFor('manju-director');
+    for (const rule of [
+      '3D CG 或 2.5D CG（默认适度风格化的数字渲染质感）',
+      '通用、Seedance、Wan3、H3 的默认画布稿与普通文本稿',
+      '【固定资产】→【视频生成风格类型】→【分镜】',
+      '【固定资产】先逐项列出本段实际引用的角色、场景、关键道具图片及用途',
+      '【视频生成风格类型】紧接其后',
+      '【分镜】最后写连续时间轴镜头',
+      '不增加剧情概述或段末补充',
+      '仅用户明确要求 H3 原生协议导出时',
+      '不把六字段作为默认提示词格式',
+      '先查项目资产台账和人物设定卡，跨 EP 复用同一角色、场景的已验收图片和固定版本',
+      '视频生成前另做逐段角色/场景资产覆盖清单',
+      '逐项记录资产台账 ID/变体',
+      '画布 assetId@assetVersion',
+      '不得以“视频节点已连一张图”代替逐项核对',
+      '由后续画布执行流程先调用图片生成节点补齐',
+      '再将实际图片挂接视频节点',
+      '本内置技能只产出文本，不声称自己已经调用节点',
+      '所有视频引擎都不能只靠文字生成视频',
+      '画布工具目前不自动理解分镜并验证每个实体对应的图片',
+      '图片、视频及各引擎实际发送的全部提示词字段',
+      '这些词即使带“非”“不要”“禁止”或出现在负向提示词，也不得送给生成模型',
+      '不增加模型名、分辨率、时长、模式等参数提交前核验门槛',
+    ]) {
+      expect(instruction, rule).toContain(rule);
+    }
+    expect(instruction).not.toContain('半写实2.5D国漫＋电影感柔光');
+    expect(instruction).not.toContain('按 v2 四段式组织');
+    expect(instruction).not.toContain('默认用中文六段式');
+    expect(instruction).not.toContain('纯文生段用 T2VA 三字段');
+    expect(instruction).not.toContain('没有参考图时用稳定的文字外观锚点');
   });
 
   it.each(['extract-assets', 'extract-assets-3d', 'extract-assets-live-action'])(

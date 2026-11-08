@@ -75,11 +75,11 @@ export function collectConnectedPromptAssets(
     roleOrders.set(handle, sortOrder + 1);
     if (edge.targetHandle === 'input:imageEdit') continue;
     const source = nodes.find((node) => node.id === edge.source);
-    if (!source) continue;
+    if (!source || source.data.enabled === false) continue;
     const parsedRole = portRoleSchema.safeParse(handle.slice('input:'.length));
     const videoInputBindings =
       target?.data.mediaType === 'video'
-        ? source.data.enabled !== false && parsedRole.success
+        ? parsedRole.success
           ? [{ nodeId: source.id, role: parsedRole.data, sortOrder }]
           : []
         : undefined;
@@ -125,10 +125,11 @@ export function collectConnectedPromptAssets(
       : (reference?.assetVersion ?? sourceVersion);
     const versionUnavailable =
       bindingUnavailable || (assetVersion === undefined && source.data.mode !== 'source');
-    const identity = JSON.stringify([assetId, assetVersion]);
+    // 未知版本不能仅凭素材 ID 合并来源，否则会隐藏仍需确认的输入。
+    const identity = JSON.stringify([assetId, assetVersion ?? source.id]);
     if (seen.has(identity)) {
       const previous = items.find(
-        (item) => JSON.stringify([item.id, item.assetVersion]) === identity,
+        (item) => JSON.stringify([item.id, item.assetVersion ?? item.sourceNodeId]) === identity,
       );
       if (previous && videoInputBindings) {
         previous.videoInputBindings = [

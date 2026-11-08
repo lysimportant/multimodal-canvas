@@ -91,13 +91,34 @@ export function getImageThumbnailSource(asset: Asset): ImageThumbnailSource | nu
 
 /**
  * 将资源索引已知的图片版本固定为原文件地址，保证小图、Dialog 和下载读取同一版本。
- * 显式版本、外部地址和无版本的旧资源不改写；返回只读副本，不更新持久化资产。
+ * 显式版本、外部地址和无版本的旧资源地址不改写；返回只读副本，不更新持久化资产。
+ * 素材目录只能补充同一版本的图片 MIME，不能把最新版本的元数据套到历史图片上。
  */
-export function resolveOriginalImageAsset(asset: Asset): Asset {
-  const source = getImageThumbnailSource(asset);
-  if (!source?.immutable || /\/versions\/[1-9]\d*\/content(?:$|\?)/.test(asset.contentUrl))
-    return asset;
-  return { ...asset, contentUrl: source.url.replace(/\/derivatives\/thumbnail$/, '/content') };
+export function resolveOriginalImageAsset(asset: Asset, knownAsset?: Asset): Asset {
+  const version = imageContentVersion(asset);
+  const knownVersion = knownAsset && imageContentVersion(knownAsset);
+  const sameVersion =
+    version !== undefined && knownVersion !== undefined
+      ? version === knownVersion
+      : version === undefined && asset.contentUrl === knownAsset?.contentUrl;
+  const resolved =
+    asset.mediaType === 'image' &&
+    knownAsset?.id === asset.id &&
+    knownAsset.mediaType === 'image' &&
+    knownAsset.mimeType.toLowerCase().startsWith('image/') &&
+    sameVersion
+      ? { ...asset, mimeType: knownAsset.mimeType }
+      : asset;
+  const source = getImageThumbnailSource(resolved);
+  if (!source?.immutable || /\/versions\/[1-9]\d*\/content(?:$|\?)/.test(resolved.contentUrl))
+    return resolved;
+  return { ...resolved, contentUrl: source.url.replace(/\/derivatives\/thumbnail$/, '/content') };
+}
+
+/** URL 中的固定版本优先，目录 latestVersion 只能用于未冻结的地址。 */
+function imageContentVersion(asset: Asset): number | undefined {
+  const match = /\/versions\/([1-9]\d*)\/content(?:$|[?#])/.exec(asset.contentUrl);
+  return match ? Number(match[1]) : asset.latestVersion;
 }
 
 /** 回收 URL 和未完成的网络请求；引用计数由持有者负责，不修改资产数据。 */

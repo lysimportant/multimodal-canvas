@@ -279,6 +279,9 @@ describe('项目 Agent 路由与官方 MCP Client 集成', () => {
       ],
     });
     expect(changed.canvas).toMatchObject({ revision: 1, edges: [edge] });
+    expect(changed.canvas.nodes.find((node) => node.id === 'source')?.data.mimeType).toBe(
+      'text/plain',
+    );
     expect(changed.canvas.nodes.find((node) => node.id === 'target')).toMatchObject({
       position: { x: 420, y: 80 },
       // create_node 未给尺寸时按媒体类型补齐卡片尺寸（文字节点 320×200），不再是近方形默认卡。
@@ -424,6 +427,105 @@ describe('项目 Agent 路由与官方 MCP Client 集成', () => {
       }
     },
   );
+
+  it('MCP 精确替换和断开连线，重复添加幂等，错误批次不保存', async () => {
+    const f = await fixture();
+    const asset = await f.asset();
+    await call(f.client, 'apply_canvas_operations', {
+      revision: 0,
+      operations: [sourceNode(asset.id), generatedNode(), { type: 'connect_nodes', edge }],
+    });
+    const duplicate = await call<{ canvas: CanvasDocument }>(f.client, 'apply_canvas_operations', {
+      revision: 1,
+      operations: [{ type: 'connect_nodes', edge: { ...edge, id: 'retry-edge' } }],
+    });
+    expect(duplicate.canvas.edges).toEqual([edge]);
+    const replacement = { ...edge, targetHandle: 'input:prompt' };
+    const replaced = await call<{ canvas: CanvasDocument }>(f.client, 'apply_canvas_operations', {
+      revision: 2,
+      operations: [{ type: 'replace_edge', edgeId: edge.id, edge: replacement }],
+    });
+    expect(replaced.canvas.edges).toEqual([replacement]);
+    await expectToolError(
+      f.client,
+      'apply_canvas_operations',
+      {
+        revision: 3,
+        operations: [
+          { type: 'disconnect_edge', edgeId: edge.id },
+          { type: 'disconnect_edge', edgeId: 'missing' },
+        ],
+      },
+      400,
+      'invalid_operation',
+    );
+    const unchanged = await call<{ canvas: CanvasDocument }>(f.client, 'get_canvas');
+    expect(unchanged.canvas).toEqual(replaced.canvas);
+    const disconnected = await call<{ canvas: CanvasDocument }>(
+      f.client,
+      'apply_canvas_operations',
+      {
+        revision: 3,
+        operations: [{ type: 'disconnect_edge', edgeId: edge.id }],
+      },
+    );
+    expect(disconnected.canvas.edges).toEqual([]);
+    expect(disconnected.canvas.nodes).toEqual(replaced.canvas.nodes);
+    expect(await f.runService.listByProject(f.projectId)).toEqual([]);
+  });
+
+  it('来源图片从可信素材补齐 MIME，保留选定版本而不接受 Agent 写 MIME', async () => {
+    const f = await fixture();
+    const asset = await f.assetStore.create({
+      projectId: f.projectId,
+      ownerId: f.session.user.id,
+      name: 'synthetic-reference.jpg',
+      mediaType: 'image',
+      mimeType: 'image/jpeg',
+      content: Buffer.from('synthetic image bytes'),
+    });
+    const operation = {
+      type: 'create_node',
+      assetVersion: 1,
+      node: {
+        id: 'image-source',
+        type: 'image',
+        position: { x: 0, y: 0 },
+        data: { label: '图片来源', mediaType: 'image', mode: 'source', assetId: asset.id },
+      },
+    };
+    const result = await call<{ canvas: CanvasDocument }>(f.client, 'apply_canvas_operations', {
+      revision: 0,
+      operations: [operation],
+    });
+    expect(result.canvas.nodes[0]?.data).toMatchObject({
+      assetId: asset.id,
+      mimeType: 'image/jpeg',
+      contentUrl: `/v1/assets/${asset.id}/versions/1/content`,
+    });
+    const invalid = await f.app.inject({
+      method: 'POST',
+      url: `${f.projectPath}/canvas/operations`,
+      headers: f.headers,
+      payload: {
+        revision: 1,
+        operations: [
+          {
+            ...operation,
+            node: {
+              ...operation.node,
+              id: 'spoof',
+              data: { ...operation.node.data, mimeType: 'text/plain' },
+            },
+          },
+        ],
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(
+      (await f.projectStore.getCanvas(f.projectId, { ownerId: f.session.user.id }))?.nodes,
+    ).toHaveLength(1);
+  });
 
   it('项目令牌不能通过直接运行请求覆盖提示词并读取未绑定的个人素材', async () => {
     const f = await fixture();

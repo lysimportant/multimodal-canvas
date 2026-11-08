@@ -18,6 +18,7 @@ import {
   type AssetFlowNode,
   type FlowEdge,
 } from './canvas-utils';
+import { collectConnectedPromptAssets } from './workspace/connected-prompt-assets';
 
 function flowNode(
   id: string,
@@ -171,6 +172,128 @@ describe('canvas document conversion', () => {
       },
     ]);
     expect(document.nodes[0].data.mimeType).toBeUndefined();
+  });
+
+  it('按持久化 order 恢复乱序入边，使编辑器编号与再次保存顺序一致', () => {
+    const sources = ['first', 'second', 'third'].map((id) =>
+      flowNode(id, 'image', {
+        mode: 'source',
+        assetId: `asset-${id}`,
+        contentUrl: `/v1/assets/asset-${id}/versions/1/content`,
+      }),
+    );
+    const target = flowNode('target', 'video');
+    const document = canvasDocumentSchema.parse({
+      revision: 7,
+      nodes: [...sources, target],
+      edges: [
+        {
+          id: 'edge-third',
+          sourceNodeId: 'third',
+          sourceHandle: 'output:image',
+          targetNodeId: 'target',
+          targetHandle: 'input:referenceImage',
+          order: 2,
+        },
+        {
+          id: 'edge-first',
+          sourceNodeId: 'first',
+          sourceHandle: 'output:image',
+          targetNodeId: 'target',
+          targetHandle: 'input:referenceImage',
+          order: 0,
+        },
+        {
+          id: 'edge-second',
+          sourceNodeId: 'second',
+          sourceHandle: 'output:image',
+          targetNodeId: 'target',
+          targetHandle: 'input:referenceImage',
+          order: 1,
+        },
+      ],
+    });
+
+    const restored = fromCanvasDocument(document);
+    expect(restored.edges.map((edge) => edge.source)).toEqual(['first', 'second', 'third']);
+    expect(
+      collectConnectedPromptAssets('target', restored.nodes, restored.edges).map((item) => [
+        item.sourceNodeId,
+        item.videoInputBindings?.[0]?.sortOrder,
+      ]),
+    ).toEqual([
+      ['first', 0],
+      ['second', 1],
+      ['third', 2],
+    ]);
+    expect(
+      toCanvasDocument(restored.nodes, restored.edges, document.revision).edges.map((edge) => [
+        edge.sourceNodeId,
+        edge.order,
+      ]),
+    ).toEqual([
+      ['first', 0],
+      ['second', 1],
+      ['third', 2],
+    ]);
+  });
+
+  it('恢复顺序时不移动其他输入槽位，并稳定保留缺失或相同 order 的旧边', () => {
+    const nodes = [
+      flowNode('first'),
+      flowNode('second'),
+      flowNode('other'),
+      flowNode('target', 'video'),
+      flowNode('other-target', 'video'),
+    ];
+    const edges: CanvasDocument['edges'] = [
+      {
+        id: 'second',
+        sourceNodeId: 'second',
+        sourceHandle: 'output:image',
+        targetNodeId: 'target',
+        targetHandle: 'input:referenceImage',
+        order: 1,
+      },
+      {
+        id: 'other-target',
+        sourceNodeId: 'other',
+        sourceHandle: 'output:image',
+        targetNodeId: 'other-target',
+        targetHandle: 'input:referenceImage',
+        order: 0,
+      },
+      {
+        id: 'first',
+        sourceNodeId: 'first',
+        sourceHandle: 'output:image',
+        targetNodeId: 'target',
+        targetHandle: 'input:referenceImage',
+        order: 0,
+      },
+    ];
+    const document = canvasDocumentSchema.parse({ revision: 1, nodes, edges });
+    expect(fromCanvasDocument(document).edges.map((edge) => edge.id)).toEqual([
+      'first',
+      'other-target',
+      'second',
+    ]);
+
+    const sameOrder = { ...document, edges: edges.map((edge) => ({ ...edge, order: 0 })) };
+    expect(fromCanvasDocument(sameOrder).edges.map((edge) => edge.id)).toEqual([
+      'second',
+      'other-target',
+      'first',
+    ]);
+    const missingOrder = {
+      ...document,
+      edges: edges.map(({ order: _order, ...edge }) => edge),
+    } as unknown as CanvasDocument;
+    expect(fromCanvasDocument(missingOrder).edges.map((edge) => edge.id)).toEqual([
+      'second',
+      'other-target',
+      'first',
+    ]);
   });
 
   it('keeps node styles unchanged after content or manual size updates', () => {

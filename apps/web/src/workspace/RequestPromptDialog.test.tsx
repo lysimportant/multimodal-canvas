@@ -261,7 +261,7 @@ describe('RequestPromptDialog', () => {
       />,
     );
     // 优先说明来源：这是最新运行的请求快照，但节点当前没有可用输出。
-    expect(screen.getByText('最新运行请求（当前没有可用输出）')).toBeInTheDocument();
+    expect(screen.getByText('最新运行输入快照，未记录最终请求')).toBeInTheDocument();
     expect(screen.queryByText('历史输入快照，未记录最终请求')).not.toBeInTheDocument();
 
     rerender(
@@ -271,7 +271,93 @@ describe('RequestPromptDialog', () => {
       />,
     );
     expect(screen.getByText('历史输入快照，未记录最终请求')).toBeInTheDocument();
-    expect(screen.queryByText('最新运行请求（当前没有可用输出）')).not.toBeInTheDocument();
+    expect(screen.queryByText('最新运行输入快照，未记录最终请求')).not.toBeInTheDocument();
+  });
+
+  it('有运行但缺记录时明确显示缺失，当前编辑内容不能冒充请求或尚未生成', () => {
+    const view = render(
+      <RequestPromptDialog
+        state={{ status: 'input', text: '现在修改的文字', historical: false, requestMissing: true }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('请求记录缺失');
+    expect(screen.getByText('当前编辑内容，非历史请求')).toBeInTheDocument();
+    expect(screen.queryByText(/尚未生成/)).not.toBeInTheDocument();
+    view.rerender(
+      <RequestPromptDialog state={{ status: 'missing', hasRun: true }} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('请求记录缺失');
+  });
+
+  it('按记录逐项显示素材身份、版本、用途和数量，不对清单再次去重', () => {
+    render(
+      <RequestPromptDialog
+        state={{
+          status: 'ready',
+          record: record({
+            mediaType: 'video',
+            resources: [
+              {
+                assetId: 'image-1',
+                assetVersion: 1,
+                mediaType: 'image',
+                name: '人物',
+                role: 'referenceImage',
+                sortOrder: 0,
+              },
+              {
+                assetId: 'image-1',
+                assetVersion: 1,
+                mediaType: 'image',
+                name: '人物首帧',
+                role: 'firstFrame',
+                sortOrder: 1,
+              },
+              {
+                assetId: 'clip',
+                assetVersion: 2,
+                mediaType: 'video',
+                role: 'content',
+                sortOrder: 2,
+              },
+              {
+                assetId: 'sound',
+                assetVersion: 1,
+                mediaType: 'audio',
+                role: 'audioTrack',
+                sortOrder: 3,
+              },
+            ],
+          }),
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('图片 2 · 视频 1 · 音频 1')).toBeInTheDocument();
+    expect(screen.getByText('已发送')).toBeInTheDocument();
+    expect(screen.getByText('人物首帧')).toBeInTheDocument();
+    expect(screen.getByText('图片 · 用途：首帧')).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+  });
+
+  it('旧记录未保存媒体类型时显示数量未知，失败发送也明确标记', () => {
+    render(
+      <RequestPromptDialog
+        state={{
+          status: 'ready',
+          record: record({
+            sendStatus: 'failed',
+            resources: [{ assetId: 'legacy', role: 'referenceImage', sortOrder: 0 }],
+          }),
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('图片/视频/音频数量未知（1 项未记录媒体类型）')).toBeInTheDocument();
+    expect(screen.getByText('发送失败')).toBeInTheDocument();
+    expect(screen.queryByText('图片 0 · 视频 0 · 音频 0')).not.toBeInTheDocument();
+    expect(screen.getByText('legacy · 版本未记录')).toBeInTheDocument();
   });
 
   it('Esc 关闭并把焦点还给触发按钮，Tab 焦点圈定在 Dialog 内', async () => {

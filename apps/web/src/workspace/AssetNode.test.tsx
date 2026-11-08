@@ -11,6 +11,7 @@ const viewportMock = vi.hoisted(() => ({
   x: 0,
   y: 0,
   zoom: 1,
+  nodes: [] as AssetFlowNode[],
   listeners: new Set<() => void>(),
   /** 注册视口变更监听，返回卸载清理函数。 */
   subscribe(listener: () => void) {
@@ -21,13 +22,18 @@ const viewportMock = vi.hoisted(() => ({
   },
 }));
 const updateNodeInternalsMock = vi.hoisted(() => vi.fn());
-const nodeConnectionsMock = vi.hoisted(() => vi.fn(() => []));
+const nodeConnectionsMock = vi.hoisted(() => vi.fn((): FlowEdge[] => []));
 
 vi.mock('@xyflow/react', async () => {
   const { useRef, useSyncExternalStore } = await import('react');
   /** 按 selector 与 equalityFn 缓存快照，复现 React Flow 的订阅语义。 */
   function useStoreMock<T>(
-    selector: (state: { transform: [number, number, number]; width: number; height: number }) => T,
+    selector: (state: {
+      transform: [number, number, number];
+      width: number;
+      height: number;
+      nodes: AssetFlowNode[];
+    }) => T,
     equalityFn: (previous: T, next: T) => boolean = Object.is,
   ): T {
     const selected = useRef({
@@ -35,6 +41,7 @@ vi.mock('@xyflow/react', async () => {
         transform: [viewportMock.x, viewportMock.y, viewportMock.zoom],
         width: 1280,
         height: 720,
+        nodes: viewportMock.nodes,
       }),
     });
     const getSnapshot = () => {
@@ -42,6 +49,7 @@ vi.mock('@xyflow/react', async () => {
         transform: [viewportMock.x, viewportMock.y, viewportMock.zoom],
         width: 1280,
         height: 720,
+        nodes: viewportMock.nodes,
       });
       if (!equalityFn(selected.current.value, value)) selected.current.value = value;
       return selected.current.value;
@@ -99,7 +107,7 @@ vi.mock('../export-utils', () => ({ downloadProjectExport: vi.fn() }));
 
 import type { NodeProps } from '@xyflow/react';
 import type { RunRecord } from '@multimodal-canvas/domain';
-import type { AssetFlowNode } from '../canvas-utils';
+import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 import { downloadProjectExport } from '../export-utils';
 import { fetchNodeAssetDownload } from './node-asset-download';
 import * as auth from '../auth-client';
@@ -332,6 +340,8 @@ afterEach(() => {
   viewportMock.x = 0;
   viewportMock.y = 0;
   viewportMock.zoom = 1;
+  viewportMock.nodes = [];
+  nodeConnectionsMock.mockReturnValue([]);
 });
 
 describe('AssetNode result presentation', () => {
@@ -551,7 +561,7 @@ describe('AssetNode result presentation', () => {
       ['上传到节点：产品图', '上传本地文件并替换当前节点内容'],
       ['修改图片：产品图', '引用当前图片创建编辑节点，不覆盖原图'],
       ['下载图片', '下载当前回显的图片文件'],
-      ['删除节点：产品图', '删除当前节点及关联连线'],
+      ['删除节点：产品图', '删除当前节点及关联连线；项目资源仍保留在右侧资源库'],
     ]) {
       const button = within(toolbar).getByRole('button', { name });
       expect(button.parentElement).toBe(toolbar);
@@ -571,6 +581,8 @@ describe('AssetNode result presentation', () => {
     const user = userEvent.setup();
     const onLabelChange = vi.fn();
     renderNode(makeNode(), undefined, undefined, undefined, false, onLabelChange);
+    await user.tab();
+    expect(screen.getByRole('button', { name: '编辑节点名称：文案生成' })).toHaveFocus();
     await user.tab();
     const rename = screen.getByRole('button', { name: '重命名节点：文案生成' });
     expect(rename).toHaveFocus();
@@ -1772,6 +1784,30 @@ describe('AssetNode result presentation', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('在节点外左上显示名称，并通过后置铅笔图标重命名', async () => {
+    const onLabelChange = vi.fn();
+    const user = userEvent.setup();
+    const { container } = renderNode(
+      makeNode(),
+      undefined,
+      undefined,
+      undefined,
+      false,
+      onLabelChange,
+    );
+
+    const label = container.querySelector('.flow-node-external-label')!;
+    expect(label.parentElement).toHaveClass('flow-asset-node');
+    expect(label).toHaveTextContent('文案生成');
+    expect(label.querySelector('.flow-node-external-label-text')).toHaveTextContent('文案生成');
+    expect(label.children[1]).toHaveClass('flow-node-external-label-edit');
+    expect(label.children[1].querySelector('svg')).toBeInTheDocument();
+
+    expect(label.querySelector('button')).toHaveAccessibleName('编辑节点名称：文案生成');
+    await user.click(label.querySelector('button')!);
+    expect(await screen.findByRole('dialog', { name: '重命名节点' })).toBeInTheDocument();
+  });
+
   it('原生 K 档显示当前设置，不把档位当作固定像素比较', async () => {
     mockThumbnail(1672, 941);
     renderNode(
@@ -2494,6 +2530,47 @@ describe('画布选区模式', () => {
 });
 
 describe('大画布按需显示', () => {
+  it('视频摘要排除停用来源，缺素材来源显示名称和待补齐原因', () => {
+    const source = {
+      ...makeNode({
+        label: '有效图片',
+        mediaType: 'image',
+        resultAsset: { assetId: 'valid-image', version: 1 },
+      }),
+      id: 'valid',
+    };
+    const disabled = {
+      ...source,
+      id: 'disabled',
+      data: { ...source.data, enabled: false },
+    };
+    const missing = {
+      ...makeNode({ label: '缺失图片', mediaType: 'image' }),
+      id: 'missing',
+    };
+    viewportMock.nodes = [source, disabled, missing];
+    nodeConnectionsMock.mockReturnValue(
+      viewportMock.nodes.map((node) => ({
+        id: node.id,
+        source: node.id,
+        target: 'node_1',
+        targetHandle: 'input:referenceImage',
+      })),
+    );
+    renderNode(makeNode({ mediaType: 'video' }));
+    expect(screen.getByLabelText('视频输入 1 项，1 项待补齐')).toHaveTextContent('待补齐 ×1');
+    expect(screen.getByTitle('缺失图片：尚无素材')).toBeInTheDocument();
+    act(() => {
+      viewportMock.nodes = [
+        { ...source, data: { ...source.data, enabled: false } },
+        disabled,
+        missing,
+      ];
+      viewportMock.listeners.forEach((listener) => listener());
+    });
+    expect(screen.getByLabelText('视频输入 0 项，1 项待补齐')).toBeInTheDocument();
+  });
+
   it('图片节点不订阅全图连线；视频仅订阅自身入边', () => {
     renderNode(makeNode({ mediaType: 'image' }));
     expect(nodeConnectionsMock).not.toHaveBeenCalled();

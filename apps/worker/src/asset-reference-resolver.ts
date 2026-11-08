@@ -847,8 +847,15 @@ function assertInputMetadata(input: RunInputSnapshot, resolved: ResolvedAsset): 
     );
   }
   const declaredMimeType = input.snapshot.data.mimeType;
-  if (declaredMimeType && normalizeMimeType(declaredMimeType) !== resolved.mimeType) {
-    throw new Error(`asset reference ${resolved.assetId} MIME type does not match its snapshot`);
+  if (declaredMimeType) {
+    const normalizedDeclaredMimeType = normalizeMimeType(declaredMimeType);
+    // 历史快照可能只保存通用二进制占位；实际发送仍使用同资产可信 MIME。
+    if (
+      normalizedDeclaredMimeType !== 'application/octet-stream' &&
+      normalizedDeclaredMimeType !== resolved.mimeType
+    ) {
+      throw new Error(`asset reference ${resolved.assetId} MIME type does not match its snapshot`);
+    }
   }
 }
 

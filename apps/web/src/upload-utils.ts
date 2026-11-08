@@ -75,6 +75,7 @@ export function isApiOriginUrl(value: string, apiBaseUrl: string, currentHref: s
     const resultUrl = new URL(value, currentHref);
     const apiPath = apiUrl.pathname.replace(/\/$/, '');
     return (
+      (resultUrl.protocol === 'http:' || resultUrl.protocol === 'https:') &&
       resultUrl.origin === apiUrl.origin &&
       (!apiPath || apiPath === '/' || resultUrl.pathname.startsWith(apiPath))
     );

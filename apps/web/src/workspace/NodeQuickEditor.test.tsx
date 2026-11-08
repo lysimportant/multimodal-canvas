@@ -2543,7 +2543,7 @@ describe('NodeQuickEditor', () => {
     expect(screen.queryByText(/未声明可引用的资源媒体类型/)).not.toBeInTheDocument();
   });
 
-  it('回传提示词、模型、推理强度和生成操作，并阻止指针事件传给画布', async () => {
+  it('回传提示词、模型和生成操作，并阻止指针事件传给画布', async () => {
     const user = userEvent.setup();
     const props = makeProps();
     const onCanvasPointerDown = vi.fn();
@@ -4282,7 +4282,7 @@ describe('NodeQuickEditor', () => {
     expect(mediaOptions.querySelectorAll('.node-quick-editor-option-group')).toHaveLength(1);
     expect(screen.queryByText('视频尺寸')).not.toBeInTheDocument();
     await user.click(within(resolutionGroup).getByRole('combobox'));
-    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(6);
+    expect(selectPopup(resolutionGroup).getAllByRole('option')).toHaveLength(7);
     fireEvent.keyDown(within(resolutionGroup).getByRole('combobox'), {
       key: 'Escape',
       keyCode: 27,
@@ -4318,6 +4318,7 @@ describe('NodeQuickEditor', () => {
       selectPopup(resolutionGroup).getByRole('option', { name: '720p', selected: true }),
     ).toBeInTheDocument();
     expect(selectPopup(resolutionGroup).getByRole('option', { name: '360p' })).toBeInTheDocument();
+    expect(selectPopup(resolutionGroup).getByRole('option', { name: '768p' })).toBeInTheDocument();
     expect(selectPopup(resolutionGroup).getByRole('option', { name: '2160p' })).toBeInTheDocument();
     if (within(ratioGroup).getByRole('combobox').getAttribute('aria-expanded') !== 'true')
       await user.click(within(ratioGroup).getByRole('combobox'));
@@ -4404,8 +4405,8 @@ describe('NodeQuickEditor', () => {
     await user.click(screen.getByRole('combobox', { name: '视频清晰度：720p' }));
     const menu = screen.getByRole('listbox');
     expect(menu.closest('.node-parameter-grid')).not.toBeNull();
-    await user.click(within(menu).getByRole('option', { name: '480p' }));
-    expect(onParametersChange).toHaveBeenCalledWith({ ...legacy, resolution: '480p' });
+    await user.click(within(menu).getByRole('option', { name: '768p' }));
+    expect(onParametersChange).toHaveBeenCalledWith({ ...legacy, resolution: '768p' });
     expect(legacy.resolution).toBe('720p');
     const parameters = JSON.parse(JSON.stringify(onParametersChange.mock.lastCall?.[0]));
     unmount();
@@ -4415,10 +4416,93 @@ describe('NodeQuickEditor', () => {
         node={{ ...videoNode, data: { ...videoNode.data, parameters } }}
       />,
     );
-    expect(screen.getByRole('combobox', { name: '视频清晰度：480p' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '视频清晰度：768p' })).toBeInTheDocument();
     expect(screen.queryByRole('spinbutton', { name: '宽度（像素）' })).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton', { name: '高度（像素）' })).not.toBeInTheDocument();
-    expect(parameters).toEqual({ ...legacy, resolution: '480p' });
+    expect(parameters).toEqual({ ...legacy, resolution: '768p' });
+  });
+
+  it('绑定 minimax-h3-1 视频引用能力时仍可选择 768p 并交给上游', async () => {
+    const user = userEvent.setup();
+    const onParametersChange = vi.fn();
+    render(
+      <NodeQuickEditor
+        {...makeProps({
+          node: {
+            ...videoNode,
+            data: {
+              ...videoNode.data,
+              modelAlias: 'minimax-h3-1',
+              videoMode: 'omni_reference',
+              parameters: { resolution: '720p' },
+            },
+          } as AssetFlowNode,
+          models: [
+            {
+              id: 'minimax-h3-1',
+              name: 'MiniMax H3.1',
+              mediaTypes: ['video'],
+              capabilities: {
+                resolutions: ['720p'],
+                videoReferences: {
+                  version: 1,
+                  adapter: 'seedance-video',
+                  tokenSyntax: 'numbered-media',
+                  maxImages: 30,
+                  maxVideos: 10,
+                  maxAudios: 10,
+                },
+              },
+            },
+          ],
+          onParametersChange,
+        })}
+      />,
+    );
+
+    const resolutionGroup = screen.getByText('视频清晰度').parentElement as HTMLElement;
+    await user.click(within(resolutionGroup).getByRole('combobox'));
+    const option = selectPopup(resolutionGroup).getByRole('option', { name: '768p' });
+    expect(option).toBeInTheDocument();
+    await user.click(option);
+    expect(onParametersChange).toHaveBeenCalledExactlyOnceWith({ resolution: '768p' });
+  });
+
+  it.each([
+    { label: '图片', node: imageNode },
+    { label: '视频', node: videoNode },
+    { label: '音频', node: audioNode },
+  ])('$label媒体参数不显示推理强度，也不改写历史推理字段', ({ node: mediaNode }) => {
+    const onInferenceStrengthChange = vi.fn();
+    const onParametersChange = vi.fn();
+    const parameters = {
+      reasoning_effort: 'low',
+      inferenceStrength: 'custom-effort',
+      preserved: true,
+    };
+    const node = {
+      ...mediaNode,
+      data: {
+        ...mediaNode.data,
+        inferenceStrength: 'high',
+        parameters,
+      },
+    } as AssetFlowNode;
+
+    render(
+      <NodeQuickEditor {...makeProps({ node, onInferenceStrengthChange, onParametersChange })} />,
+    );
+
+    expect(screen.getByRole('button', { name: '媒体参数' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByRole('region', { name: '生成参数' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /推理强度/ })).not.toBeInTheDocument();
+    expect(onInferenceStrengthChange).not.toHaveBeenCalled();
+    expect(onParametersChange).not.toHaveBeenCalled();
+    expect(node.data.inferenceStrength).toBe('high');
+    expect(node.data.parameters).toEqual(parameters);
   });
 
   it.each(
@@ -4461,13 +4545,19 @@ describe('NodeQuickEditor', () => {
         {...makeProps({
           node: {
             ...imageNode,
-            data: { ...imageNode.data, modelAlias: 'flag-model', inferenceStrength: undefined },
+            type: 'text',
+            data: {
+              ...imageNode.data,
+              mediaType: 'text',
+              modelAlias: 'flag-model',
+              inferenceStrength: undefined,
+            },
           } as AssetFlowNode,
           models: [
             {
               id: 'flag-model',
               name: '标记模型',
-              mediaTypes: ['image'],
+              mediaTypes: ['text'],
               capabilities: { reasoning_effort: { low: false, xhigh: true } },
             },
           ],
@@ -4493,8 +4583,10 @@ describe('NodeQuickEditor', () => {
         {...makeProps({
           node: {
             ...imageNode,
+            type: 'text',
             data: {
               ...imageNode.data,
+              mediaType: 'text',
               modelAlias: 'object-flag-model',
               inferenceStrength: undefined,
             },
@@ -4503,7 +4595,7 @@ describe('NodeQuickEditor', () => {
             {
               id: 'object-flag-model',
               name: '对象标记模型',
-              mediaTypes: ['image'],
+              mediaTypes: ['text'],
               capabilities: {
                 reasoning_effort: {
                   low: { enabled: false },

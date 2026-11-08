@@ -298,7 +298,7 @@ describe('提示词 Skill 契约', () => {
       id: 'xianxia-dress-character',
       name: '仙妖同款裙装',
       category: '人物与场景',
-      version: '1.1.0',
+      version: '1.2.0',
     });
     expect(getPromptSkill('character')).toMatchObject({
       id: 'character',
@@ -313,8 +313,17 @@ describe('提示词 Skill 契约', () => {
     expect(getPromptSkill('character')!.instruction).toContain('pure white (#FFFFFF)');
     for (const id of ['character', 'character-views', 'xianxia-dress-character']) {
       expect(getPromptSkill(id)!.instruction, id).toContain('pure white (#FFFFFF)');
-      expect(getPromptSkill(id)!.instruction, id).toMatch(/three-view or four-view|four-view/);
+      expect(getPromptSkill(id)!.instruction, id).toMatch(
+        /three-view or four-view|four-view|front, side and back outfit views/,
+      );
     }
+    const dressInstruction = getPromptSkill('xianxia-dress-character')!.instruction;
+    expect(dressInstruction).toContain('left 40%');
+    expect(dressInstruction).toContain('right 60% full height');
+    expect(dressInstruction).toContain('head and neck above the shoulder crop outside the frame');
+    expect(dressInstruction).toContain('Do not add a material-swatch or detail-sample strip');
+    expect(dressInstruction).not.toContain('covering the pelvis through movement');
+    expect(dressInstruction).not.toContain('front-panel coverage');
   });
 });
 
@@ -347,8 +356,10 @@ describe('Skill 升级元技能', () => {
       const expectedVersion =
         skill.id === 'character' || skill.id === 'character-views'
           ? '1.2.0'
-          : skill.id === 'xianxia-dress-character' || skill.id === 'soft-anime-atmosphere'
+          : skill.id === 'soft-anime-atmosphere'
             ? '1.1.0'
+            : skill.id === 'xianxia-dress-character'
+              ? '1.2.0'
             : ids.indexOf(skill.id) < 18 && skill.id !== SKILL_AUTHORING_SKILL_ID
               ? '1.1.0'
               : '1.0.0';

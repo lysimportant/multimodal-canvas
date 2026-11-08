@@ -4,6 +4,7 @@ import {
   type NodeTiming,
   type RequestPromptRecord,
 } from '@multimodal-canvas/domain';
+import { z } from 'zod';
 
 import { apiFetch } from './auth-client';
 
@@ -35,6 +36,61 @@ async function requestPromptPayload(response: Response): Promise<Record<string, 
     throw new Error('生成说明响应格式无效');
   }
   return payload as Record<string, unknown>;
+}
+
+const runPromptSummarySchema = z.object({
+  id: z.string().min(1).max(512),
+  runId: z.string().min(1).max(512),
+  nodeId: z.string().min(1).max(160),
+  attempt: z.number().int().positive(),
+  requestIdentity: z.string().min(1).max(200),
+  createdAt: z.string().datetime(),
+});
+
+/**
+ * 无输出时按运行、节点和当前尝试读取最新真实请求；不回退其它节点或先前尝试。
+ * 列表只含摘要，选中身份后才读取正文；迟到响应由调用方的请求身份隔离。
+ */
+export async function fetchRunRequestPrompt(
+  runId: string,
+  nodeId: string,
+  apiBaseUrl: string,
+  fetcher: typeof fetch = apiFetch,
+  signal?: AbortSignal,
+  attempt?: number,
+): Promise<Pick<AssetRequestPrompt, 'record' | 'recordId'>> {
+  if (
+    !runId ||
+    !nodeId ||
+    (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt < 1))
+  )
+    throw new Error('运行请求身份无效');
+  const path = `${apiBaseUrl.replace(/\/$/, '')}/v1/runs/${encodeURIComponent(runId)}/request-prompts`;
+  const options = signal ? { signal } : undefined;
+  const payload = await requestPromptPayload(await fetcher(path, options));
+  const summaries = runPromptSummarySchema.array().safeParse(payload.records);
+  if (!summaries.success || summaries.data.some((item) => item.runId !== runId))
+    throw new Error('运行请求记录响应格式无效或身份不一致');
+  const summary = summaries.data
+    .filter((item) => item.nodeId === nodeId && (attempt === undefined || item.attempt === attempt))
+    .sort(
+      (a, b) =>
+        b.attempt - a.attempt || b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+    )[0];
+  if (!summary) return { record: null };
+  const detail = await requestPromptPayload(
+    await fetcher(`${path}/${encodeURIComponent(summary.id)}`, options),
+  );
+  const record = requestPromptRecordSchema.safeParse(detail.record);
+  if (
+    !record.success ||
+    record.data.runId !== runId ||
+    record.data.nodeId !== nodeId ||
+    record.data.attempt !== summary.attempt ||
+    record.data.requestIdentity !== summary.requestIdentity
+  )
+    throw new Error('运行请求记录与当前节点不一致');
+  return { record: record.data, recordId: summary.id };
 }
 
 /**

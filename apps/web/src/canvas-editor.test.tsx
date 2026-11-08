@@ -573,12 +573,15 @@ function installApiMock() {
     const promptListMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/request-prompts$/);
     if (promptListMatch && method === 'GET') {
       const runId = decodeURIComponent(promptListMatch[1]);
-      const nodeId = url.searchParams.get('nodeId') ?? '';
-      const records = promptRecords.get(`${runId}\0${nodeId}`) ?? [];
+      const records = [...promptRecords.values()].flat().filter((record) => record.runId === runId);
       return jsonResponse({
         records: records.map((record) => ({
           id: record.recordId,
-          nodeId,
+          nodeId: record.nodeId,
+          runId: record.runId,
+          attempt: record.attempt,
+          requestIdentity: record.requestIdentity,
+          createdAt: record.createdAt,
           mediaType: record.mediaType,
         })),
       });
@@ -1582,13 +1585,21 @@ describe('画布编辑器交互', { timeout: 15_000 }, () => {
     const dialog = await screen.findByRole('dialog', { name: '生成提示词' });
     // 节点当前没有可用输出：提示词来自最新运行的输入快照，并明确标注来源。
     await waitFor(() =>
-      expect(within(dialog).getByText('最新运行请求（当前没有可用输出）')).toBeVisible(),
+      expect(within(dialog).getByText('最新运行输入快照，未记录最终请求')).toBeVisible(),
     );
     expect(within(dialog).getByText('最新失败运行实际发送的提示词')).toBeVisible();
     expect(within(dialog).queryByText('旧结果的生成摘要')).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/request-prompts'))).toBe(
-      false,
-    );
+    expect(within(dialog).getByText(/请求记录缺失/)).toBeVisible();
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes(`/runs/${failed.id}/request-prompts`),
+      ),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes(`/runs/${succeeded.id}/request-prompts`),
+      ),
+    ).toBe(false);
     // 旧成功运行的记录与资产版本仍保留在运行历史中，只是不再绑定到节点展示。
     expect(projectRuns.find((run) => run.id === succeeded.id)?.result?.asset?.assetId).toBe(
       succeeded.result!.asset!.assetId,

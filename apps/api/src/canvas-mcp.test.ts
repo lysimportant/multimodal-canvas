@@ -81,11 +81,61 @@ describe('画布无状态 Streamable HTTP MCP', () => {
     expect(client.getInstructions()).toContain('按 data.parameters.aspectRatio 推导长方形卡片');
     expect(client.getInstructions()).toContain('素材引用与连线必须双写');
     expect(client.getInstructions()).toContain('update_node');
-    expect(client.getInstructions()).toContain('2.5D/3D 真实画质');
+    expect(client.getInstructions()).toContain('适度风格化的 3D CG / 2.5D CG 渲染');
+    expect(client.getInstructions()).toContain('所有视频引擎共用人物风格与参考图规则');
+    expect(client.getInstructions()).toContain('缺图时先用图片节点制作人物、场景参考图');
+    expect(client.getInstructions()).toContain(
+      '生成任何新参考图片前，先用 get_canvas 检查现有图片节点',
+    );
+    expect(client.getInstructions()).toContain('遍历 list_assets 返回的当前项目全部分页');
+    expect(client.getInstructions()).toContain('直到 hasMore 为 false');
+    expect(client.getInstructions()).toContain(
+      '画布节点或连线被删除，不代表项目素材库中的资产被删除',
+    );
+    expect(client.getInstructions()).toContain('按名称、项目资产台账身份/变体及用途筛选候选');
+    expect(client.getInstructions()).toContain('再用 get_image 查看候选的指定版本');
+    expect(client.getInstructions()).toContain('复用完全相同的 assetId@assetVersion');
+    expect(client.getInstructions()).toContain(
+      '没有来源节点时创建 source 节点：node.data.assetId 填候选素材 ID',
+    );
+    expect(client.getInstructions()).toContain('node.data.assetId 填候选素材 ID');
+    expect(client.getInstructions()).toContain(
+      'create_node 操作顶层 assetVersion 填 get_image 已核实版本',
+    );
+    expect(client.getInstructions()).toContain('服务端据此生成对应固定版本 contentUrl');
+    expect(client.getInstructions()).toContain(
+      '只有确认全部项目资产分页中没有适用候选后才生成新参考图片',
+    );
+    expect(client.getInstructions()).toContain('候选身份、用途或版本不明确时暂停并报告');
+    expect(client.getInstructions()).toContain('MCP 不执行自动图像语义匹配');
+    expect(client.getInstructions()).toContain('【固定资产】→【视频生成风格类型】→【分镜】');
+    expect(client.getInstructions()).toContain('仅当用户明确要求 H3 原生协议导出时');
     expect(client.getInstructions()).toContain('禁止默认退回手绘平涂');
     expect(client.getInstructions()).toContain('生成人物定妆图或人物参考图时');
-    expect(client.getInstructions()).toContain('三视图或四视图');
-    expect(client.getInstructions()).toContain('背景必须硬性统一为纯白纯色（#FFFFFF）');
+    expect(client.getInstructions()).toContain('左侧 40% 放唯一大正脸');
+    expect(client.getInstructions()).toContain('右侧 60% 全高均分');
+    expect(client.getInstructions()).toContain('更换角色或服装时，只替换身份/面部锚点');
+    expect(client.getInstructions()).toContain('纵向铺满全高');
+    expect(client.getInstructions()).toContain('每栏上边界水平落在肩线/衣料肩线');
+    expect(client.getInstructions()).toContain('头脸、颈部、发际线与发型均位于画框之外');
+    expect(client.getInstructions()).toContain('人体采用自然成人比例');
+    expect(client.getInstructions()).toContain('不另设材质球或服饰样本区');
+    expect(client.getInstructions()).toContain('颜色保持清晰、有层次');
+    expect(client.getInstructions()).toContain('背景为纯白纯色（#FFFFFF）');
+    expect(client.getInstructions()).toContain('图片 mention＋一个空格＋姓名');
+    expect(client.getInstructions()).toContain('先放 promptDocument 图片 mention 块');
+    expect(client.getInstructions()).toContain('兼容既有“姓名＋一个空格＋图片 mention”的相邻结构');
+    expect(client.getInstructions()).toContain('镜头正文里人物、场景首次出现处');
+    expect(client.getInstructions()).toContain('台词行、声音：<…>、环境：…');
+    expect(client.getInstructions()).toContain('禁止面部变形与五官不对称');
+    expect(client.getInstructions()).toContain('minimax-h3-1 使用通用 Image N');
+    expect(client.getInstructions()).toContain('属于预览、提交或外部裸文本的输出语法');
+    expect(client.getInstructions()).toContain(
+      '当前画布不会自动把图片或人物外观转换成 <Subject N> 定义',
+    );
+    expect(client.getInstructions()).toContain('批量写入后必须逐节点打开“查看真实提示词”');
+    expect(client.getInstructions()).not.toContain('H3 把角色外观写进');
+    expect(client.getInstructions()).not.toContain('只适用于不经过 promptDocument 的手写文本');
     expect(transport.sessionId).toBeUndefined();
     expect((await client.listTools()).tools).toEqual(tools);
     const result = await client.callTool({ name: 'inspect_canvas', arguments: { label: '示例' } });

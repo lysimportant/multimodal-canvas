@@ -3124,7 +3124,7 @@ function hasVideoReferenceMedia(inputs: VideoInputMapping): boolean {
 
 /**
  * 组装渠道通用参考素材创建体：正文编号 + metadata.content。
- * 只发送受授权输入，不在这里限制数量或媒体类型；能力不足由渠道返回自己的错误。
+ * 只发送受授权输入；参考素材数量是否可用由上游判断，不按目录数量截断或拒绝。
  */
 function videoReferenceContentPayload(
   snapshot: RunSnapshot,
@@ -3193,7 +3193,7 @@ function videoReferenceContentPayload(
 /**
  * New API OpenAI 视频创建体：路径为 POST /videos。
  * 声明了素材编号能力的渠道按 metadata.content 发送；未声明的模型同样按该通用结构发送，
- * 画布不再把参考素材退化为文本，也不在发送前检查数量上限。
+ * 画布不把参考素材退化为文本；参考素材数量是否可用由上游判断。
  * GlobalStore 已知型号只传数字 duration，避免渠道拒绝重复的 seconds；其他型号保留既有映射。
  * seconds 使用字符串以兼容 Go 请求结构；图生视频 image 为 URL 字符串。
  */
@@ -3268,12 +3268,132 @@ function frozenVideoReferences(snapshot: RunSnapshot) {
   return parseVideoReferenceCapability(binding.videoReferences);
 }
 
+/** 最终请求体中一项实际媒体；原值仅供内部匹配，不得直接进入日志或公开诊断。 */
+type VideoRequestMedia = {
+  mediaType: 'image' | 'video' | 'audio';
+  value: unknown;
+  field: string;
+  role?: string;
+};
+
+/**
+ * 只遍历请求协议的媒体入口，保留最终发送顺序与重复项，供实际请求素材记录匹配。
+ * 不扫描任意 metadata 配置，也不把输出音频开关或图片尺寸算作输入媒体。
+ */
+function collectVideoRequestMedia(body: Record<string, unknown>): VideoRequestMedia[] {
+  const media: VideoRequestMedia[] = [];
+  const mediaFieldType = (key: unknown): VideoRequestMedia['mediaType'] | undefined => {
+    if (typeof key !== 'string') return undefined;
+    const normalized = key.replaceAll('_', '').toLowerCase();
+    if (
+      [
+        'image',
+        'images',
+        'imageurl',
+        'imageurls',
+        'referenceimage',
+        'referenceimages',
+        'inputimage',
+        'inputimages',
+        'inputreference',
+        'firstframe',
+        'startframe',
+        'endframe',
+        'lastframe',
+      ].includes(normalized)
+    )
+      return 'image';
+    if (
+      [
+        'video',
+        'videos',
+        'videourl',
+        'videourls',
+        'referencevideo',
+        'referencevideos',
+        'inputvideo',
+        'inputvideos',
+      ].includes(normalized)
+    )
+      return 'video';
+    if (
+      [
+        'audio',
+        'audios',
+        'audiourl',
+        'audiourls',
+        'referenceaudio',
+        'referenceaudios',
+        'inputaudio',
+        'inputaudios',
+      ].includes(normalized)
+    )
+      return 'audio';
+    return undefined;
+  };
+  const append = (
+    value: unknown,
+    mediaType: VideoRequestMedia['mediaType'],
+    field: string,
+    role?: string,
+  ): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) append(item, mediaType, field, role);
+      return;
+    }
+    // 音频开关、图片尺寸等输出配置不是输入素材；对象必须带可发送的媒体位置或内容。
+    if (
+      nonEmptyString(value) ||
+      (isRecord(value) &&
+        ['url', 'data', 'dataUrl', 'base64', 'b64_json', 'file_id', 'asset_id'].some((key) =>
+          nonEmptyString(value[key]),
+        ))
+    )
+      media.push({
+        mediaType,
+        value,
+        field,
+        ...(isRecord(value) && typeof value.role === 'string'
+          ? { role: value.role }
+          : role
+            ? { role }
+            : {}),
+      });
+  };
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!isRecord(value)) return;
+    const declaredType = mediaFieldType(value.type);
+    const role = typeof value.role === 'string' ? value.role : undefined;
+    let hasDeclaredPayload = false;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'type') continue;
+      const mediaType = mediaFieldType(key);
+      if (mediaType) {
+        append(child, mediaType, key, role);
+        if (mediaType === declaredType) hasDeclaredPayload = true;
+      } else if (['metadata', 'input', 'content', 'media'].includes(key)) {
+        // 与请求素材记录相同，只进入已支持的媒体容器，不扫描任意 metadata 配置。
+        visit(child);
+      }
+    }
+    // 兼容 {type:'image', url:'…'}，已通过 image_url 等字段计数的项不能重复算。
+    if (declaredType && !hasDeclaredPayload)
+      media.push({ mediaType: declaredType, value, field: 'type', ...(role ? { role } : {}) });
+  };
+  visit(body);
+  return media;
+}
+
 /**
  * 组装源流插件的普通参考 JSON，媒体只来自受授权输入，不赋予首尾帧语义。
  * @param snapshot 冻结精确型号与参数；时长必须显式指定。
  * @param label 目标节点名称，仅供现有提示词来源解析。
  * @param nodePrompt 目标节点提示词；正文仍遵守文字 content 连线覆盖规则。
- * @param inputs 已通过共享预检的普通参考，保留资源条顺序和重复次数。
+ * @param inputs 已按固定身份去重的普通参考，保留资源条顺序和不同用途。
  * @param nodePromptDocument 冻结提示词文档，包括提及标签。
  * @returns POST /v1/videos 的 JSON；元数据 content 使用 reference_* 角色。
  * @throws 参数、引用编号或非 HTTP(S) 素材错误在持久化提交意图之前失败。
@@ -3629,7 +3749,8 @@ function renderVideoPromptReferences(
       role: input.role,
     })),
     tokenFamily,
-    { deduplicate: hasInlineReferences },
+    // mapVideoInputs 已按固定身份去重；编号逐项对应最终媒体，未知版本也不能再次合并。
+    { deduplicate: false },
   );
   try {
     return renderVideoPromptReferenceDocument(document, references, {
@@ -4092,10 +4213,12 @@ function normalizeErrorField(value: unknown): string | undefined {
 function requestResourceName(
   value: unknown,
   sensitiveValues: readonly string[],
+  maxLength = 160,
 ): string | undefined {
   const name = normalizeErrorField(value);
-  if (!name || name.length > 160 || /(?:https?:\/\/|data:|blob:|\?)/i.test(name)) return undefined;
-  return sanitizeProviderErrorMessage(name, sensitiveValues, 160) === name ? name : undefined;
+  if (!name || name.length > maxLength || /(?:https?:\/\/|data:|blob:|\?)/i.test(name))
+    return undefined;
+  return sanitizeProviderErrorMessage(name, sensitiveValues, maxLength) === name ? name : undefined;
 }
 
 const maxProviderErrorMessageLength = 2_000;
@@ -5199,38 +5322,99 @@ function videoPromptResources(
   inputs: VideoInputMapping,
   sensitiveValues: readonly string[],
 ): RequestPromptResource[] {
-  const resources: RequestPromptResource[] = [];
-  const add = (input: RunInputSnapshot | undefined) => {
-    if (!input) return;
-    const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
-    const name = requestResourceName(input.snapshot.data.label, sensitiveValues);
-    resources.push({
-      ...(assetId ? { assetId } : {}),
-      ...(input.sourceAssetVersion ? { assetVersion: input.sourceAssetVersion } : {}),
-      ...(name ? { name } : {}),
-      role: input.role,
-      sortOrder: resources.length,
-      mediaType: input.snapshot.data.mediaType,
+  const candidates = [
+    ...new Set([...orderedVideoMedia(snapshot, inputs), ...(inputs.allInputs ?? [])]),
+  ].filter((input) => input.snapshot.data.mediaType !== 'text');
+  const used = new Set<RunInputSnapshot>();
+  return collectVideoRequestMedia(body).map((media, sortOrder) => {
+    const role = videoRequestMediaRole(media);
+    const content = videoRequestMediaContent(media.value);
+    const matches = candidates.filter((input) => {
+      if (used.has(input) || input.snapshot.data.mediaType !== media.mediaType || !content)
+        return false;
+      const source = input.snapshot.data.contentUrl?.trim();
+      if (!source || (source !== content && providerRemoteUrl(source) !== content)) return false;
+      const inputRole =
+        input === inputs.firstFrame
+          ? 'firstFrame'
+          : input === inputs.lastFrame
+            ? 'lastFrame'
+            : input.role;
+      return (
+        providerVideoMediaRole(media.mediaType, inputRole) ===
+        providerVideoMediaRole(media.mediaType, role)
+      );
     });
-  };
+    // 相同内容若对应不同资产/版本，URL 本身不足以确定身份，不能按数组位置猜测。
+    const identities = new Set(
+      matches.map((input) =>
+        JSON.stringify([
+          input.sourceAssetId ?? input.snapshot.data.assetId ?? input.nodeId,
+          input.sourceAssetVersion,
+        ]),
+      ),
+    );
+    const input = identities.size === 1 ? matches[0] : undefined;
+    if (input) used.add(input);
+    const protectedValues = [
+      ...sensitiveValues,
+      ...(content ? [content, parseDataUrl(content)?.base64 ?? ''] : []),
+    ];
+    if (content && /^https?:\/\//i.test(content)) {
+      try {
+        for (const [key, value] of new URL(content).searchParams) {
+          if (/(?:signature|sig|token|secret|key|credential|authorization)/i.test(key))
+            protectedValues.push(value);
+        }
+      } catch {
+        /* 无效地址不会被用来推断或保存身份。 */
+      }
+    }
+    const assetId = input
+      ? requestResourceName(
+          input.sourceAssetId ?? input.snapshot.data.assetId,
+          protectedValues,
+          512,
+        )
+      : undefined;
+    const name = input
+      ? requestResourceName(input.snapshot.data.label, protectedValues)
+      : undefined;
+    return {
+      ...(assetId ? { assetId } : {}),
+      ...(assetId && input?.sourceAssetVersion ? { assetVersion: input.sourceAssetVersion } : {}),
+      ...(name ? { name } : {}),
+      role: input?.role ?? role,
+      sortOrder,
+      mediaType: media.mediaType,
+    };
+  });
+}
+
+/** 仅在内存中提取可与已授权素材对应的完整地址/内容；忽略参数伪造的 asset_id。 */
+function videoRequestMediaContent(value: unknown): string | undefined {
+  if (nonEmptyString(value)) return value.trim();
+  if (!isRecord(value)) return undefined;
+  return normalizeErrorField(value.url ?? value.dataUrl ?? value.data);
+}
+
+/** 将实际协议用途收成现有记录枚举；不保存供应商自定义角色或任意参数文本。 */
+function videoRequestMediaRole(media: VideoRequestMedia): PortRole {
+  const valueType = isRecord(media.value) ? media.value.type : undefined;
+  const raw = media.role ?? (typeof valueType === 'string' ? valueType : media.field);
+  if (portRoles.includes(raw as PortRole)) return raw as PortRole;
+  const role = raw.replaceAll('_', '').toLowerCase();
   if (
-    Array.isArray(body.content) ||
-    (isRecord(body.metadata) &&
-      (Array.isArray(body.metadata.content) ||
-        (isRecord(body.metadata.input) && Array.isArray(body.metadata.input.media))))
-  ) {
-    for (const input of orderedVideoMedia(snapshot, inputs)) add(input);
-    return resources;
-  }
-  if (body.image !== undefined) add(inputs.firstFrame);
-  if (body.last_frame !== undefined) add(inputs.lastFrame);
-  if (
-    (Array.isArray(body.reference_images) && body.reference_images.length > 0) ||
-    (Array.isArray(body.images) && body.images.length > 0)
-  ) {
-    for (const input of inputs.referenceImages) add(input);
-  }
-  return resources;
+    ['firstframe', 'startframe', 'inputreference'].includes(role) ||
+    (role === 'image' && media.field === 'image')
+  )
+    return 'firstFrame';
+  if (['lastframe', 'endframe'].includes(role)) return 'lastFrame';
+  return media.mediaType === 'image'
+    ? 'referenceImage'
+    : media.mediaType === 'audio'
+      ? 'audioTrack'
+      : 'content';
 }
 
 /**
@@ -6023,7 +6207,7 @@ type ImageSourceInput = RunInputSnapshot & {
 type ImageGenerationMapping = {
   /** 发送给图片接口的主提示词。 */
   prompt: string;
-  /** 去重后按显式资源顺序上传，未列项沿连线、提及顺序追加；发送前校验数量上限。 */
+  /** 去重后按显式资源顺序上传，未列项沿连线、提及顺序追加；素材数量是否可用由上游决定。 */
   images: ImageSourceInput[];
 };
 
@@ -6354,7 +6538,7 @@ function resolveRequiredVideoPrompt(
  * 文生视频节点上的图片提及会按全能参考预检，避免参考图被文生视频规则误拦。
  * @param snapshot 运行快照。
  * @param extraInputs 提示词提及吸收出的额外输入。
- * @returns 首尾帧与角色保持不变；参考图数组应用显式顺序，混合媒体由最终组装处排序。
+ * @returns 同一固定资产版本、媒体类型和角色只保留首次输入；未知版本保持独立，参考图应用显式顺序。
  */
 function mapVideoInputs(
   snapshot: RunSnapshot,
@@ -6362,24 +6546,26 @@ function mapVideoInputs(
 ): VideoInputMapping {
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   const seenMedia = new Set<string>();
-  const hasInlineReferences = target?.data.promptDocument?.blocks.some(
-    (block) =>
-      block.type === 'mention' &&
-      block.inline &&
-      !block.executionOnly &&
-      block.mediaType !== 'text',
-  );
   const allInputs = [...snapshot.inputs, ...extraInputs].filter((input) => {
     const mediaType = input.snapshot.data.mediaType;
     const assetId = input.sourceAssetId ?? input.snapshot.data.assetId;
-    if (!hasInlineReferences || mediaType === 'text' || !assetId) return true;
+    // 素材身份与正文是否内联提及无关；没有固定版本时不能推断两条输入相同。
+    if (mediaType === 'text' || !assetId || input.sourceAssetVersion === undefined) return true;
     const identity = videoPromptReferenceIdentity({
       assetId,
       assetVersion: input.sourceAssetVersion,
       mediaType,
       role: input.role,
     });
-    if (seenMedia.has(identity)) return false;
+    if (seenMedia.has(identity)) {
+      // 重复绑定也不能掩盖明显不可发送的内容，校验失败须在创建付费任务前暴露。
+      officialVideoReferenceUrl(
+        input,
+        videoFamilyForModel(snapshot.modelAlias),
+        snapshot.modelAlias,
+      );
+      return false;
+    }
     seenMedia.add(identity);
     return true;
   });

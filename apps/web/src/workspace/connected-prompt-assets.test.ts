@@ -37,6 +37,56 @@ const child = {
 } as AssetFlowNode;
 
 describe('collectConnectedPromptAssets', () => {
+  it('停用来源不进入资源条，重复有效图片仍保留独立角色绑定', () => {
+    const target = { ...child, data: { ...child.data, mediaType: 'video' as const } };
+    const disabled = { ...parent, id: 'disabled', data: { ...parent.data, enabled: false } };
+    const edges = [
+      {
+        id: 'disabled',
+        source: disabled.id,
+        target: child.id,
+        targetHandle: 'input:referenceImage',
+      },
+      {
+        id: 'reference',
+        source: parent.id,
+        target: child.id,
+        targetHandle: 'input:referenceImage',
+      },
+      { id: 'first', source: parent.id, target: child.id, targetHandle: 'input:firstFrame' },
+    ];
+    const items = collectConnectedPromptAssets(child.id, [disabled, parent, target], edges);
+    expect(items).toHaveLength(1);
+    expect(items[0].sourceNodeId).toBe(parent.id);
+    expect(items[0].videoInputBindings).toEqual([
+      { nodeId: parent.id, role: 'referenceImage', sortOrder: 1 },
+      { nodeId: parent.id, role: 'firstFrame', sortOrder: 0 },
+    ]);
+    expect(collectConnectedPromptAssets(child.id, [disabled, target], [edges[0]])).toEqual([]);
+  });
+
+  it('同资产但版本未知的不同来源不会合并或借用目录最新版', () => {
+    const sources = ['unknown-a', 'unknown-b'].map((id) => ({
+      ...parent,
+      id,
+      data: { ...parent.data, resultAsset: { assetId: 'asset_result' } },
+    }));
+    const items = collectConnectedPromptAssets(
+      child.id,
+      [...sources, child],
+      sources.map((source) => ({
+        id: source.id,
+        source: source.id,
+        target: child.id,
+        targetHandle: 'input:referenceImage',
+      })),
+    );
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.versionUnavailable && item.contentUrl === undefined)).toBe(
+      true,
+    );
+  });
+
   it('生成结果缺少版本时不借用目录最新版本来伪造冻结身份', () => {
     const source = {
       ...parent,

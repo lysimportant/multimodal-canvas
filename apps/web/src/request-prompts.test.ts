@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RequestPromptRecord } from '@multimodal-canvas/domain';
 
-import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
+import {
+  fetchAssetRequestPrompt,
+  fetchRunRequestPrompt,
+  saveRequestPromptSummary,
+} from './request-prompts';
 
 /** 已归档的合成请求记录，用于检查版本身份和只修改摘要的边界。 */
 const record: RequestPromptRecord & { id: string } = {
@@ -30,6 +34,68 @@ function response(payload: unknown, status = 200) {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+describe('运行请求说明客户端', () => {
+  it('按当前尝试筛选节点并选择最新请求，不读取其它节点或旧尝试的正文', async () => {
+    const selected = { ...record, id: 'latest /record', attempt: 2, requestIdentity: 'request-2' };
+    const records = [
+      { ...selected, id: 'other', nodeId: 'other-node', createdAt: '2026-09-18T10:00:00.000Z' },
+      selected,
+      { ...selected, id: 'earlier', createdAt: '2026-09-16T10:00:00.000Z' },
+      record,
+    ];
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ records }))
+      .mockResolvedValueOnce(response({ record: selected }));
+    const signal = new AbortController().signal;
+    await expect(
+      fetchRunRequestPrompt('run-1', 'deleted-node', 'https://api.example/', fetcher, signal, 2),
+    ).resolves.toMatchObject({
+      recordId: 'latest /record',
+      record: { requestIdentity: 'request-2', attempt: 2 },
+    });
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example/v1/runs/run-1/request-prompts',
+      'https://api.example/v1/runs/run-1/request-prompts/latest%20%2Frecord',
+    ]);
+    expect(fetcher.mock.calls.every(([, options]) => options?.signal === signal)).toBe(true);
+  });
+
+  it('当前尝试没有记录时返回缺失，不借用旧尝试或其它节点', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({ records: [record] }));
+    await expect(
+      fetchRunRequestPrompt('run-1', 'deleted-node', '', fetcher, undefined, 2),
+    ).resolves.toEqual({ record: null });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { ...record, nodeId: 'other-node' },
+    { ...record, runId: 'other-run' },
+    { ...record, attempt: 2 },
+    { ...record, requestIdentity: 'other-request' },
+  ])('详情身份不匹配时拒绝展示：%j', async (detail) => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ records: [record] }))
+      .mockResolvedValueOnce(response({ record: detail }));
+    await expect(fetchRunRequestPrompt('run-1', 'deleted-node', '', fetcher)).rejects.toThrow(
+      '与当前节点不一致',
+    );
+  });
+
+  it('损坏列表和服务端权限错误不伪装为缺记录', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ records: [{}] }))
+      .mockResolvedValueOnce(response({ error: '没有权限' }, 403));
+    await expect(fetchRunRequestPrompt('run-1', 'node', '', fetcher)).rejects.toThrow(
+      '响应格式无效',
+    );
+    await expect(fetchRunRequestPrompt('run-1', 'node', '', fetcher)).rejects.toThrow('没有权限');
+  });
+});
 
 describe('资产版本生成说明客户端', () => {
   it('按不可变版本编码路径，删除原节点后仍读取同一份记录与耗时', async () => {

@@ -221,7 +221,7 @@ export function fromCanvasDocument(document: CanvasDocument): {
         },
       } as AssetFlowNode);
     }),
-    edges: document.edges.map((edge) => ({
+    edges: restoreCanvasEdgeOrder(document.edges).map((edge) => ({
       id: edge.id,
       source: edge.sourceNodeId,
       sourceHandle: edge.sourceHandle,
@@ -233,6 +233,31 @@ export function fromCanvasDocument(document: CanvasDocument): {
       document.nodes.map((node) => node.id),
     ),
   };
+}
+
+/**
+ * Restore each persisted input's edge order without moving unrelated edge slots.
+ * React Flow has no order field, so downstream projections and the next save use array order.
+ */
+function restoreCanvasEdgeOrder(documentEdges: CanvasDocument['edges']): CanvasDocument['edges'] {
+  const buckets = new Map<string, { edge: CanvasDocument['edges'][number]; index: number }[]>();
+  for (const [index, edge] of documentEdges.entries()) {
+    const key = JSON.stringify([edge.targetNodeId, edge.targetHandle]);
+    const bucket = buckets.get(key) ?? [];
+    bucket.push({ edge, index });
+    buckets.set(key, bucket);
+  }
+  for (const bucket of buckets.values()) {
+    if (!bucket.every(({ edge }) => Number.isSafeInteger(edge.order) && edge.order >= 0)) continue;
+    bucket.sort((left, right) => left.edge.order - right.edge.order || left.index - right.index);
+  }
+  const offsets = new Map<string, number>();
+  return documentEdges.map((edge) => {
+    const key = JSON.stringify([edge.targetNodeId, edge.targetHandle]);
+    const offset = offsets.get(key) ?? 0;
+    offsets.set(key, offset + 1);
+    return buckets.get(key)![offset].edge;
+  });
 }
 
 /** Convert React Flow state to the persisted canvas document format. */

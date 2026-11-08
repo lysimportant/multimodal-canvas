@@ -6,6 +6,26 @@ const assetNodeCss = readFileSync(resolve(process.cwd(), 'src/workspace/asset-no
 const normalizedCss = assetNodeCss.replace(/\s+/g, ' ');
 
 describe('asset node floating controls CSS contracts', () => {
+  it('节点名称位于节点外左上方，不参与节点尺寸并保持缩放可读', () => {
+    const labelRule = normalizedCss
+      .slice(normalizedCss.indexOf('.flow-node-external-label {'))
+      .split('}')[0];
+    expect(labelRule).toContain('position: absolute;');
+    expect(labelRule).toContain('left: 0;');
+    expect(labelRule).toContain('top: calc(-28px * var(--flow-node-inverse-zoom, 1));');
+    expect(labelRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
+    expect(labelRule).toContain('pointer-events: none;');
+
+    const editRule = normalizedCss
+      .slice(normalizedCss.indexOf('.flow-node-external-label-edit {'))
+      .split('}')[0];
+    expect(editRule).toContain('flex: 0 0 20px;');
+    expect(editRule).toContain('height: 20px;');
+    expect(editRule).toContain('width: 20px;');
+    expect(editRule).toContain('pointer-events: auto;');
+    expect(normalizedCss).toContain('.is-generation-batch-hidden .flow-node-external-label');
+  });
+
   it('节点外框创建时就存在，选中只换颜色并贴边加光圈', () => {
     const baseRule = normalizedCss
       .slice(normalizedCss.indexOf('.react-flow__node .flow-asset-node {'))

@@ -872,6 +872,97 @@ describe('StoredAssetReferenceResolver', () => {
     expect(repository.findVersion).toHaveBeenCalledWith(textAssetId, 1);
   });
 
+  it('用可信资产 MIME 补齐 octet-stream 快照并保持固定版本', async () => {
+    const current = Buffer.from('current-image-version');
+    const frozen = Buffer.from('frozen-image-version-two');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      mimeType: 'application/octet-stream',
+      contentUrl: `/v1/assets/${imageAssetId}/versions/2/content`,
+    });
+    snapshot.inputs[0]!.sourceAssetVersion = 2;
+    const original = structuredClone(snapshot);
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/jpeg', current, projectId)],
+      versions: [
+        {
+          assetId: imageAssetId,
+          version: 2,
+          sizeBytes: BigInt(frozen.byteLength),
+          contentKey: 'objects/image-v2',
+        },
+      ],
+      blobs: { 'objects/image-v2': frozen },
+    });
+
+    const hydrated = await new StoredAssetReferenceResolver(repository, blobStore).resolve(
+      snapshot,
+    );
+
+    expect(hydrated.inputs[0]).toMatchObject({
+      sourceAssetId: imageAssetId,
+      sourceAssetVersion: 2,
+      snapshot: {
+        data: {
+          assetId: imageAssetId,
+          mimeType: 'image/jpeg',
+          contentUrl: `data:image/jpeg;base64,${frozen.toString('base64')}`,
+        },
+      },
+    });
+    expect(repository.findVersion).toHaveBeenCalledExactlyOnceWith(imageAssetId, 2);
+    expect(blobStore.get).toHaveBeenCalledExactlyOnceWith(
+      'objects/image-v2',
+      frozen.byteLength + 1,
+    );
+    expect(snapshot).toEqual(original);
+  });
+
+  it('仍拒绝快照与可信资产之间的明确 MIME 冲突', async () => {
+    const content = Buffer.from('jpeg-image');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      mimeType: 'image/png',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/jpeg', content, projectId)],
+      blobs: { 'objects/image-current': content },
+    });
+
+    await expect(
+      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+    ).rejects.toThrow('MIME type does not match its snapshot');
+  });
+
+  it('octet-stream 占位值不掩盖固定版本内容缺失', async () => {
+    const content = Buffer.from('current-image');
+    const snapshot = referenceSnapshot({
+      sourceMediaType: 'image',
+      targetMediaType: 'video',
+      role: 'referenceImage',
+      assetId: imageAssetId,
+      mimeType: 'application/octet-stream',
+    });
+    const { repository, blobStore } = fixtures({
+      assets: [asset(imageAssetId, 'image', 'image/jpeg', content, projectId)],
+    });
+
+    await expect(
+      new StoredAssetReferenceResolver(repository, blobStore).resolve(snapshot),
+    ).rejects.toThrow('content is missing');
+    expect(repository.findVersion).toHaveBeenCalledExactlyOnceWith(imageAssetId, 1);
+    expect(blobStore.get).toHaveBeenCalledExactlyOnceWith(
+      'objects/image-current',
+      content.byteLength + 1,
+    );
+  });
+
   it('拒绝连线版本字段与冻结地址不一致，避免请求记录误指另一版本', async () => {
     const content = Buffer.from('frozen-image');
     const snapshot = referenceSnapshot({
@@ -1375,7 +1466,7 @@ describe('StoredAssetReferenceResolver', () => {
 });
 
 describe('createRunWorker asset hydration boundary', () => {
-  it('Yuan 保留显式重复参考和不同冻结版本，公共任务归档及持久记录不含素材签名或字节', async () => {
+  it('Yuan 合并同版本同用途重复参考并保留不同冻结版本，公共任务归档及持久记录不含素材签名或字节', async () => {
     const audioAssetId = '123e4567-e89b-42d3-a456-426614174714';
     const secret = 'synthetic-yuan-worker-signing-secret';
     const modelAlias = 'Yuan-Seedance-2.5-LJ-Full';
@@ -1538,7 +1629,7 @@ describe('createRunWorker asset hydration boundary', () => {
     expect(repository.findVersion).toHaveBeenCalledTimes(4);
     expect(blobStore.get).toHaveBeenCalledTimes(4);
     const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
-    const expectedReferences = [references[0]!, ...references];
+    const expectedReferences = references;
     const expectedContent = expectedReferences.map((reference) => {
       const signedIndex = signer.mock.calls.findIndex(
         ([grant]) => grant.assetId === reference.assetId && grant.version === reference.version,
@@ -1580,6 +1671,7 @@ describe('createRunWorker asset hydration boundary', () => {
         omni_reference_task_type: 'reference',
       },
     });
+    expect(body.metadata.content).toHaveLength(5);
     expect(resultArchiver).toHaveBeenCalledOnce();
     expect(resultArchiver.mock.calls[0]![0]).toMatchObject({
       result: { mediaType: 'video', targetNodeId: 'node_target' },
@@ -1593,9 +1685,17 @@ describe('createRunWorker asset hydration boundary', () => {
     expect(persistence.upsertRequestPromptRecord).toHaveBeenCalledOnce();
     expect(persistence.upsertRequestPromptRecord.mock.calls[0]![0]).toMatchObject({
       record: {
-        resources: expectedReferences.map((reference) => ({
+        resources: expectedReferences.map((reference, sortOrder) => ({
           assetId: reference.assetId,
           assetVersion: reference.version,
+          mediaType: reference.mediaType,
+          role:
+            reference.mediaType === 'image'
+              ? 'referenceImage'
+              : reference.mediaType === 'video'
+                ? 'content'
+                : 'audioTrack',
+          sortOrder,
         })),
       },
     });

@@ -167,7 +167,11 @@ import {
   applyVideoRecreationConfig,
   recreationGenerationIssue,
 } from './workspace/video-recreation-node';
-import { fetchAssetRequestPrompt, saveRequestPromptSummary } from './request-prompts';
+import {
+  fetchAssetRequestPrompt,
+  fetchRunRequestPrompt,
+  saveRequestPromptSummary,
+} from './request-prompts';
 import { ReversePromptPanel } from './workspace/ReversePromptPanel';
 import { prepareGenerationRequests } from './generation-client';
 import {
@@ -4072,12 +4076,6 @@ function WorkspaceApp({
         return true;
       }
       const removedNodes = nodesRef.current.filter((node) => selectedNodeIds.has(node.id));
-      if (blockedNodes.length > 0) {
-        setNotice({
-          kind: 'error',
-          message: `${blockedNodes.map((node) => `「${node.data.label || node.id}」`).join('、')}正在运行或保存，已跳过这些节点。`,
-        });
-      }
       if (removedNodes.length > 0)
         recordOperationLog(authUser?.id, {
           category: 'canvas',
@@ -4107,6 +4105,20 @@ function WorkspaceApp({
       setGroups(remainingGroups);
       setSelectedNodeId((current) => (current && selectedNodeIds.has(current) ? null : current));
       canvasDirtyRef.current = true;
+      if (removedNodes.length > 0) {
+        const skipped = blockedNodes.length
+          ? `运行中或保存中的节点未删除：${blockedNodes.map((node) => `「${node.data.label || node.id}」`).join('、')}。`
+          : '';
+        setNotice({
+          kind: blockedNodes.length ? 'error' : 'success',
+          message: `已从画布移除 ${removedNodes.length} 个节点及关联连线。项目资源库中的素材与生成结果仍保留，可从右侧项目资源重新添加。${skipped}`,
+        });
+      } else if (blockedNodes.length > 0) {
+        setNotice({
+          kind: 'error',
+          message: `${blockedNodes.map((node) => `「${node.data.label || node.id}」`).join('、')}正在运行或保存，暂不能删除。`,
+        });
+      }
       return true;
     },
     [authUser?.id, initialProject.id, isNodeBusy, rememberHistory, setEdges, setNodes, setNotice],
@@ -4602,7 +4614,7 @@ function WorkspaceApp({
    * 打开节点的只读「生成提示词」Dialog。
    *
    * 优先查询当前展示的资产版本；节点没有当前输出（从未生成，或最新运行未产出/已解绑旧结果）时
-   * 回退到最新运行的输入快照，并标记 latestRun，避免把旧结果的请求当成当前输出的请求展示。
+   * 读取最新运行当前节点的真实请求；记录缺失时明确区分冻结输入与当前编辑内容。
    *
    * @param nodeId 目标节点 ID。
    */
@@ -4621,27 +4633,51 @@ function WorkspaceApp({
         setPromptDialog({ nodeId, assetId, version, triggerId, state });
     };
     show({ status: 'loading' });
-    if (!assetId) {
-      // 节点没有当前输出：回退到最新运行的输入快照，并标记 latestRun，界面据此说明这是
-      // 最新运行的请求，而不是当前展示产物的请求（旧结果已解绑时尤其重要）。
-      const latestRunNode = runRecordsRef.current[nodeId]?.snapshot.nodes?.find(
-        (candidate) => candidate.id === nodeId,
-      );
-      const data = latestRunNode?.data ?? node?.data;
-      const text = data?.promptDocument ? renderPromptDocument(data.promptDocument) : data?.prompt;
-      show(
-        text
-          ? {
-              status: 'input',
-              text,
-              historical: Boolean(latestRunNode),
-              latestRun: Boolean(latestRunNode),
-            }
-          : { status: 'missing' },
-      );
-      return;
-    }
     try {
+      if (!assetId) {
+        const latestRun = runRecordsRef.current[nodeId];
+        const runId = latestRun?.id ?? node?.data.runId;
+        const hasRun = Boolean(runId || node?.data.runStatus);
+        if (runId) {
+          const result = await fetchRunRequestPrompt(
+            runId,
+            nodeId,
+            API_BASE_URL,
+            apiFetch,
+            undefined,
+            latestRun?.attempt,
+          );
+          if (result.record) {
+            show({
+              status: 'ready',
+              record: result.record,
+              recordId: result.recordId,
+              timing: latestRun?.nodeTimings?.[nodeId],
+            });
+            return;
+          }
+        }
+        // 公开运行记录可以省略 nodes；是否运行过依据运行身份，不能依赖冻结节点是否可见。
+        const latestRunNode = latestRun?.snapshot.nodes?.find(
+          (candidate) => candidate.id === nodeId,
+        );
+        const data = latestRunNode?.data ?? node?.data;
+        const text = data?.promptDocument
+          ? renderPromptDocument(data.promptDocument)
+          : data?.prompt;
+        show(
+          text
+            ? {
+                status: 'input',
+                text,
+                historical: Boolean(latestRunNode),
+                latestRun: Boolean(latestRunNode),
+                requestMissing: hasRun,
+              }
+            : { status: 'missing', hasRun },
+        );
+        return;
+      }
       version ??= (await fetchAssetVersions(assetId, API_BASE_URL, apiFetch)).at(-1)?.version;
       if (!version) throw new Error('结果版本未记录');
       const result = await fetchAssetRequestPrompt(assetId, version, API_BASE_URL);

@@ -72,6 +72,15 @@ describe('upload protocol helpers', () => {
     expect(isApiOriginUrl('/v1/assets/asset_1/content', '', page)).toBe(true);
     expect(isApiOriginUrl('/v1/assets/asset_1/versions/2/content', '', page)).toBe(true);
     expect(isApiOriginUrl('https://cdn.example/result.png', '', page)).toBe(false);
+    expect(isApiOriginUrl('blob:http://127.0.0.1:8080/synthetic-thumbnail', '', page)).toBe(false);
+    expect(isApiOriginUrl('data:image/png;base64,c3ludGhldGlj', '', page)).toBe(false);
+    expect(
+      isApiOriginUrl(
+        'blob:http://localhost:3000/synthetic-thumbnail',
+        'http://localhost:3000',
+        page,
+      ),
+    ).toBe(false);
     expect(
       isApiOriginUrl(
         '/v1/assets/asset_1/content',

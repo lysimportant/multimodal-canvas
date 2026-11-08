@@ -132,6 +132,55 @@ describe('run asset version snapshots', () => {
     );
   });
 
+  it.each(['connected', 'mention'] as const)(
+    'rejects an unreadable frozen %s version before creating a run',
+    async (kind) => {
+      const assetStore = new MemoryAssetStore();
+      const projectStore = new MemoryProjectStore();
+      const project = await projectStore.create({ name: 'Unreadable version' });
+      const asset = await assetStore.create({
+        projectId: project.id,
+        name: 'reference.txt',
+        mediaType: 'text',
+        mimeType: 'text/plain',
+        content: Buffer.from('synthetic original'),
+      });
+      const canvas = assetCanvas(asset.id);
+      canvas.nodes[0]!.data.contentUrl = `/v1/assets/${asset.id}/versions/1/content`;
+      if (kind === 'mention') {
+        canvas.edges = [];
+        canvas.nodes[1]!.data.promptDocument = {
+          version: 1,
+          blocks: [
+            {
+              type: 'mention',
+              mentionId: 'missing-content',
+              assetId: asset.id,
+              assetVersion: 1,
+              mediaType: 'text',
+              label: 'Reference',
+            },
+          ],
+        };
+      }
+      await projectStore.updateCanvas(project.id, canvas);
+      const readable = vi.spyOn(assetStore, 'hasContent').mockResolvedValue(false);
+      const runService = new MemoryRunService();
+      const app = buildApp({ logger: false, assetStore, projectStore, runService });
+      apps.push(app);
+      const submitted = await app.inject({
+        method: 'POST',
+        url: '/v1/nodes/node_target/runs',
+        payload: { projectId: project.id },
+      });
+      expect(submitted.statusCode).toBe(400);
+      expect(submitted.body).toContain('文件');
+      expect(submitted.body).toContain(kind === 'connected' ? 'node_source' : 'node_target');
+      expect(readable).toHaveBeenCalledWith(asset.id, { version: 1 }, { projectId: project.id });
+      expect(await runService.listByProject(project.id)).toEqual([]);
+    },
+  );
+
   it.each(['video', 'audio'] as const)(
     'freezes %s duration from the selected immutable version',
     async (mediaType) => {

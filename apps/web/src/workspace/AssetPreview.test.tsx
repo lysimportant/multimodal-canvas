@@ -10,6 +10,7 @@ import { clearAuthSession, persistAuthSession } from '../auth-client';
 import * as exports from '../export-utils';
 import type { ProjectExportDownload } from '../export-utils';
 import * as downloads from './node-asset-download';
+import { clearImageThumbnailCache } from './image-thumbnail-cache';
 
 /** 保存测试前的剪贴板配置，避免不同用例之间泄漏模拟状态。 */
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
@@ -726,6 +727,74 @@ describe('AssetPreview', () => {
       'download',
       '模型输出.bin',
     );
+  });
+
+  it('旧图片来源缺少 MIME 时正常显示缩略图，不对同源 blob 发出 HEAD', async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    const thumbnailUrl = 'blob:http://localhost:3000/synthetic-legacy-thumbnail';
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => thumbnailUrl),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response('synthetic-thumbnail', { headers: { 'content-type': 'image/jpeg' } }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const states = vi.fn();
+    try {
+      const view = render(
+        <AssetPreview
+          asset={makeAsset({
+            id: 'legacy-image',
+            mediaType: 'image',
+            mimeType: 'application/octet-stream',
+            contentUrl: '/v1/assets/legacy-image/versions/1/content',
+          })}
+          mode="content"
+          thumbnail
+          onLoadStateChange={states}
+        />,
+      );
+      await waitFor(() =>
+        expect(view.container.querySelector('img')).toHaveAttribute('src', thumbnailUrl),
+      );
+      fireEvent.load(view.container.querySelector('img')!);
+      await waitFor(() => expect(states).toHaveBeenCalledWith('ready'));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3000/v1/assets/legacy-image/versions/1/derivatives/thumbnail',
+        expect.not.objectContaining({ method: 'HEAD' }),
+      );
+      expect(screen.queryByText('文件产物加载失败')).not.toBeInTheDocument();
+      view.unmount();
+    } finally {
+      clearImageThumbnailCache();
+      if (originalCreate) Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      else Reflect.deleteProperty(URL, 'createObjectURL');
+      if (originalRevoke) Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+      else Reflect.deleteProperty(URL, 'revokeObjectURL');
+    }
+  });
+
+  it('同源 blob 文件保留下载入口且不执行 HEAD', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <AssetPreview
+        asset={makeAsset({
+          name: '本地文件.bin',
+          mimeType: 'application/octet-stream',
+          contentUrl: 'blob:http://localhost:3000/synthetic-file',
+        })}
+        mode="content"
+      />,
+    );
+    expect(await screen.findByRole('link', { name: '下载文件：本地文件.bin' })).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('distinguishes an absent or expired artifact URL', async () => {
