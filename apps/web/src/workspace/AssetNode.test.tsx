@@ -1813,6 +1813,21 @@ describe('AssetNode result presentation', () => {
     expect(await screen.findByRole('dialog', { name: '重命名节点' })).toBeInTheDocument();
   });
 
+  it.each(['SC001-梨园公示栏与土渠', 'PROP001-EP001关键道具参考板'])(
+    '长节点名“%s”保持完整复制，并为视觉省略保留完整标题',
+    async (nodeLabel) => {
+      const user = userEvent.setup();
+      const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+      const { container } = renderNode(makeNode({ label: nodeLabel }));
+      const label = container.querySelector<HTMLDivElement>('.flow-node-external-label')!;
+
+      expect(label).toHaveAttribute('title', `点击复制节点名称：${nodeLabel}`);
+      expect(label.querySelector('.flow-node-external-label-text')).toHaveTextContent(nodeLabel);
+      await user.click(label.querySelector('.flow-node-external-label-text')!);
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(nodeLabel);
+    },
+  );
+
   it('节点顶部右侧常显六个图标，并复用信息和放大预览操作', async () => {
     const user = userEvent.setup();
     const content = {

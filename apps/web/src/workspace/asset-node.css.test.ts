@@ -15,6 +15,9 @@ describe('asset node floating controls CSS contracts', () => {
     expect(labelRule).toContain('top: calc(-23px * var(--flow-node-inverse-zoom, 1));');
     expect(labelRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
     expect(labelRule).toContain('pointer-events: auto;');
+    expect(labelRule).toContain('max-width: 50%;');
+    expect(labelRule).toContain('overflow: hidden;');
+    expect(labelRule).toContain('width: 50%;');
 
     const editRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-external-label-edit {'))
@@ -24,7 +27,14 @@ describe('asset node floating controls CSS contracts', () => {
     expect(editRule).toContain('width: 20px;');
     expect(editRule).toContain('pointer-events: auto;');
     expect(normalizedCss).toContain('.is-generation-batch-hidden .flow-node-external-label');
-    expect(normalizedCss).toMatch(/\.flow-node-external-label-text \{[^}]*cursor: copy;/);
+    const textRule = normalizedCss
+      .slice(normalizedCss.indexOf('.flow-node-external-label-text {'))
+      .split('}')[0];
+    expect(textRule).toContain('cursor: copy;');
+    expect(textRule).toContain('min-width: 0;');
+    expect(textRule).toContain('overflow: hidden;');
+    expect(textRule).toContain('text-overflow: ellipsis;');
+    expect(textRule).toContain('white-space: nowrap;');
   });
 
   it('顶部浮动栏上移，为节点外名称和编辑按钮留出空间', () => {
@@ -97,8 +107,11 @@ describe('asset node floating controls CSS contracts', () => {
     expect(sideRule).toContain('position: absolute;');
     expect(sideRule).toContain('right: 0;');
     expect(sideRule).toContain('top: calc(-26px * var(--flow-node-inverse-zoom, 1));');
-    expect(sideRule).toContain('max-width: 100%;');
-    expect(sideRule).toContain('flex-direction: row;');
+    expect(sideRule).toContain('display: grid;');
+    expect(sideRule).toContain('grid-template-columns: repeat(6, minmax(0, 1fr));');
+    expect(sideRule).toContain('max-width: 50%;');
+    expect(sideRule).toContain('overflow: hidden;');
+    expect(sideRule).toContain('width: 50%;');
     expect(sideRule).toContain('gap: 0;');
     expect(sideRule).toContain('opacity: 1;');
     expect(sideRule).toContain('pointer-events: auto;');
@@ -117,13 +130,10 @@ describe('asset node floating controls CSS contracts', () => {
     const actionRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-side-controls .flow-node-action-button,'))
       .split('}')[0];
-    expect(actionRule).toContain('flex: 0 0 26px;');
+    expect(actionRule).toContain('flex: 0 1 auto;');
     expect(actionRule).toContain('height: 26px;');
-    expect(actionRule).toContain('min-width: 26px;');
-    expect(actionRule).toContain('width: 26px;');
-    expect(normalizedCss).toContain(
-      'max-width: min(320px, calc(100% - 162px), calc(100vw - 24px));',
-    );
+    expect(actionRule).toContain('min-width: 0;');
+    expect(actionRule).toContain('width: 100%;');
   });
 });
 
