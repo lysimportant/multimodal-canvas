@@ -14,7 +14,7 @@ describe('asset node floating controls CSS contracts', () => {
     expect(labelRule).toContain('left: 0;');
     expect(labelRule).toContain('top: calc(-28px * var(--flow-node-inverse-zoom, 1));');
     expect(labelRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
-    expect(labelRule).toContain('pointer-events: none;');
+    expect(labelRule).toContain('pointer-events: auto;');
 
     const editRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-external-label-edit {'))
@@ -24,6 +24,13 @@ describe('asset node floating controls CSS contracts', () => {
     expect(editRule).toContain('width: 20px;');
     expect(editRule).toContain('pointer-events: auto;');
     expect(normalizedCss).toContain('.is-generation-batch-hidden .flow-node-external-label');
+    expect(normalizedCss).toMatch(/\.flow-node-external-label-text \{[^}]*cursor: copy;/);
+  });
+
+  it('顶部浮动栏上移，为节点外名称和编辑按钮留出空间', () => {
+    expect(normalizedCss).toMatch(
+      /\.flow-asset-node > \.flow-node-header\.flow-node-floating-controls \{[^}]*bottom: calc\(100% \+ 42px \* var\(--flow-node-inverse-zoom, 1\)\);/,
+    );
   });
 
   it('节点外框创建时就存在，选中只换颜色并贴边加光圈', () => {
@@ -78,6 +85,30 @@ describe('asset node floating controls CSS contracts', () => {
     );
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*font-size: 13px;/);
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*display: inline;/);
+  });
+
+  it('节点右侧操作栏绝对定位、仅显示图标并按悬停状态显隐', () => {
+    const sideRule = normalizedCss
+      .slice(normalizedCss.indexOf('.flow-node-side-controls {'))
+      .split('}')[0];
+    expect(sideRule).toContain('position: absolute;');
+    expect(sideRule).toContain('left: calc(100% + 8px);');
+    expect(sideRule).toContain('flex-direction: column;');
+    expect(sideRule).toContain('transform: scale(var(--flow-node-inverse-zoom, 1));');
+    expect(sideRule).toContain('pointer-events: none;');
+    expect(normalizedCss).toContain('.flow-node-side-controls.is-visible');
+    expect(normalizedCss).toContain('.is-generation-batch-hidden .flow-node-side-controls');
+    expect(normalizedCss).toMatch(
+      /\.flow-node-side-controls \.flow-node-action-label \{[^}]*display: none;/,
+    );
+
+    const actionRule = normalizedCss
+      .slice(normalizedCss.indexOf('.flow-node-side-controls .flow-node-action-button,'))
+      .split('}')[0];
+    expect(actionRule).toContain('flex: 0 0 34px;');
+    expect(actionRule).toContain('height: 34px;');
+    expect(actionRule).toContain('min-width: 34px;');
+    expect(actionRule).toContain('width: 34px;');
   });
 });
 

@@ -14,6 +14,7 @@ import {
   Pencil,
   Power,
   RefreshCw,
+  Share2,
   Square,
   Trash2,
   Upload,
@@ -311,6 +312,41 @@ function NodeFloatingActionButton({ title, ...props }: ButtonProps & { title: st
   );
 }
 
+/** 右侧图标栏只转发到顶部工具栏的真实控件，避免重复创建分享或弹窗状态。 */
+function NodeSideActionButton({
+  action,
+  label,
+  title,
+  icon,
+  disabled,
+  onActivate,
+}: {
+  action: string;
+  label: string;
+  title: string;
+  icon: ReactElement;
+  disabled?: boolean;
+  onActivate: (action: string) => void;
+}) {
+  return (
+    <NodeFloatingActionButton
+      type="button"
+      className="flow-node-action-button nodrag nopan nowheel"
+      aria-label={`右侧快捷操作：${label}`}
+      title={title}
+      disabled={disabled}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onActivate(action);
+      }}
+    >
+      {icon}
+      <NodeFloatingActionLabel>{label}</NodeFloatingActionLabel>
+    </NodeFloatingActionButton>
+  );
+}
+
 /**
  * 节点是否处于进行中的运行状态。
  *
@@ -526,6 +562,12 @@ export function AssetNode({
   const enabled = data.enabled !== false;
   /** 全部节点共用悬浮操作栏，保持内容区域固定尺寸。 */
   const floatingControls = true;
+  const activateFloatingAction = (action: string) => {
+    const selector =
+      action === 'share' ? '.flow-node-share-button' : `[data-node-action="${action}"]`;
+    const trigger = floatingControlsRef.current?.querySelector<HTMLButtonElement>(selector);
+    if (trigger && !trigger.disabled) trigger.click();
+  };
   /**
    * 服务端受理新运行后旧结果即解绑：只有成功运行或尚未记录运行状态时，resultAsset/resultTiming
    * 才能当作节点当前输出。失败、取消、进行中都不再回显旧成功结果；旧资产版本仍可在资产库与
@@ -977,7 +1019,15 @@ export function AssetNode({
           )}
         </Button>
       ) : null}
-      <div className="flow-node-external-label" title={data.label}>
+      <div
+        className="flow-node-external-label"
+        title={`点击复制节点名称：${data.label}`}
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest('button')) return;
+          const writeText = navigator.clipboard?.writeText;
+          if (writeText) void writeText.call(navigator.clipboard, data.label).catch(() => {});
+        }}
+      >
         <span className="flow-node-external-label-text">{data.label}</span>
         {changeLabel ? (
           <Button
@@ -1038,6 +1088,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-label-button nodrag nopan nowheel"
+                  data-node-action="rename"
                   aria-label={`重命名节点：${data.label}`}
                   title="修改节点名称，不影响已有内容"
                   onClick={(event) => {
@@ -1060,6 +1111,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-drag-handle"
+                  data-node-action="move"
                   aria-label="拖动移动节点"
                   title="按住拖动，调整节点在画布中的位置"
                 >
@@ -1074,6 +1126,7 @@ export function AssetNode({
               <NodeFloatingActionButton
                 type="button"
                 className={`flow-node-action-button flow-node-info-button nodrag nopan nowheel${data.stale ? ' is-stale' : ''}`}
+                data-node-action="info"
                 aria-label="查看节点信息"
                 title={
                   data.stale
@@ -1124,6 +1177,7 @@ export function AssetNode({
                     type="button"
                     variant="ghost"
                     className="flow-node-action-button flow-node-retention-button nodrag nopan nowheel"
+                    data-node-action="retention"
                     aria-label={`查看销毁时间：${data.label}`}
                     aria-expanded={retentionOpen}
                     onPointerDown={(event) => event.stopPropagation()}
@@ -1149,6 +1203,7 @@ export function AssetNode({
                   type="button"
                   id={`node-prompt-trigger-${id}`}
                   className="flow-node-action-button flow-node-prompt-button nodrag nopan nowheel"
+                  data-node-action="prompt"
                   aria-label={`查看生成提示词：${data.label}`}
                   title="查看本次生成实际发送的提示词"
                   onPointerDown={(event) => event.stopPropagation()}
@@ -1197,6 +1252,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-enabled-toggle nodrag nopan nowheel"
+                  data-node-action="enabled"
                   aria-label={enabled ? '停用节点' : '启用节点'}
                   aria-pressed={enabled}
                   title={enabled ? '停用后不参与生成，保留已有内容' : '重新启用此节点参与生成'}
@@ -1227,6 +1283,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-upload-button nodrag nopan nowheel"
+                  data-node-action="upload"
                   disabled={writingDisabled}
                   aria-label={`上传到节点：${data.label}`}
                   title={
@@ -1254,6 +1311,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-edit-image-button nodrag nopan nowheel"
+                  data-node-action="edit-image"
                   disabled={writingDisabled}
                   aria-label={`修改图片：${data.label}`}
                   title={
@@ -1277,6 +1335,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-recreate-video-button nodrag nopan nowheel"
+                  data-node-action="recreate-video"
                   disabled={writingDisabled}
                   aria-label={`复刻短视频：${data.label}`}
                   title="创建短视频复刻节点，原视频保留不变"
@@ -1294,6 +1353,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-download-button nodrag nopan nowheel"
+                  data-node-action="download"
                   disabled={!previewAsset?.contentUrl || isDownloading}
                   aria-label={`下载${mediaLabels[data.mediaType]}`}
                   aria-busy={isDownloading}
@@ -1327,6 +1387,7 @@ export function AssetNode({
                 <NodeFloatingActionButton
                   type="button"
                   className="flow-node-action-button flow-node-delete-button nodrag nopan nowheel"
+                  data-node-action="delete"
                   aria-label={`删除节点：${data.label}`}
                   title="删除当前节点及关联连线；项目资源仍保留在右侧资源库"
                   onPointerDown={(event) => event.stopPropagation()}
@@ -1380,6 +1441,154 @@ export function AssetNode({
           )}
         </NodeActionsContainer>
       )}
+      {!mobile && !selectionMode && (!largeCanvas || controlsVisible) ? (
+        <div
+          className={`flow-node-side-controls${controlsVisible ? ' is-visible' : ''}`}
+          role="group"
+          aria-label={`节点快捷操作：${data.label}`}
+        >
+          {changeLabel ? (
+            <NodeSideActionButton
+              action="rename"
+              label="重命名"
+              title="修改节点名称，不影响已有内容"
+              icon={<Pencil size={18} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          <NodeFloatingActionButton
+            type="button"
+            className="flow-node-action-button flow-node-drag-handle"
+            aria-label="右侧快捷操作：拖动移动节点"
+            title="按住拖动，调整节点在画布中的位置"
+          >
+            <GripVertical size={18} aria-hidden="true" />
+            <NodeFloatingActionLabel>移动</NodeFloatingActionLabel>
+          </NodeFloatingActionButton>
+          <NodeSideActionButton
+            action="info"
+            label="信息"
+            title={
+              data.stale
+                ? '节点信息；上游内容已变更，节点待更新'
+                : '查看节点类型、运行状态与资源信息'
+            }
+            icon={<Info size={18} aria-hidden="true" />}
+            onActivate={activateFloatingAction}
+          />
+          {retention ? (
+            <NodeSideActionButton
+              action="retention"
+              label="销毁时间"
+              title="查看资源销毁时间"
+              icon={<Clock3 size={18} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {openPrompt ? (
+            <NodeSideActionButton
+              action="prompt"
+              label="提示词"
+              title="查看本次生成实际发送的提示词"
+              icon={<FileText size={18} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {setNodeEnabled ? (
+            <NodeSideActionButton
+              action="enabled"
+              label={enabled ? '停用' : '启用'}
+              title={enabled ? '停用后不参与生成，保留已有内容' : '重新启用此节点参与生成'}
+              icon={<Power size={18} strokeWidth={2.2} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {contentHandlers ? (
+            <NodeSideActionButton
+              action="upload"
+              label={uploadProgress === null ? '上传' : '上传中'}
+              title={
+                writingDisabled
+                  ? '节点正在运行或保存，请稍后再上传'
+                  : '上传本地文件并替换当前节点内容'
+              }
+              icon={
+                uploadProgress === null ? (
+                  <Upload size={18} aria-hidden="true" />
+                ) : (
+                  <LoaderCircle className="spin" size={18} aria-hidden="true" />
+                )
+              }
+              disabled={writingDisabled}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {editImage && !resourceExpired && isImageEditSourceNode({ data }) ? (
+            <NodeSideActionButton
+              action="edit-image"
+              label="修改图片"
+              title={
+                writingDisabled
+                  ? '节点正在运行或保存，请稍后再修改图片'
+                  : '引用当前图片创建编辑节点，不覆盖原图'
+              }
+              icon={<WandSparkles size={18} aria-hidden="true" />}
+              disabled={writingDisabled}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {recreateVideo && data.mediaType === 'video' && previewAsset?.contentUrl ? (
+            <NodeSideActionButton
+              action="recreate-video"
+              label="复刻短视频"
+              title="创建短视频复刻节点，原视频保留不变"
+              icon={<Clapperboard size={18} aria-hidden="true" />}
+              disabled={writingDisabled}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {downloadableMedia ? (
+            <NodeSideActionButton
+              action="download"
+              label={isDownloading ? '下载中' : '下载'}
+              title={
+                isDownloading
+                  ? '正在准备下载'
+                  : previewAsset?.contentUrl
+                    ? `下载当前回显的${mediaLabels[data.mediaType]}文件`
+                    : '暂无可下载内容'
+              }
+              icon={
+                isDownloading ? (
+                  <LoaderCircle className="spin" size={18} aria-hidden="true" />
+                ) : (
+                  <Download size={18} aria-hidden="true" />
+                )
+              }
+              disabled={!previewAsset?.contentUrl || isDownloading}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {shareableAsset ? (
+            <NodeSideActionButton
+              action="share"
+              label="分享"
+              title="创建当前版本的只读分享链接"
+              icon={<Share2 size={18} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+          {deleteNode ? (
+            <NodeSideActionButton
+              action="delete"
+              label="删除"
+              title="删除当前节点及关联连线；项目资源仍保留在右侧资源库"
+              icon={<Trash2 size={18} strokeWidth={2.2} aria-hidden="true" />}
+              onActivate={activateFloatingAction}
+            />
+          ) : null}
+        </div>
+      ) : null}
       <Dialog
         open={renameOpen}
         onOpenChange={(open) => {

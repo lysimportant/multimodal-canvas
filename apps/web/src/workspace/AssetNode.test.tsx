@@ -1787,6 +1787,7 @@ describe('AssetNode result presentation', () => {
   it('在节点外左上显示名称，并通过后置铅笔图标重命名', async () => {
     const onLabelChange = vi.fn();
     const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
     const { container } = renderNode(
       makeNode(),
       undefined,
@@ -1796,16 +1797,34 @@ describe('AssetNode result presentation', () => {
       onLabelChange,
     );
 
-    const label = container.querySelector('.flow-node-external-label')!;
+    const label = container.querySelector<HTMLDivElement>('.flow-node-external-label')!;
     expect(label.parentElement).toHaveClass('flow-asset-node');
     expect(label).toHaveTextContent('文案生成');
     expect(label.querySelector('.flow-node-external-label-text')).toHaveTextContent('文案生成');
     expect(label.children[1]).toHaveClass('flow-node-external-label-edit');
     expect(label.children[1].querySelector('svg')).toBeInTheDocument();
 
+    await user.click(label.querySelector('.flow-node-external-label-text')!);
+    expect(writeText).toHaveBeenCalledWith('文案生成');
+
     expect(label.querySelector('button')).toHaveAccessibleName('编辑节点名称：文案生成');
     await user.click(label.querySelector('button')!);
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('文案生成');
     expect(await screen.findByRole('dialog', { name: '重命名节点' })).toBeInTheDocument();
+  });
+
+  it('节点右侧图标栏转发到原操作按钮，点击信息仍打开同一信息面板', async () => {
+    const user = userEvent.setup();
+    const { container } = renderNode(makeNode(), undefined, undefined, undefined, true);
+
+    const sideControls = container.querySelector<HTMLDivElement>('.flow-node-side-controls')!;
+    expect(sideControls).toHaveClass('is-visible');
+    expect(sideControls).toHaveAccessibleName('节点快捷操作：文案生成');
+    expect(within(sideControls).getByRole('button', { name: '右侧快捷操作：信息' })).toBeVisible();
+    expect(sideControls.querySelector('.flow-node-action-label')).toBeInTheDocument();
+
+    await user.click(within(sideControls).getByRole('button', { name: '右侧快捷操作：信息' }));
+    expect(await screen.findByRole('dialog', { name: '节点信息' })).toBeInTheDocument();
   });
 
   it('原生 K 档显示当前设置，不把档位当作固定像素比较', async () => {

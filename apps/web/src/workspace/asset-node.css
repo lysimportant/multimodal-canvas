@@ -14,6 +14,7 @@
 
 .is-generation-batch-hidden .flow-node-floating-controls,
 .is-generation-batch-hidden .flow-node-mobile-controls,
+.is-generation-batch-hidden .flow-node-side-controls,
 .is-generation-batch-hidden .react-flow__handle,
 .is-generation-batch-hidden .react-flow__resize-control,
 .is-generation-batch-hidden .flow-node-external-label,
@@ -98,7 +99,8 @@
   gap: 2px;
   left: 0;
   max-width: min(320px, calc(100vw - 24px));
-  pointer-events: none;
+  cursor: copy;
+  pointer-events: auto;
   position: absolute;
   top: calc(-28px * var(--flow-node-inverse-zoom, 1));
   transform: scale(var(--flow-node-inverse-zoom, 1));
@@ -108,6 +110,7 @@
 }
 
 .flow-node-external-label-text {
+  cursor: copy;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -185,7 +188,7 @@
 .flow-asset-node > .flow-node-header.flow-node-floating-controls {
   align-items: stretch;
   content-visibility: hidden;
-  bottom: calc(100% + 10px * var(--flow-node-inverse-zoom, 1));
+  bottom: calc(100% + 42px * var(--flow-node-inverse-zoom, 1));
   background: var(--mc-surface);
   border: 1px solid var(--mc-border);
   border-radius: 6px;
@@ -258,6 +261,82 @@
   pointer-events: none;
   transition: none;
   visibility: hidden;
+}
+
+.flow-node-side-controls {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  left: calc(100% + 8px);
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  transform: scale(var(--flow-node-inverse-zoom, 1));
+  transform-origin: top left;
+  transition: opacity 120ms ease;
+  visibility: hidden;
+  z-index: 7;
+}
+
+.flow-node-side-controls.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.flow-node-side-controls .flow-node-action-label {
+  display: none;
+}
+
+.flow-node-side-controls .flow-node-drag-handle {
+  cursor: grab;
+}
+
+.flow-node-side-controls .flow-node-drag-handle:active {
+  cursor: grabbing;
+}
+
+.flow-node-side-controls .flow-node-action-button,
+.flow-node-side-controls .flow-node-action-button.ant-btn {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--mc-text-muted);
+  display: inline-flex;
+  flex: 0 0 34px;
+  height: 34px;
+  justify-content: center;
+  margin: 0;
+  min-width: 34px;
+  padding: 0;
+  width: 34px;
+}
+
+.flow-node-side-controls
+  .flow-node-action-button:not(:disabled):not(.ant-btn-disabled):is(
+    :hover,
+    :active,
+    :focus-visible
+  ) {
+  background-color: var(--mc-accent-soft);
+  border: 0;
+  box-shadow: none;
+  color: var(--mc-accent-strong);
+  outline: none;
+}
+
+.flow-node-side-controls .flow-node-delete-button:is(:hover, :focus-visible) {
+  background: var(--mc-surface-muted);
+  color: #bf4237;
+}
+
+.flow-node-side-controls .flow-node-action-button:disabled,
+.flow-node-side-controls .flow-node-action-button.ant-btn-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .flow-node-label > .flow-node-label-button {
