@@ -84,7 +84,11 @@ import { NodeDurationBadge, useSharedNodeClock } from './NodeDurationBadge';
 import { GenerationBatchViewContext } from './generation-batch-view';
 import { getNodeInfoTimes } from './node-info';
 import { NodeRunContext } from './node-run-context';
-import { FailureDiagnostics, getArchiveFailureDetails } from '../FailureDiagnostics';
+import {
+  FailureDiagnostics,
+  getArchiveFailureDetails,
+  isUnknownVideoSubmission,
+} from '../FailureDiagnostics';
 import { formatAssetFileSize, resolveAssetFileSize } from './asset-file-size';
 import { AssetRetentionContext, getAssetRetention, useAssetExpiryClock } from './asset-retention';
 import { CanvasPerformanceContext, getNodeRenderDetail } from './canvas-render-detail';
@@ -421,6 +425,7 @@ export function AssetNode({
     : data.runStatus;
   const effectiveRunProgress = isLocallySubmitting ? undefined : data.runProgress;
   const effectiveRunError = isLocallySubmitting ? undefined : data.runError;
+  const currentRun = nodeRuns?.[id];
   const batchContext = useContext(GenerationBatchViewContext);
   const batchView = batchContext.views.get(id);
   useEffect(() => {
@@ -775,6 +780,11 @@ export function AssetNode({
     ? (previewLoadState ?? 'loading')
     : 'missing';
   const canRetry = Boolean(retryNode) && data.mode !== 'source';
+  const createsNewVideo =
+    data.mediaType === 'video' &&
+    effectiveRunStatus === 'failed' &&
+    currentRun !== undefined &&
+    isUnknownVideoSubmission(currentRun);
   const canRecover =
     Boolean(recoverNode) &&
     data.mode !== 'source' &&
@@ -942,6 +952,7 @@ export function AssetNode({
       canRecover={canRecover}
       isRetrying={isRetrying}
       retryError={retryError}
+      createsNewVideo={createsNewVideo}
       onRetry={() => void handleRetry()}
       isRecovering={isRecovering}
       recoverError={recoverError}
@@ -1905,6 +1916,7 @@ function NodeStateContent({
   canRecover,
   isRetrying,
   retryError,
+  createsNewVideo,
   onRetry,
   isRecovering,
   recoverError,
@@ -1924,6 +1936,7 @@ function NodeStateContent({
   canRecover: boolean;
   isRetrying: boolean;
   retryError: string | null;
+  createsNewVideo: boolean;
   onRetry: () => void;
   isRecovering: boolean;
   recoverError: string | null;
@@ -2038,7 +2051,7 @@ function NodeStateContent({
                       : false
                   }
                 >
-                  {isRetrying ? '提交中…' : '重试生成'}
+                  {isRetrying ? '提交中…' : createsNewVideo ? '创建新视频' : '重试生成'}
                 </AntdButton>
               ) : null}
             </div>

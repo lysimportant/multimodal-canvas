@@ -2108,6 +2108,69 @@ describe('AssetNode result presentation', () => {
     await waitFor(() => expect(onRetry).toHaveBeenCalledWith('node_1'));
   });
 
+  it('将状态未知的失败视频人工操作标为创建新视频，普通失败仍保留重试生成', async () => {
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    const node = makeNode({
+      mediaType: 'video',
+      runStatus: 'failed',
+      runError: '视频提交结果未知',
+    });
+    const run = {
+      id: 'run_unknown_video',
+      status: 'failed',
+      errorCode: 'api_error',
+      providerJob: {
+        payload: { sendStatus: 'unknown' },
+      },
+    } as unknown as RunRecord;
+    const view = renderNode(node, onRetry, undefined, undefined, false, undefined, undefined, {
+      runs: { [node.id]: run },
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '创建新视频' }));
+    await waitFor(() => expect(onRetry).toHaveBeenCalledExactlyOnceWith(node.id));
+    view.rerender(
+      <NodeRetryContext.Provider value={onRetry}>
+        <NodeRunContext.Provider
+          value={{
+            [node.id]: {
+              ...run,
+              errorCode: 'rate_limit',
+              providerJob: {
+                ...(run as unknown as { providerJob: Record<string, unknown> }).providerJob,
+                platformJobId: 'platform-known-task',
+              },
+            } as unknown as RunRecord,
+          }}
+        >
+          <AssetNode
+            {...({ id: node.id, data: node.data, selected: false } as NodeProps<AssetFlowNode>)}
+          />
+        </NodeRunContext.Provider>
+      </NodeRetryContext.Provider>,
+    );
+    expect(screen.getByRole('button', { name: '重试生成' })).toBeInTheDocument();
+  });
+
+  it('旧失败记录仅含固定送达提示时显示创建新视频', () => {
+    const node = makeNode({
+      mediaType: 'video',
+      runStatus: 'failed',
+      runError: '原请求可能已经送达，禁止重复创建',
+    });
+    const run = {
+      id: 'run_legacy_unknown_video',
+      status: 'failed',
+      error: '原请求可能已经送达，禁止重复创建',
+    } as unknown as RunRecord;
+
+    renderNode(node, vi.fn(), undefined, undefined, false, undefined, undefined, {
+      runs: { [node.id]: run },
+    });
+
+    expect(screen.getByRole('button', { name: '创建新视频' })).toBeInTheDocument();
+  });
+
   it('does not mask a succeeded run whose artifact URL is missing', async () => {
     const onRetry = vi.fn();
     const user = userEvent.setup();

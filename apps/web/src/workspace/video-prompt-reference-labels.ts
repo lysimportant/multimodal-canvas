@@ -96,6 +96,7 @@ export function collectVideoPromptReferences(
       mention.mediaType,
       context.videoMode,
       context.modelAlias,
+      mention,
     );
     if (!role) continue;
     const identity = JSON.stringify([mention.assetId, mention.assetVersion, role]);
@@ -172,9 +173,7 @@ export function collectVideoPromptReferences(
   // 画布不按目录能力声明限制参考素材数量：超过渠道能力时由上游返回错误。
   return buildVideoPromptReferences(
     ordered,
-    context.videoReferences
-      ? 'generic'
-      : videoPromptTokenFamilyForNode(context.modelAlias, context.videoReferenceSyntax),
+    videoPromptTokenFamilyForNode(context.modelAlias, context.videoReferenceSyntax),
     { deduplicate },
   );
 }

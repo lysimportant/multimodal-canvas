@@ -51,6 +51,7 @@ import {
   isRunAssetSource,
   MemoryRunService,
   RunServiceError,
+  submissionContentFingerprint,
   type ProviderWebhookUpdate,
   type FrozenRunAssetRef,
   type RunExecutor,
@@ -300,6 +301,8 @@ type RunRequestBody = {
   idempotencyKey?: string;
   parameters?: Record<string, unknown>;
   promptDocument?: PromptDocument;
+  recreateFromRunId?: string;
+  confirmIdenticalSubmission?: boolean;
 };
 
 const runRequestBodySchema = z.object({
@@ -310,6 +313,8 @@ const runRequestBodySchema = z.object({
   credentialId: z.string().uuid().optional(),
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
   parameters: z.record(z.unknown()).optional(),
+  recreateFromRunId: z.string().trim().min(1).max(200).optional(),
+  confirmIdenticalSubmission: z.boolean().optional(),
   // Parse this field separately to keep Fastify's route type instantiation
   // bounded while retaining the domain schema and its diagnostics.
   promptDocument: z.unknown().optional(),
@@ -428,6 +433,8 @@ type PublicRunFields = {
   modelAlias: string;
   result?: PublicRunResult;
   error?: string;
+  /** 稳定的客户端处理码；不暴露 Provider 载荷或内部发送诊断。 */
+  errorCode?: 'VIDEO_SUBMISSION_UNKNOWN';
   retryOf?: string;
   /** 可供用户核对和只读查询的上游任务身份，不包含 Provider 请求载荷。 */
   platformJobId?: string;
@@ -3537,6 +3544,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(parsedBody.data.idempotencyKey ? { idempotencyKey: parsedBody.data.idempotencyKey } : {}),
       ...(parsedBody.data.parameters ? { parameters: parsedBody.data.parameters } : {}),
       ...(promptResult?.success ? { promptDocument: promptResult.data } : {}),
+      ...(parsedBody.data.recreateFromRunId
+        ? { recreateFromRunId: parsedBody.data.recreateFromRunId }
+        : {}),
+      ...(parsedBody.data.confirmIdenticalSubmission === undefined
+        ? {}
+        : { confirmIdenticalSubmission: parsedBody.data.confirmIdenticalSubmission }),
     };
 
     const scope = projectScope(requestPrincipals, request);
@@ -3888,9 +3901,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           requestSessions.get(request)!.user.id,
           snapshot,
         );
+      if (body.recreateFromRunId) {
+        const previous = await runService.get(body.recreateFromRunId);
+        const currentUserId = principal?.userId;
+        if (
+          !previous ||
+          previous.userId !== currentUserId ||
+          previous.projectId !== body.projectId ||
+          previous.targetNodeId !== request.params.nodeId
+        ) {
+          return reply.code(404).send({ error: 'run not found' });
+        }
+        if (!isUnknownVideoSubmissionFailure(previous)) {
+          return reply.code(409).send({
+            code: 'RECREATE_SOURCE_NOT_ELIGIBLE',
+            error: '原视频请求不是发送状态未知的失败任务，不能从该记录创建新视频',
+          });
+        }
+        if (
+          !body.confirmIdenticalSubmission &&
+          submissionContentFingerprint(snapshot) === submissionContentFingerprint(previous.snapshot)
+        ) {
+          return reply.code(409).send({
+            code: 'IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED',
+            error: '原请求发送状态未知；完全相同的内容可能产生两个视频及重复计费，请确认后创建',
+            previousRunId: previous.id,
+          });
+        }
+      }
       const headerIdempotencyKey = request.headers['idempotency-key'];
-      const idempotencyKey =
+      const requestedIdempotencyKey =
         typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : body.idempotencyKey;
+      const idempotencyKey =
+        body.recreateFromRunId && requestedIdempotencyKey
+          ? `recreate:${createHash('sha256')
+              .update(`${body.recreateFromRunId}\0${requestedIdempotencyKey}`)
+              .digest('hex')}`
+          : requestedIdempotencyKey;
       const run = await runService.create(snapshot, {
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(principal?.userId ? { userId: principal.userId } : {}),
@@ -4940,6 +4987,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return { asset: response };
   });
 
+  app.post('/v1/assets/batch-delete', async (request, reply) => {
+    const result = z
+      .object({
+        assetIds: z.array(z.string().trim().min(1).max(256)).min(1).max(500),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!result.success) {
+      return reply.code(400).send({ error: 'invalid asset batch delete' });
+    }
+
+    const deletedAssetIds: string[] = [];
+    const missingAssetIds: string[] = [];
+    const scope = assetScope(requestPrincipals, request);
+    for (const assetId of new Set(result.data.assetIds)) {
+      if (await assetStore.delete(assetId, scope)) deletedAssetIds.push(assetId);
+      else missingAssetIds.push(assetId);
+    }
+
+    return { deletedAssetIds, missingAssetIds };
+  });
+
   app.delete<{ Params: { assetId: string } }>('/v1/assets/:assetId', async (request, reply) => {
     const deleted = await assetStore.delete(
       request.params.assetId,
@@ -5481,6 +5550,9 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
         }
       : {}),
     ...(run.error ? { error: toPublicRunError(run.error) } : {}),
+    ...(isUnknownVideoSubmissionFailure(run)
+      ? { errorCode: 'VIDEO_SUBMISSION_UNKNOWN' as const }
+      : {}),
     ...(run.retryOf ? { retryOf: run.retryOf } : {}),
     ...(run.providerJob?.platformJobId?.trim()
       ? { platformJobId: run.providerJob.platformJobId }
@@ -5489,6 +5561,23 @@ function toPublicRunRecord(run: RunRecord): PublicRunRecord {
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   };
+}
+
+const LEGACY_UNKNOWN_VIDEO_SUBMISSION_ERRORS = new Set([
+  '原请求可能已经送达，禁止重复创建',
+  '原节点请求可能已经送达，禁止重复创建',
+]);
+
+/** 兼容旧发送栅栏记录；只匹配稳定字段或固定原文，不推断任意自然语言错误。 */
+function isUnknownVideoSubmissionFailure(run: RunRecord): boolean {
+  if (run.status !== 'failed' || run.providerJob?.platformJobId?.trim()) return false;
+  const target = run.snapshot.nodes.find((node) => node.id === run.snapshot.targetNodeId);
+  if (target?.data.mediaType !== 'video') return false;
+  return (
+    run.providerJob?.payload?.sendStatus === 'unknown' ||
+    run.providerJob?.payload?.phase === 'submitting' ||
+    (typeof run.error === 'string' && LEGACY_UNKNOWN_VIDEO_SUBMISSION_ERRORS.has(run.error.trim()))
+  );
 }
 
 function toPublicRunEvent(run: RunRecord): PublicRunEvent {

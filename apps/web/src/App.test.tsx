@@ -176,7 +176,7 @@ function runRecord(overrides: Partial<RunRecord>): RunRecord {
     ...overrides,
   };
 }
-type PublicRunRecord = RunRecord & { platformJobId?: string };
+type PublicRunRecord = RunRecord & { platformJobId?: string; errorCode?: string };
 
 /** 保持视频 Run 的目标节点与冻结快照一致，并允许模拟公开的上游任务 ID。 */
 function videoRunRecord(overrides: Partial<PublicRunRecord> = {}): PublicRunRecord {
@@ -2332,6 +2332,165 @@ describe('App 组件库迁移', () => {
     ).toBe(false);
     expect(view.canvas?.nodes.map((node) => node.id)).toEqual(['image-node']);
     expect(view.canvas?.nodes[0]?.data.runStatus).toBe('succeeded');
+  });
+
+  it('状态未知的失败视频使用当前内容创建一次新 Run，内容不同时不弹确认', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-h3')], edges: [] };
+    projectRuns = [
+      videoRunRecord({
+        error: '上游首次提交返回 502',
+        errorCode: 'api_error',
+        providerJob: {
+          id: 'provider-job-unknown-502',
+          provider: 'newapi',
+          status: 'failed',
+          progress: 100,
+          payload: { sendStatus: 'unknown', statusCode: 502 },
+          createdAt: '2026-09-25T00:00:00.000Z',
+          updatedAt: '2026-09-25T00:01:00.000Z',
+        },
+      }),
+    ];
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    await act(async () => {
+      await view.canvas!.onRetryNode('video-node');
+    });
+
+    const submissions = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/v1/nodes/video-node/runs'),
+    );
+    expect(submissions).toHaveLength(1);
+    expect(JSON.parse(String(submissions[0]?.[1]?.body))).toMatchObject({
+      recreateFromRunId: 'run-video-failed',
+      modelAlias: 'video-h3',
+      parameters: { prompt: '生成视频' },
+    });
+    expect(JSON.parse(String(submissions[0]?.[1]?.body))).not.toHaveProperty(
+      'confirmIdenticalSubmission',
+    );
+    expect(screen.queryByRole('dialog', { name: '确认创建新视频' })).not.toBeInTheDocument();
+  });
+
+  it('旧失败记录仅含固定送达提示时仍使用创建新视频协议', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-h3')], edges: [] };
+    projectRuns = [
+      videoRunRecord({
+        error: '原请求可能已经送达，禁止重复创建',
+        errorCode: undefined,
+        providerJob: undefined,
+      }),
+    ];
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    await act(async () => {
+      await view.canvas!.onRetryNode('video-node');
+    });
+
+    const submissions = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/v1/nodes/video-node/runs'),
+    );
+    expect(submissions).toHaveLength(1);
+    expect(JSON.parse(String(submissions[0]?.[1]?.body))).toMatchObject({
+      recreateFromRunId: 'run-video-failed',
+    });
+    expect(screen.queryByRole('dialog', { name: '确认创建新视频' })).not.toBeInTheDocument();
+  });
+
+  it('完全相同的状态未知视频仅在 API 409 后确认，并在同一锁内只创建一次', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-h3')], edges: [] };
+    projectRuns = [videoRunRecord({ errorCode: 'VIDEO_SUBMISSION_UNKNOWN' })];
+    const api = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/nodes/video-node/runs' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>;
+        if (body.confirmIdenticalSubmission !== true)
+          return Promise.resolve(
+            json(
+              {
+                code: 'IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED',
+                error: '需要确认完全相同的状态未知请求',
+                previousRunId: 'run-video-failed',
+              },
+              409,
+            ),
+          );
+      }
+      return api(input, init);
+    });
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    let first!: Promise<void>;
+    let duplicate!: Promise<void>;
+    act(() => {
+      first = view.canvas!.onRetryNode('video-node') as Promise<void>;
+      duplicate = view.canvas!.onRetryNode('video-node') as Promise<void>;
+    });
+    const dialog = await screen.findByRole('dialog', { name: '确认创建新视频' });
+    expect(dialog).toHaveTextContent('内容与状态未知的原请求完全一致，继续可能重复生成或计费');
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          init?.method === 'POST' && String(url).endsWith('/v1/nodes/video-node/runs'),
+      ),
+    ).toHaveLength(1);
+    await userEvent.click(within(dialog).getByRole('button', { name: '继续创建' }));
+    await act(async () => Promise.all([first, duplicate]));
+
+    const submissions = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/v1/nodes/video-node/runs'),
+    );
+    expect(submissions).toHaveLength(2);
+    expect(JSON.parse(String(submissions[0]?.[1]?.body))).toMatchObject({
+      recreateFromRunId: 'run-video-failed',
+    });
+    expect(JSON.parse(String(submissions[1]?.[1]?.body))).toMatchObject({
+      recreateFromRunId: 'run-video-failed',
+      confirmIdenticalSubmission: true,
+    });
+  });
+
+  it('完全相同的状态未知视频取消确认后不创建新 Run', async () => {
+    canvas = { revision: 1, nodes: [videoNode('video-node', 'video-h3')], edges: [] };
+    projectRuns = [videoRunRecord({ errorCode: 'VIDEO_SUBMISSION_UNKNOWN' })];
+    const api = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), 'http://localhost:3000').pathname;
+      if (path === '/v1/nodes/video-node/runs' && init?.method === 'POST')
+        return Promise.resolve(
+          json(
+            {
+              code: 'IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED',
+              error: '需要确认完全相同的状态未知请求',
+              previousRunId: 'run-video-failed',
+            },
+            409,
+          ),
+        );
+      return api(input, init);
+    });
+    await renderCanvas(0);
+    await waitFor(() => expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed'));
+
+    let recreation!: Promise<void>;
+    act(() => {
+      recreation = view.canvas!.onRetryNode('video-node') as Promise<void>;
+    });
+    const dialog = await screen.findByRole('dialog', { name: '确认创建新视频' });
+    await userEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    await act(async () => recreation);
+    const submissions = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'POST' && String(url).endsWith('/v1/nodes/video-node/runs'),
+    );
+    expect(submissions).toHaveLength(1);
+    expect(JSON.parse(String(submissions[0]?.[1]?.body))).not.toHaveProperty(
+      'confirmIdenticalSubmission',
+    );
+    expect(view.canvas?.nodes[0]?.data.runStatus).toBe('failed');
   });
 
   it('失败视频节点只通过原 Run 获取资源，轮询期间同节点不重复请求或创建新运行', async () => {

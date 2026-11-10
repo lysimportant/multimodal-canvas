@@ -26,26 +26,28 @@ const videoReferences: VideoReferenceCapability = {
 };
 
 describe('视频输入正文预览', () => {
-  it.each(['arbitrary-channel-alias', 'doubao-seedance-2-0-260128', 'wan3.0-video', 'minimax-h3'])(
-    '有渠道契约时 %s 优先使用统一编号，分别编号图片、视频和音频',
-    (modelAlias) => {
-      expect(
-        previewVideoPrompt(
-          {
-            version: 1,
-            blocks: [
-              image,
-              { type: 'text', text: ' / ' },
-              { ...image, assetId: 'motion', mentionId: 'motion', mediaType: 'video' },
-              { type: 'text', text: ' / ' },
-              { ...image, assetId: 'voice', mentionId: 'voice', mediaType: 'audio' },
-            ],
-          },
-          { ...context, modelAlias, videoReferences },
-        ),
-      ).toBe('Image 1 / Video 1 / Audio 1');
-    },
-  );
+  it.each([
+    ['arbitrary-channel-alias', 'Image 1 / Video 1 / Audio 1'],
+    ['doubao-seedance-2-0-260128', '图 1 / 视频 1 / 音频 1'],
+    ['wan3.0-video', '图1 / 视频1 / 音频1'],
+    ['minimax-h3', '<Picture 1> / <Video 1> / <Audio 1>'],
+  ])('有渠道契约时 %s 仍按模型家族分别编号图片、视频和音频', (modelAlias, prompt) => {
+    expect(
+      previewVideoPrompt(
+        {
+          version: 1,
+          blocks: [
+            image,
+            { type: 'text', text: ' / ' },
+            { ...image, assetId: 'motion', mentionId: 'motion', mediaType: 'video' },
+            { type: 'text', text: ' / ' },
+            { ...image, assetId: 'voice', mentionId: 'voice', mediaType: 'audio' },
+          ],
+        },
+        { ...context, modelAlias, videoReferences },
+      ),
+    ).toBe(prompt);
+  });
 
   it('渠道契约保留资源顺序、不同版本身份和重复引用去重', () => {
     expect(
@@ -92,7 +94,7 @@ describe('视频输入正文预览', () => {
       version: 1,
       blocks: [image, { ...image, mediaType: 'video', mentionId: 'motion', assetId: 'motion' }],
     };
-    expect(previewVideoPrompt(document, limited)).toBe('Image 1Video 1');
+    expect(previewVideoPrompt(document, limited)).toBe('图1视频1');
   });
 
   it.each(['start_frame', 'end_frame'])('禁止与未追踪的 %s 素材混用', (key) => {

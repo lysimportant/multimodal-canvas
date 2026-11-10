@@ -1,5 +1,5 @@
 import { Button, Input, FilePicker, type FilePickerHandle } from '@multimodal-canvas/ui';
-import { Alert, Button as AntdButton, Modal, Select } from 'antd';
+import { Alert, Button as AntdButton, Checkbox, Modal, Select } from 'antd';
 import {
   LoaderCircle,
   History,
@@ -61,6 +61,7 @@ export const ResourcePanel = memo(function ResourcePanel({
   onRenameAsset,
   onArchiveAsset,
   onDeleteAsset,
+  onDeleteAssets,
   onDrop,
   onToggleCollapsed,
   uploadInputRef,
@@ -87,6 +88,7 @@ export const ResourcePanel = memo(function ResourcePanel({
   onRenameAsset: (asset: Asset) => void;
   onArchiveAsset: (asset: Asset) => void;
   onDeleteAsset?: (asset: Asset) => void;
+  onDeleteAssets?: (assets: Asset[]) => Promise<void>;
   onDrop: (event: DragEvent) => void;
   onToggleCollapsed: () => void;
   uploadInputRef?: RefObject<FilePickerHandle | null>;
@@ -126,6 +128,7 @@ export const ResourcePanel = memo(function ResourcePanel({
   const [draggingOutside, setDraggingOutside] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set());
   const dialogOpen = Boolean(
     previewAsset || historyAsset || confirmationOpen || isRenameDialogOpen,
   );
@@ -219,6 +222,19 @@ export const ResourcePanel = memo(function ResourcePanel({
         const matchesFilter = activeFilter === 'all' || asset.mediaType === activeFilter;
         return matchesFilter && asset.name.toLowerCase().includes(query.toLowerCase());
       });
+  const visibleSelectionKey = filteredAssets.map((asset) => asset.id).join('\u0000');
+  const selectedAssets = filteredAssets.filter((asset) => selectedAssetIds.has(asset.id));
+  const allVisibleSelected =
+    filteredAssets.length > 0 && selectedAssets.length === filteredAssets.length;
+  const someVisibleSelected = selectedAssets.length > 0 && !allVisibleSelected;
+  useEffect(() => {
+    const visibleIds = new Set(visibleSelectionKey ? visibleSelectionKey.split('\u0000') : []);
+    setSelectedAssetIds((current) => {
+      const next = new Set([...current].filter((id) => visibleIds.has(id)));
+      if (next.size === current.size && [...next].every((id) => current.has(id))) return current;
+      return next;
+    });
+  }, [visibleSelectionKey]);
   const visibleAssets = assets.filter((asset) =>
     showArchived ? asset.status === 'archived' : asset.status !== 'archived',
   );
@@ -391,6 +407,50 @@ export const ResourcePanel = memo(function ResourcePanel({
           </Button>
         )}
       </label>
+      <div className="resource-selection-toolbar">
+        <Checkbox
+          aria-label="全选本页资源"
+          checked={allVisibleSelected}
+          indeterminate={someVisibleSelected}
+          disabled={filteredAssets.length === 0}
+          onChange={(event) => {
+            setSelectedAssetIds(
+              event.target.checked ? new Set(filteredAssets.map((asset) => asset.id)) : new Set(),
+            );
+          }}
+        >
+          全选本页
+        </Checkbox>
+        <Button
+          type="button"
+          className="resource-batch-delete-button"
+          disabled={!selectedAssets.length || !onDeleteAssets}
+          onClick={() => {
+            const targets = [...selectedAssets];
+            setConfirmationOpen(true);
+            modal.confirm({
+              title: '永久删除所选资源',
+              afterClose: () => setConfirmationOpen(false),
+              content: `将永久删除所选 ${targets.length} 项资源，删除后无法找回。确定继续吗？`,
+              okText: `永久删除 ${targets.length} 项`,
+              cancelText: '取消',
+              okButtonProps: { danger: true },
+              focusable: { autoFocusButton: 'cancel' },
+              onOk: async () => {
+                try {
+                  await onDeleteAssets?.(targets);
+                  setSelectedAssetIds(new Set());
+                } catch {
+                  // 父级已显示失败提示；保留勾选，允许用户修复后直接重试。
+                }
+              },
+            });
+          }}
+        >
+          <Trash2 size={14} aria-hidden="true" />
+          永久删除所选（{selectedAssets.length}）
+        </Button>
+      </div>
       {isUploading && uploadProgress !== null && (
         <div className="upload-progress" role="status">
           <div className="upload-progress-label">
@@ -456,6 +516,20 @@ export const ResourcePanel = memo(function ResourcePanel({
                   : '拖到提示词中引用，使用添加按钮放入画布。点击预览。'
             }
           >
+            <Checkbox
+              className="asset-select-checkbox"
+              aria-label={`选择 ${asset.name}`}
+              checked={selectedAssetIds.has(asset.id)}
+              onChange={(event) => {
+                setSelectedAssetIds((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(asset.id);
+                  else next.delete(asset.id);
+                  return next;
+                });
+              }}
+              onClick={(event) => event.stopPropagation()}
+            />
             <div
               className="asset-card-hit"
               role="button"

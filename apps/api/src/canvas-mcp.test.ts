@@ -128,7 +128,11 @@ describe('画布无状态 Streamable HTTP MCP', () => {
     expect(client.getInstructions()).toContain('镜头正文里人物、场景首次出现处');
     expect(client.getInstructions()).toContain('台词行、声音：<…>、环境：…');
     expect(client.getInstructions()).toContain('禁止面部变形与五官不对称');
-    expect(client.getInstructions()).toContain('minimax-h3-1 使用通用 Image N');
+    expect(client.getInstructions()).toContain('minimax-h3-1 自动使用 H3 的 <Picture N>');
+    expect(client.getInstructions()).toContain('重复 mention 复用同一编号和发送项');
+    expect(client.getInstructions()).toContain('不同版本或用途保持独立');
+    expect(client.getInstructions()).toContain('不能为了凑本地数量上限删减 mention');
+    expect(client.getInstructions()).not.toContain('minimax-h3-1 使用通用 Image N');
     expect(client.getInstructions()).toContain('属于预览、提交或外部裸文本的输出语法');
     expect(client.getInstructions()).toContain(
       '当前画布不会自动把图片或人物外观转换成 <Subject N> 定义',

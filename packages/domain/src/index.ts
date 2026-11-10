@@ -2249,7 +2249,17 @@ export function videoInputRoleForPromptMention(
   mediaType: MediaType,
   videoMode: VideoMode | undefined,
   modelAlias?: string,
+  mention?: {
+    semanticRole?: string;
+    binding?: { semanticRole?: string };
+  },
 ): PortRole | undefined {
+  // 正文 mention 的语义角色必须和连线角色共用同一个身份维度，否则同一张图
+  // 会分别按 character/referenceImage 编号，造成 H3 出现虚假的 6、7、8。
+  for (const rawRole of [mention?.semanticRole, mention?.binding?.semanticRole]) {
+    const role = rawRole?.trim();
+    if (role && portRoles.includes(role as PortRole)) return role as PortRole;
+  }
   return mediaType === 'image'
     ? 'referenceImage'
     : mediaType === 'audio'

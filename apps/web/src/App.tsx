@@ -174,6 +174,7 @@ import {
 } from './request-prompts';
 import { ReversePromptPanel } from './workspace/ReversePromptPanel';
 import { prepareGenerationRequests } from './generation-client';
+import { isUnknownVideoSubmission } from './FailureDiagnostics';
 import {
   collectEmptyNodeCandidates,
   hasRetainedResult,
@@ -318,6 +319,22 @@ type NodeRunOperation = {
   authGeneration: number;
   projectId: string;
 };
+
+/** API 只在旧视频发送状态未知且当前提交与原请求完全一致时返回该确认边界。 */
+const IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED =
+  'IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED';
+
+type UnknownVideoRecreation = { previousRunId: string };
+
+/** 只有服务端标记为发送状态未知的失败视频才走“创建新视频”保护协议。 */
+function unknownVideoRecreation(
+  node: AssetFlowNode,
+  run: RunRecord | undefined,
+): UnknownVideoRecreation | undefined {
+  if (node.data.mediaType !== 'video' || run?.status !== 'failed' || !isUnknownVideoSubmission(run))
+    return undefined;
+  return { previousRunId: run.id };
+}
 
 /** Public run responses expose only the upstream task ID, while internal records may include it in providerJob. */
 function upstreamTaskIdForRun(run: RunRecord | undefined): string | undefined {
@@ -1801,6 +1818,30 @@ function WorkspaceApp({
     },
     [removeAsset],
   );
+  const deleteAssets = useCallback(
+    async (assetsToDelete: Asset[]) => {
+      const requestedIds = [...new Set(assetsToDelete.map((asset) => asset.id))];
+      if (!requestedIds.length) return;
+      const response = await apiFetch(`${API_BASE_URL}/v1/assets/batch-delete`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ assetIds: requestedIds }),
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        deletedAssetIds?: string[];
+        missingAssetIds?: string[];
+        error?: string;
+      };
+      if (!response.ok || !Array.isArray(result.deletedAssetIds))
+        throw new Error(result.error ?? '资源批量永久删除失败');
+      for (const assetId of result.deletedAssetIds) removeAsset(assetId);
+      setNotice({
+        kind: 'success',
+        message: `已永久删除 ${result.deletedAssetIds.length} 项资源`,
+      });
+    },
+    [removeAsset, setNotice],
+  );
 
   const refreshProjects = useCallback(async (includeArchived = false) => {
     const query = includeArchived ? '?includeArchived=true' : '';
@@ -3093,6 +3134,20 @@ function WorkspaceApp({
 
   /** 转交当前资源的永久删除操作，保留原有异步处理语义。 */
   const handleDeleteAsset = useCallback((asset: Asset) => void deleteAsset(asset), [deleteAsset]);
+
+  /** 批量永久删除保留 Promise，让确认框仅在服务端确认成功后关闭。 */
+  const handleDeleteAssets = useCallback(
+    async (assetsToDelete: Asset[]) => {
+      try {
+        await deleteAssets(assetsToDelete);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '资源批量永久删除失败';
+        setNotice({ kind: 'error', message });
+        throw error;
+      }
+    },
+    [deleteAssets, setNotice],
+  );
 
   /** 手机只切换临时浮层；桌面显式切换才更新持久化收起偏好。 */
   const handleToggleResourceCollapsed = useCallback(() => {
@@ -4795,6 +4850,7 @@ function WorkspaceApp({
       promptOverride?: NodeRunPromptOverride,
       existingOperation?: NodeRunOperation,
       trigger = 'canvas-control',
+      recreation?: UnknownVideoRecreation,
     ) => {
       const currentNode = nodesRef.current.find((candidate) => candidate.id === node.id) ?? node;
       const operationId = existingOperation?.id ?? createOperationLogId('operation');
@@ -5100,7 +5156,9 @@ function WorkspaceApp({
       const submitted: Array<{ node: AssetFlowNode; run: RunRecord }> = [];
       let submissionError: string | undefined;
       try {
-        const batch = createGenerationBatch(nodeSnapshot, nodesRef.current, edgesRef.current);
+        const batch = recreation
+          ? { targets: [nodeSnapshot], nodes: nodesRef.current, edges: edgesRef.current }
+          : createGenerationBatch(nodeSnapshot, nodesRef.current, edgesRef.current);
         targets = batch.targets;
         if (targets.length > 1) {
           recordOperationLog(authUser?.id, {
@@ -5176,6 +5234,7 @@ function WorkspaceApp({
                 ...(inferenceStrength ? { inferenceStrength } : {}),
               },
               ...(promptDocument ? { promptDocument } : {}),
+              ...(recreation ? { recreateFromRunId: recreation.previousRunId } : {}),
             },
           };
         });
@@ -5204,36 +5263,62 @@ function WorkspaceApp({
             }
             nodeSnapshot = currentTarget;
             const confirmed = confirmedRequests[targetIndex]!;
-            const requestId = createOperationLogId('request');
-            const response = await apiFetch(
-              `${API_BASE_URL}${confirmed.path}`,
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  ...confirmed.body,
-                }),
-              },
-              {
-                expectedAuthGeneration: confirmed.authGeneration,
-                logContext: {
-                  requestId,
-                  operationId: operation.id,
-                  projectId: operation.projectId,
-                  nodeId: nodeSnapshot.id,
-                  mediaType: nodeSnapshot.data.mediaType,
-                  target,
-                  trigger,
+            const submit = async (body: Record<string, unknown>) => {
+              const requestId = createOperationLogId('request');
+              const response = await apiFetch(
+                `${API_BASE_URL}${confirmed.path}`,
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify(body),
                 },
-              },
-            );
-            const result = (await response.json().catch(() => ({}))) as {
+                {
+                  expectedAuthGeneration: confirmed.authGeneration,
+                  logContext: {
+                    requestId,
+                    operationId: operation.id,
+                    projectId: operation.projectId,
+                    nodeId: nodeSnapshot.id,
+                    mediaType: nodeSnapshot.data.mediaType,
+                    target,
+                    trigger,
+                  },
+                },
+              );
+              return { requestId, response };
+            };
+            let submittedRequest = await submit(confirmed.body);
+            let result = (await submittedRequest.response.json().catch(() => ({}))) as {
               run?: RunRecord;
               error?: string;
+              code?: string;
+              previousRunId?: string;
               issues?: Array<{ message?: string }>;
             };
+            if (
+              recreation &&
+              submittedRequest.response.status === 409 &&
+              result.code === IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED &&
+              result.previousRunId === recreation.previousRunId
+            ) {
+              const accepted = await modal.confirm({
+                title: '确认创建新视频',
+                content: '内容与状态未知的原请求完全一致，继续可能重复生成或计费',
+                okText: '继续创建',
+                cancelText: '取消',
+                cancelButtonProps: { autoInsertSpace: false },
+                okButtonProps: { danger: true },
+                mask: { closable: false },
+              });
+              if (!accepted || !isOperationCurrent(operation) || operation.stopRequested) return;
+              submittedRequest = await submit({
+                ...confirmed.body,
+                confirmIdenticalSubmission: true,
+              });
+              result = (await submittedRequest.response.json().catch(() => ({}))) as typeof result;
+            }
             if (!isOperationCurrent(operation)) return;
-            if (!response.ok || !result.run) {
+            if (!submittedRequest.response.ok || !result.run) {
               throw new Error(result.issues?.[0]?.message ?? result.error ?? '运行提交失败');
             }
             if (result.run.targetNodeId !== nodeSnapshot.id) {
@@ -5244,7 +5329,7 @@ function WorkspaceApp({
               category: 'generation',
               action: '运行已受理',
               operationId: operation.id,
-              requestId,
+              requestId: submittedRequest.requestId,
               projectId: operation.projectId,
               nodeId: nodeSnapshot.id,
               runId: result.run.id,
@@ -5386,6 +5471,7 @@ function WorkspaceApp({
       createGenerateNode,
       isOperationCurrent,
       isNodeBusy,
+      modal,
       nodeRunControlStore,
       pollRun,
       promoteSourceNodeToGenerate,
@@ -5612,7 +5698,14 @@ function WorkspaceApp({
 
       // 配置修改后不能继续复用旧 Run 的冻结绑定；重新走当前节点入口，
       // 让服务端基于最新画布、模型和凭据创建新的不可变快照。
-      await runNode(node, 'sameNode', undefined, undefined, 'retry');
+      await runNode(
+        node,
+        'sameNode',
+        undefined,
+        undefined,
+        'retry',
+        unknownVideoRecreation(node, previousRun),
+      );
     },
     [runNode],
   );
@@ -6416,6 +6509,7 @@ function WorkspaceApp({
               onRenameAsset={handleRenameAsset}
               onArchiveAsset={handleArchiveAsset}
               onDeleteAsset={handleDeleteAsset}
+              onDeleteAssets={handleDeleteAssets}
               onDrop={handleResourceDrop}
               onToggleCollapsed={handleToggleResourceCollapsed}
               uploadInputRef={uploadInputRef}

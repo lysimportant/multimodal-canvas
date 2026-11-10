@@ -1724,6 +1724,22 @@ describe('video mode ports', () => {
       videoInputRoleForPromptMention('image', 'omni_reference', 'grok-imagine-video-1.5.1'),
     ).toBe('referenceImage');
     expect(
+      videoInputRoleForPromptMention('image', 'omni_reference', 'grok-imagine-video-1.5.1', {
+        semanticRole: 'character',
+      }),
+    ).toBe('character');
+    expect(
+      videoInputRoleForPromptMention('image', 'omni_reference', 'grok-imagine-video-1.5.1', {
+        binding: { semanticRole: 'style' },
+      }),
+    ).toBe('style');
+    expect(
+      videoInputRoleForPromptMention('image', 'omni_reference', 'grok-imagine-video-1.5.1', {
+        semanticRole: 'not-a-port-role',
+        binding: { semanticRole: 'also-not-a-port-role' },
+      }),
+    ).toBe('referenceImage');
+    expect(
       videoInputRoleForPromptMention('video', 'omni_reference', 'grok-imagine-video-1.5.1'),
     ).toBe('content');
     expect(videoModeForPromptMentions('text_to_video', true)).toBe('text_to_video');

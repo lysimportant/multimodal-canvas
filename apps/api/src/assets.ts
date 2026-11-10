@@ -1603,9 +1603,13 @@ export class PrismaAssetStore implements AssetStore {
       where: { assetId: id },
       select: { contentKey: true },
     });
+    const keys = new Set<string>();
+    for (const source of [row.contentKey, ...versions.map((version) => version.contentKey)]) {
+      for (const key of this.managedKeys(source)) keys.add(key);
+    }
     await this.prisma.asset.delete({ where: { id } });
     await Promise.all(
-      [row.contentKey, ...versions.map((v) => v.contentKey)].map((key) =>
+      [...keys].map((key) =>
         this.blobStore.delete(key).catch((error: unknown) => {
           // 元数据已删除，此处失败只会留下无引用对象；记录下来交给孤儿回收器处理。
           console.warn('[asset] 对象删除失败，已留下孤立对象', { assetId: id, key }, error);

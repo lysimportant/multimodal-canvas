@@ -46,10 +46,16 @@ describe('画布 MCP 工具契约', () => {
       '更换角色或服装时，只替换身份/面部锚点',
     );
     expect(byName.get('apply_canvas_operations')?.description).toContain('纵向铺满全高');
-    expect(byName.get('apply_canvas_operations')?.description).toContain('每栏上边界水平落在肩线/衣料肩线');
-    expect(byName.get('apply_canvas_operations')?.description).toContain('头脸、颈部、发际线与发型均位于画框之外');
+    expect(byName.get('apply_canvas_operations')?.description).toContain(
+      '每栏上边界水平落在肩线/衣料肩线',
+    );
+    expect(byName.get('apply_canvas_operations')?.description).toContain(
+      '头脸、颈部、发际线与发型均位于画框之外',
+    );
     expect(byName.get('apply_canvas_operations')?.description).toContain('人体采用自然成人比例');
-    expect(byName.get('apply_canvas_operations')?.description).toContain('不另设材质球或服饰样本区');
+    expect(byName.get('apply_canvas_operations')?.description).toContain(
+      '不另设材质球或服饰样本区',
+    );
     expect(byName.get('apply_canvas_operations')?.description).toContain('颜色保持清晰、有层次');
     expect(byName.get('apply_canvas_operations')?.description).toContain(
       '背景为纯白纯色（#FFFFFF）',
@@ -67,7 +73,10 @@ describe('画布 MCP 工具契约', () => {
     expect(edit).toContain('台词行、声音：<…>、环境：…');
     expect(edit).toContain('禁止多指与手指粘连');
     expect(edit).toContain('禁止画面崩坏与镜头漂移');
-    expect(edit).toContain('minimax-h3-1 使用通用 Image N');
+    expect(edit).toContain('minimax-h3-1 自动使用 H3 的 <Picture N>');
+    expect(edit).toContain('重复 mention 复用同一编号和发送项');
+    expect(edit).toContain('不同版本或用途保持独立');
+    expect(edit).not.toContain('minimax-h3-1 使用通用 Image N');
     expect(edit).toContain('属于预览、提交或外部裸文本的输出语法');
     expect(edit).toContain('画布编辑态不手写');
     expect(edit).toContain('通用、Seedance、Wan3、H3 的默认画布稿与普通文本稿统一按三段式');

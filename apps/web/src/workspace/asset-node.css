@@ -271,9 +271,9 @@
 .flow-node-side-controls {
   align-items: center;
   box-sizing: border-box;
-  display: grid;
-  gap: 0;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  display: flex;
+  gap: 1px;
+  justify-content: flex-end;
   left: auto;
   max-width: 50%;
   opacity: 1;
@@ -285,7 +285,7 @@
   transform: scale(var(--flow-node-inverse-zoom, 1));
   transform-origin: top right;
   visibility: visible;
-  width: 50%;
+  width: max-content;
   z-index: 7;
 }
 
@@ -301,13 +301,18 @@
   border-radius: 6px;
   color: var(--mc-text-muted);
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 1 26px;
   height: 26px;
   justify-content: center;
   margin: 0;
+  max-width: 26px;
   min-width: 0;
   padding: 0;
-  width: 100%;
+  width: 26px;
+}
+
+.flow-node-side-controls .flow-node-action-button svg {
+  max-width: 100%;
 }
 
 .flow-node-side-controls

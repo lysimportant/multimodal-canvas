@@ -36,8 +36,39 @@
 }
 
 .resource-drawer > .search-field,
+.resource-drawer > .resource-selection-toolbar,
 .resource-drawer > .upload-progress {
   flex: 0 0 auto;
+}
+
+.resource-selection-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.resource-selection-toolbar .ant-checkbox-wrapper {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.resource-batch-delete-button {
+  align-items: center;
+  color: var(--mc-danger, #b42318);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 4px;
+  min-width: 0;
+  padding-inline: 7px;
+}
+
+.asset-select-checkbox {
+  align-self: flex-start;
+  flex: 0 0 auto;
+  margin-top: 10px;
 }
 
 .resource-drawer > .asset-list {
@@ -80,6 +111,7 @@
   text-align: center;
 }
 
+.resource-drawer.is-collapsed > .resource-selection-toolbar,
 .resource-drawer.is-collapsed > .resource-pagination {
   display: none;
 }

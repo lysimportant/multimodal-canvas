@@ -51,6 +51,22 @@ describe('video prompt references', () => {
     expect(document).toEqual(before);
   });
 
+  it('uses a mention semantic role when matching the connected input identity', () => {
+    const characterMention = { ...mention, semanticRole: 'character' };
+    const refs = buildVideoPromptReferences(
+      [{ ...mention, role: 'character', mediaType: 'image' as const }],
+      'h3',
+    );
+    const document: PromptDocument = { version: 1, blocks: [characterMention] };
+
+    expect(
+      renderVideoPromptReferenceDocument(document, refs, {
+        modelAlias: 'minimax-h3-1',
+        videoMode: 'omni_reference',
+      }).blocks,
+    ).toEqual([{ type: 'text', text: '<Picture 1>' }]);
+  });
+
   it('lets a node override the automatic token family', () => {
     expect(videoPromptTokenFamilyForNode('mt-h3', undefined)).toBe('h3');
     expect(videoPromptTokenFamilyForNode('mt-h3', 'wan')).toBe('wan');

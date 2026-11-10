@@ -8,6 +8,7 @@ import {
   MemoryRunService,
   resolveRunQueueRetryPolicy,
   snapshotFingerprint,
+  submissionContentFingerprint,
   type RunExecutorRequest,
 } from './runs';
 import { runSnapshotFingerprintMaterial, type CanvasDocument } from '@multimodal-canvas/domain';
@@ -666,6 +667,176 @@ describe('disabled canvas nodes', () => {
     expect(() => createRunSnapshot('project_1', canvas, 'disabled_target')).toThrow(
       'disabled nodes cannot be run',
     );
+  });
+});
+
+describe('manual video recreation submission identity', () => {
+  function videoSubmissionSnapshot() {
+    return createRunSnapshot(
+      'project_video_submission',
+      {
+        revision: 7,
+        nodes: [
+          {
+            id: 'reference_image',
+            type: 'image',
+            position: { x: 10, y: 20 },
+            width: 320,
+            height: 180,
+            data: {
+              label: 'Reference image',
+              mediaType: 'image',
+              mode: 'source',
+              assetId: 'asset_reference',
+              contentUrl: '/v1/assets/asset_reference/versions/3/content?signature=old',
+              mimeType: 'image/png',
+            },
+          },
+          {
+            id: 'video_target',
+            type: 'video',
+            position: { x: 500, y: 20 },
+            width: 480,
+            height: 270,
+            data: {
+              label: 'Video target',
+              mediaType: 'video',
+              mode: 'generate',
+              prompt: '人物转身看向镜头',
+              parameters: { duration: 30, resolution: '1080p' },
+              modelAlias: 'video-model',
+            },
+          },
+          {
+            id: 'style_image',
+            type: 'image',
+            position: { x: 10, y: 400 },
+            data: {
+              label: 'Style image',
+              mediaType: 'image',
+              mode: 'source',
+              assetId: 'asset_style',
+              contentUrl: '/v1/assets/asset_style/versions/2/content?signature=old',
+              mimeType: 'image/png',
+            },
+          },
+        ],
+        edges: [
+          {
+            id: 'edge_reference',
+            sourceNodeId: 'reference_image',
+            sourceHandle: 'output:image',
+            targetNodeId: 'video_target',
+            targetHandle: 'input:content',
+            order: 0,
+          },
+          {
+            id: 'edge_style',
+            sourceNodeId: 'style_image',
+            sourceHandle: 'output:image',
+            targetNodeId: 'video_target',
+            targetHandle: 'input:style',
+            order: 1,
+          },
+        ],
+      },
+      'video_target',
+      {
+        modelAlias: 'video-model',
+        frozenAssetRefs: {
+          reference_image: {
+            assetId: 'asset_reference',
+            version: 3,
+            contentUrl: '/v1/assets/asset_reference/versions/3/content?signature=old',
+          },
+          style_image: {
+            assetId: 'asset_style',
+            version: 2,
+            contentUrl: '/v1/assets/asset_style/versions/2/content?signature=old',
+          },
+        },
+      },
+    );
+  }
+
+  it('ignores canvas and result-display metadata, including temporary content URLs', () => {
+    const first = videoSubmissionSnapshot();
+    const equivalent = structuredClone(first);
+    equivalent.canvasRevision += 1;
+    equivalent.submittedAt = '2026-11-09T12:00:00.000Z';
+    equivalent.nodes[0]!.position = { x: 999, y: 888 };
+    equivalent.nodes[0]!.width = 640;
+    equivalent.nodes[0]!.height = 360;
+    equivalent.nodes[0]!.data.label = 'Renamed reference';
+    equivalent.nodes[0]!.data.contentUrl =
+      'https://temporary.example.test/reference.png?signature=new';
+    equivalent.inputs[0]!.snapshot.position = { x: -1, y: -2 };
+    equivalent.inputs[0]!.snapshot.data.label = 'Renamed input';
+    equivalent.inputs[0]!.snapshot.data.contentUrl =
+      'https://temporary.example.test/input.png?signature=new';
+    equivalent.edges[0]!.id = 'edge_ui_recreated';
+    equivalent.credentialId = 'credential-refreshed';
+    equivalent.credentialVersion = 9;
+    equivalent.nodeCredentialReferences = {
+      video_target: { credentialId: 'credential-refreshed', credentialVersion: 9 },
+    };
+    const target = equivalent.nodes.find((node) => node.id === 'video_target')!;
+    target.data.credentialId = 'credential-refreshed';
+    target.data.generationCount = 4;
+    target.data.promptSkillId = 'director-skill';
+    target.data.completionAction = 'create_asset';
+    equivalent.nodes.reverse();
+    equivalent.edges.reverse();
+
+    expect(submissionContentFingerprint(equivalent)).toBe(submissionContentFingerprint(first));
+  });
+
+  it.each([
+    [
+      'prompt',
+      (value: ReturnType<typeof videoSubmissionSnapshot>) => {
+        value.nodes.find((node) => node.id === 'video_target')!.data.promptDocument = {
+          version: 1,
+          blocks: [{ type: 'text', text: '人物向前奔跑' }],
+        };
+      },
+    ],
+    [
+      'model',
+      (value: ReturnType<typeof videoSubmissionSnapshot>) => {
+        value.modelAlias = 'different-video-model';
+      },
+    ],
+    [
+      'parameter',
+      (value: ReturnType<typeof videoSubmissionSnapshot>) => {
+        value.parameters.duration = 15;
+      },
+    ],
+    [
+      'asset version',
+      (value: ReturnType<typeof videoSubmissionSnapshot>) => {
+        value.inputs[0]!.sourceAssetVersion = 4;
+      },
+    ],
+    [
+      'asset use',
+      (value: ReturnType<typeof videoSubmissionSnapshot>) => {
+        value.inputs[0]!.role = 'firstFrame';
+      },
+    ],
+    [
+      'asset order',
+      (value: ReturnType<typeof videoSubmissionSnapshot>) => {
+        value.inputs[0]!.sortOrder = 1;
+      },
+    ],
+  ] as const)('changes the fingerprint when %s changes', (_name, mutate) => {
+    const first = videoSubmissionSnapshot();
+    const changed = structuredClone(first);
+    mutate(changed);
+
+    expect(submissionContentFingerprint(changed)).not.toBe(submissionContentFingerprint(first));
   });
 });
 

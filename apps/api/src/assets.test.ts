@@ -408,6 +408,46 @@ describe('PrismaAssetStore', () => {
     expect((await store.setArchived(created.id, false))?.status).toBe('ready');
   });
 
+  it('deletes every managed source and derivative key without trusting metadata object keys', async () => {
+    const blobStore = new MemoryBlobStore();
+    const prisma = createFakePrisma();
+    const store = new PrismaAssetStore(prisma as never, {
+      blobStore,
+      projectId: 'project-1',
+    });
+    const created = await store.create({
+      name: 'source.mp4',
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      content: Buffer.from('version-one'),
+      metadata: { objectKey: 'unmanaged/keep-me' },
+    });
+    await store.createVersion(created.id, { content: Buffer.from('version-two') });
+
+    const sources = [`assets/${created.id}/v1`, `assets/${created.id}/v2`];
+    const derivativeKinds = ['thumbnail', 'poster', 'waveform', 'final_frame'];
+    const managedKeys = new Set(sources);
+    for (const source of sources) {
+      for (const kind of derivativeKinds) {
+        for (const key of [`${source}.derivatives/${kind}`, `${source}/derivatives/${kind}`]) {
+          managedKeys.add(key);
+          await blobStore.put(key, Buffer.from(key));
+        }
+      }
+    }
+    await blobStore.put('unmanaged/keep-me', Buffer.from('keep'));
+    const remove = vi.spyOn(blobStore, 'delete');
+
+    expect(await store.delete(created.id, { projectId: 'other-project' })).toBe(false);
+    expect(remove).not.toHaveBeenCalled();
+    expect(await store.delete(created.id, { projectId: 'project-1' })).toBe(true);
+
+    expect(new Set(remove.mock.calls.map(([key]) => key))).toEqual(managedKeys);
+    for (const key of managedKeys) expect(await blobStore.get(key)).toBeUndefined();
+    expect(await blobStore.get('unmanaged/keep-me')).toEqual(Buffer.from('keep'));
+    expect(prisma.asset.delete).toHaveBeenCalledExactlyOnceWith({ where: { id: created.id } });
+  });
+
   it('does not expose assets from another project', async () => {
     const prisma = createFakePrisma();
     const store = new PrismaAssetStore(prisma as never, {
@@ -558,6 +598,15 @@ function createFakePrisma() {
       const row = assets.get(where.id);
       if (!row) throw new Error('not found');
       Object.assign(row, data, { updatedAt: now() });
+      return row;
+    }),
+    delete: vi.fn(async ({ where }: { where: { id: string } }) => {
+      const row = assets.get(where.id);
+      if (!row) throw new Error('not found');
+      assets.delete(where.id);
+      for (const [key, version] of versions) {
+        if (version.assetId === where.id) versions.delete(key);
+      }
       return row;
     }),
   };

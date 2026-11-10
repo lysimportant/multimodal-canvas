@@ -76,6 +76,13 @@ vi.mock('./workspace/ResourcePanel', () => ({
         >
           永久删除本页末项
         </button>
+        <button
+          type="button"
+          disabled={props.assets.length < 2 || !props.onDeleteAssets}
+          onClick={() => void props.onDeleteAssets?.(props.assets.slice(0, 2))}
+        >
+          批量永久删除本页前两项
+        </button>
         <output aria-label="当前资源页">{props.assets.map((asset) => asset.id).join(',')}</output>
       </section>
     );
@@ -248,6 +255,17 @@ function installApi() {
       if (path === `/v1/projects/${project.id}/canvas` && method === 'PATCH') {
         canvas = { ...body, revision: canvas.revision + 1 } as CanvasDocument;
         return Response.json({ canvas });
+      }
+      if (path === '/v1/assets/batch-delete' && method === 'POST') {
+        const assetIds = Array.isArray(body?.assetIds)
+          ? body.assetIds.filter((id): id is string => typeof id === 'string')
+          : [];
+        const existingIds = new Set(catalog.map((entry) => entry.id));
+        const deletedAssetIds = assetIds.filter((id) => existingIds.has(id));
+        const missingAssetIds = assetIds.filter((id) => !existingIds.has(id));
+        const deleted = new Set(deletedAssetIds);
+        catalog = catalog.filter((entry) => !deleted.has(entry.id));
+        return Response.json({ deletedAssetIds, missingAssetIds });
       }
       const assetRoute = /^\/v1\/assets\/([^/]+)(?:\/(archive|restore))?$/.exec(path);
       if (assetRoute) {
@@ -530,6 +548,28 @@ describe('App 资源分页集成', () => {
     expect(view.canvas!.nodes.find((node) => node.id === 'restored-source')?.data.assetId).toBe(
       'archived-51',
     );
+    expectEditsPreserved();
+  });
+
+  it('可用资源通过批量接口直接永久删除，并刷新当前页与已知资源索引', async () => {
+    catalog = Array.from({ length: 3 }, (_, i) => makeAsset(i + 1));
+    await renderApp(3);
+    editCanvas();
+    const beforeDelete = assetReads().length;
+    fireEvent.click(screen.getByRole('button', { name: '批量永久删除本页前两项' }));
+    await expectPage(1, 1);
+    expect(view.resource!.assets.map((entry) => entry.id)).toEqual(['ready-3']);
+    expect(
+      requests
+        .filter(
+          ({ method, url }) => method === 'POST' && url.pathname === '/v1/assets/batch-delete',
+        )
+        .map(({ body }) => body),
+    ).toEqual([{ assetIds: ['ready-1', 'ready-2'] }]);
+    expect(assetReads().slice(beforeDelete)).toHaveLength(1);
+    expect(view.canvas!.assets!.some((entry) => entry.id === 'ready-1')).toBe(false);
+    expect(view.canvas!.assets!.some((entry) => entry.id === 'ready-2')).toBe(false);
+    expect(view.canvas!.assets!.some((entry) => entry.id === 'ready-3')).toBe(true);
     expectEditsPreserved();
   });
 

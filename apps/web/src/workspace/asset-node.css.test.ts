@@ -97,7 +97,7 @@ describe('asset node floating controls CSS contracts', () => {
     expect(normalizedCss).toMatch(/\.flow-node-action-label \{[^}]*display: inline;/);
   });
 
-  it('节点顶部左右控件垂直居中，右侧图标栏常显且不超出卡片', () => {
+  it('节点顶部左右控件垂直居中，右侧图标栏紧凑贴右且不超出卡片', () => {
     const labelRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-external-label {'))
       .split('}')[0];
@@ -107,12 +107,12 @@ describe('asset node floating controls CSS contracts', () => {
     expect(sideRule).toContain('position: absolute;');
     expect(sideRule).toContain('right: 0;');
     expect(sideRule).toContain('top: calc(-26px * var(--flow-node-inverse-zoom, 1));');
-    expect(sideRule).toContain('display: grid;');
-    expect(sideRule).toContain('grid-template-columns: repeat(6, minmax(0, 1fr));');
+    expect(sideRule).toContain('display: flex;');
+    expect(sideRule).toContain('justify-content: flex-end;');
     expect(sideRule).toContain('max-width: 50%;');
     expect(sideRule).toContain('overflow: hidden;');
-    expect(sideRule).toContain('width: 50%;');
-    expect(sideRule).toContain('gap: 0;');
+    expect(sideRule).toContain('width: max-content;');
+    expect(sideRule).toContain('gap: 1px;');
     expect(sideRule).toContain('opacity: 1;');
     expect(sideRule).toContain('pointer-events: auto;');
     expect(sideRule).toContain('visibility: visible;');
@@ -130,10 +130,13 @@ describe('asset node floating controls CSS contracts', () => {
     const actionRule = normalizedCss
       .slice(normalizedCss.indexOf('.flow-node-side-controls .flow-node-action-button,'))
       .split('}')[0];
-    expect(actionRule).toContain('flex: 0 1 auto;');
+    expect(actionRule).toContain('flex: 0 1 26px;');
     expect(actionRule).toContain('height: 26px;');
     expect(actionRule).toContain('min-width: 0;');
-    expect(actionRule).toContain('width: 100%;');
+    expect(actionRule).toContain('width: 26px;');
+    expect(normalizedCss).toMatch(
+      /\.flow-node-side-controls \.flow-node-action-button svg \{[^}]*max-width: 100%;/,
+    );
   });
 });
 

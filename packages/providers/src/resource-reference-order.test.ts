@@ -121,7 +121,13 @@ function snapshotFor(mediaType: 'image' | 'video'): RunSnapshot {
 /** 按正文顺序注入冻结提及及水合内容；重复资产仍有独立 mentionId/blockOrder。 */
 function addMentions(
   snapshot: RunSnapshot,
-  sources: readonly { assetId: string; assetVersion: number; mediaType?: MediaType }[],
+  sources: readonly {
+    assetId: string;
+    assetVersion: number;
+    mediaType?: MediaType;
+    semanticRole?: PortRole;
+    binding?: { semanticRole?: string };
+  }[],
 ): void {
   const mentions = sources.map((source, index) => ({
     ...source,
@@ -238,55 +244,189 @@ describe('视频内联引用模型编号', () => {
     return snapshot;
   }
 
-  it.each(['/seadanco2.5/KL', '/future/channel-model', 'wan3.0-video'])(
-    '%s 按渠道契约编号并保留混合媒体顺序',
-    async (model) => {
-      const snapshot = channelSnapshot(model);
-      addMentions(snapshot, [
-        { assetId: 'a', assetVersion: 1 },
-        { assetId: 'b', assetVersion: 1 },
-        { assetId: 'clip', assetVersion: 1, mediaType: 'video' },
-        { assetId: 'voice', assetVersion: 1, mediaType: 'audio' },
-        { assetId: 'a', assetVersion: 1 },
-      ]);
-      snapshot.nodes[0]!.data.resourceRefs = [reference('b', 1), reference('a', 1)];
-      snapshot.nodes[0]!.data.promptDocument!.blocks =
-        snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
-          block.type === 'mention'
-            ? { ...block, inline: true, contentUrl: `https://assets.invalid/${block.assetId}` }
-            : block,
-        );
-      const before = structuredClone(snapshot);
-      const { body, record } = await captureVideo(snapshot);
-      expect(body.prompt).toBe('Use Image 2 / Image 1 / Video 1 / Audio 1 / Image 2 / ');
-      expect(body.metadata.content).toEqual([
-        { type: 'text', text: body.prompt },
+  it('minimax-h3-1 使用 H3 专用参数体并保留冻结图片清单', async () => {
+    const snapshot = channelSnapshot('minimax-h3-1');
+    snapshot.parameters = { duration: 30, aspectRatio: '9:16', resolution: '768p' };
+    const input = linkedInput('h3-reference', 1, 0);
+    input.snapshot.data.contentUrl = 'https://assets.example.com/h3-reference.png';
+    snapshot.inputs = [input];
+
+    const { body, record } = await captureVideo(snapshot);
+
+    expect(body.seconds).toBe('30');
+    expect(body.duration).toBe(30);
+    expect(body.metadata).toMatchObject({
+      resolution: '768P',
+      ratio: '9:16',
+      content: [
+        { type: 'text', text: 'Keep the scene.' },
         {
           type: 'image_url',
           role: 'reference_image',
-          image_url: { url: 'https://assets.invalid/b' },
+          image_url: { url: 'https://assets.example.com/h3-reference.png' },
         },
-        {
-          type: 'image_url',
-          role: 'reference_image',
-          image_url: { url: 'https://assets.invalid/a' },
-        },
-        {
-          type: 'video_url',
-          role: 'reference_video',
-          video_url: { url: 'https://assets.invalid/clip' },
-        },
-        {
-          type: 'audio_url',
-          role: 'reference_audio',
-          audio_url: { url: 'https://assets.invalid/voice' },
-        },
-      ]);
-      expect(body.reference_images).toBeUndefined();
-      expect(record.resources.map((item) => item.assetId)).toEqual(['b', 'a', 'clip', 'voice']);
-      expect(snapshot).toEqual(before);
-    },
-  );
+      ],
+    });
+    expect(body).not.toHaveProperty('resolution');
+    expect(body).not.toHaveProperty('aspect_ratio');
+    expect(record.resources).toEqual([
+      {
+        assetId: 'h3-reference',
+        assetVersion: 1,
+        name: 'h3-reference',
+        mediaType: 'image',
+        role: 'referenceImage',
+        sortOrder: 0,
+      },
+    ]);
+  });
+
+  it('minimax-h3-1 的 25 次提及复用 5 张冻结图片编号和唯一媒体清单', async () => {
+    const snapshot = channelSnapshot('minimax-h3-1');
+    snapshot.parameters = { duration: 30, aspectRatio: '16:9', resolution: '1080p' };
+    const uniqueImages = Array.from({ length: 5 }, (_, index) => ({
+      assetId: `h3-person-${index + 1}`,
+      assetVersion: 1,
+    }));
+    addMentions(snapshot, Array.from({ length: 5 }, () => uniqueImages).flat());
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? {
+              ...block,
+              inline: true,
+              contentUrl: `https://assets.example.com/${block.assetId}.png`,
+            }
+          : block,
+      );
+
+    const { body, record } = await captureVideo(snapshot);
+
+    const pictureNumbers = [...body.prompt.matchAll(/<Picture (\d+)>/g)].map((match) =>
+      Number(match[1]),
+    );
+    expect(pictureNumbers).toHaveLength(25);
+    expect(pictureNumbers).toEqual(Array.from({ length: 5 }, () => [1, 2, 3, 4, 5]).flat());
+    expect(Math.max(...pictureNumbers)).toBe(5);
+    expect(
+      body.metadata.content.filter((item: { type: string }) => item.type === 'image_url'),
+    ).toHaveLength(5);
+    expect(record.resources).toHaveLength(5);
+    expect(record.resources.map((item) => item.assetId)).toEqual(
+      uniqueImages.map((item) => item.assetId),
+    );
+  });
+
+  it('minimax-h3-1 按正文语义角色复用三张 character 和两张 referenceImage', async () => {
+    const snapshot = channelSnapshot('minimax-h3-1');
+    snapshot.parameters = { duration: 30, aspectRatio: '16:9', resolution: '1080p' };
+    const sources = Array.from({ length: 5 }, (_, index) => ({
+      assetId: `role-image-${index + 1}`,
+      assetVersion: 1,
+      semanticRole: index < 3 ? ('character' as const) : ('referenceImage' as const),
+    }));
+    snapshot.inputs = sources.map((source, index) => {
+      const input = linkedInput(source.assetId, source.assetVersion, index, source.semanticRole);
+      input.snapshot.data.contentUrl = `https://assets.example.com/${source.assetId}.png`;
+      return input;
+    });
+    addMentions(snapshot, Array.from({ length: 5 }, () => sources).flat());
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? {
+              ...block,
+              inline: true,
+              contentUrl: `https://assets.example.com/${block.assetId}.png`,
+            }
+          : block,
+      );
+
+    const { body, record } = await captureVideo(snapshot);
+
+    expect([...body.prompt.matchAll(/<Picture (\d+)>/g)].map((match) => Number(match[1]))).toEqual(
+      Array.from({ length: 5 }, () => [1, 2, 3, 4, 5]).flat(),
+    );
+    expect(
+      body.metadata.content.filter((item: { type: string }) => item.type === 'image_url'),
+    ).toHaveLength(5);
+    expect(record.resources.map((item) => [item.assetId, item.role])).toEqual(
+      sources.map((source) => [source.assetId, source.semanticRole]),
+    );
+  });
+
+  it('冻结引用能力不覆盖节点显式选择的编号语法', async () => {
+    const snapshot = channelSnapshot('minimax-h3-1');
+    snapshot.parameters = { duration: 30, resolution: '768p' };
+    snapshot.nodes[0]!.data.videoReferenceSyntax = 'generic';
+    addMentions(snapshot, [{ assetId: 'h3-override', assetVersion: 1 }]);
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? {
+              ...block,
+              inline: true,
+              contentUrl: 'https://assets.example.com/h3-override.png',
+            }
+          : block,
+      );
+
+    const { body } = await captureVideo(snapshot);
+
+    expect(body.prompt).toBe('Use Image 1 / ');
+    expect(body.metadata.content).toHaveLength(2);
+  });
+
+  it.each([
+    ['/seadanco2.5/KL', 'Use Image 2 / Image 1 / Video 1 / Audio 1 / Image 2 / '],
+    ['/future/channel-model', 'Use Image 2 / Image 1 / Video 1 / Audio 1 / Image 2 / '],
+    ['wan3.0-video', 'Use 图2 / 图1 / 视频1 / 音频1 / 图2 / '],
+  ])('%s 按渠道契约编号并保留混合媒体顺序', async (model, expectedPrompt) => {
+    const snapshot = channelSnapshot(model);
+    addMentions(snapshot, [
+      { assetId: 'a', assetVersion: 1 },
+      { assetId: 'b', assetVersion: 1 },
+      { assetId: 'clip', assetVersion: 1, mediaType: 'video' },
+      { assetId: 'voice', assetVersion: 1, mediaType: 'audio' },
+      { assetId: 'a', assetVersion: 1 },
+    ]);
+    snapshot.nodes[0]!.data.resourceRefs = [reference('b', 1), reference('a', 1)];
+    snapshot.nodes[0]!.data.promptDocument!.blocks =
+      snapshot.nodes[0]!.data.promptDocument!.blocks.map((block) =>
+        block.type === 'mention'
+          ? { ...block, inline: true, contentUrl: `https://assets.invalid/${block.assetId}` }
+          : block,
+      );
+    const before = structuredClone(snapshot);
+    const { body, record } = await captureVideo(snapshot);
+    expect(body.prompt).toBe(expectedPrompt);
+    expect(body.metadata.content).toEqual([
+      { type: 'text', text: body.prompt },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/b' },
+      },
+      {
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: 'https://assets.invalid/a' },
+      },
+      {
+        type: 'video_url',
+        role: 'reference_video',
+        video_url: { url: 'https://assets.invalid/clip' },
+      },
+      {
+        type: 'audio_url',
+        role: 'reference_audio',
+        audio_url: { url: 'https://assets.invalid/voice' },
+      },
+    ]);
+    expect(body.reference_images).toBeUndefined();
+    expect(record.resources.map((item) => item.assetId)).toEqual(['b', 'a', 'clip', 'voice']);
+    expect(snapshot).toEqual(before);
+  });
 
   it('完整发送目录声明的 30/10/10 个素材', async () => {
     const snapshot = channelSnapshot();

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { PromptDocument } from '@multimodal-canvas/domain';
-import { videoPromptReferenceLabels } from './video-prompt-reference-labels';
+import type { PromptDocument, VideoReferenceCapability } from '@multimodal-canvas/domain';
+import {
+  collectVideoPromptReferences,
+  videoPromptReferenceLabels,
+} from './video-prompt-reference-labels';
+import { previewVideoPrompt } from './video-prompt-preview';
 import { collectConnectedPromptAssets, type ConnectedPromptAsset } from './connected-prompt-assets';
 import type { AssetFlowNode, FlowEdge } from '../canvas-utils';
 
@@ -9,6 +13,7 @@ function mention(
   mediaType: 'image' | 'video' | 'audio' = 'image',
   version = 1,
   id = assetId,
+  semanticRole?: string,
 ): PromptDocument['blocks'][number] {
   return {
     type: 'mention',
@@ -18,10 +23,20 @@ function mention(
     assetVersion: version,
     mediaType,
     label: assetId,
+    ...(semanticRole ? { semanticRole } : {}),
   };
 }
 
 describe('video prompt reference labels', () => {
+  const videoReferences: VideoReferenceCapability = {
+    version: 1,
+    adapter: 'seedance-video',
+    maxImages: 30,
+    maxVideos: 10,
+    maxAudios: 10,
+    tokenSyntax: 'numbered-media',
+  };
+
   it('counts mixed media independently and reuses repeated references after resource ordering', () => {
     const labels = videoPromptReferenceLabels(
       { modelAlias: 'wan3.0-video', videoMode: 'omni_reference' },
@@ -146,4 +161,104 @@ describe('video prompt reference labels', () => {
       { nodeId: 'a', role: 'firstFrame', sortOrder: 0 },
     ]);
   });
+
+  it('reuses five H3 image numbers across 25 cross-shot mentions when capability exists', () => {
+    const blocks: PromptDocument['blocks'] = [];
+    let expectedPrompt = '';
+    for (let shot = 1; shot <= 5; shot += 1) {
+      blocks.push({ type: 'text', text: `【镜头${shot}】` });
+      expectedPrompt += `【镜头${shot}】`;
+      for (let imageIndex = 1; imageIndex <= 5; imageIndex += 1) {
+        blocks.push(mention(`image-${imageIndex}`, 'image', 1, `shot-${shot}-image-${imageIndex}`));
+        expectedPrompt += `<Picture ${imageIndex}>`;
+      }
+    }
+
+    const context = {
+      modelAlias: 'minimax-h3-1',
+      videoMode: 'omni_reference' as const,
+      videoReferences,
+    };
+    const document: PromptDocument = { version: 1, blocks };
+    const references = collectVideoPromptReferences(context, document);
+
+    expect(blocks.filter((block) => block.type === 'mention')).toHaveLength(25);
+    expect(previewVideoPrompt(document, context)).toBe(expectedPrompt);
+    expect(references).toHaveLength(5);
+    expect(references.map((reference) => reference.token)).toEqual([
+      '<Picture 1>',
+      '<Picture 2>',
+      '<Picture 3>',
+      '<Picture 4>',
+      '<Picture 5>',
+    ]);
+    expect(references.map((reference) => reference.assetId)).toEqual([
+      'image-1',
+      'image-2',
+      'image-3',
+      'image-4',
+      'image-5',
+    ]);
+  });
+
+  it('reuses connected character and reference roles instead of creating H3 images 6-8', () => {
+    const connected: ConnectedPromptAsset[] = Array.from({ length: 5 }, (_, index) => ({
+      id: `asset-${index + 1}`,
+      name: `Asset ${index + 1}`,
+      mediaType: 'image',
+      assetVersion: 1,
+      videoInputBindings: [
+        {
+          nodeId: `connected-${index + 1}`,
+          role: index < 3 ? ('character' as const) : ('referenceImage' as const),
+          sortOrder: index,
+        },
+      ],
+    }));
+    const blocks: PromptDocument['blocks'] = [];
+    let expectedPrompt = '';
+    for (let shot = 1; shot <= 5; shot += 1) {
+      blocks.push({ type: 'text', text: `镜头${shot}：` });
+      expectedPrompt += `镜头${shot}：`;
+      for (let imageIndex = 1; imageIndex <= 5; imageIndex += 1) {
+        const role = imageIndex <= 3 ? 'character' : 'referenceImage';
+        blocks.push(mention(`asset-${imageIndex}`, 'image', 1, `role-${shot}-${imageIndex}`, role));
+        expectedPrompt += `<Picture ${imageIndex}>`;
+      }
+    }
+    const document: PromptDocument = { version: 1, blocks };
+    const context = { modelAlias: 'minimax-h3-1', videoMode: 'omni_reference' as const };
+    const references = collectVideoPromptReferences(context, document, connected);
+
+    expect(previewVideoPrompt(document, context, connected)).toBe(expectedPrompt);
+    expect(references).toHaveLength(5);
+    expect(references.map((reference) => reference.token)).toEqual([
+      '<Picture 1>',
+      '<Picture 2>',
+      '<Picture 3>',
+      '<Picture 4>',
+      '<Picture 5>',
+    ]);
+  });
+
+  it.each([
+    ['unknown-video-model', undefined, 'Image 1'],
+    ['doubao-seedance-2-5-260628', undefined, '图 1'],
+    ['wan3.0-video', undefined, '图1'],
+    ['minimax-h3-1', 'wan' as const, '图1'],
+  ])(
+    'uses the automatic family for %s and keeps explicit syntax %s authoritative',
+    (modelAlias, videoReferenceSyntax, token) => {
+      const [reference] = collectVideoPromptReferences(
+        {
+          modelAlias,
+          videoMode: 'omni_reference',
+          videoReferences,
+          videoReferenceSyntax,
+        },
+        { version: 1, blocks: [mention('image')] },
+      );
+      expect(reference?.token).toBe(token);
+    },
+  );
 });

@@ -658,6 +658,77 @@ describe('asset endpoints', () => {
     expect(content.rawPayload.toString()).toBe('hello');
   });
 
+  it('batch-deletes unique assets in the current owner scope without exposing other owners', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('API_AUTH_TOKEN', '');
+    vi.stubEnv('API_JWT_SECRET', 'asset-batch-delete-secret');
+    const assetStore = new MemoryAssetStore();
+    const mail = new TestAuthContext();
+    const scopedApp = buildApp({ logger: false, assetStore, ...mail.appOptions });
+    try {
+      const register = async (email: string) => {
+        const response = await issueTestSession(scopedApp, mail, {
+          email,
+          password: 'strong-password-123',
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json() as { accessToken: string; user: { id: string } };
+      };
+      const owner = await register('asset-delete-owner@example.test');
+      const other = await register('asset-delete-other@example.test');
+      const createAsset = (ownerId: string, name: string) =>
+        assetStore.create({
+          ownerId,
+          name,
+          mediaType: 'text',
+          mimeType: 'text/plain',
+          content: Buffer.from(name),
+        });
+      const first = await createAsset(owner.user.id, 'first.txt');
+      const second = await createAsset(owner.user.id, 'second.txt');
+      const inaccessible = await createAsset(other.user.id, 'other.txt');
+
+      const response = await scopedApp.inject({
+        method: 'POST',
+        url: '/v1/assets/batch-delete',
+        headers: { authorization: `Bearer ${owner.accessToken}` },
+        payload: {
+          assetIds: [first.id, inaccessible.id, 'missing-asset', first.id, second.id],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        deletedAssetIds: [first.id, second.id],
+        missingAssetIds: [inaccessible.id, 'missing-asset'],
+      });
+      expect(await assetStore.get(first.id, { ownerId: owner.user.id })).toBeUndefined();
+      expect(await assetStore.get(second.id, { ownerId: owner.user.id })).toBeUndefined();
+      expect(await assetStore.get(inaccessible.id, { ownerId: other.user.id })).toBeDefined();
+    } finally {
+      await scopedApp.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('validates batch-delete payloads before deleting assets', async () => {
+    const empty = await app.inject({
+      method: 'POST',
+      url: '/v1/assets/batch-delete',
+      payload: { assetIds: [] },
+    });
+    expect(empty.statusCode).toBe(400);
+    expect(empty.json()).toEqual({ error: 'invalid asset batch delete' });
+
+    const oversized = await app.inject({
+      method: 'POST',
+      url: '/v1/assets/batch-delete',
+      payload: { assetIds: Array.from({ length: 501 }, (_, index) => `asset-${index}`) },
+    });
+    expect(oversized.statusCode).toBe(400);
+    expect(oversized.json()).toEqual({ error: 'invalid asset batch delete' });
+  });
+
   it('supports an integrity-checked direct upload session', async () => {
     const content = Buffer.from('direct upload payload');
     const digest = createHash('sha256').update(content).digest('hex');
@@ -1854,6 +1925,379 @@ describe('run endpoints', () => {
 
     const completed = await waitForRun(retry.json().run.id, 'succeeded');
     expect(completed.snapshot).toEqual(run.snapshot);
+  });
+
+  it('only requires confirmation when recreating an identical unknown video submission', async () => {
+    class UnknownSubmissionRunService extends MemoryRunService {
+      exposePlatformJobId = false;
+      diagnosticMode: 'unknown' | 'legacy-error' | 'ordinary-error' = 'unknown';
+
+      override async get(runId: string) {
+        const run = await super.get(runId);
+        if (run?.status === 'failed' && run.providerJob) {
+          run.providerJob.payload = {};
+          if (this.diagnosticMode === 'unknown') run.providerJob.payload.sendStatus = 'unknown';
+          run.error =
+            this.diagnosticMode === 'legacy-error'
+              ? '原请求可能已经送达，禁止重复创建'
+              : this.diagnosticMode === 'ordinary-error'
+                ? '普通供应商失败'
+                : run.error;
+          if (this.exposePlatformJobId) run.providerJob.platformJobId = 'known-platform-task';
+        }
+        return run;
+      }
+    }
+
+    const runService = new UnknownSubmissionRunService({
+      executor: async () => {
+        throw new Error('synthetic request boundary timeout');
+      },
+      stepDelayMs: 0,
+    });
+    const settingsStore = new MemoryAiSettingsStore('manual-recreate-video');
+    settingsStore.replaceModels([
+      {
+        id: 'video-model',
+        name: 'Video model',
+        mediaTypes: ['video'],
+        refreshedAt: appModelRefreshedAt,
+      },
+    ]);
+    const recreateApp = buildApp({ logger: false, runService, settingsStore });
+    try {
+      const project = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Manual recreate video' },
+      });
+      const projectId = project.json().project.id as string;
+      const initialCanvas = {
+        revision: 0,
+        nodes: [
+          {
+            id: 'video_recreate_target',
+            type: 'video',
+            position: { x: 0, y: 0 },
+            width: 480,
+            height: 270,
+            data: {
+              label: 'Original video',
+              mediaType: 'video',
+              mode: 'generate',
+              modelAlias: 'video-model',
+              prompt: '人物向镜头挥手',
+              parameters: { duration: 30 },
+            },
+          },
+        ],
+        edges: [],
+      };
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${projectId}/canvas`,
+            payload: initialCanvas,
+          })
+        ).statusCode,
+      ).toBe(200);
+      const original = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        headers: { 'idempotency-key': 'same-client-operation' },
+        payload: { projectId },
+      });
+      expect(original.statusCode).toBe(202);
+      const previousRunId = original.json().run.id as string;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if ((await runService.get(previousRunId))?.status === 'failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect((await runService.get(previousRunId))?.status).toBe('failed');
+      const publicFailedRun = await recreateApp.inject({
+        method: 'GET',
+        url: `/v1/runs/${previousRunId}`,
+      });
+      expect(publicFailedRun.statusCode).toBe(200);
+      expect(publicFailedRun.json().run).toMatchObject({
+        id: previousRunId,
+        status: 'failed',
+        errorCode: 'VIDEO_SUBMISSION_UNKNOWN',
+      });
+      expect(publicFailedRun.json().run.providerJob).toBeUndefined();
+      expect(publicFailedRun.body).not.toContain('sendStatus');
+
+      const imageProject = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Unknown image submission' },
+      });
+      const imageProjectId = imageProject.json().project.id as string;
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${imageProjectId}/canvas`,
+            payload: {
+              revision: 0,
+              nodes: [
+                {
+                  id: 'image_unknown_target',
+                  type: 'image',
+                  position: { x: 0, y: 0 },
+                  data: {
+                    label: 'Unknown image',
+                    mediaType: 'image',
+                    mode: 'generate',
+                    modelAlias: 'image-model',
+                    prompt: '生成图片',
+                  },
+                },
+              ],
+              edges: [],
+            },
+          })
+        ).statusCode,
+      ).toBe(200);
+      settingsStore.replaceModels([
+        {
+          id: 'image-model',
+          name: 'Image model',
+          mediaTypes: ['image'],
+          refreshedAt: appModelRefreshedAt,
+        },
+      ]);
+      const imageOriginal = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/image_unknown_target/runs',
+        payload: { projectId: imageProjectId },
+      });
+      expect(imageOriginal.statusCode).toBe(202);
+      const imageRunId = imageOriginal.json().run.id as string;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if ((await runService.get(imageRunId))?.status === 'failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const publicFailedImage = await recreateApp.inject({
+        method: 'GET',
+        url: `/v1/runs/${imageRunId}`,
+      });
+      expect(publicFailedImage.statusCode).toBe(200);
+      expect(publicFailedImage.json().run).not.toHaveProperty('errorCode');
+
+      settingsStore.replaceModels([
+        {
+          id: 'video-model',
+          name: 'Video model',
+          mediaTypes: ['video'],
+          refreshedAt: appModelRefreshedAt,
+        },
+      ]);
+
+      const otherProject = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/projects',
+        payload: { name: 'Other recreate project' },
+      });
+      const otherProjectId = otherProject.json().project.id as string;
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${otherProjectId}/canvas`,
+            payload: initialCanvas,
+          })
+        ).statusCode,
+      ).toBe(200);
+      const wrongProject = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId: otherProjectId, recreateFromRunId: previousRunId },
+      });
+      expect(wrongProject.statusCode).toBe(404);
+      expect(wrongProject.json()).toEqual({ error: 'run not found' });
+
+      const identical = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(identical.statusCode).toBe(409);
+      expect(identical.json()).toEqual({
+        code: 'IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED',
+        error: '原请求发送状态未知；完全相同的内容可能产生两个视频及重复计费，请确认后创建',
+        previousRunId,
+      });
+      expect(await runService.listByProject(projectId)).toHaveLength(1);
+
+      runService.exposePlatformJobId = true;
+      const knownPlatformTask = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(knownPlatformTask.statusCode).toBe(409);
+      expect(knownPlatformTask.json().code).toBe('RECREATE_SOURCE_NOT_ELIGIBLE');
+      expect(await runService.listByProject(projectId)).toHaveLength(1);
+      runService.exposePlatformJobId = false;
+
+      const uiOnlyCanvas = {
+        ...initialCanvas,
+        revision: 1,
+        nodes: initialCanvas.nodes.map((node) => ({
+          ...node,
+          position: { x: 900, y: 700 },
+          width: 640,
+          height: 360,
+          data: { ...node.data, label: 'Renamed in canvas' },
+        })),
+      };
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${projectId}/canvas`,
+            payload: uiOnlyCanvas,
+          })
+        ).statusCode,
+      ).toBe(200);
+      const uiOnly = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(uiOnly.statusCode).toBe(409);
+      expect(uiOnly.json().code).toBe('IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED');
+      expect(await runService.listByProject(projectId)).toHaveLength(1);
+
+      const changedCanvas = {
+        ...uiOnlyCanvas,
+        revision: 2,
+        nodes: uiOnlyCanvas.nodes.map((node) => ({
+          ...node,
+          data: { ...node.data, prompt: '人物转身向前奔跑' },
+        })),
+      };
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${projectId}/canvas`,
+            payload: changedCanvas,
+          })
+        ).statusCode,
+      ).toBe(200);
+      const changed = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(changed.statusCode).toBe(202);
+      expect(changed.json().run.id).not.toBe(previousRunId);
+
+      const restoredCanvas = {
+        ...uiOnlyCanvas,
+        revision: 3,
+      };
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${projectId}/canvas`,
+            payload: restoredCanvas,
+          })
+        ).statusCode,
+      ).toBe(200);
+      const confirmed = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        headers: { 'idempotency-key': 'same-client-operation' },
+        payload: {
+          projectId,
+          recreateFromRunId: previousRunId,
+          confirmIdenticalSubmission: true,
+        },
+      });
+      expect(confirmed.statusCode).toBe(202);
+      expect(confirmed.json().run.id).not.toBe(previousRunId);
+
+      runService.diagnosticMode = 'legacy-error';
+      const publicLegacyFailure = await recreateApp.inject({
+        method: 'GET',
+        url: `/v1/runs/${previousRunId}`,
+      });
+      expect(publicLegacyFailure.json().run).toMatchObject({
+        status: 'failed',
+        error: '原请求可能已经送达，禁止重复创建',
+        errorCode: 'VIDEO_SUBMISSION_UNKNOWN',
+      });
+      const legacyIdentical = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(legacyIdentical.statusCode).toBe(409);
+      expect(legacyIdentical.json().code).toBe(
+        'IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED',
+      );
+      const legacyConfirmed = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: {
+          projectId,
+          recreateFromRunId: previousRunId,
+          confirmIdenticalSubmission: true,
+        },
+      });
+      expect(legacyConfirmed.statusCode).toBe(202);
+      expect(legacyConfirmed.json().run.id).not.toBe(previousRunId);
+
+      expect(
+        (
+          await recreateApp.inject({
+            method: 'PATCH',
+            url: `/v1/projects/${projectId}/canvas`,
+            payload: {
+              ...restoredCanvas,
+              revision: 4,
+              nodes: restoredCanvas.nodes.map((node) => ({
+                ...node,
+                data: { ...node.data, prompt: '旧发送栅栏后创建不同的新视频' },
+              })),
+            },
+          })
+        ).statusCode,
+      ).toBe(200);
+      const legacyChanged = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(legacyChanged.statusCode).toBe(202);
+      expect(legacyChanged.json().run.id).not.toBe(previousRunId);
+
+      runService.diagnosticMode = 'ordinary-error';
+      const ordinaryFailure = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(ordinaryFailure.statusCode).toBe(409);
+      expect(ordinaryFailure.json().code).toBe('RECREATE_SOURCE_NOT_ELIGIBLE');
+
+      runService.diagnosticMode = 'legacy-error';
+      runService.exposePlatformJobId = true;
+      const legacyWithPlatformTask = await recreateApp.inject({
+        method: 'POST',
+        url: '/v1/nodes/video_recreate_target/runs',
+        payload: { projectId, recreateFromRunId: previousRunId },
+      });
+      expect(legacyWithPlatformTask.statusCode).toBe(409);
+      expect(legacyWithPlatformTask.json().code).toBe('RECREATE_SOURCE_NOT_ELIGIBLE');
+    } finally {
+      await recreateApp.close();
+    }
   });
 });
 

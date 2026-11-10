@@ -2720,6 +2720,15 @@ export function createRunWorker(options: {
           unrecoverableCreation &&
           executionSnapshot.nodes.find((node) => node.id === activeNodeId)?.data.mediaType ===
             'image';
+        // 视频创建 POST 的 5xx、超时或 VIDEO_SUBMISSION_UNKNOWN 都表示请求可能
+        // 已被上游受理。发送终态必须保留为 unknown，并在首次失败后终止 BullMQ
+        // 自动重试；明确 4xx 拒绝仍由 rejectedCreation 记录为 failed，允许新 Run。
+        const terminalVideoCreationFailure =
+          unrecoverableCreation &&
+          creationSendStatus === 'unknown' &&
+          initialData.provider === 'newapi' &&
+          executionSnapshot.nodes.find((node) => node.id === activeNodeId)?.data.mediaType ===
+            'video';
         if (
           !promptOptimizationOutputError &&
           activeArchivePhase &&
@@ -2866,7 +2875,7 @@ export function createRunWorker(options: {
               ...(terminalImageFailure && rawError instanceof NewApiProviderError
                 ? { code: rawError.code, retryable: false, error: errorMessage }
                 : {}),
-              ...(rejectedCreation || terminalImageCreationFailure
+              ...(rejectedCreation || terminalImageCreationFailure || terminalVideoCreationFailure
                 ? {
                     sendStatus: creationSendStatus,
                     error: errorMessage,
@@ -2944,6 +2953,7 @@ export function createRunWorker(options: {
         if (
           rejectedCreation ||
           terminalImageCreationFailure ||
+          terminalVideoCreationFailure ||
           terminalImageFailure ||
           promptOptimizationOutputError ||
           terminalVideoFailure ||

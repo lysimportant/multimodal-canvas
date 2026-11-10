@@ -54,6 +54,7 @@ function panelProps(
     onRenameAsset: vi.fn(),
     onArchiveAsset: vi.fn(),
     onDeleteAsset: vi.fn(),
+    onDeleteAssets: vi.fn().mockResolvedValue(undefined),
     onDrop: vi.fn(),
     onToggleCollapsed: vi.fn(),
     ...overrides,
@@ -955,5 +956,59 @@ describe('ResourcePanel 服务端分页', () => {
     expect(props.onDeleteAsset).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole('button', { name: '永久删除' }));
     await waitFor(() => expect(props.onDeleteAsset).toHaveBeenCalledExactlyOnceWith(archived));
+  });
+
+  it('支持本页半选、全选和批量永久删除，成功后清空选择', async () => {
+    const onDeleteAssets = vi.fn().mockResolvedValue(undefined);
+    const props = panelProps({
+      assets,
+      pagination: paginationProps({ total: assets.length }),
+      onDeleteAssets,
+    });
+    render(<ResourcePanel {...props} />);
+    const user = userEvent.setup();
+    const selectAll = screen.getByRole('checkbox', { name: '全选本页资源' });
+    await user.click(screen.getByRole('checkbox', { name: `选择 ${assets[0].name}` }));
+    expect(selectAll).toBePartiallyChecked();
+    expect(screen.getByRole('button', { name: /永久删除所选（1）/ })).toBeEnabled();
+    await user.click(selectAll);
+    expect(selectAll).toBeChecked();
+    for (const asset of assets)
+      expect(screen.getByRole('checkbox', { name: `选择 ${asset.name}` })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: /永久删除所选（3）/ }));
+    const dialog = await screen.findByRole('dialog', { name: '永久删除所选资源' });
+    expect(dialog).toHaveTextContent('将永久删除所选 3 项资源，删除后无法找回。确定继续吗？');
+    await user.click(within(dialog).getByRole('button', { name: '永久删除 3 项' }));
+    await waitFor(() => expect(onDeleteAssets).toHaveBeenCalledExactlyOnceWith(assets));
+    await waitFor(() => expect(selectAll).not.toBeChecked());
+    expect(screen.getByRole('button', { name: /永久删除所选（0）/ })).toBeDisabled();
+  });
+
+  it('翻页会清理不可见选择，批量删除失败则保留选择供重试', async () => {
+    const onDeleteAssets = vi.fn().mockRejectedValue(new Error('合成删除失败'));
+    const props = panelProps({
+      assets: [assets[0]],
+      pagination: paginationProps({ total: 2 }),
+      onDeleteAssets,
+    });
+    const view = render(<ResourcePanel {...props} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('checkbox', { name: `选择 ${assets[0].name}` }));
+    await user.click(screen.getByRole('button', { name: /永久删除所选（1）/ }));
+    const dialog = await screen.findByRole('dialog', { name: '永久删除所选资源' });
+    await user.click(within(dialog).getByRole('button', { name: '永久删除 1 项' }));
+    await waitFor(() => expect(onDeleteAssets).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('checkbox', { name: `选择 ${assets[0].name}` })).toBeChecked();
+    view.rerender(
+      <ResourcePanel
+        {...props}
+        assets={[assets[1]]}
+        pagination={{ ...props.pagination!, page: 2 }}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /永久删除所选（0）/ })).toBeDisabled(),
+    );
+    expect(screen.getByRole('checkbox', { name: `选择 ${assets[1].name}` })).not.toBeChecked();
   });
 });

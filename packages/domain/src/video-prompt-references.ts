@@ -80,6 +80,7 @@ export function renderVideoPromptReferenceDocument(
             block.mediaType,
             context.videoMode,
             context.modelAlias,
+            block,
           ),
         }),
       );

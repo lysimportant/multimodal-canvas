@@ -3192,8 +3192,8 @@ function videoReferenceContentPayload(
 
 /**
  * New API OpenAI 视频创建体：路径为 POST /videos。
- * 声明了素材编号能力的渠道按 metadata.content 发送；未声明的模型同样按该通用结构发送，
- * 画布不把参考素材退化为文本；参考素材数量是否可用由上游判断。
+ * 声明了素材编号能力的渠道按 metadata.content 发送；H3 仍使用其既有专用字段映射，
+ * 未声明的模型同样按通用结构发送。画布不把参考素材退化为文本；素材数量由上游判断。
  * GlobalStore 已知型号只传数字 duration，避免渠道拒绝重复的 seconds；其他型号保留既有映射。
  * seconds 使用字符串以兼容 Go 请求结构；图生视频 image 为 URL 字符串。
  */
@@ -3204,8 +3204,10 @@ function openaiVideoPayload(
   inputs: VideoInputMapping = mapVideoInputs(snapshot),
   nodePromptDocument?: PromptDocument,
 ): Record<string, unknown> {
+  const family = videoFamilyForModel(snapshot.modelAlias);
   const videoReferences = frozenVideoReferences(snapshot);
-  if (videoReferences)
+  const h3Family = family === 'moon-minimax-h3' || family === 'minimax-h3';
+  if (videoReferences && !h3Family)
     return videoReferenceContentPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   if (yuanliuVideoContractForModel(snapshot.modelAlias)) {
     return yuanliuVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
@@ -3218,9 +3220,7 @@ function openaiVideoPayload(
   // 家族启发式只用于编号写法，不改变这些型号的请求体结构。
   if (
     !isGlobalStoreVideoModel(snapshot.modelAlias) &&
-    ['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(
-      videoFamilyForModel(snapshot.modelAlias),
-    )
+    ['moon-minimax-h3', 'minimax-h3', 'wan3', 'seedance-2', 'seedance-2.5'].includes(family)
   ) {
     return officialVideoPayload(snapshot, label, nodePrompt, inputs, nodePromptDocument);
   }
@@ -3737,10 +3737,11 @@ function renderVideoPromptReferences(
   }
   const target = snapshot.nodes.find((node) => node.id === snapshot.targetNodeId);
   // 节点级“转换语法器”优先：显式覆盖值大于按模型自动匹配的默认语法；
-  // 渠道已声明 videoReferences 时仍使用通用编号，顺序与上游协议保持一致。
-  const tokenFamily = frozenVideoReferences(snapshot)
-    ? 'generic'
-    : videoPromptTokenFamilyForNode(snapshot.modelAlias, target?.data.videoReferenceSyntax);
+  // 冻结 videoReferences 只声明请求媒体能力，不能覆盖 Seedance / Wan / H3 的编号语法。
+  const tokenFamily = videoPromptTokenFamilyForNode(
+    snapshot.modelAlias,
+    target?.data.videoReferenceSyntax,
+  );
   const references = buildVideoPromptReferences(
     orderedVideoMedia(snapshot, inputs).map((input) => ({
       assetId: input.sourceAssetId ?? input.snapshot.data.assetId ?? input.nodeId,
@@ -3749,8 +3750,6 @@ function renderVideoPromptReferences(
       role: input.role,
     })),
     tokenFamily,
-    // mapVideoInputs 已按固定身份去重；编号逐项对应最终媒体，未知版本也不能再次合并。
-    { deduplicate: false },
   );
   try {
     return renderVideoPromptReferenceDocument(document, references, {
@@ -5896,6 +5895,7 @@ function collectAbsorbedVideoMentionInputs(
       block.mediaType,
       target.data.videoMode,
       snapshot.modelAlias,
+      block,
     );
     if (!role) continue;
     absorbedMentionIds.add(block.mentionId);

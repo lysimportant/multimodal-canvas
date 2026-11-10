@@ -179,6 +179,20 @@ export function getFailureDiagnosticDetails(run: FailureDiagnosticsRun): Failure
 }
 
 /**
+ * 识别“写请求可能已到上游但没有取得平台任务 ID”的发送未知状态。
+ * 旧回执可能使用专用错误码；真实 502/超时则保留 provider 错误码，只在脱敏 payload 标 unknown。
+ */
+export function isUnknownVideoSubmission(run: FailureDiagnosticsRun): boolean {
+  const details = getFailureDiagnosticDetails(run);
+  if (details.platformJobId) return false;
+  return (
+    details.errorCode === 'VIDEO_SUBMISSION_UNKNOWN' ||
+    providerJobPayload(run).sendStatus === 'unknown' ||
+    details.error === '原请求可能已经送达，禁止重复创建'
+  );
+}
+
+/**
  * 列出本次运行冻结的图片参考素材，按冻结顺序展示。
  * 节点后续改图不会改变这份历史快照，因此名称与版本都从快照读取。
  */

@@ -256,7 +256,11 @@ async function processWithQueueRetries(job: TestJob): Promise<unknown[]> {
 }
 
 /** Provider 桩先走真实提示词/发送授权回调，再以合成错误拒绝唯一创建请求。 */
-function rejectCreation(f: ReturnType<typeof fixture>, failure: Error) {
+function rejectCreation(
+  f: ReturnType<typeof fixture>,
+  failure: Error,
+  mediaType: 'image' | 'video' = 'image',
+) {
   const post = vi.fn(async () => {
     throw failure;
   });
@@ -264,12 +268,21 @@ function rejectCreation(f: ReturnType<typeof fixture>, failure: Error) {
     await reportRequestPrompt({
       ...request,
       provider: 'newapi',
-      mediaType: 'image',
-      requestIdentity: 'POST /images/generations#1',
+      mediaType,
+      requestIdentity:
+        mediaType === 'video' ? 'POST /videos/generations#1' : 'POST /images/generations#1',
       format: 'plain',
       parts: [{ order: 0, text: 'Synthetic generation' }],
       resources: [],
     });
+    if (mediaType === 'video') {
+      await request.onProviderJob?.({
+        provider: 'newapi',
+        status: 'running',
+        progress: 0,
+        payload: { phase: 'submitting' },
+      });
+    }
     return post();
   });
   return post;
@@ -651,6 +664,85 @@ describe('Worker 中性执行授权', () => {
       expect(post).toHaveBeenCalledOnce();
     },
   );
+
+  it.each([
+    ['HTTP 502', 502, 'api_error', true],
+    ['超时', undefined, 'TIMEOUT', true],
+    ['VIDEO_SUBMISSION_UNKNOWN', undefined, 'VIDEO_SUBMISSION_UNKNOWN', false],
+  ] as const)(
+    '视频创建%s送达未知时首次失败即停止队列重投并保留原错',
+    async (label, status, code, retryable) => {
+      const f = fixture(snapshot('video', true));
+      const failure = new NewApiProviderError(`first video creation failure: ${label}`, {
+        status,
+        code,
+        retryable,
+      });
+      const post = rejectCreation(f, failure, 'video');
+      const authorization = singleSendAuthorization();
+      const updateRun = vi.fn(async () => undefined);
+      f.options.persistence!.updateRun = updateRun;
+      createRunWorker({ ...f.options, execution: authorization.execution });
+
+      const failures = await processWithQueueRetries(f.job);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        name: 'UnrecoverableError',
+        message: failure.message,
+        cause: failure,
+      });
+      expect(f.job.attemptsMade).toBe(1);
+      expect(updateRun).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'failed', error: failure.message }),
+      );
+      expect(f.job.data.providerJob?.payload).toMatchObject({
+        phase: 'submitting',
+        sendStatus: 'unknown',
+        ...(status === undefined ? {} : { status }),
+        code,
+        retryable,
+        error: failure.message,
+      });
+      expect(authorization.status()).toBe('unknown');
+      expect(authorization.execution.finishSend).toHaveBeenCalledOnce();
+      expect(authorization.execution.finishSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodeId: 'target',
+          status: 'unknown',
+          error: failure.message,
+        }),
+      );
+      expect(post).toHaveBeenCalledOnce();
+      expect(f.execute).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('视频创建明确 HTTP 400 拒绝仍记录 failed，允许用户新建 Run', async () => {
+    const f = fixture(snapshot('video', true));
+    const failure = new NewApiProviderError('invalid video request', {
+      status: 400,
+      code: 'invalid_request_error',
+      retryable: false,
+    });
+    const post = rejectCreation(f, failure, 'video');
+    const authorization = singleSendAuthorization();
+    createRunWorker({ ...f.options, execution: authorization.execution });
+
+    const failures = await processWithQueueRetries(f.job);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ name: 'UnrecoverableError', cause: failure });
+    expect(f.job.data.providerJob?.payload).toMatchObject({
+      phase: 'submitting',
+      sendStatus: 'failed',
+      status: 400,
+      code: 'invalid_request_error',
+      error: failure.message,
+    });
+    expect(authorization.status()).toBe('failed');
+    expect(post).toHaveBeenCalledOnce();
+  });
 
   it.each(['queue-replay', 'database-replay'] as const)(
     '真实 503/api_error 在 %s 中保留原错和请求 ID，不重复提交图片',

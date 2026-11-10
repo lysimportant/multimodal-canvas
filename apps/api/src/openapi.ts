@@ -758,6 +758,11 @@ const runSchema = {
     provider: { type: 'string' },
     modelAlias: { type: 'string' },
     platformJobId: { type: 'string', minLength: 1 },
+    errorCode: {
+      type: 'string',
+      enum: ['VIDEO_SUBMISSION_UNKNOWN'],
+      description: '视频创建请求可能已送达但未取得上游任务 ID 时返回的稳定公开错误码。',
+    },
     snapshot: runSnapshotSchema,
     result: runResultSchema,
     error: { type: 'string' },
@@ -1327,6 +1332,45 @@ export const openApiDocument = {
           }),
           '400': response('Invalid asset status', errorSchema),
           '404': response('Project not found', errorSchema),
+        },
+      },
+    },
+    '/v1/assets/batch-delete': {
+      post: {
+        tags: ['assets'],
+        description:
+          'Permanently delete up to 500 owned assets and their managed source, version, and derivative objects. Missing and unauthorized asset IDs share the same response bucket.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['assetIds'],
+                properties: {
+                  assetIds: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: 500,
+                    items: { type: 'string', minLength: 1, maxLength: 256 },
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+        },
+        responses: {
+          '200': response('Batch delete result', {
+            type: 'object',
+            required: ['deletedAssetIds', 'missingAssetIds'],
+            properties: {
+              deletedAssetIds: { type: 'array', items: { type: 'string' } },
+              missingAssetIds: { type: 'array', items: { type: 'string' } },
+            },
+            additionalProperties: false,
+          }),
+          '400': response('Invalid batch delete request', errorSchema),
         },
       },
     },
@@ -2133,6 +2177,18 @@ export const openApiDocument = {
                   idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
                   parameters: { type: 'object', additionalProperties: true },
                   promptDocument: { $ref: '#/components/schemas/PromptDocument' },
+                  recreateFromRunId: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 200,
+                    description:
+                      '从发送状态未知且没有上游任务 ID 的失败视频记录创建全新 Run。仅当当前创作内容与原请求完全一致时需要二次确认。',
+                  },
+                  confirmIdenticalSubmission: {
+                    type: 'boolean',
+                    description:
+                      '确认完全相同的状态未知请求仍创建新视频；可能产生重复视频及重复计费。',
+                  },
                 },
                 additionalProperties: false,
               },
@@ -2147,7 +2203,10 @@ export const openApiDocument = {
           '400': response('Invalid request', errorSchema),
           '403': response('Credential selection is not permitted', errorSchema),
           '404': response('Not found', errorSchema),
-          '409': response('幂等身份或执行快照冲突', errorSchema),
+          '409': response(
+            '幂等身份或执行快照冲突；完全相同的状态未知视频返回 IDENTICAL_UNKNOWN_SUBMISSION_CONFIRMATION_REQUIRED',
+            errorSchema,
+          ),
         },
       },
     },

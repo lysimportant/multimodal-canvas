@@ -2439,6 +2439,87 @@ export function snapshotFingerprint(snapshot: RunSnapshot): string {
   return createHash('sha256').update(runSnapshotFingerprintMaterial(snapshot)).digest('hex');
 }
 
+/**
+ * 人工“创建新视频”只比较会改变本次生成或其冻结输入的内容。
+ *
+ * 运行快照本身还承担审计和恢复职责，因此会保留画布修订、节点布局、显示名称、
+ * 结果回显 URL 等信息；这些字段变化不代表用户提交了不同的视频请求。这里单独
+ * 建立一份更窄的内容身份，避免复用幂等指纹时把纯 UI 变化误判成新内容，也避免
+ * 把临时签名 URL 当作稳定素材身份。
+ */
+export function submissionContentFingerprint(snapshot: RunSnapshot): string {
+  const parsed = runSnapshotSchema.parse(snapshot);
+  const material = {
+    modelAlias: parsed.modelAlias,
+    parameters: parsed.parameters,
+    nodes: [...parsed.nodes]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(submissionNodeContent),
+    edges: [...parsed.edges]
+      .sort((left, right) => submissionEdgeKey(left).localeCompare(submissionEdgeKey(right)))
+      .map(({ id: _id, ...edge }) => edge),
+    inputs: parsed.inputs.map(({ snapshot: inputSnapshot, ...input }) => ({
+      ...input,
+      snapshot: submissionNodeContent(inputSnapshot),
+    })),
+    promptMentions: parsed.promptMentions,
+  };
+  return createHash('sha256')
+    .update(`multimodal-canvas:submission-content:v1:${canonicalSubmissionJson(material)}`)
+    .digest('hex');
+}
+
+function submissionEdgeKey(edge: RunSnapshot['edges'][number]): string {
+  return [
+    edge.sourceNodeId,
+    edge.sourceHandle,
+    edge.targetNodeId,
+    edge.targetHandle,
+    String(edge.order).padStart(12, '0'),
+  ].join('\0');
+}
+
+function submissionNodeContent(node: CanvasNode): unknown {
+  const { position: _position, width: _width, height: _height, data, ...stableNodeIdentity } = node;
+  const {
+    label: _label,
+    createdAt: _createdAt,
+    enabled: _enabled,
+    stale: _stale,
+    manualOutput: _manualOutput,
+    manualOutputRunId: _manualOutputRunId,
+    promptSkillId: _promptSkillId,
+    generationCount: _generationCount,
+    generationBatch: _generationBatch,
+    generationBatchExpanded: _generationBatchExpanded,
+    credentialId: _credentialId,
+    contentUrl: _contentUrl,
+    completionAction: _completionAction,
+    completionTargetNodeId: _completionTargetNodeId,
+    ...generationData
+  } = data;
+  return { ...stableNodeIdentity, data: generationData };
+}
+
+function canonicalSubmissionJson(value: unknown): string {
+  return JSON.stringify(canonicalSubmissionValue(value));
+}
+
+function canonicalSubmissionValue(value: unknown): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value)) {
+    return value.map((item) => (item === undefined ? null : canonicalSubmissionValue(item)));
+  }
+  if (typeof value !== 'object') return undefined;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, item]) => [key, canonicalSubmissionValue(item)]),
+  );
+}
+
 export function createIdempotentRunId(projectId: string, idempotencyKey: string): string {
   const digest = createHash('sha256')
     .update(idempotencyMapKey(projectId, idempotencyKey))
