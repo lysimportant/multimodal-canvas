@@ -106,7 +106,7 @@ const cases = [
 
 describe.each([false, true])('image output parameters (edit=%s)', (edit) => {
   it.each(['1K', '2K', '4K'])(
-    'sends unrestricted %s unchanged in the actual request',
+    'converts unrestricted %s to pixel dimensions in the actual request',
     async (size) => {
       const { provider, fetchImpl } = imageProvider();
       const snapshot = imageSnapshot({ size, aspectRatio: '9:16', seed: 0 }, edit);
@@ -117,24 +117,48 @@ describe.each([false, true])('image output parameters (edit=%s)', (edit) => {
       const body = edit
         ? Object.fromEntries((init.body as FormData).entries())
         : JSON.parse(init.body as string);
-      expect(body).toMatchObject({ size, aspect_ratio: '9:16', seed: edit ? '0' : 0 });
-      for (const key of ['quality', 'resolution', 'aspectRatio', 'width', 'height'])
+      const pixelSize = { '1K': '576x1024', '2K': '1152x2048', '4K': '2160x3840' }[size];
+      expect(body).toMatchObject({ size: pixelSize, seed: edit ? '0' : 0 });
+      for (const key of ['quality', 'resolution', 'aspectRatio', 'aspect_ratio', 'width', 'height'])
         expect(body).not.toHaveProperty(key);
       expect(snapshot).toEqual(before);
     },
   );
 
-  it('maps an official OpenAI tier into pixels at the provider boundary', async () => {
-    const { provider, fetchImpl } = imageProvider();
-    await provider.execute({ snapshot: imageSnapshot({ size: '2K', aspectRatio: '16:9' }, edit) });
-    const init = fetchImpl.mock.calls[0]![1]!;
-    const body = edit
-      ? Object.fromEntries((init.body as FormData).entries())
-      : JSON.parse(init.body as string);
-    expect(body.size).toBe('2048x1152');
-    expect(body).not.toHaveProperty('aspectRatio');
-    expect(body).not.toHaveProperty('aspect_ratio');
-  });
+  const nativeSizeCases = [
+    ['1K', '1:1', '1024x1024'],
+    ['1K', '16:9', '1024x576'],
+    ['2K', '1:1', '2048x2048'],
+    ['2K', '16:9', '2048x1152'],
+    ['4K', '1:1', '3840x3840'],
+    ['4K', '16:9', '3840x2160'],
+  ] as const;
+
+  it.each(['gpt-image-2.5-sunburst', 'gpt-image-2.6-sunburst'])(
+    'converts native tiers to pixel dimensions for %s',
+    async (modelAlias) => {
+      for (const [size, aspectRatio, pixelSize] of nativeSizeCases) {
+        const { provider, fetchImpl } = imageProvider();
+        const snapshot = imageSnapshot({ size, aspectRatio }, edit);
+        snapshot.modelAlias = modelAlias;
+        const before = structuredClone(snapshot);
+
+        await provider.execute({ snapshot });
+
+        const [url, init] = fetchImpl.mock.calls[0]!;
+        expect(url).toBe(`https://newapi.example.test/v1/images/${edit ? 'edits' : 'generations'}`);
+        if (edit) expect(init!.body).toBeInstanceOf(FormData);
+        else expect(init!.headers).toMatchObject({ 'content-type': 'application/json' });
+        const body = edit
+          ? Object.fromEntries((init!.body as FormData).entries())
+          : JSON.parse(init!.body as string);
+        expect(body).toMatchObject({ model: modelAlias, size: pixelSize });
+        for (const key of ['resolution', 'aspectRatio', 'aspect_ratio', 'width', 'height'])
+          expect(body).not.toHaveProperty(key);
+        expect(snapshot).toEqual(before);
+      }
+    },
+  );
 
   it('sends canonical size and native quality without dimension aliases', async () => {
     const { provider, fetchImpl } = imageProvider();

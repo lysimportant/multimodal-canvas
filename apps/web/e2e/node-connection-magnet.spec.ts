@@ -1,6 +1,7 @@
 /** PC 节点主体磁吸只使用既有全网络 Mock 的合成项目，不发送生成或真实保存请求。 */
 import { expect, type Locator, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { canvasDocumentSchema } from '@multimodal-canvas/domain';
 import { connectedIds, connectedLabels, test } from './connected-node-regression.fixture';
 
 test.use({
@@ -10,9 +11,26 @@ test.use({
 });
 test.describe.configure({ timeout: 45_000, retries: 0 });
 
-/** 补齐较旧连线夹具缺少的本机品牌静态资源与合成资产缩略图合同。 */
+/** 补齐较旧连线夹具缺少的账户同步、本机品牌资源与合成资产缩略图合同。 */
 test.beforeEach(async ({ page, baseURL }) => {
   const web = new URL(baseURL!);
+  await page.route(/\/v1\/account\/newapi(?:\/sync)?$/, async (route) => {
+    const syncing = new URL(route.request().url()).pathname.endsWith('/sync');
+    expect(route.request().method()).toBe(syncing ? 'POST' : 'GET');
+    await route.fulfill({
+      json: {
+        account: {
+          issuer: 'https://newapi.example.test',
+          externalUserId: 'synthetic-connected-user',
+          status: 'active',
+          groups: [
+            { group: 'synthetic', credentialId: 'synthetic-connected-credential', status: 'ready' },
+          ],
+          links: {},
+        },
+      },
+    });
+  });
   await page.route('**/brand/*', async (route) => {
     const url = new URL(route.request().url());
     expect(url.origin).toBe(web.origin);
@@ -146,7 +164,7 @@ for (const viewport of [
       expect(scenario.errors).toEqual([]);
     });
 
-    test('首尾帧主体先预览合法首帧，松手选择尾帧后落到下侧端口', async ({
+    test('首尾帧共用左侧输入，松手选择尾帧后保留角色并落到同一端口', async ({
       page,
       scenario,
     }, testInfo) => {
@@ -168,14 +186,22 @@ for (const viewport of [
       await page.keyboard.press('Escape');
       const first = target.locator('.react-flow__handle[data-handleid="input:firstFrame"]');
       const last = target.locator('.react-flow__handle[data-handleid="input:lastFrame"]');
+      await expect(target.locator('.flow-node-handle')).toHaveCount(2);
+      await expect(target.locator('.flow-node-handle--top, .flow-node-handle--bottom')).toHaveCount(
+        0,
+      );
+      const input = target.locator('.flow-node-handle--left');
+      await expect(input).toHaveClass(/connectable/);
       const firstPoint = await center(first);
       const lastPoint = await center(last);
-      const body = await center(target);
+      const inputPoint = await center(input);
+      expect(firstPoint).toEqual(inputPoint);
+      expect(lastPoint).toEqual(inputPoint);
       const preview = await beginConnection(
         page,
         source.locator('.react-flow__handle[data-handleid="output:image"]'),
       );
-      await page.mouse.move(body.x, body.y, { steps: 10 });
+      await page.mouse.move(inputPoint.x, inputPoint.y, { steps: 10 });
       await expectEndpoint(preview, firstPoint);
       await page.screenshot({
         path: testInfo.outputPath('role-magnet-preview.png'),
@@ -191,6 +217,9 @@ for (const viewport of [
       await expectEndpoint(settled, lastPoint);
       await page.keyboard.press('Control+s');
       await expect.poll(() => scenario.canvas().edges[0]?.targetHandle).toBe('input:lastFrame');
+      await page.reload();
+      await expect(settled).toHaveCount(1);
+      await expectEndpoint(settled, await center(input));
       await page.screenshot({
         path: testInfo.outputPath('role-magnet-settled.png'),
         fullPage: true,
@@ -200,3 +229,95 @@ for (const viewport of [
     });
   });
 }
+
+test('混合媒体从同一个左侧入口接入并保持各自角色', async ({ page, scenario }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  let canvas = structuredClone(scenario.canvas());
+  for (const [index, mediaType] of (['text', 'audio'] as const).entries()) {
+    canvas.nodes.push({
+      id: `two-handles-${mediaType}`,
+      type: mediaType,
+      position: { x: 160, y: index === 0 ? -80 : 460 },
+      width: 280,
+      height: 180,
+      data: {
+        label: `合成${mediaType}来源`,
+        mediaType,
+        mode: 'generate',
+        enabled: true,
+        prompt: 'Synthetic connection fixture; never submitted.',
+      },
+    });
+  }
+  const nodeIds = canvas.nodes.map((node) => node.id).sort();
+  await page.route(`**/v1/projects/${connectedIds.project}/canvas`, async (route) => {
+    const method = route.request().method();
+    if (method === 'PATCH') {
+      const saved = canvasDocumentSchema.parse(route.request().postDataJSON());
+      expect(saved.nodes.map((node) => node.id).sort()).toEqual(nodeIds);
+      canvas = { ...saved, revision: canvas.revision + 1 };
+    } else if (method !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ json: { canvas } });
+  });
+  await page.goto(`/projects/${connectedIds.project}`);
+  const target = page.locator(`.react-flow__node[data-id="${connectedIds.target}"]`);
+  await expect(target).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: '自动适配缩放', exact: true }).click();
+  const input = target.locator('.flow-node-handle--left');
+  await expect(target.locator('.react-flow__handle.connectable.target')).toHaveCount(1);
+  const sources = [
+    { id: 'two-handles-text', mediaType: 'text', role: 'prompt' },
+    { id: connectedIds.source, mediaType: 'image', role: 'referenceImage' },
+    { id: 'two-handles-audio', mediaType: 'audio', role: 'audioTrack' },
+  ];
+  for (const [index, source] of sources.entries()) {
+    const output = page.locator(
+      `.react-flow__node[data-id="${source.id}"] .react-flow__handle[data-handleid="output:${source.mediaType}"]`,
+    );
+    const preview = await beginConnection(page, output);
+    const point = await center(input);
+    await page.mouse.move(point.x, point.y, { steps: 8 });
+    await expectEndpoint(preview, point);
+    await page.mouse.up();
+    await expect(page.locator('.react-flow__edge')).toHaveCount(index + 1);
+  }
+  await page.keyboard.press('Control+s');
+  await expect.poll(() => canvas.edges.length).toBe(3);
+  for (const source of sources) {
+    expect(canvas.edges.find((edge) => edge.sourceNodeId === source.id)).toMatchObject({
+      targetNodeId: connectedIds.target,
+      targetHandle: `input:${source.role}`,
+    });
+  }
+  await page.screenshot({ path: testInfo.outputPath('two-handles-mixed.png'), fullPage: true });
+  expect(scenario.submissions).toEqual([]);
+  expect(scenario.errors).toEqual([]);
+});
+
+test.describe('移动端两个连接位置', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('输入输出保持左右居中且语义句柄不增加交互入口', async ({ page, scenario }, testInfo) => {
+    await page.goto(`/projects/${connectedIds.project}`);
+    for (const id of [connectedIds.source, connectedIds.target]) {
+      const node = page.locator(`.react-flow__node[data-id="${id}"]`);
+      await expect(node).toBeVisible({ timeout: 30_000 });
+      await expect(node.locator('.flow-node-handle')).toHaveCount(2);
+      await expect(node.locator('.react-flow__handle.connectable.target')).toHaveCount(1);
+      await expect(node.locator('.react-flow__handle.connectable.source')).toHaveCount(1);
+      const box = (await node.boundingBox())!;
+      const input = await center(node.locator('.flow-node-handle--left'));
+      const output = await center(node.locator('.flow-node-handle--right'));
+      expect(Math.abs(input.x - box.x)).toBeLessThanOrEqual(1.5);
+      expect(Math.abs(output.x - box.x - box.width)).toBeLessThanOrEqual(1.5);
+      expect(Math.abs(input.y - box.y - box.height / 2)).toBeLessThanOrEqual(1.5);
+      expect(Math.abs(output.y - input.y)).toBeLessThanOrEqual(1.5);
+    }
+    await page.screenshot({ path: testInfo.outputPath('two-handles-mobile.png'), fullPage: true });
+    expect(scenario.submissions).toEqual([]);
+    expect(scenario.errors).toEqual([]);
+  });
+});

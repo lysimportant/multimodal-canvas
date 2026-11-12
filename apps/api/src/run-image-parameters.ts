@@ -36,7 +36,7 @@ export function validateRunImageParameters(input: {
   canvas: CanvasDocument;
   targetNodeId: string;
   parameters?: Readonly<Record<string, unknown>>;
-  /** API 完成模型解析后的逐节点别名；缺省条目才回退到节点保存值。 */
+  /** API 完成模型解析后的逐节点别名；保留供兼容调用方传入，预检不用于本地能力门槛。 */
   nodeModelAliases?: Readonly<Record<string, string>>;
 }): void {
   const { canvas, targetNodeId } = input;
@@ -55,10 +55,8 @@ export function validateRunImageParameters(input: {
       ...(node.id === targetNodeId ? input.parameters : {}),
     };
     try {
-      resolveImageOutputParameters(
-        parameters,
-        input.nodeModelAliases?.[node.id] ?? node.data.modelAlias,
-      );
+      // Parse without model-specific dimensions; the upstream decides which tiers it accepts.
+      resolveImageOutputParameters(parameters);
     } catch (error) {
       if (!(error instanceof ImageOutputParameterError)) throw error;
       throw new RunImageParameterError(node.id, error);

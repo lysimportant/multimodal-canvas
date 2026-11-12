@@ -103,9 +103,10 @@ function dimensionsForRatio(
  * 将清晰度与比例解析为 Images 接口尺寸，兼容旧 quality=1k/2k/3k/4k。
  *
  * @param parameters 节点或冻结 Run 参数；不会修改输入，也不包含模型能力猜测。
- * @param modelAlias 精确官方 OpenAI 标识使用像素尺寸；代理别名保留原生 size K 档。
+ * @param modelAlias 兼容既有调用签名；显式 size K 档不根据模型名转换或限制。
  * @returns 明确 size、独立 quality 和用于界面解释的清晰度/像素。仅选比例时不补尺寸，
- * 仅选已知清晰度时按 1:1 计算；显式像素保持原值。未知尺寸、档位或比例保留原值，
+ * 显式 size K 档保留档位和独立比例；旧 resolution/quality 档位按历史规则计算，显式像素保持原值。
+ * 未知尺寸、档位或比例保留原值，
  * 不补默认像素。短边对齐可能使实际比例有微小差异。
  * @throws ImageOutputParameterError 比例过于极端，无法转换为有效尺寸时抛出。
  * @example resolveImageOutputParameters({ quality: '4k', aspectRatio: '9:16' }).size // '2160x3840'
@@ -119,36 +120,6 @@ export function resolveImageOutputParameters(
   const rawSize = readAlias(parameters, ['size', 'image_size', 'imageSize']);
   const rawResolution = readAlias(parameters, ['resolution']);
   if (/^[1-4]k$/i.test(rawSize ?? '')) {
-    if (usesOpenAIImagePixelSize(modelAlias)) {
-      const output = resolveImageOutputParameters({
-        ...parameters,
-        size: undefined,
-        image_size: undefined,
-        imageSize: undefined,
-        resolution: rawSize,
-      });
-      if (!output.width || !output.height)
-        throw new ImageOutputParameterError('aspectRatio', 'OpenAI 的 K 档换算需要明确的数字比例');
-      const suggestions = openAIImageSizeSuggestions(modelAlias);
-      if (suggestions && !suggestions.includes(output.size ?? ''))
-        throw new ImageOutputParameterError(
-          'size',
-          '该 OpenAI 模型不支持此 K 档与比例，请选择其明确支持的像素尺寸',
-        );
-      if (
-        !suggestions &&
-        output.width &&
-        output.height &&
-        (Math.max(output.width, output.height) > 3840 ||
-          output.width * output.height > 3840 * 2160 ||
-          Math.max(output.width, output.height) / Math.min(output.width, output.height) > 3)
-      )
-        throw new ImageOutputParameterError(
-          'size',
-          '此 K 档与比例超过 OpenAI 图片尺寸限制，请降低档位或调整比例',
-        );
-      return output;
-    }
     return {
       size: rawSize!.toUpperCase(),
       resolution: rawSize!.toLowerCase(),
@@ -166,14 +137,6 @@ export function resolveImageOutputParameters(
     resolutionLongEdges,
     rawQuality?.toLowerCase() ?? '',
   );
-  if (
-    usesOpenAIImagePixelSize(modelAlias) &&
-    parseAspectRatio(rawAspectRatio) &&
-    (rawSize === undefined || rawSize.toLowerCase() === 'auto') &&
-    (rawResolution === undefined || rawResolution.toLowerCase() === 'auto') &&
-    !knownQualityResolution
-  )
-    throw new ImageOutputParameterError('size', 'OpenAI 图片接口需要像素尺寸，请同时选择分辨率');
   const rawKResolution = pixelResolution
     ? undefined
     : ((automaticResolution ? undefined : rawResolution) ??
@@ -227,7 +190,7 @@ export function resolveImageOutputParameters(
  * 将图片输出字段规范为 Provider 官方的 `size` 与原生 `quality`，保留其它参数。
  *
  * @param parameters 节点或冻结 Run 参数；函数复制输入，不修改原对象。
- * @param modelAlias 精确官方 OpenAI 标识使用像素尺寸；代理别名保留原生 size K 档。
+ * @param modelAlias 兼容既有调用签名；显式 size K 档不根据模型名转换或限制。
  * @returns 已解析尺寸写入 `size`，供应商原生质量写入 `quality`；仅删除完成转换的别名。
  * 无法解释的尺寸、清晰度和比例保留原字段和值，其它字段及假值保持不变。
  * @throws ImageOutputParameterError 比例过于极端，无法转换为有效尺寸时抛出。

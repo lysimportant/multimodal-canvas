@@ -287,7 +287,7 @@ for (const viewport of [
       }),
     ).toBe(true);
     expect(
-      await root.locator('.flow-node-handle--top').evaluate((handle) => {
+      await root.locator('.flow-node-handle--left').evaluate((handle) => {
         const bounds = handle.getBoundingClientRect();
         return (
           document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2) ===

@@ -2606,7 +2606,7 @@ h2 {
   z-index: 7;
 }
 
-/* Role-specific inputs remain connectable without adding extra visible dots. */
+/* Role-specific inputs preserve edge anchors at the shared left input. */
 .flow-asset-node .flow-node-semantic-handle {
   background: transparent;
   border-color: transparent;

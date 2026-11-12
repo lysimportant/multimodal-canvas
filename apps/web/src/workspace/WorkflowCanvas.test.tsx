@@ -1943,9 +1943,7 @@ describe('WorkflowCanvas 主体磁吸连接', () => {
       modelAlias: node.data.modelAlias,
     });
     const positions = {
-      top: { x: width / 2 - 9, y: -9, position: Position.Top },
       right: { x: width - 9, y: height / 2 - 9, position: Position.Right },
-      bottom: { x: width / 2 - 9, y: height - 9, position: Position.Bottom },
       left: { x: -9, y: height / 2 - 9, position: Position.Left },
     };
     const handles: Handle[] = [
@@ -2114,12 +2112,12 @@ describe('WorkflowCanvas 主体磁吸连接', () => {
     render(<WorkflowCanvas {...props} />);
     measuredNode(source);
     const from = measuredNode(target);
-    const preview = renderPreview(previewProps(from, { x: 100, y: 80 }, 'target', 'input:content'));
+    const preview = renderPreview(previewProps(from, { x: 100, y: 80 }, 'target', 'visual:left'));
     expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
       'd',
       'M 220,80L 400,180',
     );
-    releaseOnBody(target, { x: 100, y: 80 }, 'target', 'input:content');
+    releaseOnBody(target, { x: 100, y: 80 }, 'target', 'visual:left');
     expect(props.onConnect).toHaveBeenCalledWith({
       source: source.id,
       sourceHandle: 'output:image',
@@ -2242,7 +2240,7 @@ describe('WorkflowCanvas 主体磁吸连接', () => {
     },
   );
 
-  it('库判无效的禁用透明端口不吸附，松手不能转换为其它语义角色', () => {
+  it('库判无效的连接不吸附，松手不能转换为其它语义角色', () => {
     const text: AssetFlowNode = {
       ...source,
       type: 'text',
@@ -2310,7 +2308,7 @@ describe('WorkflowCanvas 主体磁吸连接', () => {
     const preview = renderPreview(previewProps(from));
     expect(preview.container.querySelector('.canvas-flow-edge-path')).toHaveAttribute(
       'd',
-      'M 220,80L 510,260',
+      'M 220,80L 400,180',
     );
   });
 

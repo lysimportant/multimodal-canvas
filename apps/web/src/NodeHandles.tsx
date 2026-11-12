@@ -9,41 +9,18 @@ import {
   type VideoMode,
 } from '@multimodal-canvas/domain';
 
-export type NodeHandleSide = 'top' | 'right' | 'bottom' | 'left';
+export type NodeHandleSide = 'left' | 'right';
 
-export const nodeHandleSides: readonly NodeHandleSide[] = ['top', 'right', 'bottom', 'left'];
+export const nodeHandleSides: readonly NodeHandleSide[] = ['left', 'right'];
 
 const sidePositions: Record<NodeHandleSide, Position> = {
-  top: Position.Top,
   right: Position.Right,
-  bottom: Position.Bottom,
   left: Position.Left,
 };
 
 const centeredSideStyles: Record<NodeHandleSide, CSSProperties> = {
-  top: { top: 0, left: '50%', transform: 'translate(-50%, -50%)', opacity: 0 },
   right: { top: '50%', right: 0, transform: 'translate(50%, -50%)', opacity: 0 },
-  bottom: { bottom: 0, left: '50%', transform: 'translate(-50%, 50%)', opacity: 0 },
   left: { top: '50%', left: 0, transform: 'translate(-50%, -50%)', opacity: 0 },
-};
-
-const preferredInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = {
-  top: 'prompt',
-  bottom: 'negativePrompt',
-  left: 'content',
-};
-
-/** 视频左侧默认接首帧，避免把参考图误连到内容口后按提示词解析。 */
-const preferredVideoInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = {
-  top: 'prompt',
-  bottom: 'negativePrompt',
-  left: 'firstFrame',
-};
-
-const preferredFirstLastVideoInputRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole> = {
-  top: 'prompt',
-  bottom: 'lastFrame',
-  left: 'firstFrame',
 };
 
 export const inputRoleLabels: Record<PortRole, string> = {
@@ -79,8 +56,6 @@ export function videoInputRoleLabel(role: PortRole, videoMode?: VideoMode): stri
   return inputRoleLabels[role];
 }
 
-type InputHandleSide = Exclude<NodeHandleSide, 'right'>;
-
 export type VisibleNodeHandle = {
   side: NodeHandleSide;
   type: 'source' | 'target';
@@ -102,36 +77,8 @@ export type NodeHandleLayoutOptions = {
 };
 
 /**
- * 为可见锚点分配尚未占用的首选角色，否则退回下一个空闲角色。
- * @param preferredRoles 当前媒体类型在上/左/下三侧的首选输入角色。
- */
-function takePreferredRole(
-  side: InputHandleSide,
-  targetRoles: PortRole[],
-  assignedRoles: Set<PortRole>,
-  preferredRoles: Record<Exclude<NodeHandleSide, 'right'>, PortRole>,
-): PortRole | undefined {
-  const preferredRole = preferredRoles[side];
-  if (targetRoles.includes(preferredRole) && !assignedRoles.has(preferredRole)) {
-    assignedRoles.add(preferredRole);
-    return preferredRole;
-  }
-
-  const fallbackRole = targetRoles.find((role) => !assignedRoles.has(role));
-  if (fallbackRole) assignedRoles.add(fallbackRole);
-  return fallbackRole;
-}
-
-function preferredRolesForVideoMode(
-  videoMode?: VideoMode,
-): Record<Exclude<NodeHandleSide, 'right'>, PortRole> {
-  if (videoMode === 'first_last_frame') return preferredFirstLastVideoInputRoles;
-  return preferredVideoInputRoles;
-}
-
-/**
- * 四侧位置保持稳定，输入职责按媒体与视频模式展示，不校验模型能力。
- * 额外角色通过重叠语义输入层保留，已有连线身份不随可见位置变化。
+ * 统一左侧输入、右侧输出；输入角色沿用连线解析和视频角色选择。
+ * 旧语义输入在左侧保留定位，已有连线身份不随位置变化。
  * @param mediaType 节点媒体类型。
  * @param mode 节点 source/generate。
  * @param options 视频模式与模型，仅视频生成节点需要。
@@ -148,22 +95,6 @@ export function getNodeHandleLayout(
       : videoMode
         ? targetPortRolesForVideoMode(videoMode, options.modelAlias)
         : targetPortRolesForMediaType(mediaType);
-  const assignedRoles = new Set<PortRole>();
-  const sideRoles: Partial<Record<InputHandleSide, PortRole>> = {};
-  const preferredRoles =
-    mediaType === 'video' ? preferredRolesForVideoMode(videoMode) : preferredInputRoles;
-  const referenceMode =
-    videoMode === 'omni_reference' || videoMode === 'video_edit' || videoMode === 'video_extend';
-  const skipLeftRole = videoMode === 'text_to_video' || referenceMode;
-
-  for (const side of ['top', 'left', 'bottom'] as const) {
-    if (side === 'left' && skipLeftRole) continue;
-    // 参考素材共用左侧磁吸入口；没有负向提示词时，底部不能抢占参考角色。
-    if (side === 'bottom' && referenceMode && !targetRoles.includes('negativePrompt')) continue;
-    const role = takePreferredRole(side, targetRoles, assignedRoles, preferredRoles);
-    if (role) sideRoles[side] = role;
-  }
-
   const visible: VisibleNodeHandle[] = nodeHandleSides.map((side) => {
     if (side === 'right') {
       return {
@@ -174,20 +105,17 @@ export function getNodeHandleLayout(
       };
     }
 
-    const role = sideRoles[side];
-    const leftMagnet = side === 'left' && referenceMode;
     return {
       side,
       type: 'target',
-      id: role ? `input:${role}` : `visual:${side}`,
-      role,
-      isConnectable: mode !== 'source' && (Boolean(role) || leftMagnet),
+      id: 'visual:left',
+      isConnectable: mode !== 'source',
     };
   });
 
   return {
     visible,
-    semanticInputRoles: targetRoles.filter((role) => !assignedRoles.has(role)),
+    semanticInputRoles: targetRoles,
   };
 }
 
@@ -218,7 +146,11 @@ function nodeHandleDescription(
       ? '资源节点不接收输入，请从右侧输出连接'
       : '当前模式未启用此输入口；切换模式后会自动调整';
   }
-  if (!handle.role) return '参考素材：按拖入的媒体自动选择当前模式支持的输入';
+  if (!handle.role) {
+    return videoMode === 'first_last_frame'
+      ? '输入：接入上游内容；图片接入后选择首帧或尾帧'
+      : '输入：接入上游内容，按媒体类型自动选择用途；有多个图片用途时先选择';
+  }
   const label = videoInputRoleLabel(handle.role, videoMode);
   if (handle.role === 'prompt') return '提示词输入：接入文字节点，补充生成描述';
   if (handle.role === 'negativePrompt') return '负面提示词输入：接入不希望出现的内容描述';
@@ -228,9 +160,8 @@ function nodeHandleDescription(
 }
 
 /**
- * 保留四边居中的透明命中区域；不使用 display 或 visibility，React Flow 仍可测量端口。
- * 额外语义输入与左侧区域共用圆心，保留已有连线角色与位置。
- * 首尾帧模式把尾帧保留在下侧，形成两个独立输入位置。
+ * 保留左右居中的透明命中区域；不使用 display 或 visibility，React Flow 仍可测量端口。
+ * 语义输入仅供已有连线定位，不参与拖拽和吸附，避免抢占左侧通用输入。
  */
 export function NodeHandles({ mediaType, mode, videoMode, modelAlias }: NodeHandlesProps) {
   const layout = getNodeHandleLayout(mediaType, mode, { videoMode, modelAlias });
@@ -260,8 +191,8 @@ export function NodeHandles({ mediaType, mode, videoMode, modelAlias }: NodeHand
           position={Position.Left}
           id={`input:${role}`}
           title={videoInputRoleLabel(role, videoMode)}
-          style={centeredSideStyles.left}
-          isConnectable
+          style={{ ...centeredSideStyles.left, pointerEvents: 'none' }}
+          isConnectable={false}
         />
       ))}
     </>

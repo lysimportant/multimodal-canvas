@@ -289,7 +289,7 @@ test('组内空白与悬浮栏可拖动，成员和端口仍可交互，解散�
   expect(portHit.isHandle, JSON.stringify(portHit)).toBe(true);
   const output = (await text.locator('.react-flow__handle.source').boundingBox())!;
   const input = (await page
-    .locator('.react-flow__node[data-id="image-member"] .flow-node-handle--top')
+    .locator('.react-flow__node[data-id="image-member"] .flow-node-handle--left')
     .boundingBox())!;
   await page.mouse.move(output.x + output.width / 2, output.y + output.height / 2);
   await page.mouse.down();

@@ -170,18 +170,21 @@ describe('图片运行参数预检', () => {
     expect(canvas.nodes.every((node) => node.data.parameters === undefined)).toBe(true);
   });
 
-  it('最终模型是未知别名时只做中性解析，不沿用节点旧模型的尺寸限制', () => {
+  it('精确图片模型的 4K 档和比例只做中性解析，不在 API 预检中计算像素上限', () => {
     const canvas = imageCanvas();
     canvas.nodes[1].data.modelAlias = 'gpt-image-2.5-sunburst';
-    canvas.nodes[1].data.parameters = { quality: '4k', aspectRatio: '1:1' };
+    const parameters = { size: '4K', aspectRatio: '1:1' };
+    const before = structuredClone({ canvas, parameters });
 
     expect(() =>
       validateRunImageParameters({
         canvas,
         targetNodeId: 'image-target',
-        nodeModelAliases: { 'image-target': 'synthetic-unrestricted-model' },
+        parameters,
+        nodeModelAliases: { 'image-target': 'gpt-image-2.5-sunburst' },
       }),
     ).not.toThrow();
+    expect({ canvas, parameters }).toEqual(before);
   });
 
   it('只读校验旧快照所含参数，不规范化保存值或改变指纹', () => {

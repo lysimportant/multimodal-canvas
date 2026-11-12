@@ -821,7 +821,7 @@ export class NewApiProvider {
       nodePromptDocument,
       resolvedMentions,
     );
-    const parameters = providerParameters(snapshot.parameters, 'image', snapshot.modelAlias);
+    const parameters = imagesApiParameters(snapshot.parameters, snapshot.modelAlias);
     const content = endpointReferenceContent(snapshot, resolvedMentions).filter(
       (item) => item.type !== 'image_url',
     );
@@ -5482,6 +5482,57 @@ function providerParameters(
     }
   }
   return providerParameters;
+}
+
+/** 标准 Images API 的 size 需要像素尺寸；画布保存的 K 档只在发送时换算。 */
+function imagesApiParameters(
+  parameters: Record<string, unknown>,
+  modelAlias: string,
+): Record<string, unknown> {
+  const sizeAliases = ['size', 'image_size', 'imageSize'] as const;
+  const sizeValues = sizeAliases
+    .map((key) => parameters[key])
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => (typeof value === 'string' ? value.trim() : String(value)));
+  const sizeTier = sizeValues.find((value) => /^[1-4]k$/i.test(value));
+  if (!sizeTier) return providerParameters(parameters, 'image', modelAlias);
+
+  const canonicalTier = sizeTier.toLowerCase();
+  if (sizeValues.some((value) => value.toLowerCase() !== canonicalTier))
+    throw invalidProviderParameter('image', 'size', '档位别名冲突');
+
+  const resolution =
+    parameters.resolution ?? parameters.image_resolution ?? parameters.imageResolution;
+  if (
+    resolution !== undefined &&
+    resolution !== null &&
+    String(resolution).trim().toLowerCase() !== canonicalTier
+  )
+    throw invalidProviderParameter('image', 'size/resolution', '档位冲突');
+
+  const qualityAliases = ['quality', 'image_quality', 'imageQuality'] as const;
+  const qualityValues = qualityAliases
+    .map((key) => parameters[key])
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => (typeof value === 'string' ? value.trim() : String(value)));
+  if (
+    qualityValues.some((value) => /^[1-4]k$/i.test(value) && value.toLowerCase() !== canonicalTier)
+  )
+    throw invalidProviderParameter('image', 'size/quality', '档位冲突');
+
+  const converted = { ...parameters };
+  for (const key of sizeAliases) delete converted[key];
+  for (const key of ['resolution', 'image_resolution', 'imageResolution']) delete converted[key];
+  for (const key of qualityAliases) {
+    const value = converted[key];
+    if (typeof value === 'string' && /^[1-4]k$/i.test(value.trim())) delete converted[key];
+  }
+  converted.resolution = canonicalTier;
+
+  const normalized = providerParameters(converted, 'image', modelAlias);
+  if (typeof normalized.size !== 'string' || !/^\d+x\d+$/i.test(normalized.size))
+    throw invalidProviderParameter('image', 'size', 'K 档需要可转换为像素尺寸的比例');
+  return normalized;
 }
 
 /** New API 的 Gemini Chat 兼容层仅从 extra_body.google.image_config 读取图片配置。 */

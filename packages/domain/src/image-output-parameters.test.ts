@@ -172,35 +172,58 @@ describe('native image size tiers', () => {
     },
   );
 
-  it('converts a native tier only for an exact official OpenAI model', () => {
-    const parameters = { size: '4K', aspectRatio: '9:16' };
-    expect(normalizeImageOutputParameters(parameters, 'gpt-image-2')).toEqual({
-      size: '2160x3840',
-    });
-    expect(normalizeImageOutputParameters(parameters, '完全无限制-gpt-image-2')).toEqual(
-      parameters,
-    );
+  it.each([
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.6-sunburst',
+    'gpt-image-2',
+    'gpt-image-1',
+    'gpt-image-1.5',
+    'chatgpt-image-latest',
+    'dall-e-2',
+    'dall-e-3',
+    '完全无限制-gpt-image-2',
+  ])('preserves explicit tiers and independent ratios for %s without pixel limits', (model) => {
+    for (const alias of ['size', 'image_size', 'imageSize']) {
+      for (const size of ['1K', '2k', '4K']) {
+        for (const aspectRatio of ['1:1', '9:16', '1.5:1', 'adaptive', '1:1000000']) {
+          const parameters = { [alias]: size, aspectRatio, quality: 'high', seed: 0 };
+          const before = structuredClone(parameters);
+          const expected = { size: size.toUpperCase(), aspectRatio, quality: 'high', seed: 0 };
+          expect(resolveImageOutputParameters(parameters, model)).toEqual({
+            size: size.toUpperCase(),
+            resolution: size.toLowerCase(),
+            aspectRatio,
+            quality: 'high',
+          });
+          const normalized = normalizeImageOutputParameters(parameters, model);
+          expect(normalized).toEqual(expected);
+          expect(normalizeImageOutputParameters(normalized, model)).toEqual(expected);
+          expect(parameters).toEqual(before);
+        }
+      }
+    }
   });
 });
 
-describe('official native tier limits', () => {
+describe('model independent aspect ratio parameters', () => {
   it.each([
-    ['gpt-image-1', '2K', '1:1'],
-    ['dall-e-3', '4K', '16:9'],
-    ['gpt-image-2', '4K', '1:1'],
-    ['gpt-image-2', '2K', 'adaptive'],
-    ['gpt-image-1', 'auto', '16:9'],
-  ])('does not invent unsupported official dimensions for %s', (model, size, aspectRatio) => {
-    expect(() => normalizeImageOutputParameters({ size, aspectRatio }, model)).toThrow(
-      ImageOutputParameterError,
-    );
-  });
-  it('requires a pixel size when only an official OpenAI ratio is selected', () => {
-    expect(() => resolveImageOutputParameters({ aspectRatio: '9:16' }, 'gpt-image-2')).toThrow(
-      ImageOutputParameterError,
-    );
-    expect(resolveImageOutputParameters({ aspectRatio: '9:16' }, '完全无限制-Z-Image')).toEqual({
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.6-sunburst',
+    'gpt-image-2',
+    'gpt-image-1',
+    'dall-e-3',
+    '完全无限制-Z-Image',
+  ])('does not require or invent pixels for %s when only a ratio is selected', (model) => {
+    expect(resolveImageOutputParameters({ aspectRatio: '9:16' }, model)).toEqual({
       aspectRatio: '9:16',
+    });
+    expect(normalizeImageOutputParameters({ aspectRatio: '9:16', seed: 0 }, model)).toEqual({
+      aspectRatio: '9:16',
+      seed: 0,
+    });
+    expect(normalizeImageOutputParameters({ size: 'auto', aspectRatio: '16:9' }, model)).toEqual({
+      size: 'auto',
+      aspectRatio: '16:9',
     });
   });
 });

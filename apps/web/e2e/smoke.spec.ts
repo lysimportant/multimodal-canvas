@@ -327,8 +327,12 @@ async function mockApi(target: Pick<Page, 'route'>, errors: string[] = []) {
         url: `${path.replace('/access-url', '/content')}?access_token=synthetic-preview`,
       });
     }
-    if (request.method() === 'GET' && /^\/v1\/assets\/[^/]+\/content$/.test(path)) {
-      const generated = generatedContent.get(path);
+    if (
+      request.method() === 'GET' &&
+      /^\/v1\/assets\/[^/]+\/(?:content|derivatives\/thumbnail)$/.test(path)
+    ) {
+      const contentPath = path.replace('/derivatives/thumbnail', '/content');
+      const generated = generatedContent.get(contentPath);
       if (generated) {
         await route.fulfill({
           status: 200,
@@ -337,7 +341,7 @@ async function mockApi(target: Pick<Page, 'route'>, errors: string[] = []) {
         });
         return;
       }
-      const asset = assets.find((item) => item.contentUrl === path);
+      const asset = assets.find((item) => item.contentUrl === contentPath);
       const body =
         asset?.mediaType === 'image'
           ? validPng
@@ -436,7 +440,10 @@ async function mockApi(target: Pick<Page, 'route'>, errors: string[] = []) {
       await json(route, { models: accountModels });
       return;
     }
-    if (request.method() === 'GET' && path === '/v1/account/newapi') {
+    if (
+      (request.method() === 'GET' && path === '/v1/account/newapi') ||
+      (request.method() === 'POST' && path === '/v1/account/newapi/sync')
+    ) {
       await json(route, {
         account: {
           issuer: 'https://newapi.example.test',
@@ -448,7 +455,7 @@ async function mockApi(target: Pick<Page, 'route'>, errors: string[] = []) {
             {
               group: 'alpha',
               credentialId: fixtureCredentialId,
-              status: 'ready',
+              status: 'active',
               modelCount: accountModels.length,
             },
           ],
@@ -884,10 +891,10 @@ async function focusCanvas(page: Page) {
   await page.locator('.react-flow__pane').click({ position: { x: 12, y: 12 } });
 }
 
-/** 通过工具栏的可访问名称查找节点，名称不要求重复显示在媒体预览内。 */
+/** 使用常驻名称按钮定位节点，不依赖仅在悬停或选中时挂载的操作栏。 */
 function nodeByLabel(page: Page, label: string) {
   return page.locator('.flow-asset-node').filter({
-    has: page.getByRole('group', { name: `节点操作：${label}`, exact: true }),
+    has: page.getByRole('button', { name: `编辑节点名称：${label}`, exact: true }),
   });
 }
 
@@ -917,6 +924,7 @@ async function resizeNode(page: Page, node: Locator) {
 
 /** 用连续指针事件拖动节点工具栏，等待 React Flow 的拖动阈值生效。 */
 async function moveNode(page: Page, node: Locator, x: number, y: number) {
+  await node.hover();
   const handle = node.getByRole('button', { name: '拖动移动节点' });
   await handle.hover();
   const canvas = (await page.locator('.canvas-area').boundingBox())!;
@@ -1828,11 +1836,12 @@ test('adds a generate node from the canvas toolbar', async ({ page }) => {
   await expect(page.getByRole('region', { name: '文字生成节点生成设置' })).toBeVisible();
 });
 
-test('supports theme/sidebar controls, node body connections, and corner resizing', async ({
+test('supports theme/sidebar controls, node body connections, and stable node dimensions', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
   await page.goto(projectPath);
+  await page.getByRole('button', { name: '展开资源栏', exact: true }).click();
 
   await page.getByRole('button', { name: '新建图片生成节点' }).click();
   await page.locator('.resource-panel input[type="file"]').setInputFiles({
@@ -1872,31 +1881,27 @@ test('supports theme/sidebar controls, node body connections, and corner resizin
   await page.mouse.up();
   await expect(page.locator('.react-flow__edge')).toHaveCount(1);
 
+  const before = await target.evaluate((node: HTMLElement) => ({
+    width: node.offsetWidth,
+    height: node.offsetHeight,
+  }));
   await target.click();
   await expect(page.locator('.node-quick-editor')).toBeVisible();
   await expect(page.locator('.inspector-panel textarea')).toHaveCount(0);
-  const resizeHandle = page.locator('.react-flow__resize-control.bottom.right');
-  await expect(resizeHandle).toBeVisible();
-  const before = await target.boundingBox();
-  const previewBefore = await target.locator('.flow-node-placeholder').boundingBox();
-  const resizeBox = await resizeHandle.boundingBox();
-  expect(before).not.toBeNull();
-  expect(previewBefore).not.toBeNull();
-  expect(resizeBox).not.toBeNull();
-  if (!before || !previewBefore || !resizeBox) return;
-  await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(resizeBox.x + 30, resizeBox.y + 24, { steps: 8 });
-  await page.mouse.up();
+  // 节点已取消四角缩放；选中和打开编辑器必须保留节点尺寸及连线。
+  await expect(page.locator('.react-flow__resize-control')).toHaveCount(0);
+  await expect(target.locator('.flow-node-handle')).toHaveCount(2);
+  await expect(target.locator('.flow-node-handle--left')).toHaveCount(1);
+  await expect(target.locator('.flow-node-handle--right')).toHaveCount(1);
+  await expect(page.locator('.react-flow__edge')).toHaveCount(1);
   await expect
-    .poll(async () => (await target.boundingBox())?.width ?? 0)
-    .toBeGreaterThan(before.width);
-  await expect
-    .poll(async () => (await target.boundingBox())?.height ?? 0)
-    .toBeGreaterThan(before.height);
-  await expect
-    .poll(async () => (await target.locator('.flow-node-placeholder').boundingBox())?.height ?? 0)
-    .toBeGreaterThan(previewBefore.height);
+    .poll(() =>
+      target.evaluate((node: HTMLElement) => ({
+        width: node.offsetWidth,
+        height: node.offsetHeight,
+      })),
+    )
+    .toEqual(before);
 
   await page.getByRole('button', { name: '外观', exact: true }).first().click();
   const appearance = page.getByRole('dialog', { name: '主题、画布背景与连接线' });
@@ -2113,6 +2118,7 @@ test('uploads an asset and adds it to the workflow canvas with the add button', 
 test('connects three image references to one video generation node', async ({ page }) => {
   await page.setViewportSize({ width: 1800, height: 1400 });
   await page.goto(projectPath);
+  await page.getByRole('button', { name: '展开资源栏', exact: true }).click();
 
   for (const name of ['character.png', 'style.png', 'frame.png']) {
     await page.locator('.resource-panel input[type="file"]').setInputFiles({
@@ -2133,19 +2139,7 @@ test('connects three image references to one video generation node', async ({ pa
   const videoNode = nodeByLabel(page, '视频生成节点');
   await expect(videoNode).toHaveCount(1);
   const sourceNodes = page.locator('.flow-asset-node:not(.flow-generate-node)');
-  const canvasBox = await page.locator('.canvas-area').boundingBox();
-  expect(canvasBox).not.toBeNull();
-  if (!canvasBox) return;
-  const videoHeader = await videoNode.locator('.flow-node-placeholder').boundingBox();
-  expect(videoHeader).not.toBeNull();
-  if (!videoHeader) return;
-  await page.mouse.move(
-    videoHeader.x + videoHeader.width / 2,
-    videoHeader.y + videoHeader.height / 2,
-  );
-  await page.mouse.down();
-  await page.mouse.move(canvasBox.x + 1100, canvasBox.y + 500, { steps: 12 });
-  await page.mouse.up();
+  await moveNode(page, videoNode, 1100, 500);
   for (const [index, name] of ['character.png', 'style.png', 'frame.png'].entries()) {
     await page.getByRole('button', { name: `添加 ${name} 到画布` }).click();
     await expect
@@ -2205,9 +2199,22 @@ test('connects three image references to one video generation node', async ({ pa
   const edgeEffect = selectedEdge.locator('.canvas-edge-effect-meteor');
   await expect(edgeEffect).toHaveCount(1);
   await expect(edgeEffect).toHaveCSS('pointer-events', 'none');
-  expect(await edgeEffect.getAttribute('d')).toBe(
-    await selectedEdge.locator('.react-flow__edge-path').getAttribute('d'),
-  );
+  const effectGeometry = await selectedEdge.evaluate((edge) => {
+    const basePath = edge.querySelector('.react-flow__edge-path')!.getAttribute('d');
+    // 浏览器会规范化 path() 的数字与空白；用同一 CSS 解析器比较真实运动路径。
+    const expected = document.createElement('div');
+    expected.style.offsetPath = `path(${JSON.stringify(basePath)})`;
+    return {
+      basePath,
+      fallbackPath: edge.querySelector('.canvas-edge-meteor-fallback')?.getAttribute('d'),
+      motionPath: edge.querySelector<SVGGElement>('.canvas-edge-meteor-motion')?.style.offsetPath,
+      expectedMotionPath: expected.style.offsetPath,
+    };
+  });
+  expect(effectGeometry.basePath).toBeTruthy();
+  expect(effectGeometry.fallbackPath).toBe(effectGeometry.basePath);
+  expect(effectGeometry.expectedMotionPath).not.toBe('');
+  expect(effectGeometry.motionPath).toBe(effectGeometry.expectedMotionPath);
   // 多条曲线在目标端交叠，点击靠近来源的可见线段，避免命中其他连接。
   const edgePoint = await selectedEdge
     .locator('.react-flow__edge-interaction')
@@ -2229,7 +2236,7 @@ test('connects three image references to one video generation node', async ({ pa
 
   const selectedEdgeStyles = await selectedEdge.evaluate((edge) => {
     const path = edge.querySelector<SVGPathElement>('.react-flow__edge-path');
-    const effect = edge.querySelector<SVGPathElement>('.canvas-edge-effect-meteor');
+    const effect = edge.querySelector<SVGGElement>('.canvas-edge-meteor-motion');
     const shell = document.querySelector<HTMLElement>('.app-shell');
     if (!path || !effect || !shell) return null;
 
@@ -2261,6 +2268,7 @@ test('connects mixed text, image, and audio references to one video generation n
 }) => {
   await page.setViewportSize({ width: 1800, height: 1400 });
   await page.goto(projectPath);
+  await page.getByRole('button', { name: '展开资源栏', exact: true }).click();
 
   const references = [
     {
@@ -2288,20 +2296,8 @@ test('connects mixed text, image, and audio references to one video generation n
   const videoNode = nodeByLabel(page, '视频生成节点');
   await expect(videoNode).toHaveCount(1);
   const sourceNodes = page.locator('.flow-asset-node:not(.flow-generate-node)');
-  const canvasBox = await page.locator('.canvas-area').boundingBox();
-  expect(canvasBox).not.toBeNull();
-  if (!canvasBox) return;
-  const videoHeader = await videoNode.locator('.flow-node-placeholder').boundingBox();
-  expect(videoHeader).not.toBeNull();
-  if (!videoHeader) return;
-
-  await page.mouse.move(
-    videoHeader.x + videoHeader.width / 2,
-    videoHeader.y + videoHeader.height / 2,
-  );
-  await page.mouse.down();
-  await page.mouse.move(canvasBox.x + 640, canvasBox.y + 280, { steps: 12 });
-  await page.mouse.up();
+  // 视频节点放在来源右侧，避免图片卡片遮挡统一左侧输入口。
+  await moveNode(page, videoNode, 1100, 500);
 
   for (const [index, reference] of references.entries()) {
     await page.getByRole('button', { name: `添加 ${reference.name} 到画布` }).click();
@@ -2313,13 +2309,12 @@ test('connects mixed text, image, and audio references to one video generation n
   await page.getByRole('button', { name: '自动适配缩放' }).click();
   const sourceHandle = (index: number) =>
     sourceNodes.nth(index).locator('.react-flow__handle.source');
-  const targetHandle = (role: string) =>
-    videoNode.locator(role === 'prompt' ? '.flow-node-handle--top' : '.flow-node-handle--left');
+  const targetHandle = videoNode.locator('.flow-node-handle--left');
 
-  const connect = async (sourceIndex: number, role: string) => {
+  const connect = async (sourceIndex: number) => {
     await sourceHandle(sourceIndex).hover();
     const sourceBox = await sourceHandle(sourceIndex).boundingBox();
-    const targetBox = await targetHandle(role).boundingBox();
+    const targetBox = await targetHandle.boundingBox();
     expect(sourceBox).not.toBeNull();
     expect(targetBox).not.toBeNull();
     if (!sourceBox || !targetBox) return;
@@ -2331,8 +2326,9 @@ test('connects mixed text, image, and audio references to one video generation n
     await page.mouse.up();
   };
 
-  for (const [index, reference] of references.entries()) {
-    await connect(index, reference.role);
+  for (const index of references.keys()) {
+    await connect(index);
+    await expect(page.locator('.react-flow__edge')).toHaveCount(index + 1);
   }
   await focusCanvas(page);
   await page.getByRole('button', { name: '自动适配缩放' }).click();

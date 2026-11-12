@@ -126,12 +126,12 @@ describe('GlobalStore 图片异步合同', () => {
     [
       'banana2',
       { size: '2K', aspectRatio: '16:9' },
-      { model: 'banana2', aspect_ratio: '16:9', resolution: '2k' },
+      { model: 'banana2', aspect_ratio: '16:9', resolution: '2K' },
     ],
     [
       'gpt-image-2',
       { size: '1K', aspectRatio: '1:1' },
-      { model: 'gpt-image-2', size: '1024x1024' },
+      { model: 'gpt-image-2', aspect_ratio: '1:1', resolution: '1K' },
     ],
     ['seedream-5.0', { size: '2048x2048' }, { model: 'seedream-5.0', size: '2048x2048' }],
     [
@@ -187,6 +187,32 @@ describe('GlobalStore 图片异步合同', () => {
     expect(body).not.toHaveProperty('imageQuality');
     expect(body).not.toHaveProperty('image_size');
   });
+
+  it.each(['seedream-5.0', 'banana_c1', 'gpt-image-2', 'gpt-image-2.5'])(
+    '%s 的显式 K 档保留为独立 resolution，不按目录推算像素或限制档位',
+    async (modelAlias) => {
+      for (const size of ['1K', '2K', '4K']) {
+        const current = setup([
+          task('completed', { result_url: 'https://cdn.example/result.png' }),
+          new Response(png),
+        ]);
+        current.request.snapshot = {
+          ...snapshot,
+          modelAlias,
+          parameters: { size, aspectRatio: '16:9' },
+        } as unknown as RunSnapshot;
+        const before = structuredClone(current.request.snapshot);
+
+        await current.provider.execute(current.request);
+
+        const body = JSON.parse(String(current.fetchImpl.mock.calls[0]?.[1]?.body));
+        expect(body).toMatchObject({ model: modelAlias, resolution: size, aspect_ratio: '16:9' });
+        for (const key of ['size', 'width', 'height', 'aspectRatio'])
+          expect(body).not.toHaveProperty(key);
+        expect(current.request.snapshot).toEqual(before);
+      }
+    },
+  );
 
   it('拒绝模型不支持的参数、枚举和互斥组合', async () => {
     const invalidCases = [

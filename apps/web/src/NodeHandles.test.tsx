@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import { render } from '@testing-library/react';
+import { targetPortRolesForMediaType, videoModes } from '@multimodal-canvas/domain';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@xyflow/react', () => {
@@ -36,30 +37,33 @@ vi.mock('@xyflow/react', () => {
 import { getNodeHandleLayout, NodeHandles } from './NodeHandles';
 
 describe('NodeHandles', () => {
-  it('renders one centered visible anchor per side', () => {
+  it('renders only a left input and a right output anchor', () => {
     const { container } = render(<NodeHandles mediaType="video" mode="generate" />);
     const visibleHandles = Array.from(container.querySelectorAll('.flow-node-handle'));
 
-    expect(visibleHandles).toHaveLength(4);
-    expect(visibleHandles.map((handle) => handle.getAttribute('data-handle-side'))).toEqual([
-      'top',
-      'right',
-      'bottom',
+    expect(visibleHandles).toHaveLength(2);
+    expect(visibleHandles.map((handle) => handle.getAttribute('data-handle-side')).sort()).toEqual([
       'left',
-    ]);
-    expect(visibleHandles.map((handle) => handle.getAttribute('data-position'))).toEqual([
-      'top',
       'right',
-      'bottom',
-      'left',
     ]);
+    expect(container.querySelector('[data-handle-side="left"]')).toHaveAttribute(
+      'data-handle-type',
+      'target',
+    );
+    expect(container.querySelector('[data-handle-side="right"]')).toHaveAttribute(
+      'data-handle-type',
+      'source',
+    );
+    expect(
+      container.querySelectorAll('[data-position="top"], [data-position="bottom"]'),
+    ).toHaveLength(0);
   });
 
-  it('连接点视觉透明但保留原尺寸测量和连接命中区域', () => {
+  it('两个主连接点视觉透明但保留尺寸测量和连接命中区域', () => {
     const { container } = render(<NodeHandles mediaType="video" mode="generate" />);
-    const handles = Array.from(container.querySelectorAll('[data-handleid]')) as HTMLElement[];
+    const handles = Array.from(container.querySelectorAll('.flow-node-handle')) as HTMLElement[];
 
-    expect(handles.length).toBeGreaterThan(4);
+    expect(handles).toHaveLength(2);
     for (const handle of handles) {
       expect(handle.style.opacity).toBe('0');
       expect(handle.style.display).toBe('');
@@ -69,7 +73,7 @@ describe('NodeHandles', () => {
     }
   });
 
-  it('keeps every target role available through the hidden hit layer', () => {
+  it('keeps every legacy target role measurable at the left input without accepting new connections', () => {
     const { container } = render(<NodeHandles mediaType="video" mode="generate" />);
     const handles = Array.from(container.querySelectorAll('[data-handleid]'));
 
@@ -89,117 +93,109 @@ describe('NodeHandles', () => {
         'output:video',
       ]),
     );
-    expect(container.querySelectorAll('.flow-node-semantic-handle')).toHaveLength(8);
+    const semanticHandles = Array.from(
+      container.querySelectorAll('.flow-node-semantic-handle'),
+    ) as HTMLElement[];
+    expect(semanticHandles).toHaveLength(11);
+    for (const handle of semanticHandles) {
+      expect(handle).toHaveAttribute('data-position', 'left');
+      expect(handle).toHaveAttribute('data-connectable', 'false');
+      expect(handle.style.top).toBe('50%');
+      expect(handle.style.left).toBe('0px');
+      expect(handle.style.transform).toBe('translate(-50%, -50%)');
+      expect(handle.style.opacity).toBe('0');
+      expect(handle.style.pointerEvents).toBe('none');
+      expect(handle.style.display).toBe('');
+      expect(handle.style.visibility).toBe('');
+    }
     expect(
-      Array.from(container.querySelectorAll('.flow-node-semantic-handle')).every(
-        (handle) =>
-          (handle as HTMLElement).style.top === '50%' &&
-          (handle as HTMLElement).style.left === '0px' &&
-          (handle as HTMLElement).style.transform === 'translate(-50%, -50%)',
-      ),
-    ).toBe(true);
-  });
-
-  it('keeps the primary roles on the centered target anchors', () => {
-    const { visible } = getNodeHandleLayout('video', 'generate');
-    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
-
-    expect((['top', 'left', 'bottom'] as const).map((side) => handlesBySide.get(side)?.id)).toEqual(
-      ['input:prompt', 'input:firstFrame', 'input:negativePrompt'],
-    );
+      container.querySelectorAll('[data-handle-type="target"][data-connectable="true"]'),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector('[data-handle-type="target"][data-connectable="true"]'),
+    ).toHaveAttribute('data-handleid', 'visual:left');
   });
 
   it.each(['text', 'image', 'audio', 'video'] as const)(
-    '%s 节点四边可见锚点都使用同一套居中坐标',
+    '%s 生成节点统一左进右出并保留全部语义输入',
     (mediaType) => {
       const { container } = render(<NodeHandles mediaType={mediaType} mode="generate" />);
       const visible = Array.from(container.querySelectorAll('.flow-node-handle')) as HTMLElement[];
-      expect(visible.map((handle) => handle.getAttribute('data-handle-side'))).toEqual([
-        'top',
-        'right',
-        'bottom',
-        'left',
-      ]);
-      expect(visible.map((handle) => handle.style.transform)).toEqual([
-        'translate(-50%, -50%)',
-        'translate(50%, -50%)',
-        'translate(-50%, 50%)',
-        'translate(-50%, -50%)',
-      ]);
-      expect(visible[0].style.top).toBe('0px');
-      expect(visible[1].style.right).toBe('0px');
-      expect(visible[2].style.bottom).toBe('0px');
-      expect(visible[3].style.left).toBe('0px');
+      expect(visible).toHaveLength(2);
+      const left = container.querySelector('[data-handle-side="left"]') as HTMLElement;
+      const right = container.querySelector('[data-handle-side="right"]') as HTMLElement;
+      expect(left).toHaveAttribute('data-position', 'left');
+      expect(left).toHaveAttribute('data-handleid', 'visual:left');
+      expect(left).toHaveAttribute('data-connectable', 'true');
+      expect(left.style.top).toBe('50%');
+      expect(left.style.left).toBe('0px');
+      expect(left.style.transform).toBe('translate(-50%, -50%)');
+      expect(right).toHaveAttribute('data-position', 'right');
+      expect(right).toHaveAttribute('data-handleid', `output:${mediaType}`);
+      expect(right).toHaveAttribute('data-connectable', 'true');
+      expect(right.style.top).toBe('50%');
+      expect(right.style.right).toBe('0px');
+      expect(right.style.transform).toBe('translate(50%, -50%)');
+      expect(
+        Array.from(container.querySelectorAll('.flow-node-semantic-handle')).map((handle) =>
+          handle.getAttribute('data-handleid'),
+        ),
+      ).toEqual(targetPortRolesForMediaType(mediaType).map((role) => `input:${role}`));
     },
   );
 
-  it('does not expose connectable input handles on source nodes', () => {
-    const { container } = render(<NodeHandles mediaType="image" mode="source" />);
+  it.each(['text', 'image', 'audio', 'video'] as const)(
+    '%s 资源节点保留两个位置但仅输出可以连接',
+    (mediaType) => {
+      const { container } = render(<NodeHandles mediaType={mediaType} mode="source" />);
 
-    expect(container.querySelectorAll('.flow-node-semantic-handle')).toHaveLength(0);
-    expect(
-      container.querySelectorAll('[data-handle-type="target"][data-connectable="true"]'),
-    ).toHaveLength(0);
-    expect(container.querySelector('[data-handleid="output:image"]')).toBeInTheDocument();
-  });
-
-  it('keeps the left first-frame role available through the semantic hit layer in text_to_video mode', () => {
-    const { visible, semanticInputRoles } = getNodeHandleLayout('video', 'generate', {
-      videoMode: 'text_to_video',
-    });
-    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
-    expect(handlesBySide.get('left')).toMatchObject({
-      id: 'visual:left',
-      isConnectable: false,
-    });
-    expect(handlesBySide.get('top')?.id).toBe('input:prompt');
-    expect(semanticInputRoles).toContain('firstFrame');
-  });
-
-  it('puts last frame on the bottom visible slot in first_last_frame mode', () => {
-    const { visible } = getNodeHandleLayout('video', 'generate', {
-      videoMode: 'first_last_frame',
-    });
-    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
-    expect(handlesBySide.get('left')?.id).toBe('input:firstFrame');
-    expect(handlesBySide.get('bottom')?.id).toBe('input:lastFrame');
-    expect(handlesBySide.get('left')?.isConnectable).toBe(true);
-    expect(handlesBySide.get('bottom')?.isConnectable).toBe(true);
-  });
-
-  it('uses a connectable left magnet for omni references instead of first frame', () => {
-    const { visible, semanticInputRoles } = getNodeHandleLayout('video', 'generate', {
-      videoMode: 'omni_reference',
-      modelAlias: 'grok-imagine-video-1.5',
-    });
-    const handlesBySide = new Map(visible.map((handle) => [handle.side, handle]));
-    expect(handlesBySide.get('left')).toMatchObject({
-      id: 'visual:left',
-      isConnectable: true,
-    });
-    expect(semanticInputRoles).toEqual(expect.arrayContaining(['referenceImage']));
-    expect(semanticInputRoles).toEqual(expect.arrayContaining(['firstFrame', 'content']));
-  });
-
-  it.each(['omni_reference', 'video_edit', 'video_extend'] as const)(
-    '%s keeps reference media on the left and exposes the negative prompt role when declared',
-    (videoMode) => {
-      for (const modelAlias of ['wan3.0-video', 'doubao-seedance-2-5-260628']) {
-        const layout = getNodeHandleLayout('video', 'generate', { videoMode, modelAlias });
-        expect(layout.visible.find((handle) => handle.side === 'left')).toMatchObject({
-          id: 'visual:left',
-          isConnectable: true,
-        });
-        expect(layout.semanticInputRoles).toEqual(
-          expect.arrayContaining(['referenceImage', 'content', 'audioTrack']),
-        );
-        expect(layout.visible.find((handle) => handle.side === 'bottom')).toMatchObject({
-          id: 'input:negativePrompt',
-          isConnectable: true,
-        });
-      }
+      expect(container.querySelectorAll('.flow-node-handle')).toHaveLength(2);
+      expect(container.querySelectorAll('.flow-node-semantic-handle')).toHaveLength(0);
+      expect(
+        container.querySelectorAll('[data-handle-type="target"][data-connectable="true"]'),
+      ).toHaveLength(0);
+      expect(container.querySelector('[data-handleid="visual:left"]')).toHaveAttribute(
+        'data-connectable',
+        'false',
+      );
+      expect(container.querySelector(`[data-handleid="output:${mediaType}"]`)).toHaveAttribute(
+        'data-connectable',
+        'true',
+      );
     },
   );
+
+  it.each(videoModes)('%s 模式保留一个通用输入位置以及旧角色标识', (videoMode) => {
+    for (const modelAlias of [
+      'grok-imagine-video-1.5',
+      'wan3.0-video',
+      'doubao-seedance-2-5-260628',
+    ]) {
+      const layout = getNodeHandleLayout('video', 'generate', { videoMode, modelAlias });
+      expect(layout.visible).toHaveLength(2);
+      expect(layout.visible.find((handle) => handle.side === 'left')).toMatchObject({
+        id: 'visual:left',
+        type: 'target',
+        isConnectable: true,
+      });
+      expect(layout.semanticInputRoles).toEqual(
+        expect.arrayContaining([
+          'prompt',
+          'negativePrompt',
+          'referenceImage',
+          'firstFrame',
+          'lastFrame',
+          'content',
+          'audioTrack',
+        ]),
+      );
+      expect(layout.visible.find((handle) => handle.side === 'right')).toMatchObject({
+        id: 'output:video',
+        type: 'source',
+        isConnectable: true,
+      });
+    }
+  });
 });
 
 describe('连接点功能说明', () => {
@@ -209,21 +205,22 @@ describe('连接点功能说明', () => {
       'title',
       expect.stringContaining('拖到其他节点'),
     );
-    for (const side of ['top', 'left', 'bottom']) {
-      const handle = container.querySelector(`[data-handle-side="${side}"]`);
-      expect(handle).toHaveAttribute('aria-disabled', 'true');
-      expect(handle).toHaveAttribute('title', expect.stringContaining('资源节点不接收输入'));
-    }
+    const handle = container.querySelector('[data-handle-side="left"]');
+    expect(handle).toHaveAttribute('aria-disabled', 'true');
+    expect(handle).toHaveAttribute('title', expect.stringContaining('资源节点不接收输入'));
   });
 
-  it('视频模式改变后说明与当前输入职责同步，不把空闲点标作参考输入', () => {
+  it('视频模式切换后主输入位置不变且语义角色说明同步', () => {
     const { container, rerender } = render(
       <NodeHandles mediaType="video" mode="generate" videoMode="first_last_frame" />,
     );
-    expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
+    expect(container.querySelector('[data-handleid="input:lastFrame"]')).toHaveAttribute(
       'title',
       expect.stringContaining('尾帧'),
     );
+    const input = container.querySelector('[data-handle-side="left"]');
+    expect(input).toHaveAttribute('data-handleid', 'visual:left');
+    expect(input).toHaveAttribute('data-connectable', 'true');
     rerender(
       <NodeHandles
         mediaType="video"
@@ -232,16 +229,21 @@ describe('连接点功能说明', () => {
         modelAlias="minimax-h3"
       />,
     );
-    expect(container.querySelector('[data-handle-side="left"]')).toHaveAttribute(
-      'title',
-      expect.stringContaining('自动选择'),
-    );
-    expect(container.querySelector('[data-handle-side="bottom"]')).toHaveAttribute(
+    expect(container.querySelectorAll('.flow-node-handle')).toHaveLength(2);
+    expect(container.querySelector('[data-handle-side="left"]')).toBe(input);
+    expect(input).toHaveAttribute('data-handleid', 'visual:left');
+    expect(input).not.toHaveAttribute('aria-disabled');
+    expect(container.querySelector('[data-handleid="input:negativePrompt"]')).toHaveAttribute(
       'title',
       expect.stringContaining('负面提示词'),
     );
-    expect(container.querySelector('[data-handle-side="bottom"]')).not.toHaveAttribute(
-      'aria-disabled',
+    expect(container.querySelector('[data-handleid="input:content"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('参考视频'),
+    );
+    expect(container.querySelector('[data-handleid="input:audioTrack"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('参考音频'),
     );
   });
 });
